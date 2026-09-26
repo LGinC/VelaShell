@@ -576,11 +576,17 @@ public sealed partial class X11Server
         uint id = r.U32();
         if (id == 0)
         {
-            return;   // AllTemporary:没有 RetainTemporary 的资源,什么都不做
+            DestroyRetainedTemporaryClients();   // AllTemporary
+            return;
         }
         if (Lookup<XResource>(id) is not { Owner: { } owner })
         {
             throw new XProtocolError(XErrorCode.Value, id);
+        }
+        if (IsRetained(owner))
+        {
+            DestroyRetainedClient(owner);   // 已经以 Retain 模式断开:销毁它留下的全部资源
+            return;
         }
         owner.Abort();
         DisconnectClient(owner);

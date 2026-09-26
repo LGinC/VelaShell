@@ -257,4 +257,37 @@ public sealed class RobustnessTests
         XMessage property = await c.RequestAsync(20, 0, b => b.U32(window).U32(39).U32(0).U32(0).U32(0));   // GetProperty,长度 0:只看 bytes-after
         Assert.AreEqual((uint)(2 * chunk.Length), property.U32(12), "前两次追加照常生效");
     }
+
+    [TestMethod]
+    public async Task CloseDownMode为Retain时断开后资源留着_KillClient与AllTemporary销毁它们()
+    {
+        await using X11Server server = new();
+        await using XTestClient observer = await XTestClient.ConnectAsync(server);
+
+        async Task<uint> LeaveBehindAsync(byte mode)
+        {
+            XTestClient c = await XTestClient.ConnectAsync(server);
+            uint pixmap = c.NewId();
+            await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));
+            await c.SendAsync(112, mode, _ => { });   // SetCloseDownMode
+            await c.SyncAsync();
+            Task serving = c.ServerTask;
+            await c.DisposeAsync();
+            await serving.WaitAsync(TimeSpan.FromSeconds(3));
+            return pixmap;
+        }
+        async Task<bool> ExistsAsync(uint id) => (await observer.RequestAsync(14, 0, b => b.U32(id))).IsReply;   // GetGeometry
+
+        uint permanent = await LeaveBehindAsync(1), temporary = await LeaveBehindAsync(2), destroyed = await LeaveBehindAsync(0);
+        Assert.IsTrue(await ExistsAsync(permanent), "RetainPermanent:断开后资源还在");
+        Assert.IsTrue(await ExistsAsync(temporary), "RetainTemporary:断开后资源还在");
+        Assert.IsFalse(await ExistsAsync(destroyed), "Destroy:照常销毁");
+
+        await observer.SendAsync(113, 0, b => b.U32(0));   // KillClient(AllTemporary)
+        Assert.IsFalse(await ExistsAsync(temporary), "AllTemporary 销毁 RetainTemporary 留下的");
+        Assert.IsTrue(await ExistsAsync(permanent), "RetainPermanent 的不受影响");
+
+        await observer.SendAsync(113, 0, b => b.U32(permanent));   // KillClient(那个资源):销毁它的客户端留下的全部资源
+        Assert.IsFalse(await ExistsAsync(permanent));
+    }
 }

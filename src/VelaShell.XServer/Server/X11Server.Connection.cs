@@ -37,6 +37,12 @@ public sealed partial class X11Server
 
     private int _nextClientIndex = 1;
 
+    /// <summary>
+    /// 以 RetainPermanent / RetainTemporary 收尾的客户端:资源还留在资源表里(协议第 10 节),它的编号不分给新连接 ——
+    /// 否则新客户端的资源 ID 与留下来的撞上。KillClient 销毁这些资源之后编号才放回去。
+    /// </summary>
+    private readonly Dictionary<int, XClient> _retainedClients = [];
+
     /// <summary>经 TCP / Unix 套接字接进来的连接(收工时等它们结束)。</summary>
     private readonly ConcurrentDictionary<Task, byte> _connections = new();
 
@@ -272,7 +278,7 @@ public sealed partial class X11Server
         int index = _nextClientIndex;
         for (int tried = 0; tried < MaxClients; tried++, index = index >= MaxClients ? 1 : index + 1)
         {
-            if (_clients.ContainsKey(index))
+            if (_clients.ContainsKey(index) || _retainedClients.ContainsKey(index))
             {
                 continue;
             }
@@ -450,7 +456,10 @@ public sealed partial class X11Server
     private static ushort Read16(ReadOnlySpan<byte> span, bool bigEndian) =>
         bigEndian ? BinaryPrimitives.ReadUInt16BigEndian(span) : BinaryPrimitives.ReadUInt16LittleEndian(span);
 
-    /// <summary>客户端断开:按 CloseDownMode = Destroy 释放它的一切(协议第 10 节「Connection Close」)。</summary>
+    /// <summary>
+    /// 客户端断开(协议第 10 节「Connection Close」):事件选择、抓取、选区一律放掉;CloseDownMode 为 Destroy(默认)时销毁它的全部资源,
+    /// 为 RetainPermanent / RetainTemporary 时资源留着,等 KillClient 来销毁。
+    /// </summary>
     private void DisconnectClient(XClient client)
     {
         if (!_clients.Remove(client.Index))
@@ -464,7 +473,15 @@ public sealed partial class X11Server
         }
         try
         {
-            CleanupClient(client);
+            if (client.CloseDownMode is 1 or 2)
+            {
+                ReleaseConnectionState(client);
+                _retainedClients[client.Index] = client;
+            }
+            else
+            {
+                CleanupClient(client);
+            }
         }
         catch (Exception ex)
         {
@@ -476,8 +493,43 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>以 RetainPermanent / RetainTemporary 收尾的客户端的资源:KillClient 指到它们时销毁,编号随之放回。</summary>
+    private void DestroyRetainedClient(XClient client)
+    {
+        if (_retainedClients.Remove(client.Index))
+        {
+            CleanupClient(client);
+        }
+    }
+
+    /// <summary>KillClient(AllTemporary):销毁所有以 RetainTemporary 收尾的客户端的资源。</summary>
+    private void DestroyRetainedTemporaryClients()
+    {
+        foreach (XClient client in _retainedClients.Values.Where(c => c.CloseDownMode == 2).ToArray())
+        {
+            DestroyRetainedClient(client);
+        }
+    }
+
+    /// <summary>这个客户端已经以 Retain 模式断开、资源还留着。</summary>
+    private bool IsRetained(XClient client) => _retainedClients.TryGetValue(client.Index, out XClient? retained) && ReferenceEquals(retained, client);
+
+    /// <summary>连接收尾时与资源无关的那一半:选区、抓取、别人窗口上的事件选择与被动抓取、各扩展的每连接状态。</summary>
+    private void ReleaseConnectionState(XClient client)
+    {
+        ReleaseSelectionsAndGrabs(client);
+        ReleaseEventSelections(client);
+    }
+
     /// <summary>断开的客户端:释放它的资源、选区、抓取与事件选择,再让各扩展清掉自己的那份状态(<see cref="Extension.ClientClosed" />)。</summary>
     private void CleanupClient(XClient client)
+    {
+        ReleaseSelectionsAndGrabs(client);
+        DestroyClientResources(client);
+        ReleaseEventSelections(client);
+    }
+
+    private void ReleaseSelectionsAndGrabs(XClient client)
     {
         foreach ((uint atom, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
         {
@@ -499,7 +551,10 @@ public sealed partial class X11Server
         {
             KeyboardGrab = null;
         }
+    }
 
+    private void DestroyClientResources(XClient client)
+    {
         // 资源表只扫一遍:分出它的窗口与其余资源。先销毁「挂在别人窗口下」的那些(连同子窗口),再清其余资源。
         List<XWindow> windows = [];
         List<XResource> others = [];
@@ -538,7 +593,10 @@ public sealed partial class X11Server
                 CleanupDamage(pixmap);   // 客户端走了,它的像素图随之销毁:别的客户端建在上面的 Damage 一并销毁
             }
         }
+    }
 
+    private void ReleaseEventSelections(XClient client)
+    {
         // 它在别人窗口上选的事件、登记的被动抓取一并摘掉。
         foreach (XResource resource in _resources.Values)
         {
