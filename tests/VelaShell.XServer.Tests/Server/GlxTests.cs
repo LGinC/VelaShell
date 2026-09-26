@@ -599,4 +599,29 @@ public sealed class GlxTests
         XMessage back = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(abgr).U32(UnsignedByte).U8(0).U8(0).U16(0));
         CollectionAssert.AreEqual(new byte[] { 0xFF, 0x30, 0x20, 0x10 }, back.Bytes[32..36]);
     }
+
+    [TestMethod]
+    public async Task RenderLarge拼出来的长度与第一段声明的对不上回GLXBadLargeRequest()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const byte badLargeRequest = 151 + 7;
+        byte[] small = [.. BitConverter.GetBytes(0x3F800000u), .. BitConverter.GetBytes(0u), .. BitConverter.GetBytes(0u), .. BitConverter.GetBytes(0x3F800000u)];   // ClearColor 1, 0, 0, 1
+
+        // 声明比实际多 1000 字节:最后一段到了还不够 —— 命令被截断了。
+        await c.SendAsync(glx, 2, b => b.U32(tag).U16(1).U16(2).U32((uint)small.Length).U32((uint)(8 + small.Length + 1000)).U32(130).Bytes(small));
+        XMessage truncated = await c.RequestAsync(glx, 2, b => b.U32(tag).U16(2).U16(2).U32(4).U32(0));
+        Assert.IsTrue(truncated.IsError);
+        Assert.AreEqual(badLargeRequest, truncated.Bytes[1]);
+
+        // 声明正好是小参数,第二段却还带 8 字节:拼起来比声明的长。
+        await c.SendAsync(glx, 2, b => b.U32(tag).U16(1).U16(2).U32((uint)small.Length).U32((uint)(8 + small.Length)).U32(130).Bytes(small));
+        XMessage overlong = await c.RequestAsync(glx, 2, b => b.U32(tag).U16(2).U16(2).U32(8).U32(0).U32(0));
+        Assert.IsTrue(overlong.IsError);
+        Assert.AreEqual(badLargeRequest, overlong.Bytes[1]);
+    }
 }

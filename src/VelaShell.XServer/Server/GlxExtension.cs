@@ -120,6 +120,7 @@ internal sealed class GlxExtension(X11Server server)
 
         public int Opcode { get; } = opcode;
 
+        /// <summary>正文的字节数:第一段声明的长度减去 8 字节的头(长度与操作码)。</summary>
         public int Length { get; } = length;
 
         public List<byte> Data { get; } = [];
@@ -778,18 +779,28 @@ internal sealed class GlxExtension(X11Server server)
         if (number == 1)
         {
             _glxLarge.Remove(c);
-            int length = (int)r.U32(), opcode = (int)r.U32();
+            uint length = r.U32();
+            int opcode = (int)r.U32();
             // n 是小参数的字节数;有的客户端把 8 字节的长度与操作码也算在内 —— 按请求里实际剩下的字节判断。
             int small = XWire.Pad(n) == r.Remaining ? n : n - 8;
-            if (small < 0 || small > r.Remaining || total < 1 || !GlContext.IsKnownRenderOpcode(opcode))
+            if (small < 0 || small > r.Remaining || total < 1 || length < 8 || !GlContext.IsKnownRenderOpcode(opcode))
             {
                 throw GlxError(GlxBadLargeRequest, (uint)number);
             }
-            GlxLargeCommand large = new(tag, total, opcode, length);
+            if (length - 8 > MaxLargeCommandBytes)
+            {
+                throw new XProtocolError(XErrorCode.Alloc);
+            }
+            // 声明的长度含 8 字节的头(长度与操作码):正文就是 length − 8 字节,之后各段拼起来得正好这么多(最多再补齐 3 字节)。
+            GlxLargeCommand large = new(tag, total, opcode, (int)length - 8);
+            if (small > large.Length + 3)
+            {
+                throw GlxError(GlxBadLargeRequest, (uint)number);
+            }
             large.Data.AddRange(r.Bytes(small));
             if (total == 1)
             {
-                gl.ExecuteOrCompile(opcode, [.. large.Data], c.BigEndian);
+                gl.ExecuteOrCompile(opcode, CompletedBody(large, number), c.BigEndian);
                 PresentGlx(binding);
                 return;
             }
@@ -802,19 +813,32 @@ internal sealed class GlxExtension(X11Server server)
             _glxLarge.Remove(c);
             throw GlxError(GlxBadLargeRequest, (uint)number);
         }
-        if (pending.Data.Count + n > 64 * 1024 * 1024)
+        if (pending.Data.Count + n > pending.Length + 3)
         {
             _glxLarge.Remove(c);
-            throw new XProtocolError(XErrorCode.Alloc);
+            throw GlxError(GlxBadLargeRequest, (uint)number);   // 拼起来比第一段声明的长度还长
         }
         pending.Data.AddRange(r.Bytes(n));
         pending.Next++;
         if (number == total)
         {
             _glxLarge.Remove(c);
-            gl.ExecuteOrCompile(pending.Opcode, [.. pending.Data], c.BigEndian);
+            gl.ExecuteOrCompile(pending.Opcode, CompletedBody(pending, number), c.BigEndian);
             PresentGlx(binding);
         }
+    }
+
+    /// <summary>一条 RenderLarge 命令的正文上限(第一段声明的长度减去 8 字节头)。</summary>
+    private const int MaxLargeCommandBytes = 64 * 1024 * 1024;
+
+    /// <summary>拼完的正文:比声明的短(命令被截断了)回 GLXBadLargeRequest;多出来的补齐字节去掉。</summary>
+    private static byte[] CompletedBody(GlxLargeCommand large, int number)
+    {
+        if (large.Data.Count < large.Length)
+        {
+            throw GlxError(GlxBadLargeRequest, (uint)number);
+        }
+        return [.. large.Data.GetRange(0, large.Length)];
     }
 
     // ------------------------------------------------------------------ 非渲染命令(101–159)
