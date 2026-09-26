@@ -36,12 +36,12 @@ public sealed partial class X11Server
 
     private static Region ReadRegionRects(XRequestReader r)
     {
-        Region region = new();
+        List<XRect> rects = [];
         while (r.Remaining >= 8)
         {
-            region.Union(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
+            rects.Add(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
         }
-        return region;
+        return Region.FromRects(rects);
     }
 
     private void XFixes(XClient c, XRequestReader r)
@@ -128,12 +128,7 @@ public sealed partial class X11Server
                     {
                         throw new XProtocolError(XErrorCode.Match);
                     }
-                    Region region = new();
-                    foreach (XRect rect in gc.ClipRects ?? [])
-                    {
-                        region.Union(rect);
-                    }
-                    AddResource(c, new XRegionResource(id, c, region));
+                    AddResource(c, new XRegionResource(id, c, Region.FromRects(gc.ClipRects ?? [])));
                     break;
                 }
             case 9:   // CreateRegionFromPicture
@@ -268,12 +263,8 @@ public sealed partial class X11Server
                     Region src = RegionRes(r.U32()).Region;
                     XRegionResource dst = RegionRes(r.U32());
                     int left = r.U16(), right = r.U16(), top = r.U16(), bottom = r.U16();
-                    Region expanded = new();
-                    foreach (XRect rect in src.Rects)
-                    {
-                        expanded.Union(new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom));
-                    }
-                    dst.Region = expanded;
+                    dst.Region = Region.FromRects(src.Rects.Select(rect =>
+                        new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom)));
                     break;
                 }
             case 29:  // HideCursor

@@ -34,12 +34,12 @@ public sealed partial class X11Server
                     r.U8();
                     XWindow window = Window(r.U32());
                     short dx = r.I16(), dy = r.I16();
-                    Region source = new();
+                    List<XRect> rects = [];
                     while (r.Remaining >= 8)
                     {
-                        source.Union(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
+                        rects.Add(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
                     }
-                    ApplyShape(window, op, kind, source.Translate(dx, dy));
+                    ApplyShape(window, op, kind, Region.FromRects(rects).Translate(dx, dy));
                     break;
                 }
             case 2:   // Mask
@@ -212,10 +212,10 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>深度 1 位图里为 1 的像素组成的区域(逐行合并连续的一段)。</summary>
+    /// <summary>深度 1 位图里为 1 的像素组成的区域(逐行扫出连续的一段;扫出来的本身就是分好带的,一趟建成)。</summary>
     private static Region RegionFromBitmap(PixelBuffer bitmap)
     {
-        Region region = new();
+        List<XRect> spans = [];
         for (int y = 0; y < bitmap.Height; y++)
         {
             int x = 0;
@@ -232,10 +232,10 @@ public sealed partial class X11Server
                 }
                 if (x > start)
                 {
-                    region.Union(new XRect(start, y, x - start, 1));
+                    spans.Add(new XRect(start, y, x - start, 1));
                 }
             }
         }
-        return region;
+        return Region.FromRects(spans);
     }
 }
