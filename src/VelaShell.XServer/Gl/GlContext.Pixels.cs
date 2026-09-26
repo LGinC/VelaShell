@@ -438,7 +438,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
-        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || xoffset + width > image.Width || yoffset + height > image.Height)
+        // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
+        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || (long)xoffset + width > image.Width || (long)yoffset + height > image.Height)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;
@@ -495,7 +496,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
-        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || xoffset + width > image.Width || yoffset + height > image.Height)
+        // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
+        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || (long)xoffset + width > image.Width || (long)yoffset + height > image.Height)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;

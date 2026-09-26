@@ -624,4 +624,29 @@ public sealed class GlxTests
         Assert.IsTrue(overlong.IsError);
         Assert.AreEqual(badLargeRequest, overlong.Bytes[1]);
     }
+
+    [TestMethod]
+    public async Task TexSubImage的偏移加宽度在int上溢出时照样回INVALID_VALUE()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        static XTestClient.Body Store(XTestClient.Body b) => b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1);
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4117, b => b.U32(Texture2D).U32(1))                                                       // BindTexture 1
+            .Add(110, b => Store(b).U32(Texture2D).I32(0).U32(Rgba).I32(2).I32(2).I32(0).U32(Rgba).U32(UnsignedByte)
+                .Bytes(new byte[16])));                                                                     // TexImage2D 2×2
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+
+        // xoffset = 2^31 − 1、width = 2:相加在 int 上溢出成负数。
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4100, b => Store(b).U32(Texture2D).I32(0).I32(int.MaxValue).I32(0).I32(2).I32(2).U32(Rgba).U32(UnsignedByte).U32(0)
+                .Bytes(new byte[16])));
+        Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有 BadImplementation");
+    }
 }
