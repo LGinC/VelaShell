@@ -102,4 +102,40 @@ public sealed class RobustnessTests
         XMessage geometry = await c.RequestAsync(14, 0, b => b.U32(again));
         Assert.IsTrue(geometry.IsReply, "腾出一个名额之后照常建窗口");
     }
+
+    [TestMethod]
+    public async Task 客户端连满之后新连接收到建立失败_走了一个就能再连_资源ID顶上三位恒为0()
+    {
+        await using X11Server server = new();
+        List<XTestClient> clients = [];
+        try
+        {
+            for (int i = 0; i < X11Server.MaxClients; i++)
+            {
+                XTestClient c = await XTestClient.ConnectAsync(server);
+                Assert.AreEqual(1, c.SetupReply[0], $"第 {i + 1} 个连接应当成功");
+                Assert.AreEqual(0u, c.ResourceBase & 0xE0000000, "资源 ID 的顶上三位恒为 0(协议第 8 节)");
+                clients.Add(c);
+            }
+
+            await using (XTestClient refused = await XTestClient.ConnectAsync(server))
+            {
+                Assert.AreEqual(0, refused.SetupReply[0], "编号用完:连接建立失败,而不是卡住");
+            }
+
+            await clients[0].DisposeAsync();
+            await clients[0].ServerTask.WaitAsync(TimeSpan.FromSeconds(3));
+            clients.RemoveAt(0);
+            XTestClient again = await XTestClient.ConnectAsync(server);
+            clients.Add(again);
+            Assert.AreEqual(1, again.SetupReply[0], "走了一个就空出一个编号");
+        }
+        finally
+        {
+            foreach (XTestClient c in clients)
+            {
+                await c.DisposeAsync();
+            }
+        }
+    }
 }

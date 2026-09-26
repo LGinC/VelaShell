@@ -156,6 +156,11 @@ public sealed partial class X11Server
             }
 
             client = await InvokeAsync(() => RegisterClient(bigEndian)).WaitAsync(ct).ConfigureAwait(false);
+            if (client is null)
+            {
+                await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", ct).ConfigureAwait(false);
+                return;
+            }
             client.SameHost = sameHost;
             client.PeerUid = peerUid;
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
@@ -222,19 +227,31 @@ public sealed partial class X11Server
         await stream.WriteAsync(w.ToArray(), ct).ConfigureAwait(false);
     }
 
-    private XClient RegisterClient(bool bigEndian)
+    /// <summary>
+    /// 同时连着的客户端上限。资源 ID 的顶上三位恒为 0(协议第 8 节),每个客户端占低 21 位(<see cref="XClient.ResourceMask" />),
+    /// 客户端编号就只剩 8 位;编号 0 是服务端自己的资源(根窗口、默认颜色表)。
+    /// </summary>
+    internal const int MaxClients = 255;
+
+    /// <summary>分一个空闲的客户端编号并发出连接建立回复;编号用完了返回 null。</summary>
+    private XClient? RegisterClient(bool bigEndian)
     {
         int index = _nextClientIndex;
-        while (_clients.ContainsKey(index) || index == 0)
+        for (int tried = 0; tried < MaxClients; tried++, index = index >= MaxClients ? 1 : index + 1)
         {
-            index = index >= 1000 ? 1 : index + 1;
+            if (_clients.ContainsKey(index))
+            {
+                continue;
+            }
+            _nextClientIndex = index >= MaxClients ? 1 : index + 1;
+            XClient client = new(index, bigEndian);
+            _clients[index] = client;
+            client.Send(BuildSetupReply(client));
+            Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
+            return client;
         }
-        _nextClientIndex = index >= 1000 ? 1 : index + 1;
-        XClient client = new(index, bigEndian);
-        _clients[index] = client;
-        client.Send(BuildSetupReply(client));
-        Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
-        return client;
+        Log($"connection refused: {MaxClients} clients already connected");
+        return null;
     }
 
     /// <summary>连接建立成功回复:一块屏幕、深度 24 的 TrueColor 视觉(外加深度 32 与深度 1)。</summary>
