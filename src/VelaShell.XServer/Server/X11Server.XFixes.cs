@@ -2,11 +2,11 @@
 // Copyright 2026 VelaShell Labs
 //
 // 规范依据(AGENTS.md §2 纪律 1):
-//   X Fixes Extension, Version 5.0 —— §3「Save Set」、§4「Selection Tracking」(SelectSelectionInput 与
-//   XFixesSelectionNotify 的三种子类型)、§5「Cursor Image」(SelectCursorInput、CursorNotify、GetCursorImage)、
-//   §6「Region Objects」(CreateRegion… ExpandRegion、SetGCClipRegion、SetWindowShapeRegion)、
-//   §7「Cursor Names」、§10「Cursor Visibility」(HideCursor / ShowCursor)、§11「Pointer Barriers」、
-//   附录「Protocol Encoding」(请求次操作码 0–32、事件、错误 BadRegion)
+//   X Fixes Extension, Version 5.0 —— §5「Save Set processing changes」、§6「Selection Tracking」(SelectSelectionInput 与
+//   XFixesSelectionNotify 的三种子类型)、§7「Cursor Image Monitoring」(SelectCursorInput、CursorNotify、GetCursorImage)、
+//   §8「Region Objects」(CreateRegion… ExpandRegion、SetGCClipRegion、SetWindowShapeRegion)、
+//   §9「Cursor Names」、§10「Region Expansion」、§11「Cursor Visibility」(HideCursor / ShowCursor)、§12「Pointer Barriers」、
+//   附录「Protocol Encoding」(请求次操作码 0–32、事件、错误 BadRegion、BadBarrier —— 按 §8.2、§12.2 定义的先后编号)
 //
 //   实现到版本 5。指针屏障(v5)只登记不生效 —— 宿主的系统指针不归我们限制。
 
@@ -301,15 +301,26 @@ public sealed partial class X11Server
                     UpdateCursor();
                     break;
                 }
-            case 31:  // CreatePointerBarrier:只登记 ID,不限制(宿主的系统指针不归我们管)
+            case 31:  // CreatePointerBarrier:只登记,不限制(宿主的系统指针不归我们管)
                 {
                     uint id = r.U32();
-                    AddResource(c, new XRegionResource(id, c, new Region()));
+                    _ = Window(r.U32());
+                    short x1 = r.I16(), y1 = r.I16(), x2 = r.I16(), y2 = r.I16();
+                    // §12.3:必须与坐标轴平行 —— x1 == x2 或 y1 == y2,但不能两个都相等。
+                    if ((x1 == x2) == (y1 == y2))
+                    {
+                        throw new XProtocolError(XErrorCode.Value);
+                    }
+                    AddResource(c, new XPointerBarrier(id, c));
                     break;
                 }
-            case 32:  // DeletePointerBarrier
-                RemoveResource(r.U32());
-                break;
+            case 32:  // DestroyPointerBarrier:只认屏障,别的资源一律 BadBarrier(§12.2)
+                {
+                    uint id = r.U32();
+                    _ = Lookup<XPointerBarrier>(id) ?? throw new XProtocolError((XErrorCode)(XFixesErrorBase + 1), id);
+                    RemoveResource(id);
+                    break;
+                }
             default:
                 throw new XProtocolError(XErrorCode.Request);
         }

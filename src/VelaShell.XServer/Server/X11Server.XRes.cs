@@ -124,6 +124,7 @@ public sealed partial class X11Server
         XPicture => "PICTURE",
         XGlyphSet => "GLYPHSET",
         XRegionResource => "REGION",
+        XPointerBarrier => "BARRIER",
         _ => resource.GetType().Name.TrimStart('X').ToUpperInvariant(),
     };
 }

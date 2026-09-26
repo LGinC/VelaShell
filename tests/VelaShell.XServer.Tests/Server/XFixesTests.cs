@@ -141,4 +141,36 @@ public sealed class XFixesTests
         await c.SendAsync(major, 21, b => b.U32(top).U8(0).U8(0).U8(0).U8(0).I16(0).I16(0).U32(0));
         await host.WaitForAsync(() => handle.Snapshot.Shape is null);
     }
+
+    [TestMethod]
+    public async Task DestroyPointerBarrier只认屏障_拿根窗口或别人的窗口来删回BadBarrier()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        uint theirs = other.NewId();
+        await other.SendAsync(1, 0, b => b.U32(theirs).U32(other.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+        await other.SyncAsync();
+
+        foreach (uint victim in (uint[])[c.RootWindow, theirs])
+        {
+            XMessage error = await c.RequestAsync(major, 32, b => b.U32(victim));
+            Assert.IsTrue(error.IsError);
+            Assert.AreEqual(129, error.Bytes[1], "BadBarrier = first-error + 1");
+            XMessage geometry = await c.RequestAsync(14, 0, b => b.U32(victim));   // GetGeometry:窗口还在
+            Assert.IsTrue(geometry.IsReply);
+        }
+
+        uint barrier = c.NewId();
+        XMessage slanted = await c.RequestAsync(major, 31, b => b.U32(barrier).U32(c.RootWindow).I16(0).I16(0).I16(10).I16(10)
+            .U32(0).U16(0).U16(0));
+        Assert.IsTrue(slanted.IsError, "不与坐标轴平行 → BadValue");
+        Assert.AreEqual(2, slanted.Bytes[1]);
+
+        await c.SendAsync(major, 31, b => b.U32(barrier).U32(c.RootWindow).I16(0).I16(0).I16(0).I16(100).U32(0).U16(0).U16(0));
+        await c.SendAsync(major, 32, b => b.U32(barrier));
+        XMessage twice = await c.RequestAsync(major, 32, b => b.U32(barrier));
+        Assert.AreEqual(129, twice.Bytes[1], "删过一次就不在了");
+    }
 }

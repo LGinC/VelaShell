@@ -157,7 +157,7 @@ public sealed class GlxTests
         Assert.AreEqual(0u, error.U32(8));
         XMessage bad = await c.RequestAsync(glx, 115, b => b.U32(tag + 100));
         Assert.IsTrue(bad.IsError);
-        Assert.AreEqual(150 + 4, bad.Bytes[1], "GLXBadContextTag");
+        Assert.AreEqual(151 + 4, bad.Bytes[1], "GLXBadContextTag");
     }
 
     [TestMethod]
