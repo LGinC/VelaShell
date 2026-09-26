@@ -139,4 +139,36 @@ public sealed class SyncGrabTests
         await c.SendAsync(27, 0, b => b.U32(0));   // UngrabPointer
         Assert.HasCount(1, await DrainAsync(c, MotionNotify), "抓取解除,冻结随之解除,事件按普通选择送达");
     }
+
+    private static Task<XMessage> GrabPointerAsync(XTestClient c, uint window, uint confineTo = 0) =>
+        c.RequestAsync(26, 0, b => b.U32(window).U16(0).U8(Asynchronous).U8(Asynchronous).U32(confineTo).U32(0).U32(0));
+
+    private static Task<XMessage> GrabKeyboardAsync(XTestClient c, uint window) =>
+        c.RequestAsync(31, 0, b => b.U32(window).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));
+
+    [TestMethod]
+    public async Task 抓取窗口变得不可见时抓取自动解除_confine_to不可见时回GrabNotViewable()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(a, host);
+        uint child = a.NewId();
+        await a.SendAsync(1, 0, x => x.U32(child).U32(top).I16(10).I16(10).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await a.SendAsync(8, 0, x => x.U32(child));
+
+        Assert.AreEqual(0, (await GrabPointerAsync(a, child)).Detail);
+        Assert.AreEqual(0, (await GrabKeyboardAsync(a, child)).Detail);
+        Assert.AreEqual(1, (await GrabPointerAsync(b, b.RootWindow)).Detail, "AlreadyGrabbed");
+        Assert.AreEqual(1, (await GrabKeyboardAsync(b, b.RootWindow)).Detail, "AlreadyGrabbed");
+
+        await a.SendAsync(10, 0, x => x.U32(top));   // UnmapWindow:子窗口随之不可见
+        await a.SyncAsync();
+        Assert.AreEqual(0, (await GrabPointerAsync(b, b.RootWindow)).Detail, "指针抓取随之解除");
+        Assert.AreEqual(0, (await GrabKeyboardAsync(b, b.RootWindow)).Detail, "键盘抓取随之解除");
+
+        await b.SendAsync(27, 0, x => x.U32(0));   // UngrabPointer
+        Assert.AreEqual(3, (await GrabPointerAsync(b, b.RootWindow, confineTo: child)).Detail, "confine-to 不可见:GrabNotViewable");
+    }
 }

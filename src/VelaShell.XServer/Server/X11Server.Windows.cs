@@ -428,6 +428,7 @@ public sealed partial class X11Server
         {
             RevertFocus(focus);
         }
+        ReleaseUnviewableGrabs();
         UpdatePointerWindow();
     }
 

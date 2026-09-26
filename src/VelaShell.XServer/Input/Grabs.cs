@@ -44,6 +44,9 @@ internal sealed class ActiveGrab
 
     public XCursorResource? Cursor { get; set; }
 
+    /// <summary>指针抓取的 confine-to 窗口;它变得不可见时抓取随之解除。</summary>
+    public XWindow? ConfineTo { get; init; }
+
     /// <summary>XInput2 的抓取:事件以 XI2 格式、按 <see cref="Xi2Mask" /> 投递。</summary>
     public bool Xi2 { get; init; }
 

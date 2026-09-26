@@ -232,6 +232,7 @@ public sealed partial class X11Server
                 OwnerEvents = passive.Grab.OwnerEvents,
                 EventMask = passive.Grab.EventMask,
                 Cursor = passive.Grab.Cursor,
+                ConfineTo = passive.Grab.ConfineTo,
                 ReleaseWhenButtonsUp = true,
                 Xi2 = passive.Grab.Xi2,
                 Xi2Mask = passive.Grab.Xi2Mask,
@@ -848,12 +849,13 @@ public sealed partial class X11Server
         uint confine = r.U32();
         uint cursorId = r.U32();
         r.U32();
+        XWindow? confineTo = confine == 0 ? null : Window(confine);
         byte status;
         if (PointerGrab is { } existing && !ReferenceEquals(existing.Client, c))
         {
             status = 1;   // AlreadyGrabbed
         }
-        else if (!window.IsViewable)
+        else if (!window.IsViewable || confineTo is { IsViewable: false })
         {
             status = 3;   // GrabNotViewable
         }
@@ -866,13 +868,30 @@ public sealed partial class X11Server
                 OwnerEvents = ownerEvents,
                 EventMask = mask,
                 Cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId),
+                ConfineTo = confineTo,
             };
-            _ = confine;
             ApplyGrabModes(PointerGrab, pointerSync, keyboardSync);
             status = 0;
             UpdateCursor();
         }
         c.Reply(status, w => w.Zero(24));
+    }
+
+    /// <summary>
+    /// 抓取窗口(或指针抓取的 confine-to 窗口)变得不可见时,抓取自动解除(协议「GrabPointer」「GrabKeyboard」)。
+    /// 有窗口取消映射时调:它连同全部后代都变得不可见。
+    /// </summary>
+    private void ReleaseUnviewableGrabs()
+    {
+        if (PointerGrab is { } pointer && (!pointer.Window.IsViewable || pointer.ConfineTo is { IsViewable: false }))
+        {
+            PointerGrab = null;
+            UpdateCursor();
+        }
+        if (KeyboardGrab is { } keyboard && !keyboard.Window.IsViewable)
+        {
+            KeyboardGrab = null;
+        }
     }
 
     private void UngrabPointer(XClient c)
