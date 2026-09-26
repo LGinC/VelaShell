@@ -531,9 +531,19 @@ internal sealed class GlxExtension(X11Server server)
     /// <summary>绑定的表面跟上 X 可绘对象的尺寸(窗口可能被改过大小),并交给 GL 上下文。</summary>
     private void SyncGlxBinding(GlxBinding binding)
     {
-        if (binding.Context.Gl is not { } gl)
+        (GlSurface? draw, GlSurface? read) = BindingSurfaces(binding);
+        binding.Context.Gl?.Bind(draw, read);
+    }
+
+    /// <summary>
+    /// 绑定用到的绘制 / 读取表面(没有就新建,尺寸跟上 X 可绘对象)。表面太大时抛 BadAlloc —— MakeCurrent 在改任何状态之前先调它。
+    /// 直接上下文没有服务端的 GL,不要表面。
+    /// </summary>
+    private (GlSurface? Draw, GlSurface? Read) BindingSurfaces(GlxBinding binding)
+    {
+        if (binding.Context.Gl is null)
         {
-            return;
+            return (null, null);
         }
         GlSurface? draw = null, read = null;
         if (binding.Draw != 0)
@@ -546,7 +556,7 @@ internal sealed class GlxExtension(X11Server server)
             (uint key, (int Width, int Height) size, GlxConfig? config) = ResolveGlxDrawable(binding.Read, binding.Context.Config);
             read = SurfaceFor(key, size, config ?? binding.Context.Config);
         }
-        gl.Bind(draw, read);
+        return (draw, read);
     }
 
     /// <summary>把绑定的绘制表面画过的前缓冲拷进 X 可绘对象。</summary>
@@ -656,6 +666,10 @@ internal sealed class GlxExtension(X11Server server)
                 throw new XProtocolError(XErrorCode.Match);
             }
         }
+        // 表面先备好(太大时 BadAlloc):出错时请求不能留下任何效果(协议第 4 节)—— 原先先登记了新标签、把上下文挂上去才分配,
+        // 抛出去之后上下文卡在一个客户端不知道的标签上,之后谁也 MakeCurrent 不了它。
+        GlxBinding binding = new(context, drawable, read);
+        (GlSurface? drawSurface, GlSurface? readSurface) = BindingSurfaces(binding);
         if (old is not null)
         {
             ReleaseGlxBinding(c, oldTag, old);
@@ -665,7 +679,6 @@ internal sealed class GlxExtension(X11Server server)
         {
             tag = ++_nextGlxTag;
         }
-        GlxBinding binding = new(context, drawable, read);
         if (!_glxTags.TryGetValue(c, out Dictionary<uint, GlxBinding>? tags))
         {
             tags = [];
@@ -673,7 +686,7 @@ internal sealed class GlxExtension(X11Server server)
         }
         tags[tag] = binding;
         context.Current = (c, tag);
-        SyncGlxBinding(binding);
+        context.Gl?.Bind(drawSurface, readSurface);
         c.Reply(0, w => w.U32(tag).Zero(20));
     }
 

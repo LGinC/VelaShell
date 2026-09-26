@@ -555,4 +555,25 @@ public sealed class GlxTests
         Assert.IsNotNull(gl.GenTextures(Gl.GlShared.MaxTextures));
         Assert.IsNull(gl.GenTextures(1), "名字用完了");
     }
+
+    [TestMethod]
+    public async Task MakeCurrent因表面太大回BadAlloc时不留下任何效果_上下文随后还能用()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        uint huge = c.NewId();   // 5000 × 5000:超过 GLX 表面 4096² 的上限
+        await c.SendAsync(1, 0, b => b.U32(huge).U32(c.RootWindow).I16(0).I16(0).U16(5000).U16(5000).U16(0).U16(1).U32(0).U32(0));
+        uint context = c.NewId();
+        await c.SendAsync(glx, 3, b => b.U32(context).U32(RootVisual).U32(0).U32(0).U8(0).U8(0).U16(0));
+
+        XMessage refused = await c.RequestAsync(glx, 5, b => b.U32(huge).U32(context).U32(0));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(11, refused.Bytes[1], "BadAlloc");
+
+        XMessage made = await c.RequestAsync(glx, 5, b => b.U32(window).U32(context).U32(0));
+        Assert.IsTrue(made.IsReply, "上一次失败没有把上下文挂在一个看不见的标签上:这次照常成为当前");
+    }
 }
