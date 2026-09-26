@@ -1,143 +1,140 @@
+<div align="center">
+
 # VelaShell
 
-> A modern, cross-platform SSH terminal client built for sysadmins and developers.
+**A modern, cross-platform SSH terminal client built for sysadmins and developers**
 
-[简体中文](README.md) · **English**
+`/ˈveɪlə ʃɛl/` · A terminal as your sail, riding the signal winds to remote hosts
 
-<p align="center"><img src="mascot/chibi.png" alt="VelaShell mascot" width="720"></p>
+[![.NET](https://img.shields.io/badge/.NET-11.0-512BD4?logo=dotnet&logoColor=white)](https://dotnet.microsoft.com/)
+[![Avalonia](https://img.shields.io/badge/Avalonia-12.1-8B44AC)](https://avaloniaui.net/)
+[![CI](https://github.com/joesdu/VelaShell/actions/workflows/ci.yml/badge.svg)](https://github.com/joesdu/VelaShell/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/joesdu/VelaShell?label=release)](https://github.com/joesdu/VelaShell/releases)
+[![License](https://img.shields.io/badge/license-AGPL--3.0%20%7C%20Commercial-blue)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#-platforms--distribution)
 
-VelaShell is a desktop terminal application built with .NET 11 and Avalonia, running on Windows, Linux and macOS. It ships its own VT terminal engine, SSH/SFTP/FTP connectivity, local shell tabs, jump hosts (ProxyJump) and network proxies (HTTP / SOCKS5 / follow-system), two-step authentication with host fingerprint verification, port-forwarding tunnels, grouped session management, the VelaDock split/dock workspace, remote resource monitoring and traceroute, a command palette and a twelve-page settings centre; it can also be launched externally by bastion hosts and SSO portals using Xshell's calling convention. On top of that sits a **dual-mode plugin system** (in-process / isolated process) and a first-party **AI assistant plugin**. Everything is persisted, encrypted, into an embedded SonnetDB database. The goal is a **keyboard-first, information-dense, snappy** experience for heavy remote work.
+[简体中文](README.md) · **English** · [Plugin marketplace](https://market.easilynet.top) · [Docs](https://github.com/VelaShellLabs/velashell-docs)
+
+<img src="mascot/chibi.png" alt="VelaShell mascot" width="720">
+
+</div>
 
 ---
 
-## 🪶 About the name
+VelaShell is a desktop terminal application built with **.NET 11 + Avalonia**, released natively for
+Windows, Linux and macOS as self-contained builds (no .NET runtime needed on the target machine),
+and **free forever** for individuals and companies alike.
 
-**Pronunciation**: `/ˈveɪlə ʃɛl/` — say it as **"VAY-la shell"**, stress on the first syllable.
+It puts everything a day of remote work needs into one window: a VT terminal engine, SSH / SFTP / FTP
+connections, local shells, jump hosts and network proxies, port-forwarding tunnels, dual-pane SFTP with
+directory sync, remote editing, a **built-in X server**, resource monitoring and traceroute,
+session recording and replay, a command palette and a twelve-page settings centre. On top of that sits a
+**dual-mode plugin system** (in-process / isolated process) and a first-party **AI assistant plugin**.
 
-**Meaning**: **Vela** + **Shell**.
-
-- **Vela** — Latin for "sails". Vela is a southern constellation which, together with Carina (the keel) and Puppis (the stern), was split out of Argo Navis — the ship Jason and the Argonauts sailed in search of the Golden Fleece. It carries the sense of **setting sail for distant shores**.
-- **Shell** — the command-line shell, and the heart of this app: a terminal attached to a remote host.
-
-Together, VelaShell means **"a terminal as your sail, riding the signal winds to remote hosts"**. The icon distills that idea: a dark `>_` prompt on a teal gradient rounded square.
-
-### At a glance
-
-| Item | Detail |
-|------|--------|
-| **Name** | VelaShell |
-| **Pronunciation** | `/ˈveɪlə ʃɛl/` (VAY-la shell) |
-| **Category** | Cross-platform SSH / SFTP / FTP terminal client |
-| **Current version** | `v0.0.1-dev` (active development; single source of truth in `Directory.Build.props`, overridden at release time from the Release tag via `-p:Version`) |
-| **Platforms** | Windows 10 / 11 · Linux · macOS (x64 / arm64) |
-| **Runtime** | .NET 11 + Avalonia 12.1, published self-contained (no runtime install required) |
-| **UI languages** | English / 简体中文 / 繁體中文 / 日本語 / 한국어 (identical key sets across all five, enforced by `LocalizedKeyUsageTests` / `UnusedLocalizedKeyTests` — both missing translations and orphaned keys turn the suite red) |
-| **License** | Dual: [AGPL-3.0](LICENSE) / [Commercial](LICENSE-COMMERCIAL.md) · © 2026 VelaShell authors and contributors |
+Three trade-offs run through all of it: **keyboard-first**, **information-dense**, **snappy**.
 
 ---
 
 ## ✨ Features
 
-### Terminal and connectivity
+| | |
+| --- | --- |
+| **Terminal** | VT engine (DEC ANSI / VT / Xterm state machine) · ten terminal profiles (vt52 → xterm-256color) · 256 colours / true colour / line drawing / primary and alternate screens / mouse protocols / CJK double width · custom-drawn rendering · linear / block / disjoint multi-span selection · line-number and timestamp gutters · IME pre-edit for CJK input · OSC 8 hyperlinks (Ctrl+click) · OSC 133 command blocks (failures in red, jump between prompts, select a command's output in one click, fold by block) |
+| **Connectivity** | SSH · SFTP · FTP / FTPS · local shells (Windows ConPTY) · ProxyJump (≤ 5 hops, cycle detection) · HTTP / SOCKS5 / follow-system proxy · auto-reconnect (including wake from sleep / network recovery) · keep-alive and anti-idle · a per-connection post-login command · SSH compression |
+| **Auth and keys** | Password / private key / **SSH certificate** / **SSH agent** · agent forwarding (optionally only selected keys, with a prompt before every signature) · TOFU host fingerprints, with a prompt to decide when one changes · key generation (Ed25519 by default / ECDSA / RSA 4096) · optionally add keys to the agent after login |
+| **X11** | X11 forwarding · **built-in X server, VelaShell.XServer**: one native window per X window, two-way clipboard, multiple monitors and DPI, keyboard layout follows the system, GLX 1.4 · on Windows you can switch to an installed VcXsrv instead |
+| **Files** | Dual-pane SFTP with drag-and-drop transfers · resumable transfers and a transfer queue · **directory compare and sync** (SHA-256 first, keep remote up to date) · symbolic links · remote files in the built-in editor (syntax highlighting), or in an external editor with upload on save |
+| **Tunnels** | Local `-L` / remote `-R` / dynamic SOCKS5 `-D` · live connection and byte counters · automatic recovery after a disconnect · port-conflict pre-check |
+| **Operations** | Resource monitor (CPU / memory / disk / network / processes) · process manager · traceroute with geo data · connection diagnostics · session recording and replay (exports asciicast v2) |
+| **Workspace** | VelaDock drag-to-split · grouped sessions with pinning · import from WinSCP / Xshell / `~/.ssh/config` · command palette (`Ctrl+P` / `Ctrl+K`) · quick-command snippets · **synchronised input across terminals** · smart command completion · message centre and security news feed |
+| **Data** | Embedded SonnetDB (document + time series) · AES-256-GCM credential encryption · GitHub Gist cloud sync (optional passphrase end-to-end encryption, revisitable revisions) · security audit log · session logs |
+| **Appearance** | 12 named themes (7 dark, 5 light) · 16 terminal palettes paired with the UI themes · fully tokenised, zero hard-coded colours · Cascadia Mono bundled |
+| **Localisation** | 简体中文 / English / 繁體中文 / 日本語 / 한국어 — the five resx files share an identical key set; missing translations and orphaned keys both turn the tests red |
+| **Extensibility** | Dual-mode plugin host (collectible ALC / separate process + named-pipe RPC) · `.vpx` packages and a plugin manager (update checks, pinned publisher fingerprints) · per-capability consent for dangerous APIs · first-party AI assistant plugin |
+| **Desktop integration** | Single instance · tray · launch at login · Xshell-compatible launch (bastion hosts and SSO portals can start it) · URL protocol registration |
 
-- **VT terminal engine**  
-  A full DEC ANSI / VT / Xterm state machine: 256 colours, true colour, DEC line-drawing glyphs, primary/alternate screens, scroll regions, application cursor keys, mouse protocols, CJK double-width characters and on-the-fly encoding switching. Ten terminal profiles are built in (vt52/100/102/220/320/340/420/520/xterm/xterm-256color), defaulting to xterm-256color. The terminal is a custom-drawn Avalonia control — glyphs, selection and scrolling are all rendered by us. Selection supports linear and block modes, `Shift+click` to extend, and **disjoint multi-span selection** via `Ctrl+Shift+drag` (copy line 1 and line 3 in one go). **OSC 8 hyperlinks** emitted by modern CLIs (`ls --hyperlink`, `gh`, `delta`, cargo/gcc diagnostics) are underlined and open on `Ctrl+click`, even when the anchor text looks nothing like a URL; schemes are allow-listed because terminal output is untrusted input. **OSC 133 command blocks** turn a screenful of output into structured `[prompt][command][output][exit code]` blocks: a per-command marker in the gutter that reddens on failure, `Ctrl+Shift+Up/Down` to walk between prompts, click a marker to select that command's output, and folding that snaps to block boundaries. Nothing is injected into your shell — the settings page hands you a snippet to paste into your own rc file.
+<details>
+<summary><b>Expand: a few implementation details worth a closer look</b></summary>
 
-- **SSH, SFTP and local shells**  
-  Shell sessions, SFTP transfers and port forwarding are powered by [VelaShell.Ssh](src/VelaShell.Ssh/) (in this repository), our own fully managed, async-first .NET SSH library (MIT). Password and private-key auth are supported; when credentials are missing the app walks a two-step authentication flow (username → auth method) and lets you retry in place after a failure. **Local terminal tabs** auto-detect pwsh / PowerShell / CMD / WSL / Git Bash — implemented on ConPTY, so they are **Windows-only for now**.
+- **VT terminal engine** — the terminal is a custom-drawn Avalonia control that renders glyphs, selection
+  and scrolling itself, with no dependency on abandoned third-party terminal controls. Selection supports
+  linear and block modes, `Shift+click` to extend, and disjoint multi-span selection via `Ctrl+Shift+drag`
+  (copy line 1 and line 3 in one go).
 
-- **Jump hosts (ProxyJump)**  
-  A session can reference another saved profile as its jump host, chained up to 5 hops with cycle detection. Chains are built hop by hop as nested connections carrying a `direct-tcpip` tunnel, and fingerprints are verified per logical host at every hop.
+- **SSH stack** — [VelaShell.Ssh](src/VelaShell.Ssh/) (fully managed, async-first, MIT, source in this repository),
+  implemented under a clean-room rule from the RFCs and the
+  [behaviour specs in velashell-docs](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/ssh),
+  with interop tests against real OpenSSH. Jump-host chains are built hop by hop as nested connections carrying
+  a `direct-tcpip` tunnel, and fingerprints are verified per logical host at every hop. When a fingerprint changes,
+  a dialog shows the old and new fingerprints and lets you decide, instead of just failing with an error.
 
-- **Network proxy**  
-  A global proxy setting (Settings → Proxy): direct / follow system / HTTP CONNECT / SOCKS5, with proxy authentication and an option to let SOCKS5 resolve DNS proxy-side (so target hostnames never leak). It applies to **all outbound traffic** — SSH, FTP, and HTTP requests such as cloud sync and update checks.
+- **The tunnel data plane lives in the SSH library too** — local, dynamic and remote forwarding, along with the
+  SOCKS5 server handshake (RFC 1928), are all implemented in `VelaShell.Ssh`, and per-forward byte and connection
+  counts are read straight from the library. Relaying preserves half-close semantics; without it, any protocol
+  that "sends the request, shuts down, then waits for the response" would never read a byte.
 
-- **Xshell-compatible launch (external invocation)**  
-  VelaShell can be launched by third-party security clients using Xshell's (and SecureCRT's / PuTTY's) calling convention: the user clicks "open in terminal" on a bastion host or SSO portal, and the one-time credential is handed straight to VelaShell — the user never sees the password. Includes URL protocol registration and single-instance forwarding; threat model and credential handling in [`velashell-docs en/host/xshell-compatible-login.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/xshell-compatible-login.md).
+- **Built-in X server** — [VelaShell.XServer](src/VelaShell.XServer/) (MIT, fully managed, no native dependencies)
+  ships with the app and starts from a title-bar button. It is rootless: every X top-level window becomes a native
+  Avalonia window, with the host acting as the window manager; SSH's X11 channels are wired into the server
+  in-process rather than through a local TCP port. GTK3, Qt5 and Mesa (`glxgears`) run with zero protocol errors.
 
-- **FTP / FTPS**  
-  Built on [FluentFTP](https://github.com/robinrodricks/FluentFTP) (MIT) with a connection pool for concurrent transfers (a single FTP control connection can only run one command at a time), reusing exactly the same dual-pane file browser and transfer stack as SFTP. Rationale in [`velashell-docs en/host/ftp-client-feasibility-research.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/ftp-client-feasibility-research.md).
+- **FTP / FTPS** — built on [FluentFTP](https://github.com/robinrodricks/FluentFTP), with a connection pool for
+  concurrent transfers (a single FTP control connection can only run one command at a time), sharing the same
+  dual-pane browser and transfer stack as SFTP. When a server certificate fails validation, its SHA-256 fingerprint
+  is shown for the user to confirm.
 
-- **Dedicated SFTP tabs and remote file editing**  
-  A profile can be SSH or SFTP; SFTP tabs live as their own documents in the dock workspace with local/remote dual-pane browsing, drag-and-drop transfers, resumable transfers and a transfer queue. Remote files open in the built-in editor (AvaloniaEdit, syntax highlighting by extension, plus five hand-written definitions for Shell/YAML/INI/Log/Dockerfile re-skinned for dark themes) and upload on save; you can also hand a file to an external editor and have changes uploaded when it hits disk.
+- **Themes are seed colours plus derivation** — a theme is 25 hand-picked seed colours (`UiThemePalette`); the other
+  sixty-odd tokens are derived by `ThemeTokenApplier` under fixed rules, and per-theme contrast is checked by tests.
 
-- **Host key trust**  
-  First connect records the fingerprint (TOFU) by default, or you can switch to manual confirmation (trust always / trust once / cancel). A changed fingerprint aborts the connection immediately, defeating man-in-the-middle attacks; both SSH and SFTP channels are checked. Trusted hosts can be reviewed and removed in Settings (with address masking so screenshots don't leak them).
+- **Shortcuts have a single source of truth** — `src/VelaShell/ViewModels/ShortcutCatalog.cs`, which both the
+  settings page and the docs read from. Anything missing makes `ShortcutCatalogTests` fail and print a
+  ready-to-paste Markdown row.
 
-- **Port-forwarding tunnels**  
-  Local (`-L`), remote (`-R`) and dynamic SOCKS5 (`-D`) forwarding, managed in one place.
+</details>
 
-### Workspace and operations tooling
+### 🤖 AI assistant plugin (first-party, ships with the app)
 
-- **VelaDock — draggable split view**  
-  A dock framework written from scratch with zero third-party dependencies (it replaced Dock.Avalonia): tabs, five-zone edge splitting, merging across groups and tab reordering, so multiple terminals can run side by side.
+<details>
+<summary>Click to see what it does</summary>
 
-- **Session management and import**  
-  The explorer keeps connection profiles in groups (create/edit/delete/double-click to connect); the sidebar's "recent connections" shows name-group plus relative time, survives restarts, and reconnects on double-click. Existing sessions can be imported from **WinSCP**, **Xshell** and your OpenSSH **`~/.ssh/config`** (`Host` aliases, with `IdentityFile` becoming key auth and `ProxyJump` becoming a jump-host link).
+- **Multi-provider streaming chat** — three wire protocols (OpenAI Responses / Chat Completions-compatible /
+  Anthropic Messages) covering OpenAI, Anthropic, Grok, Gemini, DeepSeek, Kimi, GLM and relay endpoints.
+- **One click connects you** — a built-in provider catalogue: sign-in providers open your browser
+  (authorization code + PKCE / device code), the rest only ask for an API key. If you already pay for
+  **ChatGPT Plus, Claude Pro or GitHub Copilot**, you can spend that subscription here (flagged "experimental" in the UI).
+- **Model list** — asks the endpoint's own `/models` first, then fills in context windows and pricing by id from models.dev.
+- **Agent mode** — a `Microsoft.Extensions.AI` tool loop bridged to sessions / terminal / remote commands / remote files,
+  with per-command approval for dangerous operations; attach custom **MCP servers**; web search and fetch included.
+- **Team chat integration** — connect the agent to **Feishu / DingTalk / Telegram / WeCom**: pairing codes to authorise
+  group chats, one-click approval, and an on-the-spot connectivity check.
+- **Outbound MCP server** — Streamable HTTP, bound to `127.0.0.1` only, with a token required on every request,
+  exposing VelaShell's session capabilities to external agents. This path has no approval UI, so "ask" mode
+  means every write is refused.
+- **Interaction details** — interject while the agent is running; `@` references remote files from the selected
+  session; conversations can be browsed, resumed and deleted.
 
-- **Resource monitor**  
-  Live charts for the remote host: CPU (overall, per core, time breakdown, clock, context switches), memory (including cache/buffers/swap), disks (devices, mount points, filesystems, capacity), network connections and the process list.
-
-- **Process manager / traceroute / connection diagnostics**  
-  Inspect and kill remote processes; visualise `traceroute` with geographic data (design in [`velashell-docs en/host/route-tracing-design.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/route-tracing-design.md)); step-by-step diagnostics when a connection fails.
-
-- **Quick commands and command palette**  
-  Send saved command snippets to the current session in one click; `Ctrl+P` / `Ctrl+K` opens the command palette with fuzzy subsequence search over recent sessions, all saved sessions and global commands.
-
-- **Session recording and replay**  
-  Optionally record terminal output (stored in SonnetDB's time-series engine, pruned by the log retention setting). The replay centre offers timeline scrubbing, 1x/2x/…/16x speeds and idle-gap skipping, and exports to asciinema-compatible asciicast v2 (`.cast`).
-
-- **Line-number / timestamp gutters**  
-  Optional gutters next to terminal output, independently toggled (also via shortcuts), with fold markers and blank-gap handling.
-
-### Plugin system
-
-- **Dual-mode plugin hosting**  
-  A plugin can be loaded **in-process** (isolated in a collectible `AssemblyLoadContext`, its UI docked directly into the workspace) or run in a **separate process**, `VelaShell.PluginHost` (custom named-pipe RPC, so a crash never takes down the app, with heartbeats, self-healing restarts and idle recycling). The mode is declared in the plugin manifest; both share the same SDK contract.
-
-- **Capability APIs**  
-  Plugins reach host functionality through `IPluginContext`: `Sessions` (enumerate/observe sessions), `Terminal` (read output, write input), `RemoteFs` (remote file read/write and directory listing), `RemoteExec` (run remote commands), `Storage` and `TimeSeries` (per-plugin private document and time-series storage), `Secrets` (host-encrypted secrets), `Commands` (register commands and entry points), `Events` (session/locale/theme events), `Ui` (panels as docked documents or standalone windows), `Clipboard` and `Log`. Dangerous capabilities are granted one by one through a permission dialog.
-
-- **Packaging and management**  
-  Plugins ship as `.vpx` packages and can be installed, enabled, disabled and uninstalled from a dedicated plugin manager window; uninstalling also purges the plugin's private data (its SonnetDB namespace and data directory). The SDK ships test doubles (`VelaShell.PluginSdk.Testing`) so plugins can be tested headlessly. Third-party developers get a debugger in one command (`vela-plugin dev init` → F5); see the [dev guide](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/dev-guide.md), [CLI manual](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/cli/cli.md), [SDK reference](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/sdk/sdk-reference.md) and [packaging and publishing](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/publishing.md); marketplace: <http://market.easilynet.top>. Full blueprint in [`velashell-docs en/plugins/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/plugins) (15 design documents + a [status overview](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/plugins/STATUS.md)).
-
-- **AI assistant plugin (first-party)**  
-  Multi-provider streaming chat across three wire protocols — OpenAI Responses, OpenAI Chat Completions-compatible and Anthropic Messages — covering OpenAI, Anthropic, Grok, Gemini, DeepSeek, Kimi, GLM and relay endpoints. Providers are set up from a built-in **catalogue** where **one click connects you**: sign-in providers open your browser, come straight back, store the credential encrypted and configure the model for you — nothing to fill in. The rest ask for an API key and nothing else; name, endpoint, model and protocol ship with factory values tucked behind "Advanced". Both the **authorization-code + PKCE** flow (a loopback port catches the callback) and the **device-code** flow (for when the browser is on another machine) are implemented, and tokens refresh before they expire. If you already pay for **ChatGPT Plus, Claude Pro or GitHub Copilot**, you can spend that subscription here — those three borrow the client identity each vendor's own CLI publishes, so they are flagged "experimental" in the UI with an explanation. The model list comes from the endpoint's own `/models` (only it knows what that address actually serves), with context windows and pricing filled in by id from the open **models.dev** dataset. **Agent mode** runs a Microsoft.Extensions.AI `FunctionInvokingChatClient` tool loop bridged to sessions / terminal / remoteExec / remoteFs, with per-command approval for dangerous operations, and can attach custom **MCP servers** (stdio / HTTP) for extra tools. It also ships **web search and fetch** tools (a public SearXNG instance by default, swap in your own), so the model can look things up before answering. You can **interject** while the agent is running: a new message joins the queue and is picked up without waiting for the current turn to finish. Conversations are persisted to the plugin's private time-series store: browse history, resume a conversation, delete one or clear all; `↑`/`↓` recalls previous prompts and `@` opens a remote file picker for the selected session, attaching file contents to the message. The composer itself is an editor with **Markdown highlighting**, where `@` references render as themed short-name chips (full path on hover), and message bubbles are rendered as Markdown.
-
-### Data, appearance and updates
-
-- **Embedded SonnetDB storage**  
-  Everything persistent (profiles, groups, settings, known_hosts, snippets, connection history, audit log, recordings, plugin data) lives in a local embedded [SonnetDB](https://github.com/IoTSharp/SonnetDB) multi-model database: document collections for business data, the time-series engine for recent connections, audit entries and recording chunks. Connection passwords and key passphrases are written with **AES-256-GCM** encryption.
-
-- **GitHub Gist cloud sync**  
-  Settings, connection profiles (including groups and tunnels) and snippets sync to a private Gist under your own account for seamless multi-device roaming. Every sync is a revisitable revision and any revision can be restored. Optional passphrase-based end-to-end encryption (PBKDF2 + AES-256-GCM); with encryption off, credentials are never uploaded.
-
-- **Settings centre**  
-  Twelve pages: General, Appearance, Terminal, Proxy, Key management, Shortcuts, File transfer, Security audit, Snippets, Cloud sync, About, and Support & donate. Key management enumerates `~/.ssh` keys (type + SHA256 fingerprint), generates RSA key pairs, and imports/copies public keys. The Shortcuts page is generated from `ShortcutCatalog` as the single source of truth, same as [`velashell-docs en/host/keyboard-shortcuts.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/keyboard-shortcuts.md).
-
-- **Dark / light / system themes**  
-  Fully tokenised design with no hard-coded colours and runtime switching; unless customised, the terminal palette follows the theme (dark = Dracula, light = Solarized Light). Scrollbars follow the Windows 11 two-state model — a thin resting line that expands into a track with arrows on hover.
-
-- **Bundled terminal font**  
-  Cascadia Mono ships with the app in four styles (regular / bold / italic / bold-italic) as the default terminal font for identical glyphs on all three platforms; CJK falls back to system fonts.
-
-- **Live status bar**  
-  Connection state, latency, uptime, terminal size, encoding and CPU / memory / network throughput at a glance.
-
-- **Desktop integration**  
-  Single instance (launching again raises the existing window), minimise to tray, launch at login, and a hardware-acceleration switch (turning it off saves roughly 170 MB of resident memory).
+</details>
 
 ---
 
-## 🖥️ Platform support
+## 🖥️ Platforms & distribution
 
-| Platform | Architecture | Status |
-|----------|--------------|--------|
-| Windows 10 / 11 | x64 / arm64 | ✅ Fully supported (portable zip, in-app updates; also on Microsoft Store as MSIX) |
-| Linux | x64 / arm64 | ✅ Fully supported (portable tar.gz, single-file `.AppImage`, native `.deb` / `.rpm`) |
-| macOS | x64 / arm64 | ✅ Fully supported (tar.gz + drag-install `.dmg`, unsigned/not notarised) |
+| Platform | Architecture | Packages |
+| --- | --- | --- |
+| **Windows** 10 / 11 | x64 · arm64 | Portable zip (in-app updates) · Microsoft Store MSIX |
+| **Linux** | x64 · arm64 | Portable tar.gz · `.AppImage` · `.deb` / `.rpm` |
+| **macOS** | x64 · arm64 | tar.gz · `.dmg` (unsigned / not notarised) |
 
-Releases are **self-contained**, so no .NET runtime is required on the target machine. [`scripts/publish-all.ps1`](scripts/publish-all.ps1) produces every platform package in one go — see [Build & release](#-build--release).
+Every build is **self-contained** — unpack anywhere and run.
+
+- **In-app updates** (Settings → About) only consume the zip / tar.gz: download, verify SHA-256, then an external
+  swap process that starts only after the app exits replaces the files and relaunches. A failed swap rolls back
+  automatically, and user data under `~/.velashell` is never touched. The update channel (stable / preview) is
+  switchable in Settings.
+- Once installed, the dmg, AppImage, deb and rpm leave the app directory read-only, so the About page degrades to
+  "download it manually".
+- The Store build (MSIX) is updated by the Store and its data folder is redirected by the system, so **its settings,
+  sessions and keys are separate from the portable build's**.
 
 ---
 
@@ -145,80 +142,87 @@ Releases are **self-contained**, so no .NET runtime is required on the target ma
 
 ### Prerequisites
 
-- [.NET SDK](https://dotnet.microsoft.com/download) **11.0.0 or newer** (pinned by `global.json` with `rollForward: latestFeature`; currently built with `11.0.100-preview.x`)
-- (Optional) Docker, to run the local SSH test server
+- A [.NET SDK **11.0**](https://dotnet.microsoft.com/download) preview — `global.json` pins `11.0.100-rc.1.26425.128`
+  (`rollForward: latestFeature`). The repo enables `EnablePreviewFeatures` and `runtime-async=on`, so until the
+  final SDK ships it only builds with a preview SDK.
+- (Optional) Docker, for the local SSH test server and interop tests
 
-> ⚠️ The repo targets **net11.0** with `EnablePreviewFeatures` and `runtime-async=on` (see `Directory.Build.props`), so building requires a .NET 11 preview SDK. If you need an LTS baseline, roll `<TargetFramework>` in `Directory.Build.props` and `global.json` back to net10 together.
-
-### Clone and build
+### Build and run
 
 ```bash
 git clone https://github.com/joesdu/VelaShell
 cd VelaShell
 
-# Build the whole solution (including the plugin host)
-dotnet build
+dotnet build VelaShell.slnx                 # the whole solution (including the plugin host and the AI plugin)
+dotnet test  VelaShell.slnx                 # the full test suite
 
-# Or just the desktop entry project
-dotnet build src/VelaShell/VelaShell.csproj
+dotnet run --project src/VelaShell/VelaShell.csproj -- --data-root ~/velashell-dev   # start with a separate data directory
 ```
 
-> A clean clone builds with only the **AI plugin** this repo produces itself. To run Redis / S3 / Telnet alongside it locally, drop their plugin directories into `artifacts/plugins/` (or point elsewhere with `-p:VelaPluginsStageDir=<dir>`) — they are mirrored into `plugins/<plugin-dir>/` under the app's output directory on every build, so F5 picks them up. `dotnet publish` fails only when both the in-repo plugins and the staging directory are empty — a release package must not ship "a plugin system that looks present but has no plugins".
->
-> Since 2026-08-22 the **release pipeline no longer preinstalls** Redis / S3 / Telnet (not everyone needs Redis, S3 or Telnet); users install them on demand from the [plugin marketplace](https://market.easilynet.top). Staging is purely a local affair: once staged, your own `dotnet publish` output will include those plugins, which only affects your own build.
->
-> **Building while the app is running fails on locked files** — close the app first.
+> - **Building while the app is running fails on locked files** — close the app first.
+> - During development, pass `--data-root <dir>`: both the data and the single-instance lock follow it, so a dev
+>   build never touches — or reconnects — the profile you use day to day.
 
-### Run
+<details>
+<summary>Want Redis / S3 / Telnet plugins running locally too?</summary>
 
-```bash
-# Development (hot reload)
-dotnet watch run --project src/VelaShell/VelaShell.csproj
+A clean clone builds with only the **AI plugin** this repo produces. Drop the other plugin directories into the
+staging directory `artifacts/plugins/` (or point elsewhere with `-p:VelaPluginsStageDir=<dir>`); every build mirrors
+them into `plugins/<plugin-dir>/` under the output directory, so F5 loads them. You can unpack them from the
+**`.vpx` packages** released by [velashell-plugins](https://github.com/VelaShellLabs/velashell-plugins) (`.vpx` is
+VelaShell's plugin package format; inside is exactly the installed `plugins/<plugin>/` level), or point straight at
+that repo's build output. The release pipeline **does not preinstall** these plugins — users install them on demand
+from the [plugin marketplace](https://market.easilynet.top).
 
-# Publish a standalone Windows executable
-dotnet publish src/VelaShell/VelaShell.csproj -c Release -r win-x64 --self-contained true
-```
+> ⚠️ Do not stage `velashell-ai` — this repo already produces it, and two plugins with the same id make the later
+> one Invalid, which shows up as "the plugin mysteriously doesn't work".
 
-### Start the test SSH server
+</details>
+
+### Local SSH test server
 
 ```bash
 docker compose -f docker-compose.test.yml up -d
-# username: testuser, password: testpass
-# port: 2222
+# testuser / testpass @ localhost:2222
 ```
 
 ### Where data lives
 
 | Content | Location |
-|---------|----------|
-| SonnetDB data directory (profiles/groups/settings/known_hosts/history/audit/recordings/plugin data) | `~/.velashell/sonnetdb` |
+| --- | --- |
+| SonnetDB data directory (profiles / groups / settings / known_hosts / history / audit / recordings / plugin data) | `~/.velashell/sonnetdb` |
 | Credential encryption key (AES-256) | `~/.velashell/secret.key` |
-| Manually installed plugins (`.vpx`) | `~/.velashell/plugins` (first-party plugins remain in the application's `plugins/` directory) |
-| Host self-registration (lets `vela-plugin` locate the install and check versions) | `~/.velashell/host.json` |
+| Session logs (when enabled) and diagnostic logs | `~/.velashell/logs` |
+| Manually installed plugins (`.vpx`) | `~/.velashell/plugins` (first-party plugins live in the app's `plugins/`) |
+| Host self-registration (lets `vela-plugin` find the install) | `~/.velashell/host.json` |
 | Plugin development mounts and shadow copies | `~/.velashell/plugins.dev.txt`, `~/.velashell/dev-shadow/` |
 | SSH key pairs (Key management page) | `~/.ssh` |
 
-> Legacy JSON configuration (`sessions.json` / `settings.json` …) is imported into SonnetDB on first run and renamed to `*.migrated.bak`.
-> When upgrading from the former data root, VelaShell verifies and migrates everything under `%LocalAppData%/VelaShell` into `~/.velashell`, then removes the former directory. Conflicting files already present in `~/.velashell` are preserved under `.migration-backup/localappdata/`.
+> Legacy JSON configuration and the former `%LocalAppData%/VelaShell` data root are migrated into `~/.velashell`
+> on first run; old files are renamed to `*.migrated.bak` or kept under `.migration-backup/`.
 
 ---
 
 ## 📦 Build & release
 
 ```bash
-# Produce every platform package in one run (output in publish/)
-pwsh scripts/publish-all.ps1
+pwsh scripts/publish-all.ps1     # every platform package in one run → publish/
 ```
 
-Artifacts cover Windows x64/arm64 (portable zip) plus macOS and Linux x64/arm64 (tar.gz), all self-contained — unpack anywhere and run, no .NET required. Each package carries the isolated-plugin host process `VelaShell.PluginHost` plus a `plugins/` directory holding only the AI plugin built in this repository (Redis / S3 / Telnet have not been preinstalled since 2026-08-22 — users install them from the marketplace on demand). The macOS `.dmg` drag-install image is produced only on CI's macOS runner (`hdiutil`/`iconutil`/`codesign` are macOS-only tools); Beyond the tar.gz, Linux ships three more: a single-file `.AppImage` (`chmod +x` and double-click — see `build/appimage/README.md`) plus native `.deb` / `.rpm` packages (installed into `/opt/velashell`, registering a menu entry and `/usr/bin/velashell` — see `build/linux-packages/README.md`), one of each per architecture, all cross-built on the same x64 runner. **The updater always consumes the tar.gz**; the dmg, AppImage, deb and rpm exist purely for manual download and installation — once installed their application directory is not writable, so the About page degrades to "download it manually".
+Artifacts cover all three platforms on x64 / arm64, all self-contained. Besides the app, each package carries the
+isolated-plugin host process `VelaShell.PluginHost` and a `plugins/` directory holding only the AI plugin. The `.dmg`
+is produced only on CI's macOS runner; the `.AppImage` ([`build/appimage/`](build/appimage/README.md)) and
+`.deb` / `.rpm` ([`build/linux-packages/`](build/linux-packages/README.md)) are cross-built on the same x64 runner.
 
-> Microsoft Store (MSIX) installs are updated by the Store, so in-app update actions are hidden there. The Store build lives under the read-only `WindowsApps` directory and its data folder is redirected to a package-private location, so **its settings, sessions and keys are separate from the portable build's**.
+| Pipeline | Trigger | What it does |
+| --- | --- | --- |
+| [`ci.yml`](.github/workflows/ci.yml) | push to `main` / every PR | windows + ubuntu + macos matrix, Debug build + full test suite, `-warnaserror` |
+| [`release.yml`](.github/workflows/release.yml) | a Release is published | Packages all three platforms in parallel and attaches `SHA256SUMS.txt` and the `latest.json` update manifest; also produces an **MSIX** for Microsoft Store submission |
 
-**In-app updates**: Settings → About → Check for updates. The app reads the `latest.json` manifest from GitHub Releases, downloads the matching archive into a staging directory inside the app folder, verifies SHA-256, unpacks it, and then lets an external swap process — which only starts after the app exits — replace the files and relaunch. By then nothing in the app directory is locked, so no undeletable leftovers remain. That "external process" *is* the freshly unpacked new version (releases are self-contained and **not** single-file, so they run straight from disk), which is why no separate updater has to be shipped. Updates happen wherever the app is installed, with no location requirement; the `~/.velashell` data directory is completely isolated from the update flow, so upgrades and rollbacks never touch user data. A failed swap rolls back to the previous version automatically, and if the flow is interrupted, "Repair update state" on the About page resets it. The update channel (stable / preview) is switchable in Settings.
-
-**CI/CD**: [`.github/workflows/release.yml`](.github/workflows/release.yml) triggers when a GitHub Release is published and builds on all three native runners in parallel (the version comes from the Release tag via `-p:Version`, so releasing needs no code changes), then attaches `SHA256SUMS.txt` and the `latest.json` update manifest to the Release. The same pipeline also produces an **MSIX** for Microsoft Store submission (deliberately unsigned — the Store signs it with its own certificate after certification).
-
-> The earlier WiX MSI and Velopack installers were removed in `241c2a2`: installing into Program Files makes the app directory read-only, degrading in-app updates to "please download manually", which conflicts with the portable self-update model.
+CI deliberately builds **Debug** (strong-name signing is Release-only, and PRs from forks and Dependabot cannot read
+repository secrets), **excludes** the `DockerIntegration` / `CrossPlatform` categories, and checks out
+`velashell-docs` alongside (the shortcut cross-check tests need to find it). The version comes from the Release tag
+via `-p:Version`, so **releasing needs no code changes** — the `0.0.1-dev` in the repo is only a development placeholder.
 
 ---
 
@@ -227,193 +231,194 @@ Artifacts cover Windows x64/arm64 (portable zip) plus macOS and Linux x64/arm64 
 ```text
 VelaShell/
 ├── src/
-│   ├── VelaShell/                  # Desktop entry point, DI composition root, XAML views, VelaDock, global styles
+│   ├── VelaShell/                  # Desktop entry point, DI composition root, XAML views, VelaDock, window host for the X server
 │   ├── VelaShell.Terminal/         # VT engine and the Avalonia rendering control
-│   ├── VelaShell.Presentation/     # Cross-cutting view models, workflows and the Presentation DI module
-│   ├── VelaShell.Controls/         # Reusable control library and theme tokens
+│   ├── VelaShell.Presentation/     # Cross-cutting view models and workflows
+│   ├── VelaShell.Controls/         # Reusable controls, theme tokens and bundled fonts
 │   ├── VelaShell.Core/             # Domain models, service contracts, persistence abstractions, localisation (UI-free)
-│   ├── VelaShell.Infrastructure/   # SSH/SFTP/FTP/tunnels, SonnetDB persistence, AES-256 credential encryption,
-│   │                               # Gist sync, plugin management and capability implementations
+│   ├── VelaShell.Infrastructure/   # SSH / SFTP / FTP / tunnels, SonnetDB persistence, credential encryption, sync, plugin management
+│   ├── VelaShell.Ssh/              # SSH library (MIT, clean-room, see its AGENTS.md)
+│   ├── VelaShell.XServer/          # X11 server library (MIT, clean-room, see its AGENTS.md)
 │   └── VelaShell.PluginHost/       # Host process for isolated plugins (named-pipe RPC, SDK contract only)
-├── tests/                          # 7 MSTest projects: unit, integration, UI and smoke tests
-│   └── fixtures/                   # Fixture plugins for the plugin-runtime tests (not sample code; see its README)
-├── docs/                           # Architecture, UI specs, settings audit, plugin blueprint, interaction notes
-├── scripts/publish-all.ps1         # One-shot cross-platform publish script
+├── plugins/VelaShell.Plugin.Ai/    # First-party AI assistant plugin (built and released with the app)
+├── tests/                          # 11 MSTest projects + 1 BenchmarkDotNet project + the cert-lab certificate test server
+├── build/                          # Packaging scripts for AppImage / deb / rpm / MSIX / social preview images
+├── scripts/                        # One-shot publish script, plus interop test servers, benchmarks and code generators for SSH / X server
 ├── docker-compose.test.yml         # Local SSH test server
 ├── global.json                     # SDK version pin
 ├── Directory.Build.props           # Repo-wide version and shared MSBuild properties
-├── src/Directory.Packages.props    # Central NuGet version management
-└── VelaShell.slnx                  # Visual Studio solution
+└── VelaShell.slnx                  # Solution
 ```
 
-> Every source and test project has its own `README.md` describing its architecture, directory responsibilities and dependencies. The entry project is named `VelaShell` (`VelaShell.App` in older docs is a stale alias).
+Every source and test project has its own `README.md` describing its responsibilities, layout and dependencies.
 
-### 🧩 Three repositories, one job each
+### Architecture conventions
 
-Everything plugin-related now lives outside this repository. Five repositories plus a docs
-repository, one job each:
-
-| Repository | Owns | How it reaches this repo |
-| --- | --- | --- |
-| **joesdu/VelaShell** (this one) | The app + the host-side plugin runtime + the AI plugin | — |
-| **[VelaShellLabs/velashell-plugin-sdk](https://github.com/VelaShellLabs/velashell-plugin-sdk)** | The plugin contract SDK | `VelaShell.PluginSdk` / `.Testing` **NuGet packages** |
-| **[VelaShellLabs/velashell-plugin-cli](https://github.com/VelaShellLabs/velashell-plugin-cli)** | The `vela-plugin` CLI and `VelaShell.PluginSdk.Build` | **NuGet packages** (for plugin authors; not referenced here) |
-| **[VelaShellLabs/velashell-plugin-templates](https://github.com/VelaShellLabs/velashell-plugin-templates)** | The `dotnet new velaplugin` templates | **NuGet package** (for plugin authors; not referenced here) |
-| **[VelaShellLabs/velashell-plugins](https://github.com/VelaShellLabs/velashell-plugins)** | The Redis / S3 / Telnet / serial and Docker-panel plugins | One **`.vpx` package** per plugin (release assets / marketplace) |
-| **[VelaShellLabs/velashell-docs](https://github.com/VelaShellLabs/velashell-docs)** | **All documentation** for every repository above | — |
-
-> The split happened in steps: on 2026-08-21 the SDK, toolchain and plugins moved into
-> `velashell-plugin-toolchain`; on 2026-08-22 the plugins moved out again; on 2026-08-27 the
-> toolchain repo was split into sdk / cli / templates so each could release on its own cadence;
-> on 2026-08-30 all documentation was consolidated into `velashell-docs`. Older docs claiming
-> "the plugins live in the toolchain repo" or "the docs live under each repo's `docs/`" are obsolete.
-
-**The AI plugin is the exception**: it lives here in
-[`plugins/VelaShell.Plugin.Ai/`](plugins/VelaShell.Plugin.Ai) and is a first-party plugin built
-and released together with the app — it is the one most tightly coupled to the host (it borrows
-the host's AvaloniaEdit for its input box, must load in-process, and must compile against the
-exact Avalonia version the host loads). The reasoning is in
-[`plugins/README.md`](plugins/README.md).
-
-The SDK contract is pinned in `src/Directory.Packages.props` and `tests/Directory.Packages.props`
-(literal versions). Plugin binaries are not pinned here — they never enter a release package, so
-there is no version to lock.
-
-To run Redis / S3 / Telnet alongside the app on your own machine, drop their plugin directories
-into the **staging directory** `artifacts/plugins/`: unpack the per-plugin **`.vpx` packages**
-released by [VelaShellLabs/velashell-plugins](https://github.com/VelaShellLabs/velashell-plugins)
-(`.vpx` is VelaShell's own plugin package format; the container's layout is exactly the installed
-`plugins/<plugin>/` level), or point straight at that repo's build output. Pass `-p:VelaPluginsStageDir=<dir>` to stage elsewhere.
-
-> ⚠️ Do not stage `velashell-ai` — this repo already produces it, and two plugins with the same id
-> make `PluginManager` mark the later one Invalid, which shows up as "the plugin mysteriously
-> doesn't work".
-
-To change the SDK contract, publish a (pre-release) package from the toolchain repository first,
-then bump the `VelaShell.PluginSdk` version in `src/Directory.Packages.props`,
-`tests/Directory.Packages.props` and
-`plugins/VelaShell.Plugin.Ai/VelaShell.Plugin.Ai.csproj` together — this repository always
-consumes the SDK as a NuGet package, never as a project reference.
-
-**To write a plugin, read the [dev guide](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/dev-guide.md)**;
-the plugin architecture blueprint lives in
-[velashell-docs `en/plugins/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/plugins) — that is host-side design.
+- **Strict layering** — `VelaShell → Presentation / Controls / Infrastructure → Core`, and Core depends on no UI
+  framework; `VelaShell.Ssh` and `VelaShell.XServer` depend on no host assembly at all and can be taken out and used on their own.
+- **Single composition root** — all DI registration lives in [`src/VelaShell/App.axaml.cs`](src/VelaShell/App.axaml.cs),
+  with each layer contributing through `*ServiceCollectionExtensions`.
+- **One persistence engine** — a single embedded SonnetDB instance holds both document and time-series data;
+  interfaces in Core, implementation in Infrastructure.
+- **Tokenised design** — **no colour literals in XAML or C#**; everything binds tokens via `DynamicResource`
+  (rules in [`DESIGN.md`](DESIGN.md)).
+- **Secure defaults** — credentials encrypted at rest, TOFU host fingerprints, "remember password" can be turned off
+  per connection, per-capability consent for plugins; every case in which the app makes an outbound request is
+  listed truthfully in [`PRIVACY.md`](PRIVACY.md).
 
 ---
 
-## 🧩 Architecture highlights
+## 🧩 Plugin system
 
-- **Strict layering**: dependencies flow `App(VelaShell) → Presentation / Controls / Infrastructure → Core`. Core depends on no UI framework, so it is independently testable and reusable.
-- **Interfaces first**: services are injected through interfaces, which keeps mocking and unit testing straightforward.
-- **Single composition root**: all DI registration is centralised in [`src/VelaShell/App.axaml.cs`](src/VelaShell/App.axaml.cs), with each layer contributing via `*ServiceCollectionExtensions`.
-- **Custom rendering**: the terminal draws glyphs, selection and scrolling directly in a custom Avalonia control instead of depending on abandoned third-party terminal controls.
-- **Docking**: VelaDock separates its model layer (plain INPC, unit-testable) from its controls; dragging, splitting and tab reordering are implemented here, with zero third-party dock dependencies.
-- **Plugin isolation**: each in-process plugin gets a collectible `AssemblyLoadContext` and resolves its dependencies from its own `deps.json`; only the SDK contract and `Avalonia*` framework assemblies fall back to the host, which keeps types identical across the boundary. Plugins that need stronger isolation run in a separate process over custom named-pipe RPC.
-- **Tokenised design**: colours, fonts and spacing all live in resource dictionaries, enabling theming and rebranding.
-- **One persistence engine**: a single embedded SonnetDB instance serves both document (configuration/business data) and time-series (history/audit/recordings/plugin data) models — interfaces in Core, implementation in Infrastructure, flushed on exit; legacy JSON configuration migrates automatically on first run.
-- **Secure defaults**: credentials encrypted at rest (AES-256-GCM plus a local key file), TOFU host fingerprint verification, "remember password" disableable per connection, and per-capability consent for plugins.
+**Dual-mode hosting** — a plugin can load **in-process** (a collectible `AssemblyLoadContext`, its UI docked straight
+into the workspace) or run in a **separate process**, `VelaShell.PluginHost` (named-pipe RPC, so a crash never takes
+down the app, with heartbeats, self-healing restarts and idle recycling). Both modes share one SDK contract, and the
+plugin manifest declares which one it uses.
+
+**Capability APIs** — plugins reach the host through `IPluginContext`:
+
+| Capability | What it does |
+| --- | --- |
+| `Sessions` | Enumerate sessions, observe their state, open and close sessions from saved profiles |
+| `Terminal` | Read terminal output, write terminal input |
+| `RemoteExec` · `RemoteFs` | Run remote commands; read, write and list remote files |
+| `RemoteTunnel` | Open `direct-tcpip` / `direct-streamlocal` channels over the host's existing connections |
+| `Protocols` · `Workspaces` | **Register new connection types and workbenches** — this is how Telnet / serial / Redis / S3 join the session tree |
+| `Storage` · `TimeSeries` · `Secrets` | Per-plugin private document and time-series storage, plus host-encrypted secrets |
+| `Commands` · `Events` · `Ui` · `Clipboard` · `Log` | Register commands, subscribe to events, open panels (docked documents or standalone windows) |
+
+Dangerous capabilities are granted one by one through a permission dialog; protocol and workbench ids must carry the
+plugin's prefix; later versions of an installed plugin must be signed with the key pinned at install time. Plugins
+ship as `.vpx` packages, and the manager window installs, enables, disables, uninstalls and checks for updates;
+uninstalling also purges the plugin's private data. Third-party developers get a debugger in one command
+(`vela-plugin dev init` → F5), and the SDK ships test doubles (`VelaShell.PluginSdk.Testing`).
+
+📖 [Dev guide](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/dev-guide.md)
+· [CLI manual](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/cli/cli.md)
+· [SDK reference](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/sdk/sdk-reference.md)
+· [Packaging and publishing](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/publishing.md)
+· [Design blueprint](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/plugins)
+
+**Provided by plugins** (not preinstalled; install on demand from the [plugin marketplace](https://market.easilynet.top),
+sources in [velashell-plugins](https://github.com/VelaShellLabs/velashell-plugins)):
+
+- **Telnet, serial (COM / USB-to-serial), Redis, S3**
+- **Docker panel** — a full Docker management surface on top of an already-connected SSH session (containers / images /
+  volumes / networks / Compose, live stats, a merged log stream, in-container file editing and a TTY console).
+  It talks to the remote `/var/run/docker.sock` over the SSH session (`direct-streamlocal@openssh.com`), so
+  **nothing changes on the server**, and the daemon never needs to be exposed on 2375 / 2376.
+
+### Six repositories, one job each
+
+| Repository | Owns | How it reaches this repo |
+| --- | --- | --- |
+| **joesdu/VelaShell** (this one) | The app, the host-side plugin runtime, the SSH library, the X server library, the AI plugin | — |
+| [**velashell-plugin-sdk**](https://github.com/VelaShellLabs/velashell-plugin-sdk) | The plugin contract SDK | `VelaShell.PluginSdk` / `.Testing` **NuGet packages** |
+| [**velashell-plugin-cli**](https://github.com/VelaShellLabs/velashell-plugin-cli) | The `vela-plugin` CLI and `VelaShell.PluginSdk.Build` | NuGet packages (for plugin authors; not referenced here) |
+| [**velashell-plugin-templates**](https://github.com/VelaShellLabs/velashell-plugin-templates) | The `dotnet new velaplugin` templates | NuGet package (for plugin authors; not referenced here) |
+| [**velashell-plugins**](https://github.com/VelaShellLabs/velashell-plugins) | The Redis / S3 / Telnet / serial / Docker-panel plugins | One **`.vpx` package** per plugin (release assets / marketplace) |
+| [**velashell-docs**](https://github.com/VelaShellLabs/velashell-docs) | **All documentation** for every repository above | — |
+
+The SDK contract always arrives as a NuGet package, never a project reference, pinned in `src/Directory.Packages.props`
+and `tests/Directory.Packages.props`. **The AI plugin is the exception** and stays here: its couplings to the host are
+all compile-time (it borrows the host's AvaloniaEdit, must load in-process, and must match the host's Avalonia version
+exactly), so in a separate repo even a one-line UI change would need a release before it could be tested together
+(details in [`plugins/README.md`](plugins/README.md)).
 
 ---
 
 ## 🧪 Tests
 
-The repo carries an MSTest suite covering domain models, the VT engine, view models, the plugin system and integration scenarios (7 test projects, including real two-process plugin e2e tests and headless UI tests).
-
 ```bash
-# Run everything
-dotnet test
-
-# Only the terminal engine
-dotnet test tests/VelaShell.Terminal.Tests/
-
-# Verbose output
-dotnet test --logger "console;verbosity=detailed"
+dotnet test VelaShell.slnx                          # everything
+dotnet test tests/VelaShell.Terminal.Tests/         # a single project
+dotnet run -c Release --project tests/VelaShell.Benchmarks -- --filter *VtParser*   # benchmarks
 ```
 
 | Test project | Scope |
-|--------------|-------|
-| `VelaShell.Core.Tests` | Domain models, SFTP and the transfer queue, tunnels, sync encryption |
-| `VelaShell.Terminal.Tests` | VT parsing, emulation, encodings, character widths, gutter folding |
+| --- | --- |
+| `VelaShell.Core.Tests` | Domain models, the transfer queue, tunnels, directory sync, sync encryption |
+| `VelaShell.Terminal.Tests` · `.RenderTests` | VT parsing and emulation; **pixel-level** glyph rendering regressions (real rasterisation on Skia's software backend) |
 | `VelaShell.Presentation.Tests` | View-model workflows and commands |
-| `VelaShell.Infrastructure.Tests` | SonnetDB persistence, credential encryption, ConPTY, SSH key management, plugin management and cross-process RPC |
-| `VelaShell.Controls.Tests` | Custom control behaviour |
-| `VelaShell.Plugin.Ai.Tests` | AI plugin: toolbox approval gate, capability bridging, settings/secret storage, chat history, `@` reference syntax and headless panel interaction |
-| `VelaShell.Tests` | Window-level view models, authentication flow, plugin panels and theme tokens, integration and smoke tests |
+| `VelaShell.Infrastructure.Tests` | Persistence, credential encryption, ConPTY, SSH wiring, key management, plugin management and cross-process RPC |
+| `VelaShell.Controls.Tests` | Custom controls, theme tokens and style guards |
+| `VelaShell.Tests` | Window-level view models, the authentication flow, plugin panels, window chrome, headless views |
+| `VelaShell.Plugin.Ai.Tests` | AI plugin: approval gate, capability bridging, team chat integration, headless panel interaction |
+| `VelaShell.ShellIntegration.Tests` | End-to-end checks for "file browser follows the terminal's directory": real sshd, real login shells, real PTYs |
+| `VelaShell.Ssh.Tests` · `VelaShell.XServer.Tests` | Unit tests for the two MIT libraries, plus interop against real OpenSSH / real X clients |
+| `VelaShell.Benchmarks` | BenchmarkDotNet benchmarks, **not a CI gate** (results swing too much with machine load); for before/after comparisons on the same machine |
 
-> Integration tests **bail out early** when their environment is missing: `SshIntegrationTests` (category `DockerIntegration`) needs Docker plus the SSH server from `docker-compose.test.yml`; `CrossPlatformPublishTests` needs `VELASHELL_PUBLISH_TESTS=1`.
+> ⚠️ **An early bail-out counts as "passed" in MSTest.** `DockerIntegration` needs Docker and `docker-compose.test.yml`,
+> `CrossPlatformPublishTests` needs `VELASHELL_PUBLISH_TESTS=1`, and the X server's real-client tests need
+> `VELASHELL_XSERVER_INTEROP=1`. Without their prerequisites they go quietly green without running a line — to confirm
+> they actually ran, look for `[SKIP]` lines in `TestContext`.
 >
-> ⚠️ **An early bail-out counts as "passed" in MSTest.** When the prerequisites are absent these tests go quietly green without executing a single line — the test result alone cannot tell you the difference. The gate itself has to be honest too: probing the TCP port is not enough, because Docker's port proxy **always** accepts the connection even when the sshd behind it cannot complete a handshake, so the fixture now caches one real SSH handshake and decides from that. To confirm they actually ran, look for `[SKIP]` lines in `TestContext`.
->
-> ⚠️ In headless UI tests, always use the **value-returning** overload — `Dispatch(async () => { …; return true; })`. `HeadlessUnitTestSession` has no `Func<Task>` overload, so a void-returning lambda yields a `Task<Task>` that is never awaited: the body stops at the first `await`, the test "passes", and every assertion failure is lost.
+> ⚠️ **In headless UI tests, use the value-returning overload**: `Dispatch(async () => { …; return true; })`.
+> A void-returning lambda yields a `Task<Task>` that is never awaited: the test stops at the first `await`, "passes",
+> and every assertion failure is lost.
 
 ---
 
 ## 📚 Documentation
 
-All documentation moved to **[VelaShellLabs/velashell-docs](https://github.com/VelaShellLabs/velashell-docs)**
-on 2026-08-30 — the `docs/` and `docs-en/` trees of this repository, the SDK, the CLI and the
-templates now live there together, linking to each other by relative path instead of cross-repo URLs.
-English in [`en/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en), 中文在 [`zh/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/zh).
+All documentation lives in **[VelaShellLabs/velashell-docs](https://github.com/VelaShellLabs/velashell-docs)** —
+English in [`en/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en), 中文在 [`zh/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/zh); the two trees mirror each other.
 
 | Area | Contents |
 | --- | --- |
-| [`en/host/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/host) | **This repository's docs**: [layering and dependencies](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/architecture.md), [engineering refactor blueprint](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/architecture-design.md), [interaction and UI specs](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/interaction-and-ui-specs.md), [keyboard shortcuts](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/keyboard-shortcuts.md), [settings audit](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/settings-audit.md), plus SFTP / FTP / Telnet / serial feasibility research |
-| [`en/plugins/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/plugins) | The 15-part plugin design blueprint + [status overview](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/plugins/STATUS.md) |
-| [`en/templates/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/templates) | [Plugin dev guide](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/dev-guide.md), [packaging and publishing](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/publishing.md) |
-| [`en/cli/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/cli) | [`vela-plugin` manual](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/cli/cli.md) |
-| [`en/sdk/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/sdk) | [SDK reference](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/sdk/sdk-reference.md) |
+| [`en/host/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/host) | **This repository**: [layering and dependencies](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/architecture.md), [interaction and UI specs](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/interaction-and-ui-specs.md), [keyboard shortcuts](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/keyboard-shortcuts.md), [settings audit](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/settings-audit.md), [Xshell-compatible launch](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/xshell-compatible-login.md), plus design notes and feasibility research |
+| [`en/ssh/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/ssh) · `en/xserver/` | Architecture, behaviour specs and getting started for the SSH and X server libraries |
+| [`en/plugins/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/plugins) | The plugin system design blueprint + [status overview](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/plugins/STATUS.md) |
+| [`en/sdk/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/sdk) · [`en/cli/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/cli) · [`en/templates/`](https://github.com/VelaShellLabs/velashell-docs/tree/main/en/templates) | SDK reference, the `vela-plugin` manual, the plugin dev guide and packaging / publishing |
 
-Three documents stay here, because what they serve is writing code *in this repository*:
+A few documents stay in this repository, because what they serve is writing code *here*:
 
-- [`DESIGN.md`](DESIGN.md) — design system: colour/type/spacing tokens and component rules (XAML comments and unit tests cite its section numbers directly)
-- [`plan.md`](plan.md) — **what already happened**: the progress log, the current architecture, and the reasoning behind every change
-- [`feature-plan.md`](feature-plan.md) — **what has not happened yet**: the backlog, candidate features, and the won't-do list with its reasons
+- [`AGENTS.md`](AGENTS.md) — working conventions for AI agents and newcomers (**read it before you start**)
+- [`DESIGN.md`](DESIGN.md) — the design system: colour / type / spacing tokens and component rules
+- [`plan.md`](plan.md) — **what already happened**: current architecture, the progress log, the reasoning behind every change
+- [`feature-plan.md`](feature-plan.md) — **what has not happened yet**: backlog, roadmap, and the won't-do list with its reasons
+- [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) · [`SECURITY.md`](SECURITY.md) · [`PRIVACY.md`](PRIVACY.md)
 
-> The split is strict: once something ships it comes off `feature-plan.md` and gets a section in `plan.md`; anything unshipped stays out of `plan.md` — no TODOs there.
+> `plan.md`, `feature-plan.md` and `AGENTS.md` are written in Chinese.
 
 ---
 
 ## 🛠️ Tech stack
 
-- **.NET 11** — target runtime (`net11.0`, preview features and `runtime-async` enabled)
-- **Avalonia 12.1** — cross-platform XAML UI framework
-- **ReactiveUI** — reactive MVVM
-- **VelaDock** — draggable split/dock layout with zero third-party dependencies
-- **VelaShell.Ssh** (`src/VelaShell.Ssh`) — SSH / SFTP / port forwarding / SOCKS5 / ProxyJump (fully managed, async-first)
-- **FluentFTP** — FTP / FTPS client
-- **AvaloniaEdit** — remote file editor and the AI composer (syntax highlighting, inline reference chips)
-- **SonnetDB** — embedded multi-model database (document + time series), the only persistence engine
-- **Plugin runtime** — collectible ALCs, a separate host process, named-pipe RPC and `.vpx` packaging
-- **Microsoft.Extensions.AI / ModelContextProtocol** — unified model abstraction, agent tool loop and MCP client for the AI plugin
-- **LiveMarkdown.Avalonia** — incremental Markdown rendering for AI chat (with Mermaid / LaTeX / SVG extensions)
-- **Portable self-update** — `latest.json` manifest from GitHub Releases + SHA-256 verification + an external process that swaps and relaunches after exit (auto rollback on failure), location-independent and never touching the user data directory (`src/VelaShell/Services/Update/`)
-- **MSTest** — unit testing framework
-- **Central package management** — NuGet versions unified in `Directory.Packages.props`
+| | |
+| --- | --- |
+| **Runtime / UI** | .NET 11 (preview features and `runtime-async` enabled) · Avalonia 12.1 · ReactiveUI |
+| **Core components in this repo** | VT terminal engine · VelaDock split/dock layout · VelaShell.Ssh (SSH / SFTP / port forwarding / SOCKS5 server) · VelaShell.XServer (X11 server) · plugin runtime · portable self-update |
+| **Third party** | FluentFTP (FTP / FTPS) · SonnetDB (embedded document + time-series database) · BouncyCastle (the curve arithmetic the BCL lacks, such as Ed25519) · AvaloniaEdit (editor and AI composer) · MaxMind.Db (offline IP geolocation) |
+| **AI plugin** | Microsoft.Extensions.AI · ModelContextProtocol · LiveMarkdown.Avalonia (with Mermaid / LaTeX / SVG) |
+| **Engineering** | MSTest · BenchmarkDotNet · central package management · SourceLink |
 
 ---
 
 ## 🚧 Project status
 
-The project is under active development.
+The project is under **active development** and ships regularly; see [Releases](https://github.com/joesdu/VelaShell/releases) for the latest version.
 
-**Working today**: terminal engine, SSH/SFTP, FTP/FTPS, local shells, jump hosts, session management and import, authentication, tunnels, persistence, settings centre, cloud sync, session recording, resource monitor / process manager / traceroute, plus the **plugin system framework** (dual hosting modes, the full capability surface, UI extensions, heartbeat self-healing and idle recycling, per-plugin storage with uninstall cleanup, `.vpx` install/uninstall, SDK test doubles and developer docs) and the first-party **AI assistant plugin**.
-
-**Provided by plugins** — none preinstalled; install on demand from the [plugin marketplace](https://market.easilynet.top):
-
-- **Telnet, serial (COM / USB-to-serial), Redis and S3** — sources in [VelaShellLabs/velashell-plugins](https://github.com/VelaShellLabs/velashell-plugins).
-- **Docker panel** — [VelaShell.Plugin.DockerPanel](https://github.com/VelaShellLabs/velashell-plugins/tree/main/plugins/VelaShell.Plugin.DockerPanel) (inside the velashell-plugins repository). A full Docker management surface on top of an **already-connected SSH session**: seven pages (overview / containers / images / volumes / networks / Compose / system) plus live stats, a merged multi-container log stream, in-container file editing and a built-in TTY console. **Nothing changes on the server** — it opens a direct channel to the remote `/var/run/docker.sock` over the SSH session (`direct-streamlocal@openssh.com`) and speaks the Docker Engine HTTP API, so the daemon need not be exposed on 2375/2376 and no second set of credentials is required. Nor is it a local port forward, so no other process on your machine can reach it.
-
-**Not yet available**: SSH certificate authentication; system keychain and sudo credential autofill are still under investigation. A handful of settings are persisted but not yet wired to runtime behaviour (itemised in the P0 table of `feature-plan.md`).
-
-The completion record lives in [`plan.md`](plan.md), the backlog and plans in [`feature-plan.md`](feature-plan.md), and the plugin-side progress in [`velashell-docs en/plugins/STATUS.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/plugins/STATUS.md).
+Everything in the feature list above works today. A handful of settings are still only persisted and not yet wired
+to runtime behaviour; they have either been removed from the UI or are itemised in the P0 table of
+[`feature-plan.md`](feature-plan.md). System keychain and credential-manager integration are still at the design stage.
+The full completion record is in [`plan.md`](plan.md), the backlog and roadmap in [`feature-plan.md`](feature-plan.md),
+and the plugin side in the [status overview](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/plugins/STATUS.md).
 
 ---
 
 ## 🤝 Contributing
 
-Issues and pull requests are welcome. **Read [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) before you start** — it covers the setup (the SDK is a preview build, and only Debug builds locally), branch and commit conventions, the two hard rules for the test suite, and the localization and documentation sync requirements.
+Issues and pull requests are welcome. **Read [`CONTRIBUTING.en.md`](CONTRIBUTING.en.md) before you start**
+(AI agents: see also [`AGENTS.md`](AGENTS.md)). A few hard rules that will stop a change on the spot:
 
-For layering conventions and dependency direction see [`velashell-docs en/host/architecture.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/architecture.md); if you are writing a plugin, start with the [plugin development guide](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/templates/dev-guide.md).
+- **UI strings need all five resx files** (`Strings` / `zh-Hans` / `zh-Hant` / `ja` / `ko`); no hard-coded strings.
+- **To add or change a shortcut, edit `ShortcutCatalog.cs` first** — it is the single source of truth.
+- **No colour literals in XAML or C#**; bind tokens via `DynamicResource`.
+- **The plugin SDK always comes from NuGet**; never pick an SDK version yourself, and never build a local package.
+- **Before touching `src/VelaShell.Ssh/` or `src/VelaShell.XServer/`, read that directory's `AGENTS.md`** — both
+  libraries follow a clean-room rule.
+- **Behaviour changes must be synced to velashell-docs** — two PRs that reference each other and merge together.
 
 Found a security vulnerability? **Do not open a public issue** — follow the private process in [`SECURITY.md`](SECURITY.md).
 
@@ -421,8 +426,8 @@ Found a security vulnerability? **Do not open a public issue** — follow the pr
 
 ## 💖 Sponsor
 
-VelaShell is **free forever** for individuals and companies alike. Sponsoring is entirely
-voluntary — it unlocks nothing, and there is no "sponsor build" separate from the free one.
+VelaShell is **free forever** for individuals and companies alike. Sponsoring is entirely voluntary — it unlocks
+nothing, and there is no "sponsor build" separate from the free one.
 
 | Channel | Best for | Link |
 | --- | --- | --- |
@@ -445,13 +450,45 @@ The same links live in the app under **Settings → Support & Donate**. Thank yo
 
 VelaShell is **dual-licensed**:
 
-- **[AGPL-3.0](LICENSE) (default)**: free to use, modify and distribute, but derivative works — including anything offered as a network service — **must release their complete source under the same license**, keeping copyright and donation notices intact. Stripping the project's identity and selling it closed-source is infringement, and will be pursued (DMCA takedowns / litigation).
-- **[Commercial license](LICENSE-COMMERCIAL.md) (paid, on request)**: if you need closed-source integration or distribution, or corporate policy rules out AGPL, contact the author to purchase one (📧 <dygood@outlook.com>, subject line "Commercial License").
+- **[AGPL-3.0](LICENSE) (default)** — free to use, modify and distribute, but derivative works (including anything
+  offered as a network service) **must release their complete source under the same license**, keeping copyright and
+  donation notices intact. Stripping the project's identity and selling it closed-source is infringement, and will be
+  pursued (DMCA takedowns / litigation).
+- **[Commercial license](LICENSE-COMMERCIAL.md) (paid, on request)** — if you need closed-source integration or
+  distribution, or corporate policy rules out AGPL, contact the author to purchase one
+  (📧 <dygood@outlook.com>, subject line "Commercial License").
 
-**Authenticity notice**: VelaShell itself is **free forever** for individuals and companies alike, and the only official distribution channel is this repository's GitHub Releases; any "paid VelaShell" from any other channel is pirated. The "VelaShell" name and logo are not covered by the open-source license — derivative versions must not use them to promote or sell.
+The two libraries `src/VelaShell.Ssh/` and `src/VelaShell.XServer/` are the exception: each is licensed under the
+**MIT** license in its own directory.
 
-By contributing you agree that your contribution is licensed under AGPL-3.0 and that the copyright holder may sublicense it under the commercial license (see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) §3).
+**Authenticity notice**: VelaShell itself is **free forever** for individuals and companies alike. The only official
+distribution channels are this repository's GitHub Releases (and the Microsoft Store build of the same name); any
+"paid VelaShell" from any other channel is pirated. The "VelaShell" name and logo are not covered by the open-source
+license — derivative versions must not use them to promote or sell.
+
+By contributing you agree that your contribution is licensed under AGPL-3.0 and that the copyright holder may
+sublicense it under the commercial license (see [LICENSE-COMMERCIAL.md](LICENSE-COMMERCIAL.md) §3).
 
 ---
 
-> VelaShell — born for the command line.
+## 🪶 About the name
+
+**Pronunciation**: `/ˈveɪlə ʃɛl/` — say it as **"VAY-la shell"**, stress on the first syllable.
+
+- **Vela** — Latin for "sails". Vela is a southern constellation which, together with Carina (the keel) and Puppis
+  (the stern), was split out of Argo Navis — the ship Jason and the Argonauts sailed in search of the Golden Fleece.
+  It carries the sense of **setting sail for distant shores**.
+- **Shell** — the command-line shell, and the heart of this app: a terminal attached to a remote host.
+
+Together, VelaShell means **"a terminal as your sail, riding the signal winds to remote hosts"**. The icon distils
+that idea: a dark `>_` prompt on a teal gradient rounded square.
+
+---
+
+<div align="center">
+
+**VelaShell** — born for the command line.
+
+© 2026 VelaShell authors and contributors
+
+</div>

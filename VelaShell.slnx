@@ -17,6 +17,7 @@
     <File Path="AGENTS.md" />
     <File Path="DESIGN.md" />
     <File Path="Directory.Build.props" />
+    <File Path="feature-plan.md" />
     <File Path="global.json" />
     <File Path="LICENSE" />
     <File Path="LICENSE-COMMERCIAL.md" />
@@ -39,6 +40,7 @@
     <Project Path="src/VelaShell.XServer/VelaShell.XServer.csproj" />
     <Project Path="src/VelaShell/VelaShell.csproj" />
   </Folder>
+  <Folder Name="/scripts/" />
   <Folder Name="/scripts/ssh/">
     <File Path="scripts/ssh/Update-PublicApi.ps1" />
     <File Path="scripts/ssh/benchmarks/benchmarks.cs" />

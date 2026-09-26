@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\VelaShell.Core\VelaShell.Core.csproj" />
     <ProjectReference Include="..\VelaShell.Terminal\VelaShell.Terminal.csproj" />
     <!-- 插件契约程序集。取 nuget.org 上的正式包,版本 = 根 Directory.Build.props 的
          VelaSdkVersion(由 joesdu/velashell-plugin-toolchain 发布)。 -->
