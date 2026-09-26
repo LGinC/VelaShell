@@ -22,6 +22,16 @@ internal static class RenderCompositor
     public static XRect Composite(byte op, RenderSource src, RenderSource? mask, bool componentAlpha, RenderTarget dst,
         int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
     {
+        // 源 / 遮罩与目标是同一块缓冲(同一张像素图、同一个顶层里的窗口):先把要读的那一块拷出来。逐行从上往下合成时,
+        // 目标在源下面(或同一行靠右)的话,后面要读的源行已经被前面写过了 —— 结果得像「先读完源再写」。
+        if (src is ImageSource sharedSource && ReferenceEquals(sharedSource.Buffer, dst.Buffer))
+        {
+            src = sharedSource.Detach(new XRect(srcX, srcY, width, height));
+        }
+        if (mask is ImageSource sharedMask && ReferenceEquals(sharedMask.Buffer, dst.Buffer))
+        {
+            mask = sharedMask.Detach(new XRect(maskX, maskY, width, height));
+        }
         if (TryFastPath(op, src, mask, componentAlpha, dst, srcX, srcY, maskX, maskY, dstX, dstY, width, height, out XRect fastDirty))
         {
             return fastDirty;

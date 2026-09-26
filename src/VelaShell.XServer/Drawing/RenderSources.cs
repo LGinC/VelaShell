@@ -106,6 +106,19 @@ internal sealed class ImageSource(PixelBuffer buffer, int originX, int originY, 
 
     public PictFormat Format { get; } = format;
 
+    /// <summary>
+    /// 拷出一份不再与原缓冲共享的源:要读的只是 <paramref name="needed" />(picture 坐标)时只拷这一块,
+    /// 有变换或重复时整张拷(读哪里算不准)。源与目标是同一块缓冲时用 —— 合成要像「先读完源再写」。
+    /// </summary>
+    public ImageSource Detach(XRect needed)
+    {
+        XRect whole = new(0, 0, Width, Height);
+        XRect area = Transform is null && Repeat == RepeatNone ? needed.Intersect(whole) : whole;
+        PixelBuffer copy = new(Math.Max(1, area.Width), Math.Max(1, area.Height), Buffer.Depth);
+        PixelBuffer.CopyRect(Buffer, OriginX + area.X, OriginY + area.Y, copy, 0, 0, area.Width, area.Height);
+        return new ImageSource(copy, -area.X, -area.Y, Width, Height, Format) { Transform = Transform, Repeat = Repeat, Bilinear = Bilinear };
+    }
+
     private Argb Texel(int x, int y) =>
         Wrap(ref x, Width) && Wrap(ref y, Height) ? Format.Decode(Buffer.Get(OriginX + x, OriginY + y)) : default;
 

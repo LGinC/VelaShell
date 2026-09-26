@@ -177,4 +177,26 @@ public sealed class RenderTests
         XMessage badPicture = await c.RequestAsync(s.Major, 7, b => b.U32(0x123456));
         Assert.AreEqual(errorBase + 1, badPicture.Bytes[1]);
     }
+
+    [TestMethod]
+    public async Task 同一张picture往下错一行Composite到自己_结果像先读完源再写()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        (ushort R, ushort G, ushort B)[] rows = [(0xFFFF, 0, 0), (0, 0xFFFF, 0), (0, 0, 0xFFFF)];
+        for (int y = 0; y < rows.Length; y++)
+        {
+            (ushort r, ushort g, ushort b) = rows[y];
+            short row = (short)y;
+            await c.SendAsync(s.Major, 26, x => x.U8(1).U8(0).U8(0).U8(0).U32(s.Picture)
+                .U16(r).U16(g).U16(b).U16(0xFFFF).I16(0).I16(row).U16(10).U16(1));   // FillRectangles Src:红、绿、蓝三行
+        }
+        // Src,源 (0, 0) → 目标 (0, 1):整块往下挪一行。逐行从上往下做的话,第 2、3 行读到的是刚写进去的红。
+        await c.SendAsync(s.Major, 8, x => x.U8(1).U8(0).U8(0).U8(0).U32(s.Picture).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(0).I16(1).U16(10).U16(3));
+        await c.SyncAsync();
+        Assert.AreEqual(0xFF0000u, s.Pixel(5, 1));
+        Assert.AreEqual(0x00FF00u, s.Pixel(5, 2), "原来第 1 行的绿");
+        Assert.AreEqual(0x0000FFu, s.Pixel(5, 3), "原来第 2 行的蓝");
+    }
 }
