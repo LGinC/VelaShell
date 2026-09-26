@@ -171,4 +171,60 @@ public sealed class SyncGrabTests
         await b.SendAsync(27, 0, x => x.U32(0));   // UngrabPointer
         Assert.AreEqual(3, (await GrabPointerAsync(b, b.RootWindow, confineTo: child)).Detail, "confine-to 不可见:GrabNotViewable");
     }
+
+    /// <summary>收齐这段时间的 FocusIn / FocusOut / KeymapNotify,写成「in/out 窗口名 detail mode」与「keymap」。</summary>
+    private static async Task<List<string>> FocusTraceAsync(XTestClient c, Dictionary<uint, string> names)
+    {
+        string[] details = ["Ancestor", "Virtual", "Inferior", "Nonlinear", "NonlinearVirtual", "Pointer", "PointerRoot", "None"];
+        List<string> trace = [];
+        foreach (XMessage m in await DrainAsync(c, 9, 10, 11))
+        {
+            trace.Add(m.EventCode == 11
+                ? "keymap"
+                : $"{(m.EventCode == 9 ? "in" : "out")} {names[m.U32(4)]} {details[m.Detail]}{(m.Bytes[8] == 0 ? "" : " mode" + m.Bytes[8])}");
+        }
+        return trace;
+    }
+
+    private static void AssertTrace(string[] expected, List<string> actual) =>
+        CollectionAssert.AreEqual(expected, actual, string.Join(" | ", actual));
+
+    [TestMethod]
+    public async Task 焦点事件按上下级关系给detail_中间的窗口发虚拟事件_FocusIn之后跟KeymapNotify()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        const uint focusChange = 0x200000, keymapState = 0x4000;
+        uint top = await MapTopAsync(c, host, focusChange);
+        uint other = await MapTopAsync(c, host, focusChange);
+        uint child = c.NewId(), grandchild = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(top).I16(0).I16(0).U16(50).U16(50).U16(0).U16(1).U32(0).U32(0x800).U32(focusChange));
+        await c.SendAsync(1, 0, b => b.U32(grandchild).U32(child).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x800).U32(focusChange | keymapState));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        await c.SendAsync(8, 0, b => b.U32(grandchild));
+        Dictionary<uint, string> names = new() { [top] = "T", [other] = "O", [child] = "C", [grandchild] = "G" };
+        await DrainAsync(c, 9, 10, 11);
+
+        Task SetFocusAsync(uint window) => c.SendAsync(42, 2, b => b.U32(window).U32(0));   // SetInputFocus,revert-to Parent
+        // PointerRoot → G。指针在 (0, 0),落在最后映射的 O 里:旧焦点是 PointerRoot 时,从指针所在的窗口往上(连根)先发 Pointer;
+        // 然后 G 的根往下到 G 之前是 NonlinearVirtual,G 本身 Nonlinear。
+        await SetFocusAsync(grandchild);
+        AssertTrace(new[] { "out O Pointer", "in T NonlinearVirtual", "in C NonlinearVirtual", "in G Nonlinear", "keymap" }, await FocusTraceAsync(c, names));
+
+        await SetFocusAsync(child);        // G 是 C 的下级
+        AssertTrace(new[] { "out G Ancestor", "in C Inferior" }, await FocusTraceAsync(c, names));
+
+        await SetFocusAsync(grandchild);   // G 是 C 的下级,反过来
+        AssertTrace(new[] { "out C Inferior", "in G Ancestor", "keymap" }, await FocusTraceAsync(c, names));
+
+        await SetFocusAsync(other);        // 共同祖先是根:两边的中间窗口都是 NonlinearVirtual
+        AssertTrace(new[] { "out G Nonlinear", "out C NonlinearVirtual", "out T NonlinearVirtual", "in O Nonlinear" }, await FocusTraceAsync(c, names));
+
+        // 键盘抓取激活 / 解除:就像焦点从 O 移到抓取窗口 C、再移回来,mode 是 Grab(1)/ Ungrab(2)。
+        await c.RequestAsync(31, 0, b => b.U32(child).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));
+        AssertTrace(new[] { "out O Nonlinear mode1", "in T NonlinearVirtual mode1", "in C Nonlinear mode1" }, await FocusTraceAsync(c, names));
+        await c.SendAsync(32, 0, b => b.U32(0));   // UngrabKeyboard
+        AssertTrace(new[] { "out C Nonlinear mode2", "out T NonlinearVirtual mode2", "in O Nonlinear mode2" }, await FocusTraceAsync(c, names));
+    }
 }

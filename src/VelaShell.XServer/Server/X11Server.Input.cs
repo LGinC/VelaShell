@@ -592,11 +592,18 @@ public sealed partial class X11Server
         ushort state = State;
         int px = _pointerX, py = _pointerY;
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
-        DeliverToSelectors(window, mask, c => c.Event(code, detail, w => w
-            .U32(time).U32(Root.Id).U32(window.Id).U32(child)
-            .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state)
-            .U8(0)                                          // mode:Normal
-            .U8((byte)(0x02 | (focus ? 0x01 : 0)))));       // same-screen | focus
+        DeliverToSelectors(window, mask, c =>
+        {
+            c.Event(code, detail, w => w
+                .U32(time).U32(Root.Id).U32(window.Id).U32(child)
+                .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state)
+                .U8(0)                                          // mode:Normal
+                .U8((byte)(0x02 | (focus ? 0x01 : 0))));        // same-screen | focus
+            if (code == XEventCode.EnterNotify)
+            {
+                SendKeymapNotify(c, window);
+            }
+        });
     }
 
     // ================================================================== 键盘
@@ -775,17 +782,164 @@ public sealed partial class X11Server
         }
         _focus = focus;
         UpdateActiveWindow(old, focus);
-        const byte nonlinear = 3;
-        if (old is { IsRoot: false })
+        GenerateFocusEvents(old, focus, KeyboardGrab is null ? FocusModeNormal : FocusModeWhileGrabbed);
+    }
+
+    /// <summary>焦点事件的 mode(协议附录 B「FocusIn」)。</summary>
+    private const byte FocusModeNormal = 0, FocusModeGrab = 1, FocusModeUngrab = 2, FocusModeWhileGrabbed = 3;
+
+    /// <summary>
+    /// 焦点从 <paramref name="from" /> 移到 <paramref name="to" /> 时的 FocusOut / FocusIn,逐条照协议「Input Focus events」:
+    /// 按两个窗口的上下级关系分 Ancestor / Virtual / Inferior / Nonlinear / NonlinearVirtual,指针所在的那一支另发 Pointer,
+    /// 与 PointerRoot / None 之间的切换在根窗口上发 PointerRoot / None。null = None,<see cref="Root" /> = PointerRoot
+    /// (只有一块屏幕:「所有根窗口」就是它)。每个 FocusIn 之后紧跟 KeymapNotify。
+    /// </summary>
+    private void GenerateFocusEvents(XWindow? from, XWindow? to, byte mode)
+    {
+        const byte ancestor = 0, @virtual = 1, inferior = 2, nonlinear = 3, nonlinearVirtual = 4, pointer = 5, pointerRoot = 6, none = 7;
+        if (ReferenceEquals(from, to))
         {
-            DeliverToSelectors(old, XEventMask.FocusChange, c => c.Event(XEventCode.FocusOut, nonlinear, w => w.U32(old.Id).U8(0)));
-            SendXi2Crossing(XiFocusOut, old, nonlinear);
+            return;
         }
-        if (focus is { IsRoot: false })
+        XWindow p = _pointerWindow;
+        bool fromSpecial = from is null || from.IsRoot, toSpecial = to is null || to.IsRoot;
+        if (fromSpecial)
         {
-            DeliverToSelectors(focus, XEventMask.FocusChange, c => c.Event(XEventCode.FocusIn, nonlinear, w => w.U32(focus.Id).U8(0)));
-            SendXi2Crossing(XiFocusIn, focus, nonlinear);
+            // 从 PointerRoot / None 出来:旧的是 PointerRoot 时指针所在的那一支(连根)先发 Pointer。
+            if (from is not null)
+            {
+                FocusEach(false, UpFrom(p, null), pointer, mode);
+            }
+            Focus(false, Root, from is null ? none : pointerRoot, mode);
+            if (toSpecial)
+            {
+                Focus(true, Root, to is null ? none : pointerRoot, mode);
+                if (to is not null)
+                {
+                    FocusEach(true, DownTo(p, null), pointer, mode);
+                }
+                return;
+            }
+            XWindow a = to!;
+            FocusEach(true, DownTo(a.Parent!, null), nonlinearVirtual, mode);   // 从 A 的根往下,不含 A
+            Focus(true, a, nonlinear, mode);
+            if (p.IsDescendantOf(a))
+            {
+                FocusEach(true, DownTo(p, a), pointer, mode);
+            }
+            return;
         }
+        XWindow source = from!;
+        if (toSpecial)
+        {
+            if (p.IsDescendantOf(source))
+            {
+                FocusEach(false, UpFrom(p, source), pointer, mode);
+            }
+            Focus(false, source, nonlinear, mode);
+            FocusEach(false, UpFrom(source.Parent!, null), nonlinearVirtual, mode);   // A 以上直到根(含根)
+            Focus(true, Root, to is null ? none : pointerRoot, mode);
+            if (to is not null)
+            {
+                FocusEach(true, DownTo(p, null), pointer, mode);
+            }
+            return;
+        }
+        XWindow target = to!;
+        if (source.IsDescendantOf(target))
+        {
+            Focus(false, source, ancestor, mode);
+            FocusEach(false, UpFrom(source.Parent!, target), @virtual, mode);
+            Focus(true, target, inferior, mode);
+            if (p.IsDescendantOf(target) && !ReferenceEquals(p, source) && !p.IsDescendantOf(source) && !source.IsDescendantOf(p))
+            {
+                FocusEach(true, DownTo(p, target), pointer, mode);
+            }
+        }
+        else if (target.IsDescendantOf(source))
+        {
+            if (p.IsDescendantOf(source) && !ReferenceEquals(p, target) && !p.IsDescendantOf(target) && !target.IsDescendantOf(p))
+            {
+                FocusEach(false, UpFrom(p, source), pointer, mode);
+            }
+            Focus(false, source, inferior, mode);
+            FocusEach(true, DownTo(target.Parent!, source), @virtual, mode);
+            Focus(true, target, ancestor, mode);
+        }
+        else
+        {
+            XWindow common = CommonAncestor(source, target);
+            if (p.IsDescendantOf(source))
+            {
+                FocusEach(false, UpFrom(p, source), pointer, mode);
+            }
+            Focus(false, source, nonlinear, mode);
+            FocusEach(false, UpFrom(source.Parent!, common), nonlinearVirtual, mode);
+            FocusEach(true, DownTo(target.Parent!, common), nonlinearVirtual, mode);
+            Focus(true, target, nonlinear, mode);
+            if (p.IsDescendantOf(target))
+            {
+                FocusEach(true, DownTo(p, target), pointer, mode);
+            }
+        }
+    }
+
+    /// <summary>从 <paramref name="start" /> 往上,直到 <paramref name="stop" />(不含;null = 一直到根,含根)。</summary>
+    private static List<XWindow> UpFrom(XWindow start, XWindow? stop)
+    {
+        List<XWindow> path = [];
+        for (XWindow? w = start; w is not null && !ReferenceEquals(w, stop); w = w.Parent)
+        {
+            path.Add(w);
+        }
+        return path;
+    }
+
+    /// <summary><see cref="UpFrom" /> 倒过来:从上往下,到 <paramref name="end" /> 为止(含)。</summary>
+    private static List<XWindow> DownTo(XWindow end, XWindow? stop)
+    {
+        List<XWindow> path = UpFrom(end, stop);
+        path.Reverse();
+        return path;
+    }
+
+    private void FocusEach(bool focusIn, List<XWindow> windows, byte detail, byte mode)
+    {
+        foreach (XWindow w in windows)
+        {
+            Focus(focusIn, w, detail, mode);
+        }
+    }
+
+    /// <summary>一个 FocusIn / FocusOut(核心与 XI2);FocusIn 之后给同时选了 KeymapState 的客户端补一个 KeymapNotify。</summary>
+    private void Focus(bool focusIn, XWindow window, byte detail, byte mode)
+    {
+        byte code = focusIn ? XEventCode.FocusIn : XEventCode.FocusOut;
+        DeliverToSelectors(window, XEventMask.FocusChange, c =>
+        {
+            c.Event(code, detail, w => w.U32(window.Id).U8(mode));
+            if (focusIn)
+            {
+                SendKeymapNotify(c, window);
+            }
+        });
+        SendXi2Crossing(focusIn ? XiFocusIn : XiFocusOut, window, detail, mode);
+    }
+
+    /// <summary>
+    /// KeymapNotify(协议「KeymapNotify」):每个 EnterNotify 与 FocusIn 之后紧跟一个,发给在那个窗口上选了 KeymapState 的客户端。
+    /// 这个事件没有序号:第 0 字节是事件码,后 31 字节是键码 8–255 的按下位图(QueryKeymap 的格式,略去键码 0–7 那一字节)。
+    /// </summary>
+    private void SendKeymapNotify(XClient client, XWindow window)
+    {
+        if (!window.Selects(client, XEventMask.KeymapState))
+        {
+            return;
+        }
+        byte[] e = new byte[32];
+        e[0] = XEventCode.KeymapNotify;
+        Array.Copy(_keysDown, 1, e, 1, 31);
+        client.Send(e);
     }
 
     /// <summary>焦点窗口不可见了:按 revert-to 退回(None / PointerRoot / 最近的可见祖先)。</summary>

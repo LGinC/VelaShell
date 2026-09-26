@@ -64,7 +64,10 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>当前的键盘抓取。换掉时它冻结的设备随之解冻。</summary>
+    /// <summary>
+    /// 当前的键盘抓取。换掉时它冻结的设备随之解冻。抓取激活 / 解除时按协议「Input Focus events」发 mode 为 Grab / Ungrab 的
+    /// 焦点事件:「就像焦点从当前焦点移到抓取窗口」,解除时反过来(抓取窗口已经销毁了就不发)。
+    /// </summary>
     private ActiveGrab? KeyboardGrab
     {
         get => _keyboardGrab;
@@ -72,9 +75,21 @@ public sealed partial class X11Server
         {
             ActiveGrab? old = _keyboardGrab;
             _keyboardGrab = value;
-            if (old is not null && !ReferenceEquals(old, value))
+            if (ReferenceEquals(old, value))
+            {
+                return;
+            }
+            if (old is not null)
             {
                 ThawGrab(old);
+                if (ReferenceEquals(Lookup<XWindow>(old.Window.Id), old.Window))
+                {
+                    GenerateFocusEvents(old.Window, _focus, FocusModeUngrab);
+                }
+            }
+            if (value is not null)
+            {
+                GenerateFocusEvents(_focus, value.Window, FocusModeGrab);
             }
         }
     }
