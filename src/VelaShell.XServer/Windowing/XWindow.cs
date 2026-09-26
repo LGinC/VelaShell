@@ -222,6 +222,37 @@ internal sealed class XWindow : XResource
         return (x, y);
     }
 
+    /// <summary>嵌套层数:根为 0,顶层为 1,逐层加一。</summary>
+    public int Level
+    {
+        get
+        {
+            int level = 0;
+            for (XWindow? w = Parent; w is not null; w = w.Parent)
+            {
+                level++;
+            }
+            return level;
+        }
+    }
+
+    /// <summary>子树的高度:没有子窗口为 0,只有一层子窗口为 1。用显式栈走,不递归。</summary>
+    public int SubtreeHeight()
+    {
+        int height = 0;
+        Stack<(XWindow Window, int Depth)> pending = new();
+        pending.Push((this, 0));
+        while (pending.TryPop(out (XWindow Window, int Depth) item))
+        {
+            height = Math.Max(height, item.Depth);
+            foreach (XWindow child in item.Window.Children)
+            {
+                pending.Push((child, item.Depth + 1));
+            }
+        }
+        return height;
+    }
+
     /// <summary>是不是 <paramref name="ancestor" /> 的后代(不含自己)。</summary>
     public bool IsDescendantOf(XWindow ancestor)
     {

@@ -189,6 +189,27 @@ internal sealed class XTestClient : IAsyncDisposable
     /// <summary>发一条请求,返回它的序号。</summary>
     public async Task<ushort> SendAsync(byte opcode, byte data, Action<Body>? body = null, bool bigRequest = false)
     {
+        await _stream.WriteAsync(Encode(opcode, data, body, bigRequest));
+        await _stream.FlushAsync();
+        return ++_sequence;
+    }
+
+    /// <summary>一次写出一批请求(几万条的用例用,省掉每条一次 flush),返回最后一条的序号。</summary>
+    public async Task<ushort> SendManyAsync(IEnumerable<(byte Opcode, byte Data, Action<Body>? Body)> requests)
+    {
+        List<byte> batch = [];
+        foreach ((byte opcode, byte data, Action<Body>? body) in requests)
+        {
+            batch.AddRange(Encode(opcode, data, body, bigRequest: false));
+            _sequence++;
+        }
+        await _stream.WriteAsync(batch.ToArray());
+        await _stream.FlushAsync();
+        return _sequence;
+    }
+
+    private byte[] Encode(byte opcode, byte data, Action<Body>? body, bool bigRequest)
+    {
         Body b = new(BigEndian);
         body?.Invoke(b);
         b.Pad();
@@ -206,9 +227,7 @@ internal sealed class XTestClient : IAsyncDisposable
             request.AddRange(U16Bytes((ushort)((payload.Length + 4) / 4), BigEndian));
         }
         request.AddRange(payload);
-        await _stream.WriteAsync(request.ToArray());
-        await _stream.FlushAsync();
-        return ++_sequence;
+        return [.. request];
     }
 
     /// <summary>发请求并等它的回复(或错误)。</summary>

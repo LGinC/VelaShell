@@ -55,6 +55,9 @@ internal sealed class XClient : IDisposable
 
     public HashSet<uint> SaveSet { get; } = [];
 
+    /// <summary>这个客户端眼下拥有的窗口数(见 <c>X11Server.MaxWindowsPerClient</c>)。</summary>
+    public int WindowCount { get; set; }
+
     /// <summary>最近几条请求的「主.次」操作码(只在开了诊断日志时记),出错时一并打印,便于看出错前客户端在干什么。</summary>
     public Queue<string> RecentRequests { get; } = new();
 

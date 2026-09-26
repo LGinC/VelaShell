@@ -195,44 +195,55 @@ public sealed partial class X11Server
         {
             return;
         }
-        ExposeRecursive(top, region, region.Bounds, 0, 0);
+        ExposeSubtree(top, region);
         MarkDamage(top, region);
     }
 
-    /// <param name="w">要重画的窗口。</param>
+    /// <summary>
+    /// 先序走一遍子树:先画窗口自己(边框、背景、Expose),再按堆叠顺序从下到上走子窗口。
+    /// 显式栈、不递归 —— 一棵够深的树递归下去会把执行线程的栈压爆、整个进程退出。
+    /// </summary>
+    /// <param name="top">顶层窗口。</param>
     /// <param name="region">要重画的范围(缓冲坐标)。</param>
-    /// <param name="bounds"><paramref name="region" /> 的外接矩形。</param>
-    /// <param name="ix">窗口内区原点在缓冲里的 x(往下走时逐层累加)。</param>
-    /// <param name="iy">同上,y。</param>
-    private static void ExposeRecursive(XWindow w, Region region, XRect bounds, int ix, int iy)
+    private static void ExposeSubtree(XWindow top, Region region)
     {
-        if (!w.Mapped && !w.IsTopLevel)
+        XRect bounds = region.Bounds;
+        // 每项带着窗口内区原点在缓冲里的位置(往下走时逐层累加)。
+        Stack<(XWindow Window, int X, int Y)> pending = new();
+        pending.Push((top, 0, 0));
+        while (pending.TryPop(out (XWindow Window, int X, int Y) item))
         {
-            return;
-        }
-        if (!w.IsInputOnly)
-        {
-            if (!w.IsTopLevel && w.BorderWidth > 0)
-            {
-                Region border = VisibleOuter(w).Intersect(region).Subtract(InnerRect(w));
-                PaintBorder(w, border);
-            }
-            Region area = ClipByChildren(w).Intersect(region);
-            if (!area.IsEmpty)
-            {
-                PaintBackground(w, area);
-                SendExpose(w, area);
-            }
-        }
-        foreach (XWindow child in w.Children)
-        {
-            // 子窗口(连同它的整棵子树,都被裁在它的外框之内)与重画范围不相交:整棵跳过,不算它们的可见区域。
-            int cx = ix + child.X, cy = iy + child.Y, bw = child.BorderWidth;
-            if (new XRect(cx, cy, child.Width + (2 * bw), child.Height + (2 * bw)).Intersect(bounds).IsEmpty)
+            XWindow w = item.Window;
+            if (!w.Mapped && !w.IsTopLevel)
             {
                 continue;
             }
-            ExposeRecursive(child, region, bounds, cx + bw, cy + bw);
+            if (!w.IsInputOnly)
+            {
+                if (!w.IsTopLevel && w.BorderWidth > 0)
+                {
+                    Region border = VisibleOuter(w).Intersect(region).Subtract(InnerRect(w));
+                    PaintBorder(w, border);
+                }
+                Region area = ClipByChildren(w).Intersect(region);
+                if (!area.IsEmpty)
+                {
+                    PaintBackground(w, area);
+                    SendExpose(w, area);
+                }
+            }
+            // 倒着压栈,出栈时就是从下到上。
+            for (int i = w.Children.Count - 1; i >= 0; i--)
+            {
+                // 子窗口(连同它的整棵子树,都被裁在它的外框之内)与重画范围不相交:整棵跳过,不算它们的可见区域。
+                XWindow child = w.Children[i];
+                int cx = item.X + child.X, cy = item.Y + child.Y, bw = child.BorderWidth;
+                if (new XRect(cx, cy, child.Width + (2 * bw), child.Height + (2 * bw)).Intersect(bounds).IsEmpty)
+                {
+                    continue;
+                }
+                pending.Push((child, cx + bw, cy + bw));
+            }
         }
     }
 

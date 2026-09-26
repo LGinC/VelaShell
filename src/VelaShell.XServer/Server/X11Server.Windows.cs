@@ -18,6 +18,15 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
+    /// <summary>
+    /// 窗口嵌套层数上限(顶层为 1)。协议没有规定上限,但逐层往上走的可见区域计算每条绘图请求都要做一遍,
+    /// 无限嵌套就能把执行线程拖住;真实程序里嵌套最深的 Xt / Motif 也不过几十层。超出回 BadAlloc(协议允许任何请求回 Alloc)。
+    /// </summary>
+    internal const int MaxWindowDepth = 256;
+
+    /// <summary>每个客户端同时拥有的窗口数上限。每个窗口都带着几张事件 / 属性 / 抓取表,不设上限一个客户端就能把内存吃光。</summary>
+    internal const int MaxWindowsPerClient = 32768;
+
     private void CreateWindow(XClient c, XRequestReader r)
     {
         byte depth = r.Data;
@@ -43,6 +52,10 @@ public sealed partial class X11Server
         if (cls == 1 && parent.IsInputOnly)
         {
             throw new XProtocolError(XErrorCode.Match);
+        }
+        if (c.WindowCount >= MaxWindowsPerClient || parent.Level >= MaxWindowDepth)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
         }
 
         XWindow window = new(id, c, parent)
@@ -79,6 +92,7 @@ public sealed partial class X11Server
 
         ApplyWindowAttributes(c, window, mask, r);
         AddResource(c, window);
+        c.WindowCount++;
         parent.Children.Add(window);
         InvalidateVisibility();
 
@@ -245,15 +259,37 @@ public sealed partial class X11Server
         UpdatePointerWindow();
     }
 
-    /// <summary>从最深的后代开始逐个发 DestroyNotify 并释放(协议规定:先下级后上级)。</summary>
+    /// <summary>
+    /// 从最深的后代开始逐个发 DestroyNotify 并释放(协议规定:先下级后上级)。显式栈做后序遍历、不递归 ——
+    /// 客户端断开时的清理也走这里,递归的话一棵够深的树就能把执行线程的栈压爆、整个进程退出。
+    /// 顺序与递归写法相同:兄弟按堆叠顺序从下到上,每个子窗口的子表在轮到它时才取。
+    /// </summary>
     private void DestroyTree(XWindow window)
     {
-        foreach (XWindow child in window.Children.ToArray())
+        Stack<(XWindow Window, XWindow[] Children, int Next)> pending = new();
+        pending.Push((window, [.. window.Children], 0));
+        while (pending.TryPop(out (XWindow Window, XWindow[] Children, int Next) item))
         {
-            DestroyTree(child);
+            if (item.Next < item.Children.Length)
+            {
+                pending.Push(item with { Next = item.Next + 1 });
+                XWindow child = item.Children[item.Next];
+                pending.Push((child, [.. child.Children], 0));
+                continue;
+            }
+            DestroyOne(item.Window);
         }
+    }
+
+    /// <summary>销毁一个窗口本身(它的后代已经销毁过了)。</summary>
+    private void DestroyOne(XWindow window)
+    {
         DeliverStructure(window, XEventCode.DestroyNotify, 0, w => w.U32(window.Id));
         _resources.Remove(window.Id);
+        if (window.Owner is { } creator)
+        {
+            creator.WindowCount--;
+        }
         foreach (Extension extension in _extensionList)
         {
             extension.WindowDestroyed?.Invoke(window);
@@ -583,6 +619,10 @@ public sealed partial class X11Server
         if (!window.IsInputOnly && parent.IsInputOnly)
         {
             throw new XProtocolError(XErrorCode.Match);
+        }
+        if (parent.Level + 1 + window.SubtreeHeight() > MaxWindowDepth)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 挪过去整棵子树就超过嵌套上限了
         }
         bool wasMapped = window.Mapped;
         if (wasMapped)
