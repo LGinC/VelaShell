@@ -181,4 +181,37 @@ public sealed class RobustnessTests
         await c.RequestAsync(8, 0, b => b.U32(0x7FFFFF));
         Assert.IsTrue(lines.Any(l => l.Contains("more log lines were not written", StringComparison.Ordinal)), "补一行没记的有几条");
     }
+
+    [TestMethod]
+    public async Task 像素图超过像素上限回BadAlloc_顶层缓冲只保留上限之内的一块()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+
+        // 32767² 的像素图:一块就是 4 GB。
+        XMessage pixmap = await c.RequestAsync(53, 24, b => b.U32(c.NewId()).U32(c.RootWindow).U16(32767).U16(32767));
+        Assert.IsTrue(pixmap.IsError);
+        Assert.AreEqual(BadAlloc, pixmap.Detail);
+
+        // 32767² 的顶层窗口照样建、照样映射(协议允许),缓冲只保留上限之内的一块。
+        uint top = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(top).U32(c.RootWindow).I16(0).I16(0).U16(32767).U16(32767).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        (int w, int h) = (0, 0);
+        Assert.IsTrue(host.Mapped[top].ReadPixels((_, width, height) => (w, h) = (width, height)));
+        Assert.AreEqual(32767, w);
+        Assert.IsLessThanOrEqualTo(VelaShell.XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
+
+        // 把一个小顶层配置成 32767²:同样削到上限之内。
+        uint small = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(small).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(small));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(small));
+        await c.SendAsync(12, 0, b => b.U32(small).U16(0x0C).U16(0).U32(32767).U32(32767));   // ConfigureWindow 宽、高
+        await c.SyncAsync();
+        Assert.IsTrue(host.Mapped[small].ReadPixels((_, width, height) => (w, h) = (width, height)));
+        Assert.IsLessThanOrEqualTo(VelaShell.XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
+    }
 }

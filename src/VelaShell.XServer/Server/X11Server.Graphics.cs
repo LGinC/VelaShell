@@ -55,6 +55,10 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, depth);
         }
+        if ((long)width * height > PixelBuffer.MaxPixels)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 65535² 一块就是 16 GB
+        }
         AddResource(c, new XPixmap(id, c, width, height, depth));
     }
 
