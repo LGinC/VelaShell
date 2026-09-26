@@ -649,4 +649,25 @@ public sealed class GlxTests
         Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
         Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有 BadImplementation");
     }
+
+    [TestMethod]
+    public async Task RenderMode只在之前是反馈或选择模式时回复()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint render = 0x1C00, feedback = 0x1C01;
+
+        ushort toFeedback = await c.SendAsync(glx, 107, b => b.U32(tag).U32(feedback));   // 之前是渲染模式:没有回复
+        await c.SyncAsync();
+        Assert.IsFalse(await c.NextAsync(m => m.Sequence == toFeedback, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有回复");
+
+        XMessage back = await c.RequestAsync(glx, 107, b => b.U32(tag).U32(render));        // 之前是反馈模式:有回复
+        Assert.IsTrue(back.IsReply);
+        Assert.AreEqual(0u, back.U32(12), "n = 0:反馈不实现");
+        Assert.AreEqual(render, back.U32(16), "new mode");
+    }
 }

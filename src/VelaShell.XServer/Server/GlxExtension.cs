@@ -872,6 +872,8 @@ internal sealed class GlxExtension(X11Server server)
                     uint previous = gl.RenderModeValue;
                     uint mode = r.U32();
                     int result = gl.RenderMode(mode);
+                    // GLX 协议规范 1.3 §2.2.1「RenderMode」:之前在反馈 / 选择模式才有回复(返回值、n、新模式、数据);
+                    // 「之前在渲染模式时没有回复」。选择 / 反馈不实现,n 恒为 0。
                     if (previous != GlEnum.RENDER)
                     {
                         uint current = gl.RenderModeValue;
