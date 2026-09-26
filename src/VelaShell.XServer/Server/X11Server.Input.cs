@@ -55,7 +55,7 @@ public sealed partial class X11Server
         NoteUserActivity();
         // 根坐标在注入的那一刻算好:指针冻着时事件排队,之后窗口可能挪了。
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
-        ProcessPointerInput(() => MovePointer(rootX, rootY));
+        ProcessPointerInput(() => MovePointer(rootX, rootY), motion: true);
     }
 
     private void ApplyPointerButton(XWindow top, int x, int y, int button, bool pressed)

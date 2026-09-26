@@ -45,9 +45,25 @@ public sealed partial class X11Server
     /// <summary>引起键盘冻结、可被 ReplayKeyboard 重放的按键按下。</summary>
     private (byte Keycode, XWindow GrabWindow)? _keyboardReplay;
 
-    private readonly Queue<Action> _pointerQueue = new();
-    private readonly Queue<Action> _keyboardQueue = new();
+    /// <summary>
+    /// 冻结期间排着的设备事件,指针与键盘排在同一个队列里、按到达的先后 —— 两个设备都放行时按原来的相对顺序处理。
+    /// 冻结是按设备的:某个设备冻着时,另一个设备排在它后面的事件照样可以先走。
+    /// </summary>
+    private readonly List<(bool Pointer, bool Motion, Action Input)> _frozenInput = [];
+
+    /// <summary>
+    /// 排着的事件上限。客户端抓着不放(一直不 AllowEvents)时宿主的输入一直进来:满了先丢最早的一个移动,
+    /// 全是按键 / 按钮时丢新来的。
+    /// </summary>
+    internal const int MaxFrozenInput = 4096;
+
+    /// <summary>放行之后一个工作项最多回放这么多个事件,余下的排到下一个工作项 —— 中间客户端的请求(下一个 AllowEvents)能插进来。</summary>
+    private const int DrainBatch = 64;
+
     private bool _drainScheduled;
+
+    /// <summary>排着的事件数(测试用)。</summary>
+    internal int FrozenInputCount => _frozenInput.Count;
 
     /// <summary>当前的指针抓取。换掉(解除或被别的抓取取代)时,它冻结的设备随之解冻。</summary>
     private ActiveGrab? PointerGrab
@@ -96,32 +112,45 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 入口:设备事件按冻结状态排队
 
-    /// <summary>一个指针事件(移动、按钮、离开):指针冻着、或前面还有排着的,就排队;否则立即处理。</summary>
-    private void ProcessPointerInput(Action input)
-    {
-        if (_pointerFrozenBy is not null || _pointerQueue.Count > 0)
-        {
-            _pointerQueue.Enqueue(input);
-            return;
-        }
-        input();
-    }
+    /// <summary>一个指针事件(移动、按钮、离开):见 <see cref="ProcessInput" />。</summary>
+    private void ProcessPointerInput(Action input, bool motion = false) => ProcessInput(pointer: true, motion, input);
 
-    /// <summary>一个键盘事件:同上。</summary>
-    private void ProcessKeyboardInput(Action input)
+    /// <summary>一个键盘事件:见 <see cref="ProcessInput" />。</summary>
+    private void ProcessKeyboardInput(Action input) => ProcessInput(pointer: false, motion: false, input);
+
+    private bool IsFrozen(bool pointer) => pointer ? _pointerFrozenBy is not null : _keyboardFrozenBy is not null;
+
+    /// <summary>
+    /// 设备冻着、或者前面还排着这个设备的事件、或者排着已经可以走的事件(回放还没做完)时排队,否则立即处理 —— 保证先来的先处理。
+    /// </summary>
+    private void ProcessInput(bool pointer, bool motion, Action input)
     {
-        if (_keyboardFrozenBy is not null || _keyboardQueue.Count > 0)
+        bool frozen = IsFrozen(pointer);
+        if (!frozen && !_frozenInput.Exists(e => e.Pointer == pointer || !IsFrozen(e.Pointer)))
         {
-            _keyboardQueue.Enqueue(input);
+            input();
             return;
         }
-        input();
+        if (_frozenInput.Count >= MaxFrozenInput)
+        {
+            int oldestMotion = _frozenInput.FindIndex(e => e.Motion);
+            if (oldestMotion < 0)
+            {
+                return;   // 全是按键 / 按钮:丢新来的
+            }
+            _frozenInput.RemoveAt(oldestMotion);   // 移动带的是绝对位置,丢掉中间的一个只是轨迹少一个点
+        }
+        _frozenInput.Add((pointer, motion, input));
+        if (!frozen)
+        {
+            ScheduleDrain();
+        }
     }
 
     /// <summary>解冻之后排着的事件在执行线程的下一个工作项里处理 —— 不在当前事件处理的半途插进去。</summary>
     private void ScheduleDrain()
     {
-        if (_drainScheduled || (_pointerQueue.Count == 0 && _keyboardQueue.Count == 0))
+        if (_drainScheduled || !_frozenInput.Exists(e => !IsFrozen(e.Pointer)))
         {
             return;
         }
@@ -129,24 +158,22 @@ public sealed partial class X11Server
         Post(null, DrainFrozenQueues);
     }
 
+    /// <summary>按到达的先后回放没冻着的设备的事件;回放的事件可能又把设备冻上(Sync 放行)。一次最多 <see cref="DrainBatch" /> 个。</summary>
     private void DrainFrozenQueues()
     {
         _drainScheduled = false;
-        bool progressed = true;
-        while (progressed)
+        for (int budget = DrainBatch; budget > 0; budget--)
         {
-            progressed = false;
-            if (_pointerFrozenBy is null && _pointerQueue.TryDequeue(out Action? pointer))
+            int index = _frozenInput.FindIndex(e => !IsFrozen(e.Pointer));
+            if (index < 0)
             {
-                pointer();
-                progressed = true;
+                return;
             }
-            if (_keyboardFrozenBy is null && _keyboardQueue.TryDequeue(out Action? keyboard))
-            {
-                keyboard();
-                progressed = true;
-            }
+            Action input = _frozenInput[index].Input;
+            _frozenInput.RemoveAt(index);
+            input();
         }
+        ScheduleDrain();
     }
 
     // ------------------------------------------------------------------ 冻结与解冻

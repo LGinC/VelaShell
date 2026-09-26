@@ -95,7 +95,7 @@ public sealed partial class X11Server
             }
             else
             {
-                ProcessPointerInput(inject);
+                ProcessPointerInput(inject, motion: type == XEventCode.MotionNotify);
             }
         }
 

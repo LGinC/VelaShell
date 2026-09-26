@@ -227,4 +227,34 @@ public sealed class SyncGrabTests
         await c.SendAsync(32, 0, b => b.U32(0));   // UngrabKeyboard
         AssertTrace(new[] { "out C Nonlinear mode2", "out T NonlinearVirtual mode2", "in O Nonlinear mode2" }, await FocusTraceAsync(c, names));
     }
+
+    [TestMethod]
+    public async Task 两个设备都冻着时排着的事件放行后按原来的先后_排队有上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        XTopLevelWindow handle = host.Mapped[top];
+        await c.RequestAsync(31, 0, b => b.U32(top).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));                        // GrabKeyboard
+        await c.RequestAsync(26, 0, b => b.U32(top).U16(0x40).U8(Synchronous).U8(Synchronous).U32(0).U32(0).U32(0));        // GrabPointer:两个都冻上
+
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectPointerMotion(handle, 10, 10);
+        server.InjectKey(XKeycodes.A, pressed: false);
+        Assert.IsEmpty(await DrainAsync(c, KeyPress, KeyRelease, MotionNotify), "冻着:一条都不发");
+
+        await c.SendAsync(35, 6, b => b.U32(0));   // AllowEvents AsyncBoth
+        List<XMessage> events = await DrainAsync(c, KeyPress, KeyRelease, MotionNotify);
+        CollectionAssert.AreEqual(new byte[] { KeyPress, MotionNotify, KeyRelease }, events.Select(e => e.EventCode).ToArray(),
+            "按键、移动、松开:按到达的先后,不是两个设备各走各的");
+
+        // 再冻上,宿主不停地移动:排着的事件有上限。
+        await c.RequestAsync(26, 0, b => b.U32(top).U16(0x40).U8(Synchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
+        for (int i = 0; i < X11Server.MaxFrozenInput + 500; i++)
+        {
+            server.InjectPointerMotion(handle, i % 90, 5);
+        }
+        Assert.AreEqual(X11Server.MaxFrozenInput, await server.InvokeAsync(() => server.FrozenInputCount));
+    }
 }
