@@ -306,4 +306,29 @@ public sealed class WindowAndDrawingTests
         XMessage pointer = await c.RequestAsync(38, 0, b => b.U32(c.RootWindow));   // QueryPointer
         Assert.AreEqual(0, pointer.U16(24) & 0x100, "Button1 松开了");
     }
+
+    [TestMethod]
+    public async Task CirculateNotify的place在第16字节()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint parent, _) = await MapWindowAsync(c, host, 0, 0x80000);   // SubstructureNotify
+        uint lower = c.NewId(), upper = c.NewId();
+        foreach (uint child in (uint[])[lower, upper])
+        {
+            await c.SendAsync(1, 0, b => b.U32(child).U32(parent).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+            await c.SendAsync(8, 0, b => b.U32(child));
+        }
+
+        await c.SendAsync(13, 1, b => b.U32(parent));   // CirculateWindow LowerHighest:最上面的 upper 沉到底
+        XMessage lowered = await c.NextEventAsync(26);
+        Assert.AreEqual(parent, lowered.U32(4), "event");
+        Assert.AreEqual(upper, lowered.U32(8), "window");
+        Assert.AreEqual(1, lowered.Bytes[16], "place = Bottom");
+
+        await c.SendAsync(13, 0, b => b.U32(parent));   // RaiseLowest:又浮上来
+        XMessage raised = await c.NextEventAsync(26);
+        Assert.AreEqual(0, raised.Bytes[16], "place = Top");
+    }
 }

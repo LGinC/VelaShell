@@ -601,7 +601,8 @@ public sealed partial class X11Server
             window.Children.Insert(0, moving);
         }
         InvalidateVisibility();
-        DeliverStructure(moving, XEventCode.CirculateNotify, 0, w => w.U32(moving.Id).U32(0).Zero(4).U8(direction == 0 ? (byte)0 : (byte)1));
+        // 附录 B:event、window、4 字节不用,place 在第 16 字节(Top 0、Bottom 1)。
+        DeliverStructure(moving, XEventCode.CirculateNotify, 0, w => w.U32(moving.Id).U32(0).U8(direction == 0 ? (byte)0 : (byte)1));
         if (moving.TopLevel is { } top && !moving.IsTopLevel)
         {
             ExposeWindowTree(top, VisibleOuter(moving));
