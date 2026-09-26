@@ -159,7 +159,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VelaShell.Core\VelaShell.Core.csproj" />
-    <ProjectReference Include="..\VelaShell.Terminal\VelaShell.Terminal.csproj" />
     <ProjectReference Include="..\VelaShell.Presentation\VelaShell.Presentation.csproj" />
     <ProjectReference Include="..\VelaShell.Controls\VelaShell.Controls.csproj" />
     <ProjectReference Include="..\VelaShell.Infrastructure\VelaShell.Infrastructure.csproj" />

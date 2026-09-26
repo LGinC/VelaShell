@@ -132,11 +132,9 @@ graph RL
 
     App --> Pres
     App --> Ctrls
-    App --> Term
     App --> Infra
     App --> Host
     Pres --> Term
-    Pres --> Core
     Term --> Core
     Infra --> Core
     Infra --> Ssh
@@ -1080,7 +1078,7 @@ X11 选项一律 `BestEffort = true`,失败原因取自 `SshShell.X11SetupFailur
 
 **二、基准**:`scripts/xserver/bench/bench.cs` 新增三个场景;整窗 PutImage 的 CPU 时间降约一成,宿主那一半没有量化数字。
 
-**三、其余发现**:去重后 32 项,未修,分 A–E 五组整体登记在 `feature-plan.md`「内置 X 服务端（VelaShell.XServer）全库审查的待修项」。
+**三、其余发现**:去重后 32 项,本节未修,分 A–E 五组整体登记在 `feature-plan.md`「内置 X 服务端（VelaShell.XServer）全库审查的待修项」。其中 `XTopLevelWindow` 跨线程读到撕裂几何那一项随 §116 的 `XTopLevelSnapshot` 修掉(09-26 复核),其余 31 项仍在。
 
 **四、验证**:XServer.Tests 在 Windows 与 Linux 容器全绿(新增 `ImageTests`,此前 PutImage 没有像素用例),真实客户端零协议错误;分数缩放下小块有无接缝没实机看过。文档:`xserver/design/architecture.md` §5、§6、§10。
 
