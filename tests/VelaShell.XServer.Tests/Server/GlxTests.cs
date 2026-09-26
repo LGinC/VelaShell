@@ -576,4 +576,27 @@ public sealed class GlxTests
         XMessage made = await c.RequestAsync(glx, 5, b => b.U32(window).U32(context).U32(0));
         Assert.IsTrue(made.IsReply, "上一次失败没有把上下文挂在一个看不见的标签上:这次照常成为当前");
     }
+
+    [TestMethod]
+    public async Task 声明了的GL_EXT_abgr真能用_DrawPixels与ReadPixels按ABGR排分量()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint abgr = 0x8000;
+
+        // 一个像素:A = FF、B = 30、G = 20、R = 10。
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(34, b => F(b, -1, -1))
+            .Add(173, b => b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(4).I32(1).I32(1).U32(abgr).U32(UnsignedByte)
+                .Bytes([0xFF, 0x30, 0x20, 0x10])));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag), "ABGR 是认识的格式");
+        XMessage rgba = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        CollectionAssert.AreEqual(new byte[] { 0x10, 0x20, 0x30, 0xFF }, rgba.Bytes[32..36]);
+        XMessage back = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(abgr).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        CollectionAssert.AreEqual(new byte[] { 0xFF, 0x30, 0x20, 0x10 }, back.Bytes[32..36]);
+    }
 }

@@ -171,7 +171,7 @@ internal sealed partial class GlContext
     /// <summary>格式里的元素个数(Table A.2);不认识的返回 0。</summary>
     private static int FormatElements(uint format) => format switch
     {
-        GlEnum.RGBA or GlEnum.BGRA => 4,
+        GlEnum.RGBA or GlEnum.BGRA or GlEnum.ABGR_EXT => 4,
         GlEnum.RGB or GlEnum.BGR => 3,
         GlEnum.LUMINANCE_ALPHA => 2,
         GlEnum.COLOR_INDEX or GlEnum.STENCIL_INDEX or GlEnum.DEPTH_COMPONENT or GlEnum.RED or GlEnum.GREEN or GlEnum.BLUE
@@ -328,6 +328,7 @@ internal sealed partial class GlContext
         GlEnum.RGBA => new Vector4(c[0], c[1], c[2], c[3]),
         GlEnum.RGB => new Vector4(c[0], c[1], c[2], 1),
         GlEnum.BGRA => new Vector4(c[2], c[1], c[0], c[3]),
+        GlEnum.ABGR_EXT => new Vector4(c[3], c[2], c[1], c[0]),   // GL_EXT_abgr:分量次序 A、B、G、R
         GlEnum.BGR => new Vector4(c[2], c[1], c[0], 1),
         GlEnum.RED => new Vector4(c[0], 0, 0, 1),
         GlEnum.GREEN => new Vector4(0, c[0], 0, 1),
@@ -920,6 +921,9 @@ internal sealed partial class GlContext
                 break;
             case GlEnum.BGRA:
                 (o[0], o[1], o[2], o[3]) = (c.Z, c.Y, c.X, c.W);
+                break;
+            case GlEnum.ABGR_EXT:
+                (o[0], o[1], o[2], o[3]) = (c.W, c.Z, c.Y, c.X);
                 break;
             case GlEnum.BGR:
                 (o[0], o[1], o[2]) = (c.Z, c.Y, c.X);
