@@ -48,7 +48,7 @@
 | 09-17 ~ 09-21 | §78 – §90 | 冷启动与 Defender、出站代理规约、SIMD 调研、资源管理器置顶、指纹变更弹窗、Xshell 外部拉起、Ed25519 / ECDSA、AI 面板卡顿 |
 | 09-22 ~ 09-23 | §91 – §103 | 换成 VelaShell.Ssh 并并入本仓库、Agent / X11 / 压缩、自动加钥、agent 转发限定、VelaShell.XServer M1 – M2 |
 | 09-23 ~ 09-24 | §104 – §113 | XServer 功能完备与 M3（接入宿主）、AltGr、M4（GLX 等）、键盘布局、SSH 库三批全库审查与主机证书 |
-| 09-25 ~ 09-26 | §114 – §122 | XServer 审查与渲染路径、SSH 库 API 规范、窗口外框跨平台适配、状态栏对齐、CI 行尾 |
+| 09-25 ~ 09-26 | §114 – §123 | XServer 审查与渲染路径、SSH 库 API 规范、窗口外框跨平台适配、状态栏对齐、CI 行尾、软换行长行复制 |
 
 ## 📈 阶段脉络
 
@@ -1161,3 +1161,13 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 §121 之后 CI 剩两条红用例，都与行尾无关，只改测试：
 - macOS：`TunnelPanelUiTests` 的帮助对话框用例写死了 §118 之前的 `WindowDecorations.None`，改为按 `WindowChrome.PlatformOf(dialog)` 取期望值。
 - Windows：`StatusBarViewModelTests.StartUptimeTimer_UpdatesUptimeProperty` 靠真实时钟，runner 忙就红；改注入 `ISequencer`、用 `VirtualClock` 手动推进并断言精确值。
+
+## ✅ 123. 2026-09-26 复制被自动换行折开的长行，粘出来成了好几行（#517）
+
+**一、现象**：`cat` 出一行 RSA 公钥，在终端里选中复制，粘到文件里变成多行；别的终端复制同一段再粘进 VelaShell 没问题，所以坏在复制。
+
+**二、原因**：引擎在自动换行时本就给行打了 `TerminalRow.Wrapped`（改列宽重排靠它），但 `VelaTerminalControl.AppendSpanText` 不看这个标志，每个物理行后面都补一个 `\n`。双击选词、「保存输出到文件」（`GetBufferText`）同样只按物理行走：前者选不全跨行的长词，后者导出的文件同样断行。
+
+**三、做法**：三处都按逻辑行走。线性选区遇到 `Wrapped` 行就接着拼、不断行；折行处显式写入的空格是行中间的内容，不受「去除尾部空格」影响；宽字符在末列放不下、挪到下一行后留在末列的空位不当成空格。块选照旧逐行断开。双击选词在行首 / 行尾沿软换行继续向上 / 向下找；导出缓冲区逐逻辑行去尾空格。
+
+**四、验证**：新增 `SoftWrapCopyTests` 7 条（headless 真事件），其中 5 条在改前的代码上失败；另 2 条（恰好写满一行再显式换行、块选）锁住不该变的行为。`VelaShell.Terminal.Tests` 512 条全过，整个解决方案构建 0 警告。
