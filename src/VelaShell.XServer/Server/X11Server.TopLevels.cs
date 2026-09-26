@@ -104,7 +104,7 @@ public sealed partial class X11Server
             ClassName = className,
             OverrideRedirect = top.OverrideRedirect,
             TransientFor = transientFor,
-            SupportsDeleteWindow = SupportsDeleteWindow(top),
+            SupportsDeleteWindow = SupportsProtocol(top, _wmDeleteWindowAtom),
             HasAlpha = top.Depth == 32,
             Shape = shape,
         };
@@ -156,10 +156,17 @@ public sealed partial class X11Server
         return changes;
     }
 
-    /// <summary>客户端在 WM_PROTOCOLS 里声明了 WM_DELETE_WINDOW。</summary>
-    private bool SupportsDeleteWindow(XWindow top) =>
+    /// <summary>客户端在 WM_PROTOCOLS 里声明了这个协议(WM_DELETE_WINDOW、WM_TAKE_FOCUS)。</summary>
+    private bool SupportsProtocol(XWindow top, uint protocol) =>
         top.Properties.TryGetValue(_wmProtocolsAtom, out XProperty? p) && p.Format == 32
-        && MemoryMarshal.Cast<byte, uint>(p.Data.AsSpan(0, p.Data.Length & ~3)).Contains(_wmDeleteWindowAtom);
+        && MemoryMarshal.Cast<byte, uint>(p.Data.AsSpan(0, p.Data.Length & ~3)).Contains(protocol);
+
+    /// <summary>WM_HINTS 的 input 字段(ICCCM §4.1.2.4);没给(flags 里没有 InputHint)时按 True 算。</summary>
+    private static bool AcceptsInputHint(XWindow top)
+    {
+        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints));
+        return hints.Length < 2 || (hints[0] & 1) == 0 || hints[1] != 0;
+    }
 
     /// <summary>把这一批攒下的损伤一次性交给宿主(每个顶层合并成一组矩形)。</summary>
     private void FlushDamage()
@@ -181,7 +188,12 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 宿主作为窗口管理器的动作(见 X11Server.cs 的公开方法)
 
-    /// <summary>键盘焦点给 <paramref name="top" />;null = 所有顶层都失去焦点(焦点 None)。</summary>
+    /// <summary>
+    /// 键盘焦点给 <paramref name="top" />;null = 所有顶层都失去焦点(焦点 None)。按 ICCCM §4.1.7 的四种输入模型:
+    /// WM_HINTS.input 为 True(Passive、Locally Active)时由窗口管理器 SetInputFocus;声明了 WM_TAKE_FOCUS(Locally Active、
+    /// Globally Active)时发 WM_TAKE_FOCUS,由客户端自己决定焦点给哪个窗口;两样都没有(No Input)什么也不做。
+    /// override-redirect 窗口不归窗口管理器管(弹出菜单、提示框自己抓键盘),宿主激活了它的原生窗口也不动焦点。
+    /// </summary>
     private void ApplyFocus(XWindow? top)
     {
         if (top is null)
@@ -189,10 +201,20 @@ public sealed partial class X11Server
             SetFocus(null, 0);
             return;
         }
-        if (top.IsViewable && (_focus is null || ReferenceEquals(_focus, Root) || !ReferenceEquals(_focus.TopLevel, top)))
+        if (top.OverrideRedirect || !top.IsViewable)
+        {
+            return;
+        }
+        if (AcceptsInputHint(top) && (_focus is null || ReferenceEquals(_focus, Root) || !ReferenceEquals(_focus.TopLevel, top)))
         {
             // 与窗口管理器的做法一致:把焦点给顶层,revert-to PointerRoot。客户端之后可以自己把焦点挪到子窗口。
             SetFocus(top, 1);
+        }
+        if (SupportsProtocol(top, _wmTakeFocusAtom) && top.Owner is { Closed: false } owner)
+        {
+            // ICCCM §4.2.8:ClientMessage,类型 WM_PROTOCOLS,data[0] = WM_TAKE_FOCUS,data[1] 是一个有效的时间戳(不是 CurrentTime)。
+            uint time = Math.Max(1u, Now);
+            owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(time).Zero(12), sent: true);
         }
     }
 
@@ -229,7 +251,7 @@ public sealed partial class X11Server
         {
             return;
         }
-        if (SupportsDeleteWindow(top))
+        if (SupportsProtocol(top, _wmDeleteWindowAtom))
         {
             uint time = Now;
             owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmDeleteWindowAtom).U32(time).Zero(12), sent: true);

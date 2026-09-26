@@ -160,4 +160,55 @@ public sealed class EwmhTests
         Assert.AreEqual(top, p.U32(32));
         await host.WaitForAsync(() => (host.Mapped[top].Snapshot.States & XWindowStates.Focused) != 0);
     }
+
+    [TestMethod]
+    public async Task FocusTopLevel按ICCCM的输入模型_不动override_redirect与不收输入的窗口_WM_TAKE_FOCUS发给声明了它的客户端()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint protocols = await InternAsync(c, "WM_PROTOCOLS"), takeFocus = await InternAsync(c, "WM_TAKE_FOCUS");
+        const uint wmHints = 35, atom = 4;
+
+        async Task<(uint Window, XTopLevelWindow Handle)> MapAsync(bool overrideRedirect, bool? input, bool takesFocus)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, b => b.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0)
+                .U32(0x200).U32(overrideRedirect ? 1u : 0));
+            if (input is { } value)
+            {
+                await SetCard32Async(c, id, wmHints, wmHints, 1, value ? 1u : 0, 0, 0, 0, 0, 0, 0, 0);   // flags = InputHint
+            }
+            if (takesFocus)
+            {
+                await SetCard32Async(c, id, protocols, atom, takeFocus);
+            }
+            await c.SendAsync(8, 0, b => b.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return (id, host.Mapped[id]);
+        }
+
+        async Task<uint> FocusAfterAsync(XTopLevelWindow handle)
+        {
+            server.FocusTopLevel(handle);
+            return (await c.RequestAsync(43, 0)).U32(8);   // GetInputFocus
+        }
+
+        (_, XTopLevelWindow popup) = await MapAsync(overrideRedirect: true, input: null, takesFocus: false);
+        Assert.AreEqual(1u, await FocusAfterAsync(popup), "override-redirect:焦点不动(还是 PointerRoot)");
+
+        (_, XTopLevelWindow noInput) = await MapAsync(overrideRedirect: false, input: false, takesFocus: false);
+        Assert.AreEqual(1u, await FocusAfterAsync(noInput), "No Input:焦点不动");
+
+        (uint globallyActive, XTopLevelWindow global) = await MapAsync(overrideRedirect: false, input: false, takesFocus: true);
+        Assert.AreEqual(1u, await FocusAfterAsync(global), "Globally Active:窗口管理器不设焦点");
+        XMessage message = await c.NextEventAsync(33);
+        Assert.AreEqual(globallyActive, message.U32(4));
+        Assert.AreEqual(takeFocus, message.U32(12), "data[0] = WM_TAKE_FOCUS");
+        Assert.AreNotEqual(0u, message.U32(16), "data[1] 是有效的时间戳,不是 CurrentTime");
+
+        (uint locallyActive, XTopLevelWindow local) = await MapAsync(overrideRedirect: false, input: true, takesFocus: true);
+        Assert.AreEqual(locallyActive, await FocusAfterAsync(local), "Locally Active:设焦点");
+        Assert.AreEqual(locallyActive, (await c.NextEventAsync(33)).U32(4), "同时发 WM_TAKE_FOCUS");
+    }
 }
