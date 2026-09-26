@@ -25,6 +25,17 @@ public sealed partial class X11Server
     /// <summary>窗口 → 挂在它上面的事件上下文(按窗口索引,呈现时不必扫整个资源表)。</summary>
     private readonly Dictionary<XWindow, List<XPresentEventContext>> _presentContexts = [];
 
+    /// <summary>
+    /// 一个客户端同时挂着的 NotifyMSC 上限。每条是一个计时器,目标 MSC 可以远到几十天之后;真实的程序按帧节拍只挂一两条。
+    /// </summary>
+    internal const int MaxPendingNotifyMsc = 256;
+
+    /// <summary>各客户端挂着的 NotifyMSC:取消用的令牌(客户端断开时一并取消)与条数。</summary>
+    private readonly Dictionary<XClient, (CancellationTokenSource Cancel, int Count)> _notifyMsc = [];
+
+    /// <summary>挂着的 NotifyMSC 总条数(测试用)。</summary>
+    internal int PendingNotifyMsc => _notifyMsc.Values.Sum(p => p.Count);
+
     /// <summary>当前帧号:按 60 Hz 从服务端时钟推算。</summary>
     private ulong CurrentMsc => (ulong)(_clock.ElapsedTicks * 60 / System.Diagnostics.Stopwatch.Frequency);
 
@@ -56,7 +67,19 @@ public sealed partial class X11Server
                     else
                     {
                         uint delayMs = (uint)Math.Min((when - now) * 1000.0 / 60, uint.MaxValue);   // 按 double 算:目标 MSC 很大时整数乘法会回绕
-                        _ = DelayThenPostAsync(c, Math.Max(1, delayMs), () => SendPresentComplete(window, serial, kind: 1, CurrentMsc));
+                        (CancellationTokenSource cancel, int count) = _notifyMsc.GetValueOrDefault(c);
+                        if (count >= MaxPendingNotifyMsc)
+                        {
+                            throw new XProtocolError(XErrorCode.Alloc);
+                        }
+                        cancel ??= CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                        _notifyMsc[c] = (cancel, count + 1);
+                        void Fire()
+                        {
+                            EndNotifyMsc(c);
+                            SendPresentComplete(window, serial, kind: 1, CurrentMsc);   // 窗口已销毁时事件上下文随之没了,不会发
+                        }
+                        _ = DelayThenPostAsync(Math.Max(1, delayMs), Fire, cancel.Token);
                     }
                     break;
                 }
@@ -204,9 +227,30 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>客户端断开:摘掉它的事件上下文。</summary>
+    /// <summary>一条 NotifyMSC 到点了:从这个客户端的计数里减掉,减到 0 就收掉令牌。</summary>
+    private void EndNotifyMsc(XClient client)
+    {
+        if (!_notifyMsc.TryGetValue(client, out (CancellationTokenSource Cancel, int Count) pending))
+        {
+            return;
+        }
+        if (pending.Count > 1)
+        {
+            _notifyMsc[client] = (pending.Cancel, pending.Count - 1);
+            return;
+        }
+        _notifyMsc.Remove(client);
+        pending.Cancel.Dispose();
+    }
+
+    /// <summary>客户端断开:取消它挂着的 NotifyMSC,摘掉它的事件上下文。</summary>
     private void CleanupPresent(XClient client)
     {
+        if (_notifyMsc.Remove(client, out (CancellationTokenSource Cancel, int Count) pending))
+        {
+            pending.Cancel.Cancel();
+            pending.Cancel.Dispose();
+        }
         foreach ((XWindow w, List<XPresentEventContext> list) in _presentContexts.ToArray())
         {
             list.RemoveAll(ctx => ReferenceEquals(ctx.Owner, client));

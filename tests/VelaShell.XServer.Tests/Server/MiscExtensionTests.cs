@@ -157,4 +157,54 @@ public sealed class MiscExtensionTests
         Assert.AreEqual(1, v.U16(8));
         Assert.AreEqual(0, v.U16(10));
     }
+
+    /// <summary>XTEST FakeInput:type、detail、延迟(毫秒),其余为 0。</summary>
+    private static Task<ushort> FakeInputAsync(XTestClient c, byte xtest, byte type, byte detail, uint delay) =>
+        c.SendAsync(xtest, 2, b => b.U8(type).U8(detail).U16(0).U32(delay).U32(0).U32(0).U32(0).I16(0).I16(0).U32(0).U32(0));
+
+    [TestMethod]
+    public async Task XTEST的延迟到点之前这个客户端的请求不处理_按下与松开不会乱序把键卡住()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xtest = await MajorAsync(c, "XTEST");
+        const byte a = 38;
+
+        // 按下延迟 150 毫秒、松开立即:旧的实现先执行松开(那时还没按下)、再按下,键就一直按着。
+        await FakeInputAsync(c, xtest, 2, a, delay: 150);
+        await FakeInputAsync(c, xtest, 3, a, delay: 0);
+        Task<XMessage> keymap = c.RequestAsync(44, 0);   // QueryKeymap:要等延迟到点、两条都做完才处理
+        await Task.Delay(50);
+        Assert.IsFalse(keymap.IsCompleted, "延迟期间这个客户端后面的请求不处理");
+        XMessage keys = await keymap;
+        Assert.AreEqual(0, keys.Bytes[8 + (a / 8)] & (1 << (a % 8)), "按下、松开按发出的顺序生效,键没被卡住");
+
+        await Task.Delay(300);
+        keys = await c.RequestAsync(44, 0);
+        Assert.AreEqual(0, keys.Bytes[8 + (a / 8)] & (1 << (a % 8)), "过一会儿再看也没卡住");
+    }
+
+    [TestMethod]
+    public async Task XTEST的延迟与Present的NotifyMSC在客户端断开时取消_NotifyMSC有上限()
+    {
+        await using X11Server server = new();
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xtest = await MajorAsync(c, "XTEST");
+        byte present = await MajorAsync(c, "Present");
+        uint window = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+
+        // NotifyMSC 目标 MSC 在几十天之后:每条一个计时器。
+        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingNotifyMsc + 1).Select(i =>
+            (present, (byte)2, (Action<XTestClient.Body>?)(b => b.U32(window).U32((uint)i).U32(0).U32(100_000_000).U32(0).U32(0).U32(0).U32(0).U32(0)))));
+        XMessage refused = await c.NextAsync(m => m.IsError && m.Sequence == last);
+        Assert.AreEqual(11, refused.Detail, "超过上限:BadAlloc");
+        await FakeInputAsync(c, xtest, 2, 38, delay: int.MaxValue);   // 挂一个 24 天的延迟
+        Assert.AreEqual((1, X11Server.MaxPendingNotifyMsc), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)));
+
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)), "断开时计时器一并取消");
+    }
 }

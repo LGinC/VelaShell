@@ -187,6 +187,11 @@ public sealed partial class X11Server
         {
             return;
         }
+        // XTEST 的 FakeInput 带了延迟:到点之前这个客户端之后的请求暂存。
+        if (_fakeInputDelays.Count != 0 && DeferIfFakeInputPending(item))
+        {
+            return;
+        }
         // GrabServer 期间,别人的请求原样暂存,Ungrab 后按原顺序放回(协议「GrabServer」)。
         if (_serverGrabber is { } grabber && item.Client is { } client && !ReferenceEquals(client, grabber) && !client.Closed)
         {
