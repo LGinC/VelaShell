@@ -40,13 +40,19 @@ public sealed partial class X11Server
         }
         catch (XProtocolError error)
         {
-            Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
-                + $"(之前:{string.Join(' ', client.RecentRequests)})");
+            if (ShouldLogFrequent())
+            {
+                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
+                    + $"(之前:{string.Join(' ', client.RecentRequests)})");
+            }
             client.Error(error.Code, error.BadValue, minor, r.Opcode);
         }
         catch (Exception ex)
         {
-            Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation {ex}");
+            if (ShouldLogFrequent())
+            {
+                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation {ex}");
+            }
             client.Error(XErrorCode.Implementation, 0, minor, r.Opcode);
         }
     }

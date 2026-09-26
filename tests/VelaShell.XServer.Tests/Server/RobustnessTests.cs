@@ -138,4 +138,47 @@ public sealed class RobustnessTests
             }
         }
     }
+
+    [TestMethod]
+    public async Task 协议错误日志在放掉像素锁之后才交给宿主_刷屏时每秒只记五十条()
+    {
+        using RecordingHost host = new();
+        XTopLevelWindow? handle = null;
+        int logged = 0, loggedUnderLock = 0;
+        System.Collections.Concurrent.ConcurrentQueue<string> lines = new();
+        await using X11Server server = new(new X11ServerOptions
+        {
+            Log = line =>
+            {
+                lines.Enqueue(line);
+                if (!line.Contains("BadWindow", StringComparison.Ordinal) || handle is not { } window)
+                {
+                    return;
+                }
+                Interlocked.Increment(ref logged);
+                // 别的线程去读像素:日志要是在持锁时调的,这里就拿不到锁(宿主的 UI 线程就是这么被拖住的)。
+                // 抓到一次就够了,之后不再试(否则每条都要等满 1 秒)。
+                if (Volatile.Read(ref loggedUnderLock) == 0 && !Task.Run(() => window.CopyPixels(new uint[16 * 16])).Wait(TimeSpan.FromSeconds(1)))
+                {
+                    Interlocked.Increment(ref loggedUnderLock);
+                }
+            },
+        }, host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(top).U32(c.RootWindow).I16(0).I16(0).U16(16).U16(16).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        handle = host.Mapped[top];
+
+        // 500 条 MapWindow(不存在的窗口):每条一个 BadWindow。
+        await c.SendManyAsync(Enumerable.Range(0, 500).Select(_ => ((byte)8, (byte)0, (Action<XTestClient.Body>?)(b => b.U32(0x7FFFFF)))));
+        await c.SyncAsync();
+        Assert.AreEqual(0, loggedUnderLock, "没有一条日志是持着像素锁交出去的");
+        Assert.IsLessThanOrEqualTo(100, logged, $"刷屏的错误每秒最多记 50 条,实际 {logged}");
+
+        await Task.Delay(1100);
+        await c.RequestAsync(8, 0, b => b.U32(0x7FFFFF));
+        Assert.IsTrue(lines.Any(l => l.Contains("more log lines were not written", StringComparison.Ordinal)), "补一行没记的有几条");
+    }
 }

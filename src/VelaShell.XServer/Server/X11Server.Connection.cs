@@ -155,7 +155,13 @@ public sealed partial class X11Server
             }
             if (Authorize(authName, authData, peer) is { } reason)
             {
-                Log($"connection refused: {reason}");
+                Post(null, () =>
+                {
+                    if (ShouldLogFrequent())
+                    {
+                        Log($"connection refused: {reason}");
+                    }
+                });
                 await SendSetupFailureAsync(stream, bigEndian, reason, ct).ConfigureAwait(false);
                 return;
             }
@@ -274,10 +280,16 @@ public sealed partial class X11Server
             XClient client = new(index, bigEndian);
             _clients[index] = client;
             client.Send(BuildSetupReply(client));
-            Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
+            if (ShouldLogFrequent())
+            {
+                Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
+            }
             return client;
         }
-        Log($"connection refused: {MaxClients} clients already connected");
+        if (ShouldLogFrequent())
+        {
+            Log($"connection refused: {MaxClients} clients already connected");
+        }
         return null;
     }
 
@@ -444,7 +456,10 @@ public sealed partial class X11Server
             return;
         }
         client.Closed = true;
-        Log($"{client} disconnected");
+        if (ShouldLogFrequent())
+        {
+            Log($"{client} disconnected");
+        }
         try
         {
             CleanupClient(client);

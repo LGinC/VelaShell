@@ -53,8 +53,91 @@ public sealed partial class X11Server
         return tcs.Task;
     }
 
-    /// <summary>诊断日志的唯一出口(<see cref="X11ServerOptions.Log" />)。</summary>
-    private void Log(string message) => _options.Log?.Invoke(message);
+    /// <summary>持锁期间产生的诊断日志:放锁之后再交给宿主(宿主的日志往往同步写文件,持锁写就是让 UI 线程陪着等磁盘)。</summary>
+    private readonly List<string> _pendingLog = [];
+
+    /// <summary>此刻持着像素锁的执行线程(没人持有为 0)。</summary>
+    private int _lockThread;
+
+    /// <summary>
+    /// 客户端能成批触发的日志(协议错误、连接进出、字体没找到)每秒最多记这么多条(全部客户端合计);
+    /// 再多只计数,下一次能记时补一行「没记的有几条」。
+    /// </summary>
+    private const int FrequentLogsPerSecond = 50;
+
+    private long _frequentLogSecond;
+    private int _frequentLogsThisSecond;
+    private int _frequentLogsSuppressed;
+
+    /// <summary>
+    /// 诊断日志的唯一出口(<see cref="X11ServerOptions.Log" />)。执行线程持锁时先攒着,放锁之后按原顺序交出去;
+    /// 连接的读写线程上直接交。
+    /// </summary>
+    private void Log(string message)
+    {
+        if (_options.Log is not { } log)
+        {
+            return;
+        }
+        if (_lockThread == Environment.CurrentManagedThreadId)
+        {
+            _pendingLog.Add(message);
+            return;
+        }
+        log(message);
+    }
+
+    /// <summary>放锁之后:把持锁期间攒下的日志交给宿主。</summary>
+    private void FlushLog()
+    {
+        if (_pendingLog.Count == 0 || _options.Log is not { } log)
+        {
+            return;
+        }
+        string[] lines = [.. _pendingLog];
+        _pendingLog.Clear();
+        foreach (string line in lines)
+        {
+            try
+            {
+                log(line);
+            }
+            catch (Exception)
+            {
+                // 宿主的日志出错不能拖垮执行线程。
+            }
+        }
+    }
+
+    /// <summary>
+    /// 这一条客户端能成批触发的日志要不要记:每秒最多 <see cref="FrequentLogsPerSecond" /> 条 —— 一个客户端每秒能打出
+    /// 几十万条错误请求、连上又断开几千次,条条都记,日志文件一晚上就是几个 GB。只在执行线程上调。
+    /// </summary>
+    private bool ShouldLogFrequent()
+    {
+        if (_options.Log is null)
+        {
+            return false;
+        }
+        long second = Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+        if (second != _frequentLogSecond)
+        {
+            if (_frequentLogsSuppressed > 0)
+            {
+                Log($"{_frequentLogsSuppressed} more log lines were not written (limit {FrequentLogsPerSecond} per second)");
+            }
+            _frequentLogSecond = second;
+            _frequentLogsThisSecond = 0;
+            _frequentLogsSuppressed = 0;
+        }
+        if (_frequentLogsThisSecond >= FrequentLogsPerSecond)
+        {
+            _frequentLogsSuppressed++;
+            return false;
+        }
+        _frequentLogsThisSecond++;
+        return true;
+    }
 
     private async Task RunLoopAsync()
     {
@@ -67,17 +150,26 @@ public sealed partial class X11Server
                 _pixelGate.YieldToHost();
                 lock (_pixelGate.Lock)
                 {
-                    long deadline = Stopwatch.GetTimestamp() + LockBudgetTicks;
-                    while (reader.TryRead(out WorkItem item))
+                    _lockThread = Environment.CurrentManagedThreadId;
+                    try
                     {
-                        RunItem(item);
-                        if (Stopwatch.GetTimestamp() >= deadline || _pixelGate.HostWaiting)
+                        long deadline = Stopwatch.GetTimestamp() + LockBudgetTicks;
+                        while (reader.TryRead(out WorkItem item))
                         {
-                            break;
+                            RunItem(item);
+                            if (Stopwatch.GetTimestamp() >= deadline || _pixelGate.HostWaiting)
+                            {
+                                break;
+                            }
                         }
                     }
+                    finally
+                    {
+                        _lockThread = 0;
+                    }
                 }
-                // 宿主回调一律在放锁之后调:回调里同步等 UI 线程、而 UI 线程正在 ReadPixels 里等这把锁,就是死锁。
+                // 宿主回调与日志一律在放锁之后调:回调里同步等 UI 线程、而 UI 线程正在 ReadPixels 里等这把锁,就是死锁。
+                FlushLog();
                 FlushDamage();
                 _host.Flush();
             }

@@ -30,7 +30,10 @@ public sealed partial class X11Server
         XFont? font = _fonts.Open(name);
         if (font is null)
         {
-            Log($"{c} OpenFont: no font matches '{name}'");
+            if (ShouldLogFrequent())
+            {
+                Log($"{c} OpenFont: no font matches '{name}'");
+            }
             throw new XProtocolError(XErrorCode.Name);
         }
         AddResource(c, new XFontResource(id, c, font));
