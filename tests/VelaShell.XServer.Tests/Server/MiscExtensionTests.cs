@@ -207,4 +207,27 @@ public sealed class MiscExtensionTests
         await serving.WaitAsync(TimeSpan.FromSeconds(3));
         Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)), "断开时计时器一并取消");
     }
+
+    [TestMethod]
+    public async Task QueryClientIds每个客户端只回一次_GetXIDList一次最多给上限个()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        byte xres = await MajorAsync(c, "X-Resource");
+        // 1000 条 spec,每条都是 client = 0(全部客户端)、mask = ClientXIDMask:旧的实现每条都展开一遍。
+        XMessage ids = await c.RequestAsync(xres, 4, b =>
+        {
+            b.U32(1000);
+            for (int i = 0; i < 1000; i++)
+            {
+                b.U32(0).U32(1);
+            }
+        });
+        Assert.AreEqual(2u, ids.U32(8), "两个客户端,各回一次");
+
+        byte xcmisc = await MajorAsync(c, "XC-MISC");
+        XMessage list = await c.RequestAsync(xcmisc, 2, b => b.U32(uint.MaxValue));
+        Assert.AreEqual(X11Server.MaxXidListCount, list.U32(8), "给的可以比要的少(XC-MISC 规范)");
+    }
 }

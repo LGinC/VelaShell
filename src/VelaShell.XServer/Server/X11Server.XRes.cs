@@ -70,7 +70,9 @@ public sealed partial class X11Server
             case 4:   // QueryClientIds:只回答 ClientXIDMask(远端客户端的 PID 我们不知道)
                 {
                     uint count = r.U32();
+                    // 每个客户端只回一次:client = 0 表示「全部客户端」,两百万条这样的 spec 各展开一遍就是几 GB 的回复。
                     List<XClient> matched = [];
+                    HashSet<XClient> seen = [];
                     for (uint i = 0; i < count && r.Remaining >= 8; i++)
                     {
                         uint client = r.U32();
@@ -79,13 +81,12 @@ public sealed partial class X11Server
                         {
                             continue;
                         }
-                        if (client == 0)
+                        foreach (XClient one in client == 0 ? [.. _clients.Values] : (XClient[])[ClientOfXid(client)])
                         {
-                            matched.AddRange(_clients.Values);
-                        }
-                        else
-                        {
-                            matched.Add(ClientOfXid(client));
+                            if (seen.Add(one))
+                            {
+                                matched.Add(one);
+                            }
                         }
                     }
                     c.Reply(0, w =>
