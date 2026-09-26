@@ -42,6 +42,32 @@ internal sealed partial class GlContext
         _ => null,
     };
 
+    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记账的对象;名字 0 的默认纹理与代理纹理每个上下文就几个,不记)。</summary>
+    private bool IsNamed(GlTexture texture) =>
+        texture.Name != 0 && Shared.Textures.TryGetValue(texture.Name, out GlTexture? named) && ReferenceEquals(named, texture);
+
+    /// <summary>给这个纹理的某一级换一张 <paramref name="bytes" /> 字节的图像放得下吗;放不下记 OUT_OF_MEMORY(先问再分配)。</summary>
+    private bool FitsTexture(GlTexture texture, int level, long bytes)
+    {
+        long delta = bytes - (texture.Levels[level]?.Texels.Length ?? 0);
+        if (!IsNamed(texture) || delta <= 0 || Shared.TextureBytes + delta <= GlShared.MaxTextureBytes)
+        {
+            return true;
+        }
+        SetError(GlEnum.OUT_OF_MEMORY);
+        return false;
+    }
+
+    /// <summary>换掉纹理的一级图像并记账。</summary>
+    private void StoreLevel(GlTexture texture, int level, GlTexImage? image)
+    {
+        if (IsNamed(texture))
+        {
+            Shared.TextureBytes += (image?.Texels.Length ?? 0) - (texture.Levels[level]?.Texels.Length ?? 0);
+        }
+        texture.Levels[level] = image;
+    }
+
     private void BindTexture(uint target, uint name)
     {
         if (target is not (GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D))
@@ -53,6 +79,11 @@ internal sealed partial class GlContext
         {
             if (!Shared.Textures.TryGetValue(name, out GlTexture? texture))
             {
+                if (Shared.Textures.Count >= GlShared.MaxTextures)
+                {
+                    SetError(GlEnum.OUT_OF_MEMORY);   // 绑一个没用过的名字就建一个纹理对象:名字同样有上限
+                    return;
+                }
                 texture = new GlTexture(name);
                 Shared.Textures[name] = texture;
             }
@@ -357,6 +388,10 @@ internal sealed partial class GlContext
             texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, []);
             return;
         }
+        if (!FitsTexture(texture, level, (long)w * h * 4))
+        {
+            return;
+        }
         // 数据为空(客户端传 NULL)时纹理内容未定义:这里填 0。边框像素只存内圈。
         byte[] texels = new byte[w * h * 4];
         if (r.Remaining > 0 && w > 0 && h > 0)
@@ -378,7 +413,7 @@ internal sealed partial class GlContext
                 }
             }
         }
-        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
+        StoreLevel(texture, level, new GlTexImage(w, h, internalFormat, baseFormat, texels));
     }
 
     private void TexSubImage(ref GlReader r, bool oneD)
@@ -436,6 +471,11 @@ internal sealed partial class GlContext
             return;
         }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
+        GlTexture texture = BoundTexture(target)!;
+        if (!FitsTexture(texture, level, Math.Max(0, (long)w * h * 4)))
+        {
+            return;
+        }
         byte[] texels = new byte[Math.Max(0, w * h * 4)];
         for (int j = 0; j < h; j++)
         {
@@ -444,7 +484,7 @@ internal sealed partial class GlContext
                 StoreTexel(texels, (j * w) + i, ReadColorPixel(x + i + border, y + j + (oneD ? 0 : border)), baseFormat);
             }
         }
-        BoundTexture(target)!.Levels[level] = new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels);
+        StoreLevel(texture, level, new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels));
     }
 
     private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height)
@@ -782,6 +822,20 @@ internal sealed partial class GlContext
             return Vector4.Zero;
         }
         return Unpack(buffer[((s.Height - 1 - y) * s.Width) + x], s.HasAlpha);
+    }
+
+    /// <summary>ReadPixels 打包出来有多少字节(与 <see cref="ReadPixels" /> 的布局一致);格式或类型不认识时为 0。</summary>
+    public static long PackedSize(int width, int height, uint format, uint type)
+    {
+        int elements = FormatElements(format);
+        (int nbytes, bool packed) = TypeSize(type);
+        if (elements == 0 || nbytes == 0 || width <= 0 || height <= 0)
+        {
+            return 0;
+        }
+        long rowBytes = (long)nbytes * (packed ? 1 : elements) * width;
+        long k = nbytes >= 4 ? rowBytes : (rowBytes + 3) & ~3L;
+        return k * height;
     }
 
     /// <summary>

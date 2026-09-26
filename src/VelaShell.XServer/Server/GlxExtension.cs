@@ -24,6 +24,7 @@
 //   GetString / QueryServerString 的串带上结尾的 NUL(STRING8 长度算在内):客户端库按 C 串使用。
 
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using VelaShell.XServer.Gl;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Resources;
@@ -90,8 +91,14 @@ internal sealed class GlxExtension(X11Server server)
     /// <summary>GLX 1.2 的视觉配置:每个视觉一条,取它的双缓冲配置。</summary>
     private static readonly GlxConfig[] GlxVisualConfigs = [GlxConfigs[0], GlxConfigs[2]];
 
-    /// <summary>可绘对象的帧缓冲,按 X 窗口 / 像素图 / Pbuffer 的 ID 存(同一个窗口的各种用法共用一份)。</summary>
-    private readonly Dictionary<uint, GlSurface> _glxSurfaces = [];
+    /// <summary>
+    /// 可绘对象的帧缓冲,按 X 窗口 / 像素图 / Pbuffer 的 ID 存(同一个窗口的各种用法共用一份),连同建表面时那个 ID 上的资源:
+    /// ID 会被重用(客户端走了、编号给了下一个客户端),拿同一个 ID 的新资源不能接着用旧表面、读到上一个的内容(见 <see cref="TryGetSurface" />)。
+    /// </summary>
+    private readonly Dictionary<uint, (XResource Source, GlSurface Surface)> _glxSurfaces = [];
+
+    /// <summary>现存的 GLX 表面数(测试用)。</summary>
+    internal int SurfaceCount => _glxSurfaces.Count;
 
     /// <summary>每个客户端的上下文标签 → 当前绑定。</summary>
     private readonly Dictionary<XClient, Dictionary<uint, GlxBinding>> _glxTags = [];
@@ -117,6 +124,9 @@ internal sealed class GlxExtension(X11Server server)
 
         public List<byte> Data { get; } = [];
     }
+
+    /// <summary>ReadPixels 的回复最多这么大:再大就超过一个客户端的输出队列上限(<see cref="XClient.MaxQueuedOutputBytes" />)了。</summary>
+    private const long MaxReadPixelsBytes = XClient.MaxQueuedOutputBytes / 2;
 
     private static XProtocolError GlxError(byte code, uint value = 0) => new((XErrorCode)code, value);
 
@@ -204,7 +214,7 @@ internal sealed class GlxExtension(X11Server server)
                         PresentGlx(GlxBindingOf(c, tag));
                     }
                     (uint key, _, _) = ResolveGlxDrawable(drawable, null);
-                    if (_glxSurfaces.TryGetValue(key, out GlSurface? surface) && surface.DoubleBuffered)
+                    if (TryGetSurface(key, out GlSurface? surface) && surface.DoubleBuffered)
                     {
                         surface.Swap();
                         PresentSurface(key, surface);
@@ -485,16 +495,37 @@ internal sealed class GlxExtension(X11Server server)
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 颜色(前后)、深度、模板一共 13 字节 / 像素
         }
-        if (!_glxSurfaces.TryGetValue(key, out GlSurface? surface))
+        if (!TryGetSurface(key, out GlSurface? surface))
         {
+            XResource source = server.Lookup<XResource>(key) ?? throw GlxError(GlxBadDrawable, key);
             surface = new GlSurface(size.Width, size.Height, config.DoubleBuffer, config.Alpha);
-            _glxSurfaces[key] = surface;
+            _glxSurfaces[key] = (source, surface);
         }
         else
         {
             surface.Resize(size.Width, size.Height);
         }
         return surface;
+    }
+
+    /// <summary>
+    /// 按 ID 找表面。那个 ID 上现在的资源已经不是建表面时的那一个(原来的被释放、ID 又被重用)时作废旧表面 ——
+    /// 否则新资源(可能属于另一个客户端)接着用旧的帧缓冲,读到上一个的内容。
+    /// </summary>
+    private bool TryGetSurface(uint key, [NotNullWhen(true)] out GlSurface? surface)
+    {
+        surface = null;
+        if (!_glxSurfaces.TryGetValue(key, out (XResource Source, GlSurface Surface) entry))
+        {
+            return false;
+        }
+        if (!ReferenceEquals(server.Lookup<XResource>(key), entry.Source))
+        {
+            _glxSurfaces.Remove(key);
+            return false;
+        }
+        surface = entry.Surface;
+        return true;
     }
 
     /// <summary>绑定的表面跟上 X 可绘对象的尺寸(窗口可能被改过大小),并交给 GL 上下文。</summary>
@@ -525,7 +556,7 @@ internal sealed class GlxExtension(X11Server server)
         {
             return;
         }
-        uint key = _glxSurfaces.FirstOrDefault(kv => ReferenceEquals(kv.Value, surface)).Key;
+        uint key = _glxSurfaces.FirstOrDefault(kv => ReferenceEquals(kv.Value.Surface, surface)).Key;
         PresentSurface(key, surface);
     }
 
@@ -657,10 +688,17 @@ internal sealed class GlxExtension(X11Server server)
         }
     }
 
-    /// <summary>客户端断开:它的标签作废,上下文不再是当前;拼到一半的 RenderLarge 丢掉。</summary>
+    /// <summary>客户端断开:它的标签作废,上下文不再是当前;拼到一半的 RenderLarge 丢掉;它的 Pbuffer、像素图、窗口上的表面释放。</summary>
     public void CleanupClient(XClient client)
     {
         _glxLarge.Remove(client);
+        foreach ((uint key, (XResource Source, GlSurface Surface) entry) in _glxSurfaces.ToArray())
+        {
+            if (ReferenceEquals(entry.Source.Owner, client))
+            {
+                _glxSurfaces.Remove(key);   // 一块 4096² 的表面连深度、模板是两百多 MB,不能等 ID 被重用才回收
+            }
+        }
         if (_glxTags.Remove(client, out Dictionary<uint, GlxBinding>? tags))
         {
             foreach (GlxBinding binding in tags.Values)
@@ -817,7 +855,8 @@ internal sealed class GlxExtension(X11Server server)
                     uint format = r.U32(), type = r.U32();
                     bool swap = r.Bool();
                     r.Bool();   // lsb first:只对 BITMAP 有意义
-                    if ((long)width * height > 64L * 1024 * 1024)
+                    // 回复的大小先算出来再分配:6400 万像素 × 4 个 float 就是 1 GB,远超一个客户端的输出队列上限。
+                    if (GlContext.PackedSize(width, height, format, type) > MaxReadPixelsBytes)
                     {
                         throw new XProtocolError(XErrorCode.Alloc);
                     }
@@ -969,7 +1008,7 @@ internal sealed class GlxExtension(X11Server server)
                     {
                         throw new XProtocolError(XErrorCode.Alloc);
                     }
-                    uint[] names = gl.GenTextures(n);
+                    uint[] names = gl.GenTextures(n) ?? throw new XProtocolError(XErrorCode.Alloc);
                     c.Reply(0, w =>
                     {
                         w.Zero(24);
@@ -1218,7 +1257,11 @@ internal sealed class GlxExtension(X11Server server)
                 body.Bytes(bits);
                 list.Add(new GlCommand(5, body.ToArray(), BigEndian: false));
             }
-            gl.Shared.Lists[listBase + i] = list;
+            if (gl.Shared.ListBytes + GlShared.SizeOf(list) > GlShared.MaxListBytes)
+            {
+                throw new XProtocolError(XErrorCode.Alloc);   // 显示列表的账不能被这条请求绕过
+            }
+            gl.Shared.SetList(listBase + i, list);
         }
         PresentGlx(binding);
     }

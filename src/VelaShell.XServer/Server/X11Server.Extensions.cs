@@ -50,6 +50,9 @@ public sealed partial class X11Server
     /// <summary>注册顺序(清理钩子按这个顺序调)。</summary>
     private readonly List<Extension> _extensionList = [];
 
+    /// <summary>GLX 扩展(测试看它的内部状态用)。</summary>
+    internal GlxExtension Glx => _glx;
+
     private void InitExtensions()
     {
         Register(new Extension("BIG-REQUESTS", BigRequestsMajor, BigRequests));

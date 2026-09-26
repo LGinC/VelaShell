@@ -428,4 +428,131 @@ public sealed class GlxTests
             .Add(5, b => F(b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1).I32(100000).I32(100000), 0, 0, 0, 0).U32(0xFFFFFFFF)));   // Bitmap
         Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
     }
+
+    [TestMethod]
+    public async Task Begin与End之间的顶点有上限_超了记OUT_OF_MEMORY()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(4, b => b.U32(0)));   // Begin(POINTS)
+        const int perRequest = 20000;
+        for (int sent = 0; sent <= Gl.GlContext.MaxPrimitiveVertices; sent += perRequest)
+        {
+            Commands vertices = new();
+            for (int i = 0; i < perRequest; i++)
+            {
+                vertices.Add(66, b => F(b, 0, 0));
+            }
+            await RenderAsync(c, glx, tag, vertices);
+        }
+        await RenderAsync(c, glx, tag, new Commands().Add(23));                  // End
+        Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
+    public async Task PrioritizeTextures声称的个数不按它分配_ReadPixels的回复大小有上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(4118, b => b.I32(int.MaxValue)));   // n = 2^31 − 1,后面没有数据
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有 BadImplementation 之类的错误");
+
+        // 8000 × 8000 的 RGBA FLOAT:1 GB 的回复。
+        XMessage huge = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(8000).I32(8000).U32(Rgba).U32(0x1406).U8(0).U8(0).U16(0));
+        Assert.IsTrue(huge.IsError);
+        Assert.AreEqual(11, huge.Bytes[1], "BadAlloc");
+        XMessage small = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(2).I32(2).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.IsTrue(small.IsReply, "正常大小照常回");
+    }
+
+    private const uint SingleBufferedRgb = 0x102, RgbaType = 0x8014;
+
+    [TestMethod]
+    public async Task 像素图释放后同一个ID的新像素图拿到新表面_不会读到上一个的内容()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pixmap = c.NewId(), glxPixmap = c.NewId(), context = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));
+        await c.SendAsync(glx, 22, b => b.U32(0).U32(SingleBufferedRgb).U32(pixmap).U32(glxPixmap).U32(0));        // CreatePixmap(GLX 1.3)
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(glxPixmap).U32(glxPixmap).U32(context))).U32(8);
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 1, 0, 0, 1)).Add(127, b => b.U32(ColorBit)));
+        XMessage red = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.AreEqual(255, red.Bytes[32], "先画成红色");
+
+        await c.RequestAsync(glx, 26, b => b.U32(tag).U32(0).U32(0).U32(0));                                          // 放下当前上下文
+        await c.SendAsync(glx, 23, b => b.U32(glxPixmap));                                                              // DestroyPixmap(GLX)
+        await c.SendAsync(54, 0, b => b.U32(pixmap));                                                                   // FreePixmap
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));                                 // 同一个 ID 建新像素图
+        await c.SendAsync(glx, 22, b => b.U32(0).U32(SingleBufferedRgb).U32(pixmap).U32(glxPixmap).U32(0));
+        uint again = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(glxPixmap).U32(glxPixmap).U32(context))).U32(8);
+        XMessage fresh = await c.RequestAsync(glx, 111, b => b.U32(again).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.AreEqual(0, fresh.Bytes[32], "新像素图的表面是新的,不是上一个画过的红色");
+    }
+
+    [TestMethod]
+    public async Task 客户端断开时它的Pbuffer表面随之释放()
+    {
+        await using X11Server server = new();
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pbuffer = c.NewId(), context = c.NewId();
+        await c.SendAsync(glx, 27, b => b.U32(0).U32(SingleBufferedRgb).U32(pbuffer).U32(2).U32(0x8041).U32(64).U32(0x8040).U32(64));   // CreatePbuffer 64×64
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        XMessage made = await c.RequestAsync(glx, 26, b => b.U32(0).U32(pbuffer).U32(pbuffer).U32(context));
+        Assert.IsTrue(made.IsReply);
+        Assert.AreEqual(1, await server.InvokeAsync(() => server.Glx.SurfaceCount));
+
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, await server.InvokeAsync(() => server.Glx.SurfaceCount), "断开时表面随之释放");
+    }
+
+    [TestMethod]
+    public void 显示列表与纹理记账_超了上限记OUT_OF_MEMORY_删掉之后销账()
+    {
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null);
+        gl.NewList(1, Compile);
+        for (int i = 0; i < 70; i++)
+        {
+            gl.ExecuteOrCompile(130, new byte[1 << 20], bigEndian: false);   // 每条 1 MB,共 70 MB
+        }
+        gl.EndList();
+        Assert.AreEqual(OutOfMemory, gl.GetError());
+        Assert.IsLessThanOrEqualTo(Gl.GlShared.MaxListBytes, gl.Shared.ListBytes);
+        gl.DeleteLists(1, 1);
+        Assert.AreEqual(0L, gl.Shared.ListBytes, "删掉之后销账");
+
+        // 纹理:4×4 的 RGBA 记 64 字节,删掉销账;名字总数有上限。
+        gl.ExecuteOrCompile(4117, [.. BitConverter.GetBytes(Texture2D), .. BitConverter.GetBytes(7u)], bigEndian: false);   // BindTexture
+        List<byte> image = [0, 0, 0, 0, .. new byte[16]];   // 像素存储头:不交换、MSB、行长 / 跳过 0、对齐 4(下面改)
+        image[16] = 4;
+        foreach (uint value in (uint[])[Texture2D, 0, Rgba, 4, 4, 0, Rgba, UnsignedByte])
+        {
+            image.AddRange(BitConverter.GetBytes(value));
+        }
+        image.AddRange(new byte[64]);
+        gl.ExecuteOrCompile(110, [.. image], bigEndian: false);   // TexImage2D
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(64L, gl.Shared.TextureBytes);
+        gl.DeleteTextures([7]);
+        Assert.AreEqual(0L, gl.Shared.TextureBytes);
+
+        Assert.IsNotNull(gl.GenTextures(Gl.GlShared.MaxTextures));
+        Assert.IsNull(gl.GenTextures(1), "名字用完了");
+    }
 }
