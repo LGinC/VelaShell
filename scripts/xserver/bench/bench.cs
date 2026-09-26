@@ -7,6 +7,7 @@
 //   dotnet run -c Release -p:SignAssembly=false scripts/xserver/bench/bench.cs   (仓库里没有签名密钥,Release 需关掉签名)
 //
 // 场景:核心填充、32 位 PutImage(小块与整窗)、Xft 式字形合成(a8 字形 + 纯色源 + Over)、ARGB 图像 Over 合成、
+// RENDER 通用路径(线性渐变源、带缩放变换的双线性源、ARGB 源 + a8 遮罩)、
 // RENDER 多矩形填充、指针移动注入(窗口选了 PointerMotion)、请求往返延迟;
 // 最后量整窗 PutImage 满载时宿主读像素(另一条线程每 16 毫秒读一次整窗)要等多久 —— 宿主 UI 线程卡不卡看的就是它。
 // 数字只用来比较前后改动,不同机器之间不可比。
@@ -55,6 +56,29 @@ c.Request(53, 32, b => b.U32(argbPixmap).U32(window).U16(100).U16(100));
 uint argbPicture = c.NewId();
 c.Request(render, 4, b => b.U32(argbPicture).U32(argbPixmap).U32(argb).U32(0));
 c.Request(render, 26, b => b.U8(1).U8(0).U8(0).U8(0).U32(argbPicture).U16(0x8000).U16(0x4000).U16(0).U16(0x8000).I16(0).I16(0).U16(100).U16(100));
+// 线性渐变(三个色标,中间半透明):cairo / Qt 画按钮底色、标题栏。
+uint gradient = c.NewId();
+c.Request(render, 34, b => b.U32(gradient).U32(0).U32(0).U32(100 << 16).U32(100 << 16).U32(3)
+    .U32(0).U32(0x8000).U32(0x10000)
+    .U16(0xFFFF).U16(0).U16(0).U16(0xFFFF).U16(0).U16(0xFFFF).U16(0).U16(0x8000).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF));
+// 同一张 ARGB 像素图的另一个 picture:放大两倍、双线性(缩放预览、HiDPI 下的图标)。
+uint scaledPicture = c.NewId();
+c.Request(render, 4, b => b.U32(scaledPicture).U32(argbPixmap).U32(argb).U32(0));
+c.Request(render, 28, b => b.U32(scaledPicture).U32(0x8000).U32(0).U32(0).U32(0).U32(0x8000).U32(0).U32(0).U32(0).U32(0x10000));
+c.Request(render, 30, b => b.U32(scaledPicture).U16(8).U16(0).Bytes("bilinear"u8.ToArray()));
+// 100×100 的 a8 遮罩:半透明的斜坡(圆角、阴影的形状遮罩)。
+uint maskPixmap = c.NewId();
+c.Request(53, 8, b => b.U32(maskPixmap).U32(window).U16(100).U16(100));
+uint maskPicture = c.NewId();
+c.Request(render, 4, b => b.U32(maskPicture).U32(maskPixmap).U32(a8).U32(0));
+uint maskGc = c.NewId();
+c.Request(55, 0, b => b.U32(maskGc).U32(maskPixmap).U32(0));
+byte[] ramp = new byte[100 * 100];
+for (int i = 0; i < ramp.Length; i++)
+{
+    ramp[i] = (byte)(i % 100 * 255 / 99);
+}
+c.Request(72, 2, b => b.U32(maskPixmap).U32(maskGc).U16(100).U16(100).I16(0).I16(0).U8(0).U8(8).U16(0).Bytes(ramp));
 await c.SyncAsync();
 
 byte[] image = new byte[200 * 100 * 4];
@@ -87,6 +111,15 @@ await RunAsync("CompositeGlyphs8 ×10(Xft 文字)", 20_000, i =>
         .U8(10).U8(0).U8(0).U8(0).I16((short)(i % 600)).I16((short)(20 + (i % 500))).Bytes("gggggggggg"u8.ToArray()).U8(0).U8(0)));
 await RunAsync("Composite ARGB 100×100 Over", 5_000, i =>
     c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(argbPicture).U32(0).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite 线性渐变 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(gradient).U32(0).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite 放大 2 倍双线性 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(scaledPicture).U32(0).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite ARGB + a8 遮罩 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(argbPicture).U32(maskPicture).U32(picture)
         .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
 await RunAsync("PutImage 800×600 整窗(BIG-REQUESTS)", 1_000, _ => c.Raw(frameRequest));
 await RunAsync("RenderFillRectangles ×50", 5_000, _ => c.Request(render, 26, fillRects));

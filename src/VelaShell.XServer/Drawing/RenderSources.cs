@@ -32,15 +32,40 @@ internal abstract class RenderSource
         }
         for (int i = 0; i < row.Length; i++)
         {
-            double px = x + i + 0.5, py = y + 0.5;
-            double w = (t[6] * px) + (t[7] * py) + t[8];
-            if (w == 0)
-            {
-                row[i] = default;
-                continue;
-            }
-            row[i] = Sample(((t[0] * px) + (t[1] * py) + t[2]) / w, ((t[3] * px) + (t[4] * py) + t[5]) / w);
+            row[i] = Map(t, x + i, y, out double sx, out double sy) ? Sample(sx, sy) : default;
         }
+    }
+
+    /// <summary>
+    /// 取一行,直接给 8 位预乘的 0xAARRGGBB —— 合成器的整数路径用。默认逐像素取浮点再量化;
+    /// 常用的源(纯色、像素缓冲、单字节遮罩、渐变)各自覆写成整数取样。
+    /// </summary>
+    public void FetchRow8888(int x, int y, Span<uint> row)
+    {
+        if (Transform is not { } t)
+        {
+            FetchIntegerRow8888(x, y, row);
+            return;
+        }
+        for (int i = 0; i < row.Length; i++)
+        {
+            row[i] = Map(t, x + i, y, out double sx, out double sy) ? Sample8888(sx, sy) : 0;
+        }
+    }
+
+    /// <summary>目标像素 (x, y) 的中心经变换落到源的哪一点;齐次坐标 w 为 0 时没有定义(取透明)。</summary>
+    private static bool Map(double[] t, int x, int y, out double sx, out double sy)
+    {
+        double px = x + 0.5, py = y + 0.5;
+        double w = (t[6] * px) + (t[7] * py) + t[8];
+        if (w == 0)
+        {
+            (sx, sy) = (0, 0);
+            return false;
+        }
+        sx = ((t[0] * px) + (t[1] * py) + t[2]) / w;
+        sy = ((t[3] * px) + (t[4] * py) + t[5]) / w;
+        return true;
     }
 
     /// <summary>没有变换时的取样:像素 (x + i, y) 的中心。</summary>
@@ -52,8 +77,20 @@ internal abstract class RenderSource
         }
     }
 
+    /// <summary>没有变换时的 8 位取样。</summary>
+    protected virtual void FetchIntegerRow8888(int x, int y, Span<uint> row)
+    {
+        for (int i = 0; i < row.Length; i++)
+        {
+            row[i] = Sample8888(x + i + 0.5, y + 0.5);
+        }
+    }
+
     /// <summary>在连续坐标上取样(像素 (i, j) 的中心是 (i + 0.5, j + 0.5))。</summary>
     protected abstract Argb Sample(double x, double y);
+
+    /// <summary>同 <see cref="Sample" />,给 8 位预乘的 0xAARRGGBB。</summary>
+    protected virtual uint Sample8888(double x, double y) => Argb8.Pack(Sample(x, y));
 
     /// <summary>按 repeat 把整数坐标折回 [0, size);None 时越界返回 false。</summary>
     protected bool Wrap(ref int v, int size)
@@ -84,11 +121,17 @@ internal abstract class RenderSource
 /// <summary>纯色(CreateSolidFill、FillRectangles)。</summary>
 internal sealed class SolidSource(Argb color) : RenderSource
 {
+    private readonly uint _packed = Argb8.Pack(color);
+
     public Argb Color { get; } = color;
 
     protected override void FetchIntegerRow(int x, int y, Span<Argb> row) => row.Fill(Color);
 
+    protected override void FetchIntegerRow8888(int x, int y, Span<uint> row) => row.Fill(_packed);
+
     protected override Argb Sample(double x, double y) => Color;
+
+    protected override uint Sample8888(double x, double y) => _packed;
 }
 
 /// <summary>以像素缓冲为内容的源:像素图,或窗口在其顶层缓冲里的那一块。</summary>
@@ -122,11 +165,69 @@ internal sealed class ImageSource(PixelBuffer buffer, int originX, int originY, 
     private Argb Texel(int x, int y) =>
         Wrap(ref x, Width) && Wrap(ref y, Height) ? Format.Decode(Buffer.Get(OriginX + x, OriginY + y)) : default;
 
+    private uint Texel8888(int x, int y) =>
+        Wrap(ref x, Width) && Wrap(ref y, Height) ? To8888(Buffer.Get(OriginX + x, OriginY + y)) : 0;
+
+    /// <summary>存储的像素值换成 8 位预乘的 0xAARRGGBB:8888 与 a8(最常见的遮罩)直接换位,其余格式经浮点解码。</summary>
+    private uint To8888(uint raw) =>
+        ReferenceEquals(Format, PictFormat.A8R8G8B8) ? raw
+        : ReferenceEquals(Format, PictFormat.X8R8G8B8) ? raw | 0xFF000000u
+        : ReferenceEquals(Format, PictFormat.A8) ? (raw & 0xFF) << 24
+        : Argb8.Pack(Format.Decode(raw));
+
     protected override void FetchIntegerRow(int x, int y, Span<Argb> row)
     {
         for (int i = 0; i < row.Length; i++)
         {
             row[i] = Texel(x + i, y);
+        }
+    }
+
+    protected override void FetchIntegerRow8888(int x, int y, Span<uint> row)
+    {
+        // 整行都在图像与缓冲之内:按行读,不逐像素折回;a8r8g8b8 直接整行拷。
+        int bx = OriginX + x, by = OriginY + y;
+        if (x >= 0 && x + row.Length <= Width && (uint)y < (uint)Height
+            && bx >= 0 && bx + row.Length <= Buffer.Width && (uint)by < (uint)Buffer.Height)
+        {
+            ReadOnlySpan<uint> from = Buffer.Pixels.AsSpan((by * Buffer.Width) + bx, row.Length);
+            if (ReferenceEquals(Format, PictFormat.A8R8G8B8))
+            {
+                from.CopyTo(row);
+                return;
+            }
+            for (int i = 0; i < row.Length; i++)
+            {
+                row[i] = To8888(from[i]);
+            }
+            return;
+        }
+        for (int i = 0; i < row.Length; i++)
+        {
+            row[i] = Texel8888(x + i, y);
+        }
+    }
+
+    protected override uint Sample8888(double x, double y)
+    {
+        if (!Bilinear)
+        {
+            return Texel8888((int)Math.Floor(x), (int)Math.Floor(y));
+        }
+        x -= 0.5;
+        y -= 0.5;
+        int x0 = (int)Math.Floor(x), y0 = (int)Math.Floor(y);
+        // 权重取 0–256 的定点数:四个角按 (256 − fx)(256 − fy)… 加权,和是 65536。
+        uint fx = (uint)(((x - x0) * 256) + 0.5), fy = (uint)(((y - y0) * 256) + 0.5);
+        uint a = Texel8888(x0, y0), b = Texel8888(x0 + 1, y0), c = Texel8888(x0, y0 + 1), d = Texel8888(x0 + 1, y0 + 1);
+        return (Lerp(a, b, c, d, fx, fy, 24) << 24) | (Lerp(a, b, c, d, fx, fy, 16) << 16)
+            | (Lerp(a, b, c, d, fx, fy, 8) << 8) | Lerp(a, b, c, d, fx, fy, 0);
+
+        static uint Lerp(uint a, uint b, uint c, uint d, uint fx, uint fy, int shift)
+        {
+            uint top = (((a >> shift) & 0xFF) * (256 - fx)) + (((b >> shift) & 0xFF) * fx);
+            uint bottom = (((c >> shift) & 0xFF) * (256 - fx)) + (((d >> shift) & 0xFF) * fx);
+            return ((top * (256 - fy)) + (bottom * fy) + 32768) >> 16;
         }
     }
 
@@ -214,7 +315,17 @@ internal sealed class ByteMaskSource(byte[] alpha, int x0, int y0, int width, in
         }
     }
 
+    protected override void FetchIntegerRow8888(int x, int y, Span<uint> row)
+    {
+        for (int i = 0; i < row.Length; i++)
+        {
+            row[i] = At(x + i, y) * 0x01010101u;
+        }
+    }
+
     protected override Argb Sample(double x, double y) => Argb.Gray(ToFloat[At((int)Math.Floor(x), (int)Math.Floor(y))]);
+
+    protected override uint Sample8888(double x, double y) => At((int)Math.Floor(x), (int)Math.Floor(y)) * 0x01010101u;
 }
 
 /// <summary>带颜色的遮罩(次像素字形,分量 alpha):每像素一个预乘的 0xAARRGGBB。</summary>
