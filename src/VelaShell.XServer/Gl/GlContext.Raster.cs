@@ -181,11 +181,12 @@ internal sealed partial class GlContext
         {
             return;
         }
-        int w = Math.Max(1, (int)MathF.Round(width));
-        // 沿主轴逐个像素中心取样;起点含、终点不含(菱形出口规则的常见近似)。
+        int w = Math.Clamp((int)MathF.Round(width), 1, MaxLineWidth);
+        // 沿主轴逐个像素中心取样;起点含、终点不含(菱形出口规则的常见近似)。主轴上只走裁剪范围之内的那一段。
         float start = xMajor ? MathF.Min(a.X, b.X) : MathF.Min(a.Y, b.Y);
         float end = xMajor ? MathF.Max(a.X, b.X) : MathF.Max(a.Y, b.Y);
-        int i0 = (int)MathF.Floor(start + 0.5f), i1 = (int)MathF.Floor(end + 0.5f);
+        int lo = xMajor ? _clipX0 : _clipY0, hi = xMajor ? _clipX1 : _clipY1;
+        int i0 = (int)Math.Clamp(MathF.Floor(start + 0.5f), lo, hi), i1 = (int)Math.Clamp(MathF.Floor(end + 0.5f), lo, hi);
         for (int i = i0; i < i1; i++)
         {
             float center = i + 0.5f;
@@ -220,7 +221,7 @@ internal sealed partial class GlContext
         {
             return;
         }
-        int s = Math.Max(1, (int)MathF.Round(size));
+        int s = Math.Clamp((int)MathF.Round(size), 1, MaxLineWidth);
         int x0 = (int)MathF.Floor(p.X - (s / 2f) + 0.5f), y0 = (int)MathF.Floor(p.Y - (s / 2f) + 0.5f);
         for (int y = Math.Max(y0, _clipY0); y < Math.Min(y0 + s, _clipY1); y++)
         {

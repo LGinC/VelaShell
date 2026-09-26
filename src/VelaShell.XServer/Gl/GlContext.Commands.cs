@@ -22,7 +22,7 @@ internal sealed partial class GlContext
         switch (opcode)
         {
             case 1:   // CallList
-                CallList(r.U32());
+                _ = CallList(r.U32());
                 break;
             case 2:   // CallLists
                 CallLists(ref r);
@@ -583,7 +583,10 @@ internal sealed partial class GlContext
                 SetError(GlEnum.INVALID_ENUM);
                 return;
             }
-            CallList(State.ListBase + offset);
+            if (!CallList(State.ListBase + offset))
+            {
+                return;   // 预算用完:剩下的不再逐个空转
+            }
         }
     }
 

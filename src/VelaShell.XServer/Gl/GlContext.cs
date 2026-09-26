@@ -107,6 +107,12 @@ internal sealed partial class GlContext
     public const int MaxMatrixDepth = 32;
     public const int MaxAttribDepth = 16;
 
+    /// <summary>
+    /// 非抗锯齿线宽与点大小的上限(LINE_WIDTH_RANGE / POINT_SIZE_RANGE 报的最大值)。§3.3、§3.4:给的宽度先取整,
+    /// 再夹到实现的上限 —— 不夹的话一条线宽 2^31 的线每个像素都要走 2^31 次。
+    /// </summary>
+    public const int MaxLineWidth = 64;
+
     private readonly Stack<(GlState State, uint Mask)> _attribStack = new();
     private readonly List<Matrix4x4> _modelview = [Matrix4x4.Identity];
     private readonly List<Matrix4x4> _projection = [Matrix4x4.Identity];
@@ -120,9 +126,16 @@ internal sealed partial class GlContext
 
     /// <summary>
     /// 一个请求里显示列表展开执行的命令数上限:列表可以互相调用,嵌套 64 层、每层调两次就是 2^64 条 ——
-    /// 超出后不再展开并记 OUT_OF_MEMORY,免得一个客户端卡住执行线程。
+    /// 超出后不再展开并记 OUT_OF_MEMORY,免得一个客户端卡住执行线程。每次 CallList(包括调空列表、调不存在的列表)
+    /// 也算一条:否则一个装着「CallLists 一百万个空列表」的列表被调一百万次,就是 10^12 次空转而一条都不计。
     /// </summary>
     public const long ListCommandBudget = 4_000_000;
+
+    /// <summary>
+    /// 一组共享上下文里显示列表名的上限。GenLists 的 range 可以到 2^31,照单全收就是几十亿个空列表;
+    /// 名字分完了按 §5.4 返回 0(不生成任何名字)。
+    /// </summary>
+    public const int MaxLists = 1 << 16;
 
     private long _budget = ListCommandBudget;
 
@@ -267,6 +280,10 @@ internal sealed partial class GlContext
 
     public uint ListMode => _compiling is null ? 0 : _compileMode;
 
+    /// <summary>
+    /// GenLists(§5.4):找一段 <paramref name="range" /> 个连续的、没用过的名字并登记成空列表。range 为 0、
+    /// 名字不够(见 <see cref="MaxLists" />)时不生成任何名字,返回 0。
+    /// </summary>
     public uint GenLists(int range)
     {
         if (range < 0)
@@ -274,36 +291,36 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return 0;
         }
-        if (range == 0)
+        if (range == 0 || range > MaxLists - Shared.Lists.Count)
         {
             return 0;
         }
-        // 找一段连续的、没用过的名字。
-        uint start = 1;
-        while (true)
+        // 已占的名字排个序,找第一个够大的空档。用 long 算:名字是 32 位,在 uint 上加会回绕成死循环。
+        long start = 1;
+        foreach (uint used in Shared.Lists.Keys.Order())
         {
-            bool free = true;
-            for (uint i = 0; i < range; i++)
+            if (used < start)
             {
-                if (Shared.Lists.ContainsKey(start + i))
-                {
-                    start += i + 1;
-                    free = false;
-                    break;
-                }
+                continue;
             }
-            if (free)
+            if (used - start >= range)
             {
                 break;
             }
+            start = (long)used + 1;
         }
-        for (uint i = 0; i < range; i++)
+        if (start + range - 1 > uint.MaxValue)
         {
-            Shared.Lists[start + i] = [];
+            return 0;
         }
-        return start;
+        for (long i = 0; i < range; i++)
+        {
+            Shared.Lists[(uint)(start + i)] = [];
+        }
+        return (uint)start;
     }
 
+    /// <summary>DeleteLists(§5.4):删掉 [list, list + range) 里存在的列表。range 比现有的列表还多时改为遍历现有的列表,不按 range 空转。</summary>
     public void DeleteLists(uint list, int range)
     {
         if (range < 0)
@@ -311,19 +328,33 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
-        for (uint i = 0; i < range; i++)
+        ulong end = list + (ulong)range;
+        if (range <= Shared.Lists.Count)
         {
-            Shared.Lists.Remove(list + i);
+            for (ulong name = list; name < end; name++)
+            {
+                Shared.Lists.Remove((uint)name);
+            }
+            return;
+        }
+        foreach (uint name in Shared.Lists.Keys.Where(name => name >= list && name < end).ToArray())
+        {
+            Shared.Lists.Remove(name);
         }
     }
 
     public bool IsList(uint list) => Shared.Lists.ContainsKey(list);
 
-    private void CallList(uint list)
+    /// <summary>执行一个显示列表;这一次调用本身也算预算里的一条。预算用完返回 false,调用方(CallLists)随之停下。</summary>
+    private bool CallList(uint list)
     {
+        if (!Spend())
+        {
+            return false;
+        }
         if (_callDepth >= MaxListNesting || !Shared.Lists.TryGetValue(list, out List<GlCommand>? commands))
         {
-            return;
+            return true;
         }
         _callDepth++;
         try
@@ -331,18 +362,33 @@ internal sealed partial class GlContext
             // 执行期间列表可能被重新定义(不会,编译时不执行 NewList):照当时的快照执行。
             foreach (GlCommand command in commands.ToArray())
             {
-                if (--_budget < 0)
+                if (!Spend())
                 {
-                    SetError(GlEnum.OUT_OF_MEMORY);
-                    return;
+                    return false;
                 }
                 Execute(command.Opcode, command.Body, command.BigEndian);
             }
+            return _budget >= 0;
         }
         finally
         {
             _callDepth--;
         }
+    }
+
+    /// <summary>从这个请求的展开预算里花一条;花光时记一次 OUT_OF_MEMORY 并返回 false。</summary>
+    private bool Spend()
+    {
+        if (--_budget >= 0)
+        {
+            return true;
+        }
+        if (_budget == -1)
+        {
+            SetError(GlEnum.OUT_OF_MEMORY);
+        }
+        _budget = -1;   // 停在 -1:之后的调用都直接返回,不会一路减到回绕
+        return false;
     }
 
     // ------------------------------------------------------------------ 纹理名

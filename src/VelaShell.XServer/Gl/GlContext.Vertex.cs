@@ -948,7 +948,14 @@ internal sealed partial class GlContext
         {
             return;
         }
-        for (int v = 0; v < count && r.Remaining > 0; v++)
+        // 顶点数以数据里真有的为准:一个数组都没给(每个顶点 0 字节)时不空转 count 次。
+        int stride = 0;
+        foreach ((_, _, int bytes) in info)
+        {
+            stride += (bytes + 3) & ~3;
+        }
+        int vertices = stride == 0 ? 0 : Math.Min(count, r.Remaining / stride);
+        for (int v = 0; v < vertices; v++)
         {
             Vector4 position = new(0, 0, 0, 1);
             bool hasVertex = false;
