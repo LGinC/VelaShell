@@ -214,4 +214,47 @@ public sealed class RobustnessTests
         Assert.IsTrue(host.Mapped[small].ReadPixels((_, width, height) => (w, h) = (width, height)));
         Assert.IsLessThanOrEqualTo(VelaShell.XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
     }
+
+    [TestMethod]
+    public async Task InternAtom的名字合计超上限回BadAlloc_已有的原子照常取得到()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        int max = (int)(X11Server.MaxAtomNameBytes / 65535) + 2;
+        XMessage? refused = null;
+        for (int i = 0; i < max && refused is null; i++)
+        {
+            byte[] name = new byte[65535];
+            Array.Fill(name, (byte)'a');
+            BitConverter.GetBytes(i).CopyTo(name, 0);
+            XMessage reply = await c.RequestAsync(16, 0, b => b.U16(65535).U16(0).Bytes(name));
+            refused = reply.IsError ? reply : null;
+        }
+        Assert.IsNotNull(refused, "原子名合计超过上限之后应当拒绝");
+        Assert.AreEqual(BadAlloc, refused.Detail);
+
+        XMessage wmName = await c.RequestAsync(16, 0, b => b.U16(7).U16(0).Bytes("WM_NAME"u8.ToArray()));
+        Assert.AreEqual(39u, wmName.U32(8), "已经有的原子照常返回(预定义的 WM_NAME)");
+    }
+
+    [TestMethod]
+    public async Task ChangeProperty追加到超过属性上限回BadAlloc_原来的值不变()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte bigRequests = (await c.RequestAsync(98, 0, b => b.U16(12).U16(0).Bytes("BIG-REQUESTS"u8.ToArray()))).Bytes[9];
+        await c.RequestAsync(bigRequests, 0);
+        uint window = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+
+        byte[] chunk = new byte[15 * 1024 * 1024];
+        await c.SendAsync(18, 0, b => b.U32(window).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)chunk.Length).Bytes(chunk), bigRequest: true);
+        await c.SendAsync(18, 2, b => b.U32(window).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)chunk.Length).Bytes(chunk), bigRequest: true);
+        ushort third = await c.SendAsync(18, 2, b => b.U32(window).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)chunk.Length).Bytes(chunk), bigRequest: true);
+        XMessage error = await c.NextAsync(m => m.IsError && m.Sequence == third);
+        Assert.AreEqual(BadAlloc, error.Detail, "45 MB 超过了 32 MB 的上限");
+
+        XMessage property = await c.RequestAsync(20, 0, b => b.U32(window).U32(39).U32(0).U32(0).U32(0));   // GetProperty,长度 0:只看 bytes-after
+        Assert.AreEqual((uint)(2 * chunk.Length), property.U32(12), "前两次追加照常生效");
+    }
 }

@@ -18,8 +18,21 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
+    /// <summary>
+    /// 客户端经 InternAtom 能建的原子数上限。原子一旦建了就永不释放(协议如此),不设上限一个客户端就能把内存吃光;
+    /// 真实程序建的是几百到几千个。服务端自己建的(预定义、EWMH、XKB 的名字……)不受限。
+    /// </summary>
+    internal const int MaxAtoms = 1 << 18;
+
+    /// <summary>全部原子名合计的字节上限(一个名字可以到 65535 字节)。</summary>
+    internal const long MaxAtomNameBytes = 16L * 1024 * 1024;
+
+    /// <summary>一个属性的值最多这么多字节。ChangeProperty 的 Append / Prepend 能让它一直涨;_NET_WM_ICON 这种大户也不过几 MB。</summary>
+    internal const long MaxPropertyBytes = 32L * 1024 * 1024;
+
     private readonly Dictionary<string, uint> _atomsByName = [with(StringComparer.Ordinal)];
     private readonly List<string> _atomNames = [];
+    private long _atomNameBytes;
     private readonly Dictionary<uint, (XWindow Window, XClient? Client, uint Time)> _selections = [];
 
     private void InitAtoms()
@@ -40,6 +53,7 @@ public sealed partial class X11Server
         atom = (uint)_atomNames.Count;
         _atomNames.Add(name);
         _atomsByName[name] = atom;
+        _atomNameBytes += name.Length;
         return atom;
     }
 
@@ -61,7 +75,15 @@ public sealed partial class X11Server
         int length = r.U16();
         r.Skip(2);
         string name = r.String8(length);
-        uint atom = onlyIfExists ? _atomsByName.GetValueOrDefault(name) : Intern(name);
+        uint atom = _atomsByName.GetValueOrDefault(name);
+        if (atom == 0 && !onlyIfExists)
+        {
+            if (_atomNames.Count >= MaxAtoms || _atomNameBytes + name.Length > MaxAtomNameBytes)
+            {
+                throw new XProtocolError(XErrorCode.Alloc);
+            }
+            atom = Intern(name);
+        }
         c.Reply(0, w => w.U32(atom).Zero(20));
     }
 
@@ -99,14 +121,18 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Length);
         }
-        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
-
-        if (mode != 0 && window.Properties.TryGetValue(property, out XProperty? existing))
+        XProperty? existing = mode != 0 ? window.Properties.GetValueOrDefault(property) : null;
+        if (existing is not null && (existing.Type != type || existing.Format != format))
         {
-            if (existing.Type != type || existing.Format != format)
-            {
-                throw new XProtocolError(XErrorCode.Match);
-            }
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        if (byteCount + (existing?.Data.Length ?? 0) > MaxPropertyBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 先算再拼:不为一个注定超限的值分配
+        }
+        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
+        if (existing is not null)
+        {
             data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
         }
         window.Properties[property] = new XProperty(type, format, data);
