@@ -122,11 +122,11 @@ public sealed class RegionTests
     }
 
     [TestMethod]
-    public void 两万块的棋盘格并一个矩形与一次性建区域都是近线性的()
+    public void 一万六千块的棋盘格并一个矩形与一次性建区域都是近线性的()
     {
-        // 旧的矩形表实现:每并一块都要与已有的每一块互减,两万块是亿级的运算。
+        // 旧的矩形表实现:每并一块都要与已有的每一块互减,一万多块就是亿级的运算。
         List<XRect> board = [];
-        for (int y = 0; y < 200; y++)
+        for (int y = 0; y < 160; y++)
         {
             for (int x = y % 2; x < 200; x += 2)
             {
@@ -138,7 +138,40 @@ public sealed class RegionTests
         region.Union(new XRect(50, 50, 100, 100));
         region.Subtract(new XRect(0, 0, 10, 10));
         watch.Stop();
-        Assert.AreEqual(20000 - (100 * 100 / 2) - (10 * 10 / 2) + (100 * 100), region.Rects.Sum(r => r.Width * r.Height));
+        Assert.IsFalse(region.Saturated, "一万六千块在上限之内");
+        Assert.AreEqual(16000 - (100 * 100 / 2) - (10 * 10 / 2) + (100 * 100), region.Rects.Sum(r => r.Width * r.Height));
         Assert.IsLessThan(2000, watch.ElapsedMilliseconds, $"用了 {watch.ElapsedMilliseconds} 毫秒");
+    }
+
+    [TestMethod]
+    public void 块数超上限退化成外接矩形并置上Saturated_参与运算的结果也带着它()
+    {
+        List<XRect> dots = [.. Enumerable.Range(0, Region.MaxRects + 1).Select(i => new XRect(i * 2, 0, 1, 1))];
+        Region tooMany = Region.FromRects(dots);
+        Assert.IsTrue(tooMany.Saturated);
+        CollectionAssert.AreEqual(new[] { new XRect(0, 0, (Region.MaxRects * 2) + 1, 1) }, tooMany.Rects.ToArray());
+
+        // 横条减竖条:结果是一张网格,块数是两边的乘积。
+        Region bars = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(0, i * 2, 400, 1)));
+        Region columns = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(i * 2, 0, 1, 400)));
+        Assert.IsFalse(bars.Saturated || columns.Saturated);
+        Region grid = bars.Clone().Subtract(columns);
+        Assert.IsTrue(grid.Saturated, "200 × 200 块超了上限");
+        Assert.AreEqual(bars.Bounds, grid.Bounds, "差退化成被减数的外接矩形:盖住真实结果");
+        Assert.IsTrue(grid.Clone().Union(new XRect(0, 0, 1, 1)).Saturated, "由它算出来的也带着标志");
+    }
+
+    [TestMethod]
+    public void 一带很多段被很多带切开时按预算止损_不会退化成平方()
+    {
+        // 一带里一万六千段;减数是一万六千条细带,与它们都不相交 —— 每条细带都要把那一带整个过一遍。
+        const int n = 16000;
+        Region comb = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect(i * 2, 0, 1, n * 2)));
+        Region thin = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect((n * 2) + 10, i * 2, 1, 1)));
+        Stopwatch watch = Stopwatch.StartNew();
+        Region result = comb.Clone().Subtract(thin);
+        watch.Stop();
+        Assert.IsTrue(result.Saturated, "超了归并预算");
+        Assert.IsLessThan(1000, watch.ElapsedMilliseconds, $"用了 {watch.ElapsedMilliseconds} 毫秒");
     }
 }

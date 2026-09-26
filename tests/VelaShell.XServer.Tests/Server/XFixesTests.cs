@@ -173,4 +173,27 @@ public sealed class XFixesTests
         XMessage twice = await c.RequestAsync(major, 32, b => b.U32(barrier));
         Assert.AreEqual(129, twice.Bytes[1], "删过一次就不在了");
     }
+
+    [TestMethod]
+    public async Task 棋盘格位图建区域回BadAlloc()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        uint bitmap = c.NewId(), gc = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(bitmap).U32(c.RootWindow).U16(256).U16(256));   // CreatePixmap 深度 1
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(bitmap).U32(0));
+        // 256×256 的棋盘格:每行 128 段,一共 32768 段。ZPixmap 深度 1,每行 32 字节,低位在前。
+        byte[] image = new byte[32 * 256];
+        for (int y = 0; y < 256; y++)
+        {
+            Array.Fill(image, y % 2 == 0 ? (byte)0x55 : (byte)0xAA, y * 32, 32);
+        }
+        await c.SendAsync(72, 2, b => b.U32(bitmap).U32(gc).U16(256).U16(256).I16(0).I16(0).U8(0).U8(1).U16(0).Bytes(image));
+
+        uint region = c.NewId();
+        XMessage error = await c.RequestAsync(major, 6, b => b.U32(region).U32(bitmap));   // CreateRegionFromBitmap
+        Assert.IsTrue(error.IsError);
+        Assert.AreEqual(11, error.Detail, "BadAlloc");
+    }
 }

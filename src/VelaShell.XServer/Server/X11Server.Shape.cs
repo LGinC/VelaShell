@@ -168,7 +168,7 @@ public sealed partial class X11Server
             ShapeInvert => source.Subtract(dest),   // dest = source − dest
             _ => throw new XProtocolError(XErrorCode.Value, op),
         };
-        SetShape(window, kind, result);
+        SetShape(window, kind, Exact(result));
     }
 
     /// <summary>设形状,重画受影响的区域,通知宿主与选了 ShapeNotify 的客户端。</summary>
@@ -212,7 +212,16 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>深度 1 位图里为 1 的像素组成的区域(逐行扫出连续的一段;扫出来的本身就是分好带的,一趟建成)。</summary>
+    /// <summary>
+    /// 客户端要的区域(形状、XFIXES 区域、RENDER / GC 裁剪)超了 <see cref="Region.MaxRects" /> 或归并预算:回 BadAlloc ——
+    /// 不拿一个近似的外接矩形冒充它要的区域。服务端内部算出来的可见区域、损伤超限时照常用近似值(多不少)。
+    /// </summary>
+    private static Region Exact(Region region) => region.Saturated ? throw new XProtocolError(XErrorCode.Alloc) : region;
+
+    /// <summary>
+    /// 深度 1 位图里为 1 的像素组成的区域(逐行扫出连续的一段;扫出来的本身就是分好带的,一趟建成)。
+    /// 段数超过 <see cref="Region.MaxRects" />(棋盘格之类)就不再扫,返回超限的区域。
+    /// </summary>
     private static Region RegionFromBitmap(PixelBuffer bitmap)
     {
         List<XRect> spans = [];
@@ -233,6 +242,10 @@ public sealed partial class X11Server
                 if (x > start)
                 {
                     spans.Add(new XRect(start, y, x - start, 1));
+                    if (spans.Count > Region.MaxRects)
+                    {
+                        return Region.OverLimit(bitmap.Bounds);
+                    }
                 }
             }
         }

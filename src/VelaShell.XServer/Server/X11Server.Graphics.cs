@@ -227,6 +227,10 @@ public sealed partial class X11Server
         gc.ClipXOrigin = r.I16();
         gc.ClipYOrigin = r.I16();
         List<XRect> rects = [];
+        if (r.Remaining / 8 > Region.MaxRects)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 每次画都要按它建一次区域(Rasterizer),块数与区域同一个上限
+        }
         while (r.Remaining >= 8)
         {
             rects.Add(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));

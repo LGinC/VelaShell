@@ -97,7 +97,7 @@ public sealed partial class X11Server
             case 5:   // CreateRegion
                 {
                     uint id = r.U32();
-                    AddResource(c, new XRegionResource(id, c, ReadRegionRects(r)));
+                    AddResource(c, new XRegionResource(id, c, Exact(ReadRegionRects(r))));
                     break;
                 }
             case 6:   // CreateRegionFromBitmap
@@ -109,7 +109,7 @@ public sealed partial class X11Server
                     {
                         throw new XProtocolError(XErrorCode.Match);
                     }
-                    AddResource(c, new XRegionResource(id, c, RegionFromBitmap(bitmap.Buffer)));
+                    AddResource(c, new XRegionResource(id, c, Exact(RegionFromBitmap(bitmap.Buffer))));
                     break;
                 }
             case 7:   // CreateRegionFromWindow
@@ -128,7 +128,7 @@ public sealed partial class X11Server
                     {
                         throw new XProtocolError(XErrorCode.Match);
                     }
-                    AddResource(c, new XRegionResource(id, c, Region.FromRects(gc.ClipRects ?? [])));
+                    AddResource(c, new XRegionResource(id, c, Exact(Region.FromRects(gc.ClipRects ?? []))));
                     break;
                 }
             case 9:   // CreateRegionFromPicture
@@ -145,7 +145,7 @@ public sealed partial class X11Server
                     break;
                 }
             case 11:  // SetRegion
-                RegionRes(r.U32()).Region = ReadRegionRects(r);
+                RegionRes(r.U32()).Region = Exact(ReadRegionRects(r));
                 break;
             case 12:  // CopyRegion
                 {
@@ -161,19 +161,19 @@ public sealed partial class X11Server
                     Region a = RegionRes(r.U32()).Region.Clone();
                     Region b = RegionRes(r.U32()).Region;
                     XRegionResource dst = RegionRes(r.U32());
-                    dst.Region = op switch
+                    dst.Region = Exact(op switch
                     {
                         13 => a.Union(b),
                         14 => a.Intersect(b),
                         _ => a.Subtract(b),
-                    };
+                    });
                     break;
                 }
             case 16:  // InvertRegion:dst = bounds − src
                 {
                     Region src = RegionRes(r.U32()).Region;
                     XRect bounds = new(r.I16(), r.I16(), r.U16(), r.U16());
-                    RegionRes(r.U32()).Region = new Region(bounds).Subtract(src);
+                    RegionRes(r.U32()).Region = Exact(new Region(bounds).Subtract(src));
                     break;
                 }
             case 17:  // TranslateRegion
@@ -263,8 +263,8 @@ public sealed partial class X11Server
                     Region src = RegionRes(r.U32()).Region;
                     XRegionResource dst = RegionRes(r.U32());
                     int left = r.U16(), right = r.U16(), top = r.U16(), bottom = r.U16();
-                    dst.Region = Region.FromRects(src.Rects.Select(rect =>
-                        new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom)));
+                    dst.Region = Exact(Region.FromRects(src.Rects.Select(rect =>
+                        new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom))));
                     break;
                 }
             case 29:  // HideCursor

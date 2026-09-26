@@ -116,4 +116,26 @@ public sealed class ShapeTests
         XMessage outside = await c.NextEventAsync(4);
         Assert.AreEqual(top, outside.U32(12), "形状外面穿过子窗口落到父窗口");
     }
+
+    [TestMethod]
+    public async Task 两万块矩形的形状回BadAlloc_不把执行线程拖住()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        uint window = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(400).U16(400).U16(0).U16(1).U32(0).U32(0));
+
+        // 两万个互不相接的 1×1:旧的矩形表实现每加一块都要与已有的每一块互减。
+        XMessage error = await c.RequestAsync(major, 1, b =>
+        {
+            b.U8(0).U8(0).U8(0).U8(0).U32(window).I16(0).I16(0);   // Set、Bounding、UnSorted
+            for (int i = 0; i < 20000; i++)
+            {
+                b.I16((short)(i % 200 * 2)).I16((short)(i / 200 * 2)).U16(1).U16(1);
+            }
+        });
+        Assert.IsTrue(error.IsError);
+        Assert.AreEqual(11, error.Detail, "BadAlloc");
+    }
 }

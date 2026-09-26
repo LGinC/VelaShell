@@ -185,7 +185,7 @@ public sealed partial class X11Server
                     {
                         throw new XProtocolError(XErrorCode.Match);
                     }
-                    p.Clip = RegionFromBitmap(clip.Buffer);
+                    p.Clip = Exact(RegionFromBitmap(clip.Buffer));
                     break;
                 case 8: p.SubwindowMode = (byte)v; break;
                 case 12: p.ComponentAlpha = v != 0; break;
@@ -205,7 +205,7 @@ public sealed partial class X11Server
         {
             rects.Add(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
         }
-        p.Clip = Region.FromRects(rects);
+        p.Clip = Exact(Region.FromRects(rects));
     }
 
     private void FreePicture(XRequestReader r)
