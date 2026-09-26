@@ -27,8 +27,18 @@ internal sealed class XClient : IDisposable
     /// <summary>已读进来、还没执行的请求上限:读端到了上限就等执行线程消化,给发得太快的客户端施加背压。</summary>
     public const int MaxPendingRequests = 1024;
 
+    /// <summary>
+    /// 已读进来、还没执行的请求合计的字节上限。只数条数的话,1024 条 × 16 MB 的大请求就是 16 GB ——
+    /// SYNC 的 Await、别人的 GrabServer 挂住的请求一直占着。一条请求本身比上限大(BIG-REQUESTS 最大 16 MB)时,
+    /// 只要前面的都执行完了照样放行,不会卡死。只按客户端各自算,不设全局上限:全局上限会让 GrabServer 的持有者
+    /// 连 UngrabServer 都发不进来(字节被别人挂住的请求占满了),就是死锁。
+    /// </summary>
+    public const long MaxPendingRequestBytes = 32L * 1024 * 1024;
+
     private readonly CancellationTokenSource _abort = new();
     private long _queuedBytes;
+    private long _pendingRequestBytes;
+    private TaskCompletionSource? _requestBytesWaiter;
 
     public XClient(int index, bool bigEndian)
     {
@@ -89,6 +99,43 @@ internal sealed class XClient : IDisposable
 
     /// <summary>写出端写掉了这么多字节。</summary>
     public void NoteWritten(long count) => Interlocked.Add(ref _queuedBytes, -count);
+
+    /// <summary>
+    /// 读端要读进一条 <paramref name="bytes" /> 字节的请求:未执行的请求合计超出 <see cref="MaxPendingRequestBytes" /> 时
+    /// 先等执行线程消化(<see cref="ReleaseRequestBytes" />)。只由这个连接的读端调(单线程)。
+    /// </summary>
+    public async ValueTask ReserveRequestBytesAsync(int bytes, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            if (Fits())
+            {
+                Interlocked.Add(ref _pendingRequestBytes, bytes);
+                return;
+            }
+            TaskCompletionSource waiter = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            Volatile.Write(ref _requestBytesWaiter, waiter);
+            if (Fits())   // 登记之后再看一眼:登记之前刚好放掉的那一次不会丢
+            {
+                Volatile.Write(ref _requestBytesWaiter, null);
+                continue;
+            }
+            await waiter.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        bool Fits()
+        {
+            long pending = Volatile.Read(ref _pendingRequestBytes);
+            return pending == 0 || pending + bytes <= MaxPendingRequestBytes;
+        }
+    }
+
+    /// <summary>一条请求执行了(或连接收工时丢掉了):把它占的字节还回去。执行线程上调。</summary>
+    public void ReleaseRequestBytes(int bytes)
+    {
+        Interlocked.Add(ref _pendingRequestBytes, -bytes);
+        Interlocked.Exchange(ref _requestBytesWaiter, null)?.TrySetResult();
+    }
 
     /// <summary>连接结束时释放(断开的信号源与请求名额)。之后再 <see cref="Abort" /> 是空操作。</summary>
     /// <remarks>

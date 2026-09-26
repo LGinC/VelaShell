@@ -16,6 +16,7 @@ public sealed partial class X11Server
     private void ExecuteRequest(XClient client, byte[] request)
     {
         client.PendingRequests.Release();   // 这条请求已从队列里取出:读端可以再读一条
+        client.ReleaseRequestBytes(request.Length);
         if (client.Closed)
         {
             return;
