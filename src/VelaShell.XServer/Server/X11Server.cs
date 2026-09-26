@@ -219,7 +219,8 @@ public sealed partial class X11Server : IAsyncDisposable
 
     /// <summary>
     /// 按钮按下 / 松开(内区坐标)。1 左、2 中、3 右;滚轮向上 4、向下 5、向左 6、向右 7(宿主应当为每格滚动注入一次按下 + 松开);
-    /// 8、9 是后退 / 前进侧键。
+    /// 8、9 是后退 / 前进侧键。窗口已经不在时,按下照例忽略,松开照样生效(不挪指针)—— 按下之后窗口没了(弹出菜单一点就关),
+    /// 松开要是也丢了,X 这边那个按钮就一直按着、自动抓取也不解除。
     /// </summary>
     public void InjectPointerButton(XTopLevelWindow window, int x, int y, int button, bool pressed)
     {
@@ -231,6 +232,10 @@ public sealed partial class X11Server : IAsyncDisposable
             if (LiveTopLevel(window) is { } top)
             {
                 ApplyPointerButton(top, x, y, button, pressed);
+            }
+            else if (!pressed)
+            {
+                ApplyPointerButtonRelease(button);
             }
         });
     }

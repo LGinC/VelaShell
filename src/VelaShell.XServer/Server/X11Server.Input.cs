@@ -69,6 +69,19 @@ public sealed partial class X11Server
         });
     }
 
+    /// <summary>松开一个按钮,指针留在原处(按下它的那个顶层已经不在了);X 这边并没按着它就什么也不做。</summary>
+    private void ApplyPointerButtonRelease(int button)
+    {
+        NoteUserActivity();
+        ProcessPointerInput(() =>
+        {
+            if ((_buttonsDown[button >> 3] & (1 << (button & 7))) != 0)
+            {
+                ButtonEvent(button, false);
+            }
+        });
+    }
+
     /// <summary>指针离开了所有顶层窗口。</summary>
     private void ApplyPointerLeave() => ProcessPointerInput(() => MovePointer(-1, -1));
 

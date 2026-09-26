@@ -244,6 +244,45 @@ public sealed class AvaloniaXServerHostUiTests
     }, CancellationToken.None);
 
     /// <summary>
+    /// 按钮按着的时候窗口失活(Alt+Tab、别的窗口抢走)或失去捕获:之后的松开不会再送到这个窗口,X 那边要替它松开 ——
+    /// 否则那个按钮一直按着、自动抓取也一直不解除。之后真的松开时不再补一次。
+    /// headless 平台不发 Deactivated / PointerCaptureLost,这里直接调那两个处理器都调的 <see cref="XNativeWindow.ReleaseHeldButtons" />。
+    /// </summary>
+    [TestMethod]
+    public async Task ReleaseHeldButtons_ReleasesInX_AndTheLaterMouseUpIsNotRepeated() => await _session.Dispatch(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte> events = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, events);
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0)
+            .U32(0x800).U32(0x4 | 0x8));                                                  // ButtonPress | ButtonRelease
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        native.Activate();
+
+        native.MouseDown(new Point(5, 5), MouseButton.Left);
+        await WaitForAsync(() => events.Contains((byte)4) ? native : null);           // ButtonPress
+
+        native.ReleaseHeldButtons();
+        await WaitForAsync(() => events.Count(e => e == 5) == 1 ? native : null);       // ButtonRelease
+        native.MouseUp(new Point(5, 5), MouseButton.Left);                               // 之后真的松开:不再补一个
+        await Task.Delay(100);
+        Dispatcher.UIThread.RunJobs();
+        Assert.AreEqual(1, events.Count(e => e == 5), "松开只有一次");
+
+        native.CloseByHost();
+        host.Detach();
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+        return true;
+    }, CancellationToken.None);
+
+    /// <summary>
     /// 原生窗口按 256 × 256 切块、只取损伤矩形:跨块的窗口、后来只改了右下角一小块、客户端改了尺寸(缓冲变大、块数变多)之后,
     /// 各块的像素都对,没改到的地方保持原样。
     /// </summary>
@@ -348,7 +387,7 @@ public sealed class AvaloniaXServerHostUiTests
 
     // ------------------------------------------------------------------ 最小的 X 客户端(小端)
 
-    private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream)
+    private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte>? events = null)
     {
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
@@ -362,8 +401,32 @@ public sealed class AvaloniaXServerHostUiTests
         int vendor = BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(24));
         int formats = reply[29];
         uint root = BinaryPrimitives.ReadUInt32LittleEndian(reply.AsSpan(40 + ((vendor + 3) & ~3) + (formats * 8)));
-        _ = ReadAndDiscardAsync(stream);   // 事件与回复一概不看,只要别把管道堵住
+        _ = events is null ? ReadAndDiscardAsync(stream) : ReadEventsAsync(stream, events);   // 不看的就读掉,只要别把管道堵住
         return (idBase, root);
+    }
+
+    /// <summary>记下收到的事件码(回复与错误跳过)。</summary>
+    private static async Task ReadEventsAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte> events)
+    {
+        byte[] head = new byte[32];
+        try
+        {
+            while (true)
+            {
+                await stream.ReadExactlyAsync(head);
+                if (head[0] == 1 || (head[0] & 0x7F) == 35)
+                {
+                    await stream.ReadExactlyAsync(new byte[BinaryPrimitives.ReadUInt32LittleEndian(head.AsSpan(4)) * 4]);
+                }
+                if (head[0] > 1)
+                {
+                    events.Enqueue((byte)(head[0] & 0x7F));
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or EndOfStreamException)
+        {
+        }
     }
 
     private static async Task ReadAndDiscardAsync(Stream stream)

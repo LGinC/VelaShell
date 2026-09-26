@@ -30,7 +30,13 @@ public sealed class XNativeWindow : Window
     private readonly XSurface _surface;
     private readonly HashSet<byte> _heldKeys = [];
     private PointerPressedEventArgs? _lastPress;
-    private bool _buttonHeld;
+
+    /// <summary>
+    /// 在 X 那边按着的按钮(X 的按钮号)与最后一次指针位置(内区物理像素)。只记一个 bool 的话,两个按钮同时按着、松开一个
+    /// 就当全松开了;失去捕获(系统拖动循环、别的窗口抢走)或窗口失活之后等不到的那些松开,由 <see cref="ReleaseHeldButtons" /> 补上。
+    /// </summary>
+    private readonly HashSet<int> _heldButtons = [];
+    private (int X, int Y) _lastPointer;
     private bool _applying;
     private bool _closingByHost;
     private Vector _wheelRemainder;
@@ -193,7 +199,7 @@ public sealed class XNativeWindow : Window
     /// <summary>客户端经 <c>_NET_WM_MOVERESIZE</c> 要求拖动 / 缩放:用系统的拖动循环(要一次还按着的按下事件)。</summary>
     public void BeginInteractive(XMoveResizeDirection direction)
     {
-        if (_lastPress is not { } press || !_buttonHeld)
+        if (_lastPress is not { } press || _heldButtons.Count == 0)
         {
             return;
         }
@@ -299,7 +305,30 @@ public sealed class XNativeWindow : Window
             }
         }
         _heldKeys.Clear();
+        ReleaseHeldButtons();
         _host.OnWindowDeactivated(this);
+    }
+
+    /// <summary>X 那边还按着的按钮一律松开(在最后一次指针位置)。失去捕获、窗口失活时调:之后的松开不会再送到这个窗口。</summary>
+    internal void ReleaseHeldButtons()
+    {
+        if (_heldButtons.Count == 0)
+        {
+            return;
+        }
+        int[] held = [.. _heldButtons];
+        _heldButtons.Clear();
+        foreach (int button in held)
+        {
+            Server?.InjectPointerButton(Handle, _lastPointer.X, _lastPointer.Y, button, pressed: false);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
+    {
+        base.OnPointerCaptureLost(e);
+        ReleaseHeldButtons();
     }
 
     /// <summary>系统边框的尺寸(物理像素)告诉服务端(<c>_NET_FRAME_EXTENTS</c>),摆放时也用它把内容区对准 X 的坐标。</summary>
@@ -365,6 +394,7 @@ public sealed class XNativeWindow : Window
     {
         base.OnPointerMoved(e);
         (int x, int y) = ToPixels(e.GetPosition(_surface));
+        _lastPointer = (x, y);
         Server?.InjectPointerMotion(Handle, x, y);
     }
 
@@ -387,8 +417,9 @@ public sealed class XNativeWindow : Window
             return;
         }
         _lastPress = e;
-        _buttonHeld = true;
+        _heldButtons.Add(button);
         (int x, int y) = ToPixels(e.GetPosition(_surface));
+        _lastPointer = (x, y);
         Server?.InjectPointerButton(Handle, x, y, button, pressed: true);
         e.Handled = true;
     }
@@ -402,10 +433,14 @@ public sealed class XNativeWindow : Window
         {
             return;
         }
-        _buttonHeld = false;
-        (int x, int y) = ToPixels(e.GetPosition(_surface));
-        Server?.InjectPointerButton(Handle, x, y, button, pressed: false);
         e.Handled = true;
+        if (!_heldButtons.Remove(button))
+        {
+            return;   // 按下没送到 X(或者失去捕获时已经替它松开了):不补一个没有按下的松开
+        }
+        (int x, int y) = ToPixels(e.GetPosition(_surface));
+        _lastPointer = (x, y);
+        Server?.InjectPointerButton(Handle, x, y, button, pressed: false);
     }
 
     /// <inheritdoc />
@@ -440,7 +475,7 @@ public sealed class XNativeWindow : Window
     protected override void OnPointerExited(PointerEventArgs e)
     {
         base.OnPointerExited(e);
-        if (!_buttonHeld)
+        if (_heldButtons.Count == 0)
         {
             Server?.InjectPointerLeave();
         }

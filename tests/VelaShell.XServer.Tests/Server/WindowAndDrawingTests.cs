@@ -289,4 +289,21 @@ public sealed class WindowAndDrawingTests
         XMessage focus = await receiver.RequestAsync(43, 0);
         Assert.IsTrue(focus.IsReply, "收件人的协议流没有错位");
     }
+
+    [TestMethod]
+    public async Task 顶层窗口没了之后宿主注入的松开照样生效_按钮不会一直按着()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0x4);   // ButtonPress:按下时自动抓取
+        server.InjectPointerButton(handle, 5, 5, 1, pressed: true);
+        await c.NextEventAsync(4);
+
+        await c.SendAsync(4, 0, b => b.U32(win));   // 弹出菜单一点就关:窗口在按钮松开之前销毁
+        await c.SyncAsync();
+        server.InjectPointerButton(handle, 5, 5, 1, pressed: false);
+        XMessage pointer = await c.RequestAsync(38, 0, b => b.U32(c.RootWindow));   // QueryPointer
+        Assert.AreEqual(0, pointer.U16(24) & 0x100, "Button1 松开了");
+    }
 }
