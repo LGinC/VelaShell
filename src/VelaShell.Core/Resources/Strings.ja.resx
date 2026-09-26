@@ -5078,7 +5078,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>SSH X11 転送でリモートの GUI プログラムをこの PC に表示するローカル X サーバー:内蔵のもの、または Windows 上の VcXsrv。変更は次回 X Server を起動したときに反映されます。</value>
   </data>
   <data name="SetXServer_BuiltInNote" xml:space="preserve">
-    <value>X のウィンドウはそれぞれ独立したネイティブウィンドウになります。SSH の X11 転送はローカルのポートを経由せず内蔵サーバーに直接つながります。ほかのローカルの X プログラムも DISPLAY=localhost:N で接続できます。</value>
+    <value>X のウィンドウはそれぞれ独立したネイティブウィンドウになります。SSH の X11 転送はローカルのポートを経由せず内蔵サーバーに直接つながります。ほかのローカルの X プログラムも DISPLAY=localhost:N で接続できます。起動のたびに新しい認証 cookie を ~/.Xauthority に書き込み(停止時に削除)、それを読めないプログラムは接続できません。</value>
   </data>
   <data name="SetXServer_Engine" xml:space="preserve">
     <value>X サーバー</value>

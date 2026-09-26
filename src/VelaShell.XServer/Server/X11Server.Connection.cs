@@ -79,7 +79,8 @@ public sealed partial class X11Server
         {
             try
             {
-                await ServeAsync(tcp.GetStream(), local, cancellationToken).ConfigureAwait(false);
+                await ServeCoreAsync(tcp.GetStream(), new Peer(local, SameHost: false, Uid: null, LocalUser: false, Authenticated: false),
+                    cancellationToken).ConfigureAwait(false);
             }
             catch (ObjectDisposedException)
             {
@@ -111,12 +112,15 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 一条连接
 
-    /// <param name="stream">连接。</param>
-    /// <param name="isLocal">对端是不是本机(没配置 cookie 时只接受本机连接)。</param>
-    /// <param name="sameHost">经 Unix 套接字连进来的:MIT-SHM 对它可见。</param>
-    /// <param name="peerUid">对端的 uid(SO_PEERCRED);取不到为 null。</param>
-    /// <param name="cancellationToken">取消令牌。</param>
-    private async Task ServeCoreAsync(Stream stream, bool isLocal, bool sameHost, uint? peerUid, CancellationToken cancellationToken)
+    /// <summary>连接的对端:服务端对它知道多少(授权检查与 MIT-SHM 用)。</summary>
+    /// <param name="IsLocal">来自本机(环回 TCP、Unix 套接字、进程内的流)。没配置 cookie 时只接受本机连接。</param>
+    /// <param name="SameHost">经 Unix 套接字连进来的:MIT-SHM 对它可见。</param>
+    /// <param name="Uid">对端的 uid(Linux 上经 SO_PEERCRED);取不到为 null。</param>
+    /// <param name="LocalUser">能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 uid 与本进程相同)。</param>
+    /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync" />),不再查授权。</param>
+    internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated);
+
+    private async Task ServeCoreAsync(Stream stream, Peer peer, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -149,8 +153,9 @@ public sealed partial class X11Server
                 await SendSetupFailureAsync(stream, bigEndian, "Protocol version mismatch", ct).ConfigureAwait(false);
                 return;
             }
-            if (Authorize(authName, authData, isLocal) is { } reason)
+            if (Authorize(authName, authData, peer) is { } reason)
             {
+                Log($"connection refused: {reason}");
                 await SendSetupFailureAsync(stream, bigEndian, reason, ct).ConfigureAwait(false);
                 return;
             }
@@ -161,8 +166,8 @@ public sealed partial class X11Server
                 await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", ct).ConfigureAwait(false);
                 return;
             }
-            client.SameHost = sameHost;
-            client.PeerUid = peerUid;
+            client.SameHost = peer.SameHost;
+            client.PeerUid = peer.Uid;
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
             connection = CancellationTokenSource.CreateLinkedTokenSource(ct, client.Aborted);
             ct = connection.Token;
@@ -204,18 +209,40 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>授权检查;通过返回 null,否则返回给客户端看的原因。</summary>
-    private string? Authorize(string name, byte[] data, bool isLocal)
+    /// <summary>
+    /// 授权检查;通过返回 null,否则返回给客户端看的原因。依次:
+    /// ① 调用方已经验过身份的流(<see cref="ServeAuthenticatedAsync" />)放行;
+    /// ② 带了对的 MIT-MAGIC-COOKIE-1 放行;
+    /// ③ 能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 SO_PEERCRED 的 uid 相同)放行;
+    /// ④ 知道对端 uid 而它是别的用户:拒 —— Linux 抽象命名空间里的套接字没有文件权限可言,不看 uid 的话
+    ///    本机任何用户都能连进来读窗口、记键盘、经 XTEST 注入输入;
+    /// ⑤ 配置了 cookie 时其余一律拒(环回 TCP 也一样:本机别的进程、别的用户都连得到那个端口);
+    ///    没配置时与 X.Org 的主机访问控制一致,只放行本机。
+    /// </summary>
+    internal string? Authorize(string name, byte[] data, Peer peer)
     {
-        if (_options.AuthorizationCookie is { } cookie)
+        if (peer.Authenticated)
         {
-            // ⚠️ 常数时间比较:逐字节短路会泄漏「前几个字节对了几个」。
-            return name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie)
-                ? null
-                : "Authorization required, but no authorization protocol specified";
+            return null;
         }
-        // 没配置 cookie:与 X.Org 的主机访问控制一致 —— 本机放行,客户端带来的 cookie 不看。
-        return isLocal ? null : "No protocol specified: only local connections are accepted";
+        // ⚠️ 常数时间比较:逐字节短路会泄漏「前几个字节对了几个」。
+        if (_options.AuthorizationCookie is { } cookie && name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie))
+        {
+            return null;
+        }
+        if (peer.LocalUser)
+        {
+            return null;
+        }
+        if (peer.Uid is not null)
+        {
+            return "Authorization required: the connecting user does not own this display";
+        }
+        if (_options.AuthorizationCookie is not null)
+        {
+            return "Authorization required, but no authorization protocol specified";
+        }
+        return peer.IsLocal ? null : "No protocol specified: only local connections are accepted";
     }
 
     private static async Task SendSetupFailureAsync(Stream stream, bool bigEndian, string reason, CancellationToken ct)

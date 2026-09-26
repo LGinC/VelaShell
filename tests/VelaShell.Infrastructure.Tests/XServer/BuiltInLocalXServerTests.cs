@@ -1,3 +1,6 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
 using NSubstitute;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
@@ -128,6 +131,68 @@ public class BuiltInLocalXServerTests
         byte[] head = new byte[8];
         await stream.ReadExactlyAsync(head).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(1, head[0], "重启之后旧连接器接进的是新服务端");
+    }
+
+    /// <summary>X 连接建立:可以带授权(MIT-MAGIC-COOKIE-1),返回回复的第一个字节(1 = Success,0 = Failed)。</summary>
+    private static async Task<byte> HandshakeAsync(Stream stream, byte[]? cookie = null)
+    {
+        byte[] name = cookie is null ? [] : Encoding.ASCII.GetBytes("MIT-MAGIC-COOKIE-1");
+        byte[] data = cookie ?? [];
+        List<byte> hello = [(byte)'l', 0, 11, 0, 0, 0, (byte)name.Length, 0, (byte)data.Length, 0, 0, 0];
+        hello.AddRange(name);
+        hello.AddRange(new byte[((name.Length + 3) & ~3) - name.Length]);
+        hello.AddRange(data);
+        hello.AddRange(new byte[((data.Length + 3) & ~3) - data.Length]);
+        await stream.WriteAsync(hello.ToArray());
+        await stream.FlushAsync();
+        byte[] head = new byte[8];
+        await stream.ReadExactlyAsync(head).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        return head[0];
+    }
+
+    /// <summary>
+    /// 每次启动生成 cookie:环回 TCP 不带就拒(本机别的进程、别的用户都连得到那个端口),带上就放行;
+    /// cookie 写进 .Xauthority 给本机 X 程序用,停下时撤出;SSH 的连接器不要 cookie。
+    /// </summary>
+    [TestMethod]
+    public async Task Start_RequiresTheCookieOnTcp_PublishesItToXauthority_AndRetractsItOnStop()
+    {
+        string xauthority = Path.Combine(Path.GetTempPath(), $"vx-xauth-{Guid.NewGuid():N}");
+        try
+        {
+            await using BuiltInLocalXServer server = new(Settings(new XServerOptions()), () => new RecordingHost(), LowDisplaysBusy,
+                _ => Task.FromResult(false), xauthority);
+            Assert.IsTrue((await server.StartAsync()).Success);
+
+            XAuthorityFile.Entry entry = XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single();
+            Assert.AreEqual(XAuthorityFile.FamilyLocal, entry.Family);
+            Assert.AreEqual(Dns.GetHostName(), Encoding.ASCII.GetString(entry.Address));
+            Assert.AreEqual("10", entry.Number);
+            Assert.HasCount(16, entry.Data);
+
+            using (TcpClient anonymous = new())
+            {
+                await anonymous.ConnectAsync(IPAddress.Loopback, 6010);
+                Assert.AreEqual(0, await HandshakeAsync(anonymous.GetStream()), "环回 TCP 不带 cookie:Failed");
+            }
+            using (TcpClient authorized = new())
+            {
+                await authorized.ConnectAsync(IPAddress.Loopback, 6010);
+                Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data), "带上 .Xauthority 里的 cookie:Success");
+            }
+            XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
+            await using (Stream channel = await resolution.Connector!(CancellationToken.None))
+            {
+                Assert.AreEqual(1, await HandshakeAsync(channel), "SSH 的连接器:转发层核对过假 cookie,不再要");
+            }
+
+            await server.StopAsync();
+            Assert.IsEmpty(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!, "停下时撤出");
+        }
+        finally
+        {
+            File.Delete(xauthority);
+        }
     }
 
     [TestMethod]

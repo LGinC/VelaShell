@@ -5527,7 +5527,7 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>本機 X 伺服器,用於經 SSH X11 轉送在本機顯示遠端的圖形程式:內建的,或 Windows 上的 VcXsrv。變更在下次啟動 X Server 時生效。</value>
   </data>
   <data name="SetXServer_BuiltInNote" xml:space="preserve">
-    <value>每個 X 視窗都是一個獨立的原生視窗。SSH 的 X11 轉送直接接進內建伺服器,不經本機連接埠;本機其他 X 程式照樣可以用 DISPLAY=localhost:N 連線。</value>
+    <value>每個 X 視窗都是一個獨立的原生視窗。SSH 的 X11 轉送直接接進內建伺服器,不經本機連接埠;本機其他 X 程式照樣可以用 DISPLAY=localhost:N 連線 —— 每次啟動產生新的授權 cookie、寫進 ~/.Xauthority(停止時撤出),讀不到它的程式連不進來。</value>
   </data>
   <data name="SetXServer_Engine" xml:space="preserve">
     <value>X 伺服器</value>
