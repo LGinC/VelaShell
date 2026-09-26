@@ -543,14 +543,15 @@ public sealed partial class X11Server
         short sx = r.I16(), sy = r.I16(), dx = r.I16(), dy = r.I16();
         ushort width = r.U16(), height = r.U16();
         XGc gc = Gc(gcId);
-        if (ReadSource(src, sx, sy, width, height, out byte srcDepth) is not { } source)
+        // 先核对深度再取像素:ReadSource 给的是租来的池化数组,拿到之后再抛 BadMatch / BadDrawable,它就还不回池里了。
+        if (DrawableDepth(src) != DrawableDepth(dst))
+        {
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
         {
             SendNoExposure(c, gc, dst, XOpcode.CopyArea);
             return;
-        }
-        if (srcDepth != DrawableDepth(dst))
-        {
-            throw new XProtocolError(XErrorCode.Match);
         }
         XRect avail = source.Available;
         try
