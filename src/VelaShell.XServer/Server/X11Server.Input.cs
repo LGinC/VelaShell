@@ -253,10 +253,14 @@ public sealed partial class X11Server
         }
         if (!replay)
         {
-            _buttonsDown[button >> 3] |= (byte)(1 << (button & 7));
             SendRawEvent(XiRawButtonPress, (uint)button, 0, 0);
         }
+        // XI2 事件里的 buttons 是事件之前的按钮状态(XI2 协议「DeviceEvent」):这个按钮的位在投递之后才置上,与核心的 state 一致。
         Delivery? delivered = DeliverDeviceEvent(XEventCode.ButtonPress, (byte)button, XEventMask.ButtonPress, _pointerWindow);
+        if (!replay)
+        {
+            _buttonsDown[button >> 3] |= (byte)(1 << (button & 7));
+        }
         if (PointerGrab is null && delivered is { } d)
         {
             // 自动抓取:按下的那个窗口在所有按钮松开之前独占指针事件(协议「ButtonPress」;XI2 同理,格式跟着收到的那种走)。
@@ -698,6 +702,13 @@ public sealed partial class X11Server
                 _lockedMods ^= (byte)modBit;
             }
             UpdateModifierState(keycode, pressed ? XEventCode.KeyPress : XEventCode.KeyRelease);
+        }
+        else if (pressed && _latchedMods != 0)
+        {
+            // XKB「Locking and Latching Modifiers and Groups」:锁存的修饰键只作用于下一个不改变键盘状态的按键事件 ——
+            // 这个事件已经带着它们发出去了,随后解除(修饰键本身按下不算,Shift 锁存之后再锁存 Ctrl,两个都还留着)。
+            _latchedMods = 0;
+            UpdateModifierState(keycode, XEventCode.KeyPress);
         }
 
         if (!pressed && KeyboardGrab is { ReleaseWhenButtonsUp: true } && _passiveKeyGrabKey == keycode)

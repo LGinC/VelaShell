@@ -235,4 +235,23 @@ public sealed class XInputTests
         XMessage all = await c.RequestAsync(xi, 48, b => b.U16(0).U16(0));
         Assert.AreEqual(254, all.U16(8));
     }
+
+    [TestMethod]
+    public async Task XI2按钮事件的buttons是事件之前的按钮状态()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint top = await MapTopAsync(c, host);
+        await SelectAsync(c, xi, top, 0, (1u << 4) | (1u << 5));   // ButtonPress | ButtonRelease
+        await c.SyncAsync();
+
+        server.InjectPointerButton(host.Mapped[top], 3, 3, 1, pressed: true);
+        XMessage press = await NextXiAsync(c, xi, 4);
+        Assert.AreEqual(0, press.Bytes[80] & 0x02, "按下:按钮 1 在事件之前还没按着");
+        server.InjectPointerButton(host.Mapped[top], 3, 3, 1, pressed: false);
+        XMessage release = await NextXiAsync(c, xi, 5);
+        Assert.AreEqual(0x02, release.Bytes[80] & 0x02, "松开:事件之前还按着");
+    }
 }

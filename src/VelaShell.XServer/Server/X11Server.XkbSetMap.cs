@@ -100,7 +100,14 @@ public sealed partial class X11Server
             CheckKeyRange(firstModMapKey, nModMapKeys);
             for (int i = 0; i < totalModMapKeys; i++)
             {
-                modmap.Add((r.U8(), r.U8()));
+                byte keycode = r.U8(), mods = r.U8();
+                // XKB「XkbSetMap」:modmap 的每一项都得是 firstModMapKey 起 nModMapKeys 个键里的 —— 否则会把区间外的键、
+                // 甚至 0–7 这些不存在的键码写进核心修饰键表。
+                if (keycode < firstModMapKey || keycode >= firstModMapKey + nModMapKeys)
+                {
+                    throw new XProtocolError(XErrorCode.Value, keycode);
+                }
+                modmap.Add((keycode, mods));
             }
             r.Skip(XWire.Pad(totalModMapKeys * 2) - (totalModMapKeys * 2));
         }
