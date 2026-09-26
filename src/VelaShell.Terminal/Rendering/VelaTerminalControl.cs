@@ -3205,22 +3205,38 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         BufferSearch.FindAll(Emulator.Screen, query);
 
     /// <summary>
-    /// 导出整个缓冲区(scrollback + 当前屏幕)为纯文本:逐行去尾空格,
+    /// 导出整个缓冲区(scrollback + 当前屏幕)为纯文本:逐逻辑行去尾空格,
     /// 末尾的空白行不输出(“保存输出到文件”,§12.4)。
     /// </summary>
+    /// <remarks>
+    /// 与复制选区同一规矩(#517):自动换行折出来的物理行与下一行同属一条逻辑行,导出时接着拼。
+    /// </remarks>
     public string GetBufferText()
     {
         TerminalScreen screen = Emulator.Screen;
         var sb = new StringBuilder();
         int lastNonEmpty = -1;
+        int lineStart = 0;
         for (int row = 0; row < screen.TotalRows; row++)
         {
-            string text = screen.ViewLine(row).GetText().TrimEnd();
-            sb.AppendLine(text);
-            if (text.Length > 0)
+            TerminalRow line = screen.ViewLine(row);
+            sb.Append(line.GetText());
+            if (line.Wrapped && row + 1 < screen.TotalRows)
+            {
+                // 逻辑行还没完:折行处的空格是行中间的内容,不去。
+                continue;
+            }
+            while (sb.Length > lineStart && char.IsWhiteSpace(sb[^1]))
+            {
+                sb.Length--;
+            }
+            bool empty = sb.Length == lineStart;
+            sb.AppendLine();
+            if (!empty)
             {
                 lastNonEmpty = sb.Length;
             }
+            lineStart = sb.Length;
         }
         if (lastNonEmpty < 0)
         {
@@ -3310,8 +3326,14 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
     }
 
     /// <summary>把一段选区的文本追加进 <paramref name="sb" />(不含段与段之间的分隔)。</summary>
+    /// <remarks>
+    /// 线性选区按<b>逻辑行</b>断行:被自动换行折出来的物理行(<see cref="TerminalRow.Wrapped" />)
+    /// 与下一行同属一行,复制时接着拼、不插换行 —— 否则 <c>cat</c> 出来的一行公钥复制出去就成了
+    /// 好几行(#517)。块选是逐行取同一段列区间的矩形,行与行之间照旧断行。
+    /// </remarks>
     private void AppendSpanText(StringBuilder sb, TerminalScreen screen, SelectionSpan span)
     {
+        int lineStart = sb.Length;
         for (int row = span.Start.Row; row <= span.End.Row && row < screen.TotalRows; row++)
         {
             TerminalRow line = screen.ViewLine(row);
@@ -3322,7 +3344,16 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
                 row,
                 line.Columns
             );
-            int lineStart = sb.Length;
+            bool continues = !span.Block && row != span.End.Row && line.Wrapped;
+            if (continues)
+            {
+                // 行尾没写过的格子(宽字符在末列放不下、挪到下一行后留下的空位)不是内容,
+                // 接着拼时别当成空格带出去。
+                while (to > from && line[to - 1] is { Rune: 0, IsWideTrailing: false })
+                {
+                    to--;
+                }
+            }
             for (int col = from; col < to; col++)
             {
                 TerminalCell cell = line[col];
@@ -3330,6 +3361,11 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
                 {
                     sb.Append(cell.Rune == 0 ? " " : char.ConvertFromUtf32(cell.Rune));
                 }
+            }
+            if (continues)
+            {
+                // 逻辑行还没完:折行处的空格是行中间的内容,不受「去除尾部空格」影响。
+                continue;
             }
             // 复制时去除每行尾部空格(设置 → 终端 → 选择与复制)。
             if (TrimTrailingWhitespaceOnCopy)
@@ -3342,6 +3378,7 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
             if (row != span.End.Row)
             {
                 sb.Append('\n');
+                lineStart = sb.Length;
             }
         }
     }
@@ -3663,15 +3700,49 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         {
             return;
         }
+        // 词可以跨自动换行延续(被折成几行的长 URL、密钥仍是一个词,#517):
+        // 找到行首时,只要上一行是软换行折过来的、末格仍是词字符,就接着往上找;行尾同理往下。
+        int startRow = cell.Row;
         int start = col;
         while (start > 0 && IsWordCell(line, start - 1))
         {
             start--;
         }
+        while (
+            start == 0
+            && startRow > 0
+            && screen.ViewLine(startRow - 1) is { Wrapped: true, Columns: > 0 } above
+            && IsWordCell(above, above.Columns - 1)
+        )
+        {
+            startRow--;
+            start = above.Columns - 1;
+            while (start > 0 && IsWordCell(above, start - 1))
+            {
+                start--;
+            }
+        }
+        int endRow = cell.Row;
         int end = col + 1;
         while (end < line.Columns && IsWordCell(line, end))
         {
             end++;
+        }
+        while (
+            end == line.Columns
+            && line.Wrapped
+            && endRow + 1 < screen.TotalRows
+            && screen.ViewLine(endRow + 1) is { Columns: > 0 } below
+            && IsWordCell(below, 0)
+        )
+        {
+            endRow++;
+            line = below;
+            end = 1;
+            while (end < line.Columns && IsWordCell(line, end))
+            {
+                end++;
+            }
         }
         if (append)
         {
@@ -3681,8 +3752,8 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         {
             _extraSelections.Clear();
         }
-        _selectionAnchor = (cell.Row, start);
-        _selectionCaret = (cell.Row, end);
+        _selectionAnchor = (startRow, start);
+        _selectionCaret = (endRow, end);
         _selecting = false;
         _blockSelection = false;
         InvalidateTerminal();
