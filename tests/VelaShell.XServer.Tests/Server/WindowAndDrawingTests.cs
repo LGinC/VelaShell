@@ -253,4 +253,40 @@ public sealed class WindowAndDrawingTests
         await c.SendAsync(18, 0, b => b.U32(win).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)title.Length).Bytes(title));
         await host.WaitForAsync(() => handle.Snapshot.Title == "xterm");
     }
+
+    [TestMethod]
+    public async Task SendEvent不许发GenericEvent与没登记的事件码_收件人的协议流不会错位()
+    {
+        await using X11Server server = new();
+        await using XTestClient sender = await XTestClient.ConnectAsync(server);
+        await using XTestClient receiver = await XTestClient.ConnectAsync(server);
+        uint window = receiver.NewId();
+        await receiver.SendAsync(1, 0, b => b.U32(window).U32(receiver.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+        await receiver.SyncAsync();
+
+        // GenericEvent:长度字段写 1000 —— 收件人会以为后面还有 4000 字节,把之后的回复、事件都当成它的一部分。
+        byte[] generic = new byte[32];
+        generic[0] = 35;
+        generic[4] = 0xE8;
+        generic[5] = 0x03;
+        XMessage refused = await sender.RequestAsync(25, 0, b => b.U32(window).U32(0).Bytes(generic));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(2, refused.Detail, "BadValue");
+
+        byte[] unassigned = new byte[32];
+        unassigned[0] = 50;   // 核心的 36–63 没有定义
+        XMessage alsoRefused = await sender.RequestAsync(25, 0, b => b.U32(window).U32(0).Bytes(unassigned));
+        Assert.AreEqual(2, alsoRefused.Detail, "BadValue");
+
+        byte[] clientMessage = new byte[32];
+        clientMessage[0] = 33;
+        clientMessage[1] = 32;
+        BitConverter.GetBytes(window).CopyTo(clientMessage, 4);
+        await sender.SendAsync(25, 0, b => b.U32(window).U32(0).Bytes(clientMessage));   // 空掩码:发给窗口的创建者
+        await sender.SyncAsync();
+        XMessage delivered = await receiver.NextEventAsync(33);
+        Assert.AreEqual(window, delivered.U32(4));
+        XMessage focus = await receiver.RequestAsync(43, 0);
+        Assert.IsTrue(focus.IsReply, "收件人的协议流没有错位");
+    }
 }

@@ -355,6 +355,27 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ SendEvent
 
+    /// <summary>
+    /// SendEvent 能发的事件码:核心事件(2–34)与已登记扩展的事件(协议「SendEvent」:别的码一律 BadValue)。
+    /// 0 是错误、1 是回复;35 GenericEvent 不行 —— 它的长度字段说后面还跟着几个 4 字节,SendEvent 只带 32 字节,
+    /// 收到的客户端会按长度字段往后多读,从此整条协议流错位;没声明过 Generic Event 版本的客户端本来也不该收到它。
+    /// </summary>
+    private bool IsSendableEvent(byte code)
+    {
+        if (code is >= 2 and <= XEventCode.MappingNotify)
+        {
+            return true;
+        }
+        foreach (Extension extension in _extensionList)
+        {
+            if (extension.EventCount > 0 && code >= extension.FirstEvent && code < extension.FirstEvent + extension.EventCount)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void SendEvent(XClient c, XRequestReader r)
     {
         bool propagate = r.Data != 0;
@@ -362,9 +383,8 @@ public sealed partial class X11Server
         uint mask = r.U32();
         byte[] raw = r.Bytes(32);
         byte code = (byte)(raw[0] & 0x7F);
-        if (code < 2)
+        if (!IsSendableEvent(code))
         {
-            // 0 是错误、1 是回复,都不是事件。
             throw new XProtocolError(XErrorCode.Value, code);
         }
 
