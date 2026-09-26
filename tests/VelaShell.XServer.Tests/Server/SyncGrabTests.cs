@@ -302,4 +302,29 @@ public sealed class SyncGrabTests
         Assert.AreEqual(LeaveNotify, released[0].EventCode);
         Assert.AreEqual(2, released[0].Bytes[30], "mode = Ungrab");
     }
+
+    [TestMethod]
+    public async Task 键盘被抓着且owner_events为True时按键照常按焦点报告_不是按指针所在的窗口()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+
+        async Task<uint> MapAtAsync(short x)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, b => b.U32(id).U32(c.RootWindow).I16(x).I16(0).U16(100).U16(80).U16(0).U16(1).U32(0).U32(0x800).U32(0x1));   // KeyPress
+            await c.SendAsync(8, 0, b => b.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        uint focused = await MapAtAsync(0), pointed = await MapAtAsync(300);
+        server.FocusTopLevel(host.Mapped[focused]);
+        server.InjectPointerMotion(host.Mapped[pointed], 5, 5);   // 指针在另一个窗口里
+        await c.RequestAsync(31, 1, b => b.U32(c.RootWindow).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));   // GrabKeyboard,owner-events True
+
+        server.InjectKey(XKeycodes.A, pressed: true);
+        XMessage key = await c.NextEventAsync(KeyPress);
+        Assert.AreEqual(focused, key.U32(12), "event = 焦点窗口");
+    }
 }

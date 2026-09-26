@@ -785,18 +785,20 @@ public sealed partial class X11Server
     }
 
     /// <summary>按键事件的源窗口:焦点是 PointerRoot 时是指针所在窗口;指针在焦点窗口里面时是指针所在窗口;否则是焦点窗口。</summary>
+    /// <summary>
+    /// 按键事件的源窗口:焦点是 PointerRoot 时是指针所在的窗口;焦点是某个窗口时,指针在它里面就是指针所在的窗口,否则是焦点本身。
+    /// 键盘被抓着时照样按焦点算 —— 协议「GrabKeyboard」:owner-events 为 True 时按键事件「照常报告」就是按焦点报告;
+    /// 照常报告不到(焦点为 None)才以抓取窗口为源。
+    /// </summary>
     private XWindow? KeyboardSource()
     {
-        if (KeyboardGrab is not null)
-        {
-            return _pointerWindow.IsViewable ? _pointerWindow : KeyboardGrab.Window;
-        }
-        return _focus switch
+        XWindow? normal = _focus switch
         {
             null => null,
             { } f when ReferenceEquals(f, Root) => _pointerWindow,
             { } f => ReferenceEquals(_pointerWindow, f) || _pointerWindow.IsDescendantOf(f) ? _pointerWindow : f,
         };
+        return KeyboardGrab is { } grab ? normal ?? grab.Window : normal;
     }
 
     /// <summary>被动抓取:从根往下到源窗口,第一个匹配的生效(协议「GrabButton」「GrabKey」)。</summary>
