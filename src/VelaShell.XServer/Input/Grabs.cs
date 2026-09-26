@@ -54,4 +54,7 @@ internal sealed class ActiveGrab
 
     /// <summary>由按钮按下自动(或被动抓取)激活 —— 按钮全部松开时自动解除。</summary>
     public bool ReleaseWhenButtonsUp { get; init; }
+
+    /// <summary>按钮按下时服务端自动建立的抓取(协议「ButtonPress」);激活 / 解除时不发 Grab / Ungrab 模式的 crossing。</summary>
+    public bool Automatic { get; init; }
 }

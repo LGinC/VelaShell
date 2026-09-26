@@ -763,10 +763,13 @@ public sealed partial class X11Server
         });
     }
 
-    /// <summary>XI2 的 Enter / Leave / FocusIn / FocusOut(只发给在该窗口上选了它的客户端,不传播)。</summary>
-    private void SendXi2Crossing(int evtype, XWindow window, byte detail, byte mode = 0, uint child = 0)
+    /// <summary>
+    /// XI2 的 Enter / Leave / FocusIn / FocusOut(只发给在该窗口上选了它的客户端,不传播)。<paramref name="only" /> 给了就只发给它;
+    /// <paramref name="force" /> 时它没在这个窗口上选也发(抓取的事件掩码里有)。
+    /// </summary>
+    private void SendXi2Crossing(int evtype, XWindow window, byte detail, byte mode = 0, uint child = 0, XClient? only = null, bool force = false)
     {
-        if (!window.AnyXi2Selects(evtype))
+        if (!force && !window.AnyXi2Selects(evtype))
         {
             return;
         }
@@ -778,9 +781,13 @@ public sealed partial class X11Server
         int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
         uint time = Now;
-        foreach ((XClient client, (ulong master, ulong slave)) in window.Xi2Selections)
+        IEnumerable<XClient> targets = force && only is not null
+            ? [only]
+            : window.Xi2Selections.Where(s => ((s.Value.Master | s.Value.Slave) & (1UL << evtype)) != 0 && (only is null || ReferenceEquals(s.Key, only)))
+                .Select(s => s.Key);
+        foreach (XClient client in targets.ToArray())
         {
-            if (client.Closed || ((master | slave) & (1UL << evtype)) == 0)
+            if (client.Closed)
             {
                 continue;
             }

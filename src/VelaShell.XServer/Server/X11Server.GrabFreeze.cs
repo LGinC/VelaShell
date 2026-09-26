@@ -65,7 +65,11 @@ public sealed partial class X11Server
     /// <summary>排着的事件数(测试用)。</summary>
     internal int FrozenInputCount => _frozenInput.Count;
 
-    /// <summary>当前的指针抓取。换掉(解除或被别的抓取取代)时,它冻结的设备随之解冻。</summary>
+    /// <summary>
+    /// 当前的指针抓取。换掉(解除或被别的抓取取代)时,它冻结的设备随之解冻。抓取激活 / 解除时按协议「Pointer Window events」
+    /// 发 mode 为 Grab / Ungrab 的 Enter / Leave:「就像指针从所在的窗口 P 瞬移到抓取窗口 G」,解除时反过来(指针并没有动)。
+    /// 按钮按下时的自动抓取不发;抓取窗口已经销毁了也不发。
+    /// </summary>
     private ActiveGrab? PointerGrab
     {
         get => _pointerGrab;
@@ -73,9 +77,21 @@ public sealed partial class X11Server
         {
             ActiveGrab? old = _pointerGrab;
             _pointerGrab = value;
-            if (old is not null && !ReferenceEquals(old, value))
+            if (ReferenceEquals(old, value))
+            {
+                return;
+            }
+            if (old is not null)
             {
                 ThawGrab(old);
+                if (!old.Automatic && ReferenceEquals(Lookup<XWindow>(old.Window.Id), old.Window))
+                {
+                    GenerateCrossing(old.Window, _pointerWindow, CrossingModeUngrab);
+                }
+            }
+            if (value is { Automatic: false })
+            {
+                GenerateCrossing(_pointerWindow, value.Window, CrossingModeGrab);
             }
         }
     }

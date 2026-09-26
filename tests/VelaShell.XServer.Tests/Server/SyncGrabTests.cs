@@ -257,4 +257,49 @@ public sealed class SyncGrabTests
         }
         Assert.AreEqual(X11Server.MaxFrozenInput, await server.InvokeAsync(() => server.FrozenInputCount));
     }
+
+    [TestMethod]
+    public async Task 抓取期间Enter与Leave只报给抓取方_激活与解除时发Grab与Ungrab模式的crossing()
+    {
+        const byte EnterNotify = 7, LeaveNotify = 8;
+        const uint enterLeave = 0x10 | 0x20;
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+
+        async Task<uint> MapAtAsync(short x)
+        {
+            uint id = a.NewId();
+            await a.SendAsync(1, 0, w => w.U32(id).U32(a.RootWindow).I16(x).I16(0).U16(100).U16(80).U16(0).U16(1).U32(0).U32(0x800).U32(enterLeave));
+            await a.SendAsync(8, 0, w => w.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        uint t = await MapAtAsync(0), u = await MapAtAsync(300);
+        await b.SendAsync(2, 0, w => w.U32(u).U32(0x800).U32(enterLeave));   // B 也在 U 上选了 Enter / Leave
+        server.InjectPointerMotion(host.Mapped[t], 5, 5);
+        await DrainAsync(a, EnterNotify, LeaveNotify);
+        await DrainAsync(b, EnterNotify, LeaveNotify);
+
+        // A 在 U 上抓指针(owner-events False,抓取掩码 Enter | Leave):就像指针从 T 瞬移到 U,mode = Grab;只报抓取窗口 U 上的。
+        await a.RequestAsync(26, 0, w => w.U32(u).U16((ushort)enterLeave).U8(Asynchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
+        List<XMessage> grabbed = await DrainAsync(a, EnterNotify, LeaveNotify);
+        Assert.HasCount(1, grabbed, "只有抓取窗口上的那一个");
+        Assert.AreEqual(EnterNotify, grabbed[0].EventCode);
+        Assert.AreEqual(u, grabbed[0].U32(12));
+        Assert.AreEqual(1, grabbed[0].Bytes[30], "mode = Grab");
+
+        server.InjectPointerMotion(host.Mapped[u], 5, 5);   // 真的挪进 U:照常的 crossing,但只报给抓取方
+        Assert.AreEqual(EnterNotify, (await DrainAsync(a, EnterNotify, LeaveNotify)).Single().EventCode);
+        Assert.IsEmpty(await DrainAsync(b, EnterNotify, LeaveNotify), "抓取期间别的客户端收不到");
+
+        server.InjectPointerMotion(host.Mapped[t], 5, 5);
+        await DrainAsync(a, EnterNotify, LeaveNotify);
+        await a.SendAsync(27, 0, w => w.U32(0));             // UngrabPointer:就像指针从 U 瞬移回 T,mode = Ungrab,照常报给所有人
+        List<XMessage> released = await DrainAsync(b, EnterNotify, LeaveNotify);
+        Assert.HasCount(1, released);
+        Assert.AreEqual(LeaveNotify, released[0].EventCode);
+        Assert.AreEqual(2, released[0].Bytes[30], "mode = Ungrab");
+    }
 }

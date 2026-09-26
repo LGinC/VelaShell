@@ -267,6 +267,7 @@ public sealed partial class X11Server
                 OwnerEvents = (d.Mask & (uint)XEventMask.OwnerGrabButton) != 0,
                 EventMask = d.Mask,
                 ReleaseWhenButtonsUp = true,
+                Automatic = true,
                 Xi2 = d.Xi2,
                 Xi2Mask = d.Xi2Mask,
             };
@@ -500,44 +501,52 @@ public sealed partial class X11Server
             .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state).Bool(true));
     }
 
+    /// <summary>Enter / Leave 的 mode(协议附录 B「EnterNotify」)。</summary>
+    private const byte CrossingModeNormal = 0, CrossingModeGrab = 1, CrossingModeUngrab = 2;
+
     /// <summary>
-    /// Enter / Leave(协议「Pointer Window events」的五种 detail)。只发给选了 EnterWindow / LeaveWindow 的客户端,不传播。
+    /// Enter / Leave(协议「Pointer Window events」的五种 detail)。只发给选了 EnterWindow / LeaveWindow 的客户端,不传播;
+    /// 指针被抓着时见 <see cref="Crossing" />。
     /// </summary>
-    private void GenerateCrossing(XWindow from, XWindow to)
+    private void GenerateCrossing(XWindow from, XWindow to, byte mode = CrossingModeNormal)
     {
         const byte ancestor = 0, @virtual = 1, inferior = 2, nonlinear = 3, nonlinearVirtual = 4;
+        if (ReferenceEquals(from, to))
+        {
+            return;
+        }
         // Leave 的 child 指向指针原先所在的那一支,Enter 的指向指针现在所在的那一支(协议「EnterNotify / LeaveNotify」)。
         if (to.IsDescendantOf(from))
         {
-            Crossing(XEventCode.LeaveNotify, from, inferior, to);
+            Crossing(XEventCode.LeaveNotify, from, inferior, to, mode);
             foreach (XWindow w in PathBetween(to, from))
             {
-                Crossing(XEventCode.EnterNotify, w, @virtual, to);
+                Crossing(XEventCode.EnterNotify, w, @virtual, to, mode);
             }
-            Crossing(XEventCode.EnterNotify, to, ancestor, to);
+            Crossing(XEventCode.EnterNotify, to, ancestor, to, mode);
         }
         else if (from.IsDescendantOf(to))
         {
-            Crossing(XEventCode.LeaveNotify, from, ancestor, from);
+            Crossing(XEventCode.LeaveNotify, from, ancestor, from, mode);
             foreach (XWindow w in Enumerable.Reverse(PathBetween(from, to)))
             {
-                Crossing(XEventCode.LeaveNotify, w, @virtual, from);
+                Crossing(XEventCode.LeaveNotify, w, @virtual, from, mode);
             }
-            Crossing(XEventCode.EnterNotify, to, inferior, from);
+            Crossing(XEventCode.EnterNotify, to, inferior, from, mode);
         }
         else
         {
             XWindow common = CommonAncestor(from, to);
-            Crossing(XEventCode.LeaveNotify, from, nonlinear, from);
+            Crossing(XEventCode.LeaveNotify, from, nonlinear, from, mode);
             foreach (XWindow w in Enumerable.Reverse(PathBetween(from, common)))
             {
-                Crossing(XEventCode.LeaveNotify, w, nonlinearVirtual, from);
+                Crossing(XEventCode.LeaveNotify, w, nonlinearVirtual, from, mode);
             }
             foreach (XWindow w in PathBetween(to, common))
             {
-                Crossing(XEventCode.EnterNotify, w, nonlinearVirtual, to);
+                Crossing(XEventCode.EnterNotify, w, nonlinearVirtual, to, mode);
             }
-            Crossing(XEventCode.EnterNotify, to, nonlinear, to);
+            Crossing(XEventCode.EnterNotify, to, nonlinear, to, mode);
         }
     }
 
@@ -583,20 +592,48 @@ public sealed partial class X11Server
         return a;
     }
 
-    private void Crossing(byte code, XWindow window, byte detail, XWindow pointerWindow)
+    /// <summary>
+    /// 一个 Enter / Leave(核心与 XI2)。指针被抓着时(mode 为 Normal 或 Grab)按协议「GrabPointer」只报给抓取方:owner-events 为 True
+    /// 且它自己在这个窗口上选了的照常报;否则只报抓取窗口上、抓取的事件掩码里有的。别的客户端一条都收不到。
+    /// Ungrab 的 crossing 发出时抓取已经解除,照常报给所有选了的客户端。
+    /// </summary>
+    private void Crossing(byte code, XWindow window, byte detail, XWindow pointerWindow, byte mode = CrossingModeNormal)
     {
         XEventMask mask = code == XEventCode.EnterNotify ? XEventMask.EnterWindow : XEventMask.LeaveWindow;
-        bool xi2 = window.AnyXi2Selects(code == XEventCode.EnterNotify ? XiEnter : XiLeave);
-        if (!xi2 && !window.AnySelects(mask))
+        int evtype = code == XEventCode.EnterNotify ? XiEnter : XiLeave;
+        uint child = ChildToward(window, pointerWindow);
+        if (mode != CrossingModeUngrab && PointerGrab is { } grab)
         {
+            XClient owner = grab.Client;
+            if (grab.OwnerEvents && (window.Selects(owner, mask) || window.Xi2Selects(owner, evtype)))
+            {
+                SendXi2Crossing(evtype, window, detail, mode, child, only: owner);
+                if (window.Selects(owner, mask))
+                {
+                    SendCoreCrossing(owner, code, window, detail, child, mode);
+                }
+            }
+            else if (ReferenceEquals(window, grab.Window))
+            {
+                if (grab.Xi2 && (grab.Xi2Mask & (1UL << evtype)) != 0)
+                {
+                    SendXi2Crossing(evtype, window, detail, mode, child, only: owner, force: true);
+                }
+                else if (!grab.Xi2 && (grab.EventMask & (uint)mask) != 0)
+                {
+                    SendCoreCrossing(owner, code, window, detail, child, mode);
+                }
+            }
             return;
         }
-        uint child = ChildToward(window, pointerWindow);
-        if (xi2)
-        {
-            SendXi2Crossing(code == XEventCode.EnterNotify ? XiEnter : XiLeave, window, detail, child: child);
-        }
-        if (!window.AnySelects(mask))
+        SendXi2Crossing(evtype, window, detail, mode, child);
+        DeliverToSelectors(window, mask, c => SendCoreCrossing(c, code, window, detail, child, mode));
+    }
+
+    /// <summary>核心的 EnterNotify / LeaveNotify;Enter 之后给同时选了 KeymapState 的客户端补一个 KeymapNotify。</summary>
+    private void SendCoreCrossing(XClient client, byte code, XWindow window, byte detail, uint child, byte mode)
+    {
+        if (client.Closed)
         {
             return;
         }
@@ -605,18 +642,15 @@ public sealed partial class X11Server
         ushort state = State;
         int px = _pointerX, py = _pointerY;
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
-        DeliverToSelectors(window, mask, c =>
+        client.Event(code, detail, w => w
+            .U32(time).U32(Root.Id).U32(window.Id).U32(child)
+            .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state)
+            .U8(mode)
+            .U8((byte)(0x02 | (focus ? 0x01 : 0))));        // same-screen | focus
+        if (code == XEventCode.EnterNotify)
         {
-            c.Event(code, detail, w => w
-                .U32(time).U32(Root.Id).U32(window.Id).U32(child)
-                .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state)
-                .U8(0)                                          // mode:Normal
-                .U8((byte)(0x02 | (focus ? 0x01 : 0))));        // same-screen | focus
-            if (code == XEventCode.EnterNotify)
-            {
-                SendKeymapNotify(c, window);
-            }
-        });
+            SendKeymapNotify(client, window);
+        }
     }
 
     // ================================================================== 键盘
