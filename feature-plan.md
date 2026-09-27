@@ -7,8 +7,8 @@
 > 一件事还没做，就不要在 `plan.md` 里留 TODO。
 >
 > 最近复核：**2026-09-26**。逐条对着 `src/` 核过：四个 P0 开关仍然零消费者、
-> 11 条「怎么改都绿」的用例还是无返回值写法、`SessionProfile.Tags` 仍无人读、
-> `IShellStreamWrapper.Resize` 仍只收行列。已完成的条目（✅）一律移出本文件，
+> 11 条「怎么改都绿」的用例还是无返回值写法、`SessionProfile.Tags` 仍无人读。
+> 已完成的条目（✅）一律移出本文件，
 > 它们的来龙去脉在 `plan.md` 对应小节；「SSH 压缩开关」核实已在 `plan.md` §92 接线，一并删除。
 >
 > **全文分三部分，读法不同**：
@@ -43,9 +43,9 @@
 
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| 一、欠账 | 5 | 5 | 9 | 10 | **29** |
+| 一、欠账 | 5 | 5 | 9 | 9 | **28** |
 | 二、路线图 | — | 5 | 17 | 13 | **35** |
-| 三、文档待同步 | — | — | — | — | **14** |
+| 三、文档待同步 | — | — | — | — | **15** |
 
 
 ---
@@ -105,7 +105,6 @@
 | ⏳ | 🟡 P2 | **非 bash 的 shell 别注入目录上报钩子** | 钩子由 `test -n "${BASH_VERSION:-}"` 守卫，在 zsh / dash 上是空操作，却照样占一个提示符周期、在历史里留一整行（`plan.md` §66 的摘历史只对 bash 有效，zsh 没有 `history -d`） | 让 `RemoteShellProbe` 顺带报 shell 家族（探针加 `${BASH_VERSION:+-bash}` / `${ZSH_VERSION:+-zsh}`，标记向后兼容），**确认是 zsh 时跳过注入**。⚠️ 只在**正面认出**非 bash 时才跳，免得误伤「登录 shell 是 /bin/sh、交互 shell 是 bash」的机器 |
 | ⏳ | 🟡 P2 | **拆 SSH 库的两个上帝类** | `SshConnection` 约 2,960 行（四个 partial）、`SshChannel` 1,388 行，远过 `src/VelaShell.Ssh/AGENTS.md` 4.4 的 800 行（`plan.md` §117） | 拆成 internal 协作者而不是更多 partial：`SshChannel` 的收发窗口与 stdin 泵、`SshConnection` 的收包分发与全局请求账本。**纯重构，单独开 PR**，`VelaShell.Ssh.Tests` 与互操作用例是安全网 |
 | ⏳ | 🟡 P2 | **SSH 库剩余中文诊断文本的界面本地化** | 英 / 日 / 韩界面仍会看到库的中文原文：认证逐条尝试记录（`SshAuthAttempt.ToString` / `Detail`）、`SshChannelException` 的建议、`KnownHostLookup.CertificateProblem`、带路径 / 指纹 / 端口的私钥与证书消息（`plan.md` §117） | **先在库里补结构化出处**（`Detail` 的种类、证书问题的枚举），宿主 `SshInterop` 再按枚举出五语言文案 —— 不在宿主里解析句子（`AGENTS.md` 4.5） |
-| ⏳ | 🟢 P3 | **SSH PTY 像素尺寸贯通** | `window-change` 的像素字段恒为 0：`IShellStreamWrapper.Resize(int, int)` 与 `ITerminalEmulator.PtySizeChanged` 都只带行列。换成 VelaShell.Ssh 后库这一侧已不卡（`TerminalSize` 带像素，`pty-req` 与 `window-change` 两条路都能发） | 宿主侧一次改完：新增共享结构 `PtySize`（行列 + 物理像素），`PtySizeChanged` 改携带它（像素 = 单元格尺寸 × 行列 × `RenderScaling`），`ITerminalEmulator` 加 `CurrentPtySize` 供挂流时重推；`Resize` 改收 `PtySize`，SSH 实现传像素，ConPTY 与插件流忽略像素。**不动插件 SDK**：插件视图 API 的 `Resized` 对外仍是 `Action<int,int>`，内部用命名方法适配以便退订。初始 `pty-req` 维持 0（布局前不知道像素，首个 `window-change` 会覆盖）。验收：拖拽缩放后 `window-change` 载荷像素非零 |
 
 ### 🪟 窗口与外观
 
@@ -247,6 +246,7 @@
 | `plan.md` §74 / §75 目录比较与同步 | `SFTP双栏与WinSCP差距分析.md`（C1 改已实现、新增第七节）与 `交互与界面规格.md` §6（文档工具条、同步窗口、保持远端最新、SHA-256 优先比较） | [velashell-docs#35](https://github.com/VelaShellLabs/velashell-docs/pull/35) **待合入** |
 | `plan.md` §82 #474 | `交互与界面规格.md` 资源管理器补**置顶**与 SFTP 路径栏的**复制当前路径**；`设置项审计.md` 补 `General.CollapseGroupsByDefault`、`Transfer.UseRecursiveDeleteCommand`（写明只对有 exec 通道的 SSH 会话生效、失败自动回退、没有逐条进度） | 已在 `docs/474-explorer-sftp` 分支改好（中英各 3 个文件），**待开 PR** |
 | `plan.md` §117 SSH 库 API 整改 | `ssh/getting-started.md` 示例改用新公开面；`ssh/design/architecture.md` §6、§8 对上代码；`ssh/spec/08-failures.md` 补新增的 `SshFailureReason` 值与 `SshHostKeyVerdict.Reason` | 已在 `fix/ssh-api-cleanup` 分支备好（本地工作树，未提交），**待开 PR** |
+| `plan.md` §125 PTY 像素尺寸 | `{zh,en}/host/architecture.md` §9 连接时序图：`PtySizeChanged(cols,rows)` 那一行改成带物理像素、落到 `window-change` | [velashell-docs#72](https://github.com/VelaShellLabs/velashell-docs/pull/72) 已开，与宿主 PR 一起合 |
 | `plan.md` §63 SSH 证书认证 | `zh/host/架构设计.md:37` 与 `交互与界面规格.md:451`（及英文镜像 `architecture-design.md:37`、`interaction-and-ui-specs.md:463`）的认证方式口径还停在「密码 / 私钥」。要写：证书 + 私钥是**两件套**、选完证书按 `-cert.pub` 自动补私钥、**证书路径留空是硬错** | 未开始 |
 | `plan.md` §86 / §87 密钥生成 | `交互与界面规格.md` 密钥管理页：工具栏多了算法下拉（Ed25519 默认 / ECDSA 256·384·521 / RSA 4096，位数刻意不给选），自动命名随算法走（`velashell_ed25519` 等，重名加 `_2`）；`架构设计.md` 若有「只能生成 RSA」一并改 | 未开始 |
 | `plan.md` §51 远程编辑 | `host/` 补：双击 / 「打开」/「使用默认编辑器打开」三个入口的语义差别、自动回传规则、`双击文件时` / `编辑后自动上传` 两个设置项、`~/.velashell/logs/remote-edit.log` 诊断日志 | 未开始 |
