@@ -1206,3 +1206,17 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 两条都与 §125 的改动无关，只改测试：
 - Linux：`FtpSessionStatusTests.ServerGoesAway_TreeDotGoesBackToOffline` 在圆点变绿后立刻拆服务器、再刷新。加一行诊断实测：本机 6 次拆服务器时首次列目录都还没做完，刷新与它撞车（刷新先取消上一次导航，被取消的那次不报错），圆点变不变红就看调度。改为先等 `InitialLoadTask`（同文件第三条用例本来就这么等）；本机连跑 10 次全过，把 `Fault` 里的 `Faulted` 事件去掉时它会红。
 - macOS：`MiscExtensionTests` 的 XTEST 延迟用例按下延迟 150 毫秒、50 毫秒后断言「还没处理」，只留 100 毫秒余量，runner 忙起来 `Task.Delay(50)` 就睡过头。延迟改为 1 秒。
+
+## ✅ 127. 2026-09-27 标签条：自动宽度、固定标签页、多行显示（#521）
+
+**一、问题**：开的标签一多，标签条只能靠右端的 `◀ ▶` 与「所有标签页」下拉翻找；每个标签的宽度钉死在标题原宽上，几个长主机名就能把一排占满（#521 附图：十几个标签，最左边那个已经被挤出去一半）。用户要求参考 Visual Studio：标签自动宽度、可以固定（Pin）标签、右键菜单里能切多行显示，并补齐「关闭所有 / 关闭左侧 / 关闭右侧 / 关闭其他」。
+
+**二、做法**：
+- **自动宽度**：标签条的排版面板由 `StackPanel` 换成新增的 `DockTabPanel`。放得下按标题原宽；放不下先把**最宽的那几个**削到同一宽度（VS Code 的 `tabSizing: shrink`，短标签原样不动），下限 120px，削到下限仍放不下才溢出滚动。单排时外层 ScrollViewer 量内容给的是无穷宽，面板改为盯着它的视口宽度重新量；两种结局（收窄后放得下 / 到下限仍溢出、溢出按钮出现后视口更窄）都是稳态，不会振荡。封顶宽度取整到整像素，免得小数累加超出视口半像素把溢出按钮闪出来。五种标签的模板从一排 `StackPanel` 改成三栏 `Grid`（状态与标识 | 标题 | 右端按钮），只有标题那一栏伸缩、出省略号。
+- **多行显示**：`DockWorkspace.MultiRowTabs`，整个工作区一个开关、所有窗格一起变，只对顶置的标签条生效。开了之后面板换行，每行 35px，标签条随行数长高；激活标签的强调线原先 Y 写死 0，改为取标签所在那一行的顶。入口两个、同一个值：五种标签右键菜单里的勾选项（打开菜单时由 `DockTabItemBase` 按名字找到这一项填状态 —— 菜单开在弹出层里、数据上下文又是文档，绑不到工作区；侧边标签条上置灰），与 设置 → 外观 → 窗口 的开关（新增 `AppearanceOptions.MultiRowTabs`，默认关）。`MainWindowViewModel` 两头对齐：设置 → `ApplyShellPreferences` 铺到布局；布局变了而设置不是这个值才写回，回灌时不会再存一遍。拖放的插入位与插入线改为按行算：先找指针所在那一行、行内比中线，线只画一行高。
+- **固定标签页**：`DockDocument.IsPinned`（setter 只在程序集内，改顺序的事归 `DockWorkspace.SetPinned`）。固定的永远排在组的最前面：固定 = 挪到固定区末尾，取消固定 = 挪到普通区开头；`MoveDocument` / 跨组 `DockTo` 用 `ClampInsertIndex` 把落点收进合法区间，拖拽插入线也画在收过之后的位置；`ReplaceDocument` 把固定状态交给接手的文档（「连接中」占位 → 真标签）。「关闭其他 / 所有 / 左侧 / 右侧」绕开固定标签，中键关不掉它；冲着它本人的「关闭」与 `Ctrl+W` 照常生效。固定标签右端的 × 换成图钉，点一下取消固定；两枚按钮的外观抽成 `DockStyles.axaml` 的 `Button.tab-end`。与原 Dock 的 Pin（钉到侧边自动隐藏，产品红线）不是一回事，那一条仍不做；固定状态与分屏布局一样不落盘（记进 `feature-plan.md` 布局持久化那一项）。
+- **右键菜单**：「关闭其他 / 所有 / 左侧 / 右侧」原本就在终端、SFTP、工作台三种标签上；插件面板标签与「连接中」占位标签缺左侧 / 右侧，这次补齐。五种标签都加了「固定标签页 / 取消固定标签页」（按状态二选一）与「多行显示标签页」。
+- **激活标签滚进可视区**：`DESIGN.md` 早就写着「`ScrollIntoView` on activation」，实际没有实现 —— 从「所有标签页」下拉里挑一个溢出区里的标签，它被激活了却还在视口外。现在激活标签变化（以及标签条换了摆法）后，在下一次布局回调里 `BringIntoView`。
+- 快捷键目录里「标签页 + 中键 = 关闭」加了条件「固定的标签页除外」（`Sc_NoteNotPinned`）。新增本地化键 `Dock_PinTab` / `Dock_UnpinTab` / `Dock_MultiRowTabs` / `SetAppear_MultiRowTabsDesc` / `Sc_NoteNotPinned`，五份 resx 齐。
+
+**三、验证**：新增 `DockPinnedTabsTests` 10 条（固定 / 取消固定的落位、四种批量关闭绕开固定标签、显式关闭照常、组内重排与跨组移动守顺序、`ClampInsertIndex` 同组跨组同一口径、占位换真标签接手固定、`MultiRowTabs` 通知）；`DockTabStripUiTests` 7 条 headless 真控件（收窄只削长标签且不再溢出、标题出省略号而 × 还在；多行换行、标签条按行长高、强调线跟到第三行、切回单行；侧边标签条不受多行影响；固定标签显示图钉、中键不关、点图钉取消固定；右键真点开菜单读到并切换工作区开关、侧边时置灰；激活溢出区的标签滚进视口）；`MainWindowViewModelTests` 1 条（设置铺到布局、菜单切换写回一次、设置页保存回灌不多存）；`ModelSerializationTests` 1 条。原有 `TabStripWheel_ScrollsTabs_OnlyWhenTheyOverflow` 假定标签条从开头起步，而最后加进来的标签是激活的、现在会被滚进视口，改为先激活第一个。像素对照：同一场景（终端 + 两个插件标签，不拥挤）在改前改后各截一帧，等 120ms 的配色过渡走完后两帧 SHA-1 相同 —— 三栏 `Grid` 与原来的 `StackPanel` 在不收窄时逐像素一致（不等过渡走完两帧会差在激活标签标题的前景色上：旧代码在 `Initialize` 里换 `ItemsPanel` 会把标签多建一遍，截帧时过渡进度不同）。`VelaShell.Tests` 1526 通过 / 8 跳过；`VelaShell.Core.Tests` 531 通过 / 1 失败 / 2 跳过，失败的仍是 §124 记过的 X11 靶机用例（本机靶机镜像旧，与本改动无关）。文档：velashell-docs `{zh,en}/host/` 的 交互与界面规格 §4B（§4B.2、§4B.3 与新增 §4B.5）、dock-replacement-plan（产品红线里的 Pin 注明是哪一种）、settings-audit（§9.2 与第八批）、快捷键参考（中键关闭的条件）（[velashell-docs#73](https://github.com/VelaShellLabs/velashell-docs/pull/73)，两个 PR 互引、一起合）。

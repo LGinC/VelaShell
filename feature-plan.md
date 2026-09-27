@@ -177,7 +177,7 @@
 
 | 状态 | 优先级 | 项 | 对标 | 架构落点 |
 | :---: | :---: | --- | --- | --- |
-| ⏳ | 🟠 P1 | **布局持久化与命名布局模板** | Royal TS / mRemoteNG / Tabby | 「打开这一组机器并按这个分屏排好」。单独恢复上次布局意义不大（文档即活动会话），**同一套序列化做成命名模板价值大得多**：VelaDock 的模型层是纯 INPC、本来就可单测可序列化，缺的是 `布局节点 ↔ profileId` 映射、自定义 document 还原器与一个模板列表；「恢复会话」顺带就有了 |
+| ⏳ | 🟠 P1 | **布局持久化与命名布局模板** | Royal TS / mRemoteNG / Tabby | 「打开这一组机器并按这个分屏排好」。单独恢复上次布局意义不大（文档即活动会话），**同一套序列化做成命名模板价值大得多**：VelaDock 的模型层是纯 INPC、本来就可单测可序列化，缺的是 `布局节点 ↔ profileId` 映射、自定义 document 还原器与一个模板列表；「恢复会话」顺带就有了。标签的固定状态（`DockDocument.IsPinned`，`plan.md` §127）眼下只活在本次运行里，做这项时一起存 |
 | 🚧 | 🟡 P2 | **按会话自定义标签页图标** | Xshell / Termius | 按协议的默认图标已完成（`plan.md` §68，`Services/ConnectionIcon`）。还差「像挑颜色一样挑图标」：`TerminalOverrides` 加一个图标 id。⚠️ `SessionProfile` 是**逐字段手写拷贝**，新增字段要把几处拷贝都补上（`plan.md` §37 列了名单，漏抄不报错、重开软件字段就没了） |
 | ⏳ | 🟡 P2 | **整组批量操作** | MobaXterm | 对一个分组批量连接 / 批量下发命令。同步输入的频道模型（`SyncInputCoordinator`）已经是对等广播，按分组建频道是自然延伸 |
 | ⏳ | 🟢 P3 | **标签条上的「+」新建按钮** | Windows Terminal / Chrome | 分屏后「在这一格里新开会话」目前只能靠 `Ctrl+T`（`plan.md` §64 后它已落到活动窗格）。⚠️ 卡点在**分层**：`Docking/` 不认识「会话」，要么 `DockWorkspaceControl` 抛 `NewTabRequested(group)` 由宿主接，要么注入回调 —— **别让停靠层直接 new 一个终端** |
