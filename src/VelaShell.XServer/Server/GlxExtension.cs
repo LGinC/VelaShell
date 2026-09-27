@@ -25,6 +25,7 @@
 
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using VelaShell.XServer.Drawing;
 using VelaShell.XServer.Gl;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Resources;
@@ -218,7 +219,7 @@ internal sealed class GlxExtension(X11Server server)
                     if (TryGetSurface(key, out GlSurface? surface) && surface.DoubleBuffered)
                     {
                         surface.Swap();
-                        PresentSurface(key, surface);
+                        PresentSurface(surface);
                     }
                     break;
                 }
@@ -499,7 +500,7 @@ internal sealed class GlxExtension(X11Server server)
         if (!TryGetSurface(key, out GlSurface? surface))
         {
             XResource source = server.Lookup<XResource>(key) ?? throw GlxError(GlxBadDrawable, key);
-            surface = new GlSurface(size.Width, size.Height, config.DoubleBuffer, config.Alpha);
+            surface = new GlSurface(key, size.Width, size.Height, config.DoubleBuffer, config.Alpha);
             _glxSurfaces[key] = (source, surface);
         }
         else
@@ -563,19 +564,26 @@ internal sealed class GlxExtension(X11Server server)
     /// <summary>把绑定的绘制表面画过的前缓冲拷进 X 可绘对象。</summary>
     private void PresentGlx(GlxBinding binding)
     {
-        if (binding.Draw == 0 || binding.Context.Gl?.Draw is not { FrontDirty: true } surface)
+        if (binding.Draw != 0 && binding.Context.Gl?.Draw is { FrontDirty: true } surface)
+        {
+            PresentSurface(surface);
+        }
+    }
+
+    /// <summary>
+    /// 前缓冲上次拷出后画过的那一块 → X 窗口可见部分(并记损伤)或像素图;Pbuffer 不拷。
+    /// 单缓冲的程序每个 Render 请求都走这里:只拷画过的外接矩形,不拷整窗。
+    /// 表面的 ID 上现在已是别的资源(原来的可绘对象没了、ID 被重用)时不拷。
+    /// </summary>
+    private void PresentSurface(GlSurface surface)
+    {
+        XRect dirty = surface.FrontDirtyRect;
+        surface.ClearFrontDirty();
+        if (!TryGetSurface(surface.Drawable, out GlSurface? current) || !ReferenceEquals(current, surface))
         {
             return;
         }
-        uint key = _glxSurfaces.FirstOrDefault(kv => ReferenceEquals(kv.Value.Surface, surface)).Key;
-        PresentSurface(key, surface);
-    }
-
-    /// <summary>前缓冲 → X 窗口可见部分(并记损伤)或像素图;Pbuffer 不拷。</summary>
-    private void PresentSurface(uint key, GlSurface surface)
-    {
-        surface.FrontDirty = false;
-        switch (server.Lookup<XResource>(key))
+        switch (server.Lookup<XResource>(surface.Drawable))
         {
             case XWindow window:
                 {
@@ -583,49 +591,53 @@ internal sealed class GlxExtension(X11Server server)
                     {
                         return;
                     }
-                    uint mask = target.Buffer.DepthMask;
-                    int w = Math.Min(surface.Width, window.Width), h = Math.Min(surface.Height, window.Height);
-                    foreach (XRect rect in target.Clip.Rects)
+                    XRect area = dirty.Intersect(new XRect(0, 0, Math.Min(surface.Width, window.Width), Math.Min(surface.Height, window.Height)));
+                    if (area.IsEmpty)
                     {
-                        XRect local = rect.Offset(-target.OriginX, -target.OriginY).Intersect(new XRect(0, 0, w, h));
-                        for (int y = local.Y; y < local.Bottom; y++)
+                        return;
+                    }
+                    // 可见区域是缓存里共享的,先拷一份再裁到画过的范围(缓冲坐标)。
+                    Region visible = target.Clip.Clone().Intersect(area.Offset(target.OriginX, target.OriginY));
+                    uint mask = target.Buffer.DepthMask;
+                    foreach (XRect rect in visible.Rects)
+                    {
+                        for (int y = rect.Y; y < rect.Bottom; y++)
                         {
-                            int src = (y * surface.Width) + local.X;
-                            int dst = ((y + target.OriginY) * target.Buffer.Width) + local.X + target.OriginX;
-                            for (int x = 0; x < local.Width; x++)
+                            ReadOnlySpan<uint> from = surface.Front.AsSpan(((y - target.OriginY) * surface.Width) + rect.X - target.OriginX, rect.Width);
+                            Span<uint> to = target.Buffer.Pixels.AsSpan((y * target.Buffer.Width) + rect.X, rect.Width);
+                            for (int x = 0; x < to.Length; x++)
                             {
-                                target.Buffer.Pixels[dst + x] = surface.Front[src + x] & mask;
+                                to[x] = from[x] & mask;
                             }
                         }
                     }
-                    if (target.TopLevel is { } top)
+                    if (target.TopLevel is { } top && !visible.IsEmpty)
                     {
-                        server.MarkDamage(top, target.Clip);
+                        server.MarkDamage(top, visible);
                     }
                     break;
                 }
             case XPixmap pixmap:
                 {
+                    XRect area = dirty.Intersect(new XRect(0, 0, Math.Min(surface.Width, pixmap.Width), Math.Min(surface.Height, pixmap.Height)));
                     uint mask = pixmap.Buffer.DepthMask;
-                    int w = Math.Min(surface.Width, pixmap.Width), h = Math.Min(surface.Height, pixmap.Height);
-                    for (int y = 0; y < h; y++)
+                    for (int y = area.Y; y < area.Bottom; y++)
                     {
-                        for (int x = 0; x < w; x++)
+                        ReadOnlySpan<uint> from = surface.Front.AsSpan((y * surface.Width) + area.X, area.Width);
+                        Span<uint> to = pixmap.Buffer.Pixels.AsSpan((y * pixmap.Width) + area.X, area.Width);
+                        for (int x = 0; x < to.Length; x++)
                         {
-                            pixmap.Buffer.Pixels[(y * pixmap.Width) + x] = surface.Front[(y * surface.Width) + x] & mask;
+                            to[x] = from[x] & mask;
                         }
                     }
-                    server.NotePixmapDrawn(pixmap, new XRect(0, 0, w, h));
+                    if (!area.IsEmpty)
+                    {
+                        server.NotePixmapDrawn(pixmap, area);
+                    }
                     break;
                 }
-            case XGlxDrawable { Kind: GlxDrawableKind.Pbuffer }:
-                break;
-            default:
-                _glxSurfaces.Remove(key);   // X 可绘对象已经没了
-                break;
         }
     }
-
     // ------------------------------------------------------------------ 当前上下文
 
     private GlxBinding GlxBindingOf(XClient c, uint tag) =>

@@ -504,6 +504,34 @@ public sealed class GlxTests
     }
 
     [TestMethod]
+    public async Task 单缓冲每个Render请求只拷画过的那一块_不盖掉窗口里别处X画的内容()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        uint context = c.NewId();
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 5, b => b.U32(window).U32(context).U32(0))).U32(8);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 0, 0, 1, 1)).Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 1, 1), "单缓冲:清除随 Render 请求就出现在窗口里");
+
+        // 左上角用 X 画一块绿色;GL 接着只在右上角画一个小三角形。
+        uint gc = c.NewId();
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(window).U32(0x4).U32(0x00FF00));
+        await c.SendAsync(70, 0, b => b.U32(window).U32(gc).I16(0).I16(0).U16(4).U16(4));
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(8, b => F(b, 1, 0, 0))
+            .Add(4, b => b.U32(Triangles))
+            .Add(66, b => F(b, 0.6f, 0.6f)).Add(66, b => F(b, 0.9f, 0.6f)).Add(66, b => F(b, 0.6f, 0.9f))
+            .Add(23));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 50, 6), "三角形拷进了窗口");
+        Assert.AreEqual(0x00FF00u, await PixelAsync(c, window, 1, 1), "GL 没画的地方不重拷整块前缓冲,X 画的绿色还在");
+    }
+
+    [TestMethod]
     public async Task 客户端断开时它的Pbuffer表面随之释放()
     {
         await using X11Server server = new();
