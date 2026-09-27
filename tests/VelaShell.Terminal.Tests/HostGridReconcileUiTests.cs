@@ -70,7 +70,7 @@ public sealed class HostGridReconcileUiTests
                 int rows = control.Rows;
 
                 (int Cols, int Rows)? pty = null;
-                control.PtySizeChanged += (c, r) => pty = (c, r);
+                control.PtySizeChanged += size => pty = (size.Columns, size.Rows);
 
                 // 模拟"有东西改了几何却没通知任何人"——#253 里的 DECCOLM 当初就是这样。
                 control.DesyncGridForTest(80, rows);

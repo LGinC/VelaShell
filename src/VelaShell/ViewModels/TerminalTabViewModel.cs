@@ -24,7 +24,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     private readonly Lock _ptyResizeGate = new();
     private IDisposable? _copyFeedbackReset;
     private bool _disposed;
-    private (int Columns, int Rows)? _pendingPtySize;
+    private PtySize? _pendingPtySize;
     private bool _ptyResizeSending;
     private bool _started;
 
@@ -818,12 +818,13 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     /// <summary>
     /// 把模拟器当前的网格尺寸重新发送到实时 shell 流,使远程 PTY 的
     /// winsize 与真实视口一致,而非通道打开时的固定尺寸。
+    /// 通道打开时的 <c>pty-req</c> 像素是 0(那时还不知道),也由这一次补上。
     /// </summary>
     private void SyncPtySize()
     {
-        if (TerminalEmulator is { Columns: > 0, Rows: > 0 })
+        if (TerminalEmulator.CurrentPtySize is { Columns: > 0, Rows: > 0 } size)
         {
-            OnPtySizeChanged(TerminalEmulator.Columns, TerminalEmulator.Rows);
+            OnPtySizeChanged(size);
         }
     }
 
@@ -953,7 +954,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     /// 原先每次事件都 fire-and-forget 地 Task.Run,在拖拽风暴期间可能乱序送达尺寸,
     /// 导致远程 shell 拿到过期网格 —— 其随后的提示符重绘便会破坏缓冲区。
     /// </summary>
-    private void OnPtySizeChanged(int columns, int rows)
+    private void OnPtySizeChanged(PtySize size)
     {
         if (_disposed || ShellStream is null || !ShellStream.CanWrite)
         {
@@ -961,7 +962,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
         }
         lock (_ptyResizeGate)
         {
-            _pendingPtySize = (columns, rows);
+            _pendingPtySize = size;
             if (_ptyResizeSending)
             {
                 return;
@@ -975,7 +976,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     {
         while (true)
         {
-            (int Columns, int Rows) size;
+            PtySize size;
             lock (_ptyResizeGate)
             {
                 if (_pendingPtySize is null)
@@ -998,7 +999,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
             }
             try
             {
-                stream.Resize(size.Columns, size.Rows);
+                stream.Resize(size);
             }
             catch
             {

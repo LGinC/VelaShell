@@ -1,6 +1,7 @@
 using System.Text;
 using Avalonia.Controls;
 using Avalonia.Input;
+using VelaShell.Core.Ssh;
 
 namespace VelaShell.Terminal;
 
@@ -75,9 +76,15 @@ public interface ITerminalEmulator : IDisposable
 
     /// <summary>
     /// 终端的字符单元格网格尺寸变化时触发(例如控件以新尺寸完成布局),
-    /// 以便宿主 PTY 调整大小与之匹配。参数:(columns, rows)。
+    /// 以便宿主 PTY 调整大小与之匹配。网格没变、只是像素变了(改字号、换到缩放不同的显示器)也会触发。
     /// </summary>
-    event Action<int, int>? PtySizeChanged;
+    event Action<PtySize>? PtySizeChanged;
+
+    /// <summary>
+    /// 当前网格对应的 PTY 尺寸(行列 + 物理像素),供新挂上的传输补推一次 ——
+    /// 挂流之前触发的 <see cref="PtySizeChanged" /> 没有人接。
+    /// </summary>
+    PtySize CurrentPtySize { get; }
 
     /// <summary>
     /// shell 上报当前工作目录时触发(绝对路径)。用于「文件浏览器跟随终端目录」。来自 feed 线程。

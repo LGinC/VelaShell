@@ -109,7 +109,8 @@ internal sealed class PluginTerminalShellStream(IProtocolTerminalSession session
     }
 
     /// <inheritdoc />
-    public void Resize(int columns, int rows)
+    /// <remarks>SDK 的协议会话只收行列,像素到这里为止。</remarks>
+    public void Resize(PtySize size)
     {
         if (_disposed)
         {
@@ -120,7 +121,7 @@ internal sealed class PluginTerminalShellStream(IProtocolTerminalSession session
         {
             try
             {
-                await session.ResizeAsync(columns, rows, _lifetime.Token).ConfigureAwait(false);
+                await session.ResizeAsync(size.Columns, size.Rows, _lifetime.Token).ConfigureAwait(false);
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

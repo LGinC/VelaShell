@@ -1,6 +1,7 @@
 using System.Text;
 using System.Threading.Channels;
 using Avalonia.Threading;
+using VelaShell.Core.Ssh;
 using VelaShell.PluginSdk.TerminalView;
 using VelaShell.Terminal.Emulation;
 using VelaShell.Terminal.Rendering;
@@ -164,11 +165,49 @@ internal sealed class PluginTerminalView(VelaTerminalControl control) : IPluginT
         remove => control.UserInput -= value;
     }
 
+    /// <summary>插件那一侧的 <see cref="Resized" /> 订阅者。<see cref="_gate" /> 保护。</summary>
+    private Action<int, int>? _resized;
+
+    /// <remarks>
+    /// SDK 的契约只有行列,像素不往外交。控件事件带的是 <see cref="PtySize" />,
+    /// 所以不能把插件的委托原样挂上去:经一个具名方法转一道,首个订阅者到来时挂、最后一个走时摘,
+    /// 退订因此仍然有效(每次现包一个 lambda 的话,<c>-=</c> 永远摘不掉)。
+    /// </remarks>
     public event Action<int, int>? Resized
     {
-        add => control.PtySizeChanged += value;
-        remove => control.PtySizeChanged -= value;
+        add
+        {
+            if (value is null)
+            {
+                return;
+            }
+            lock (_gate)
+            {
+                if (_resized is null)
+                {
+                    control.PtySizeChanged += OnPtySizeChanged;
+                }
+                _resized += value;
+            }
+        }
+        remove
+        {
+            lock (_gate)
+            {
+                if (_resized is null)
+                {
+                    return;
+                }
+                _resized -= value;
+                if (_resized is null)
+                {
+                    control.PtySizeChanged -= OnPtySizeChanged;
+                }
+            }
+        }
     }
+
+    private void OnPtySizeChanged(PtySize size) => _resized?.Invoke(size.Columns, size.Rows);
 
     /// <summary>
     /// 把这个视图接到一条双工流上。读在后台、渲染回 UI 线程、写回串行化 ——

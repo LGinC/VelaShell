@@ -109,8 +109,8 @@ public sealed partial class ConPtyShellStream : IShellStreamWrapper
         }
     }
 
-    /// <summary>调整伪控制台的列/行尺寸(数值钳制在 2–500)。</summary>
-    public void Resize(int columns, int rows)
+    /// <summary>调整伪控制台的列/行尺寸(数值钳制在 2–500)。ConPTY 只认字符格,像素不用。</summary>
+    public void Resize(PtySize size)
     {
         if (_closed || _disposed)
         {
@@ -118,8 +118,8 @@ public sealed partial class ConPtyShellStream : IShellStreamWrapper
         }
         _ = NativeMethods.ResizePseudoConsole(_console, new()
         {
-            X = (short)Math.Clamp(columns, 2, 500),
-            Y = (short)Math.Clamp(rows, 2, 500)
+            X = (short)Math.Clamp(size.Columns, 2, 500),
+            Y = (short)Math.Clamp(size.Rows, 2, 500)
         });
     }
 

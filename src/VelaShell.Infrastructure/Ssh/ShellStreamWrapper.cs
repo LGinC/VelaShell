@@ -171,31 +171,33 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
     }
 
     /// <summary>
-    /// 发送 <c>window-change</c> 请求以调整远端终端尺寸。
+    /// 发送 <c>window-change</c> 请求以调整远端终端尺寸,像素一并带上。
     /// </summary>
     /// <remarks>
-    /// 像素尺寸这里给 0:本接口只收字符行列数。宿主真正拿得到像素尺寸的那条路
-    /// (<see cref="ISshClientWrapper.CreateShellStreamAsync" /> 的 width/height)
-    /// 在打开时已经发过一次了。把像素尺寸一路带到 resize 是 #519 那条线的事,
-    /// 记在 feature-plan 里。
+    /// 打开通道时的 <c>pty-req</c> 像素仍是 0:那时控件还没布局,不知道像素;
+    /// 挂流后宿主立刻按真实网格补发一次(<c>TerminalTabViewModel.SyncPtySize</c>),像素由这一次覆盖。
     /// </remarks>
-    public void Resize(int columns, int rows)
+    public void Resize(PtySize size)
     {
-        if (_disposed || _channelClosed || columns <= 0 || rows <= 0)
+        if (_disposed || _channelClosed || size.Columns <= 0 || size.Rows <= 0)
         {
             return;
         }
 
         // 接口是同步的,而发请求是异步的。这里**不等**它完成:
         // 调整尺寸失败不影响会话本身,而在 UI 线程上阻塞等一个网络往返是不能接受的。
-        _ = ResizeCoreAsync(columns, rows);
+        _ = ResizeCoreAsync(ToTerminalSize(size));
     }
 
-    private async Task ResizeCoreAsync(int columns, int rows)
+    /// <summary>换成库的尺寸类型。负的像素按「不知道」发 0 —— 库在构造时就会拒绝负数。</summary>
+    internal static SshTerminalSize ToTerminalSize(PtySize size) =>
+        new(size.Columns, size.Rows, Math.Max(0, size.PixelWidth), Math.Max(0, size.PixelHeight));
+
+    private async Task ResizeCoreAsync(SshTerminalSize size)
     {
         try
         {
-            await _shell.ResizeAsync(new SshTerminalSize(columns, rows)).ConfigureAwait(false);
+            await _shell.ResizeAsync(size).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is SshException or ObjectDisposedException or InvalidOperationException)
         {
