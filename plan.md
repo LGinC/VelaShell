@@ -1187,3 +1187,22 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **五、性能(E 组)**:RENDER 在 8888 目标上整数合成(线性渐变 Over 4.2k → 7.2k 次 / 秒、ARGB + a8 遮罩 3.8k → 19.3k);GLX 单缓冲每个 Render 请求只拷画过的外接矩形(小三角形 4.2k → 约 46k,也不再盖掉窗口里别处 X 画的内容);请求缓冲池化(`XRequestReader` 自带长度),回复与事件在按线程复用的写入器里拼,指针事件与 GetInputFocus 不分配闭包(整窗 PutImage 1.1k → 1.6k,CPU 少四成);连接建立 30 秒时限。基准脚本加了四个场景与每次请求的分配字节一列。⚠️ 这台机器上进程内基准是双峰的(同一份代码能差 1.5 倍,像是线程落在大小核上),前后比较各跑两遍以上再下结论。
 
 **六、验证**:XServer.Tests 213 条通过,Linux 容器里 Unix 套接字权限与真实 MIT-SHM 的用例也跑过;新增 `XAuthorityFileTests` 与宿主松开按钮的无头用例。全量 4800 条:4761 通过 / 1 失败 / 38 跳过,失败的是 Core.Tests 的 X11 靶机用例 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce`,`main` 上同样失败(本机靶机镜像旧,同 §116)。整个解决方案一起跑时 `MiscExtensionTests` 那条 XTEST 延迟用例红过一次:延迟挂着时没法用往返确认 FakeInput 已执行,改为轮询。⚠️ 本地一开始没按 CI 的 `dotnet build VelaShell.slnx -c Debug -warnaserror` 构建,测试工程里四处警告(CS8620 ×3、CA1416)到 PR 的 CI 上才报成错误;改测试之前先用这条命令构建。文档:velashell-docs `xserver/design/architecture.md` §4、§5、§7、§10,补上 §114 欠的「所有 SSH 会话共享一个受信的显示」提醒([velashell-docs#71](https://github.com/VelaShellLabs/velashell-docs/pull/71),两个 PR 互引、一起合)。
+
+## ✅ 125. 2026-09-27 SSH PTY 像素尺寸贯通到 `window-change`（`feature-plan.md` 🟢 P3 项）
+
+**一、问题**：`window-change` 的像素字段恒为 0。库这一侧早就不卡（`SshTerminalSize` 四个字段，`pty-req` 与 `window-change` 都照发），卡在宿主：`ITerminalEmulator.PtySizeChanged` 与 `IShellStreamWrapper.Resize` 都只带行列，`ShellStreamWrapper` 只好 `new SshTerminalSize(columns, rows)`。sixel / kitty 图形与按像素排版的 TUI 靠 `ws_xpixel / ws_ypixel` 换算单元格尺寸，拿到 0 就等于「不知道」。
+
+**二、做法**：
+- `VelaShell.Core.Ssh` 新增 `PtySize`（行列 + 物理像素，0 = 不知道）。`PtySizeChanged` 改为 `Action<PtySize>`，`ITerminalEmulator` 加 `CurrentPtySize`；`Resize` 改收 `PtySize`：SSH 实现带上像素（负数按 0 发，库在构造时会拒绝负数，而这条路即发即忘），ConPTY 与插件流只取行列。
+- 像素 = 单元格尺寸（DIP）× 行列 × 显示缩放，只算网格本身，不含内边距、侧栏与滚动条留白（远端拿它除以行列，多算的边就成了误差）。缩放在 UI 线程上缓存一份，`CurrentPtySize` 只读字段，挂流时从哪个线程读都行。
+- 网格没变、只有像素变了也补报一次：改了字号而行列恰好不变（布局走「网格没变」那条路时比对上次报出的尺寸），或拖到缩放不同的显示器（订阅 `TopLevel.ScalingChanged`，挂树 / 离树时随控件换窗口重订）。尺寸没变不重复报。
+- `TerminalTabViewModel` 的尺寸队列改排 `PtySize`；挂流时的补推改读 `CurrentPtySize`，通道打开时 `pty-req` 的像素维持 0（那时还没布局），由这一次覆盖。
+- **不动插件 SDK**：插件视图的 `Resized` 对外仍是 `Action<int, int>`，经一个具名方法转一道，首个订阅者到来时挂、最后一个走时摘 —— 每次现包 lambda 的话 `-=` 永远摘不掉。
+
+**三、验证**：新增 `PtySizeReportingUiTests` 3 条（headless 真控件：当前尺寸带像素、拖大窗口后报出的尺寸像素非零且与新网格一致、只改缩放时正好补报一次且不重复报），把像素宽度改回 0 后三条全红；`TerminalTabViewModelTests` 2 条（挂流补推、控件报出的尺寸原样交给传输）；`ShellStreamWrapperResizeTests` 2 条（像素进 `SshTerminalSize`、负数按 0）；`PluginTerminalViewResizedTests` 1 条（插件收到行列、退订后不再回调）。线上载荷那一段由 `VelaShell.Ssh.Tests` 的「终端尺寸变化发出window_change」覆盖。全量 4809 条：4770 通过 / 1 失败 / 38 跳过，失败的仍是 §124 记过的 X11 靶机用例（本机靶机镜像旧，与本改动无关）；`dotnet build VelaShell.slnx -c Debug -warnaserror --no-incremental` 0 警告。文档：velashell-docs `{zh,en}/host/architecture.md` §9 时序图那一行（[velashell-docs#72](https://github.com/VelaShellLabs/velashell-docs/pull/72)，两个 PR 互引、一起合）。
+
+## ✅ 126. 2026-09-27 CI：修掉 PR #522 上两条随调度红的用例（CI 反馈）
+
+两条都与 §125 的改动无关，只改测试：
+- Linux：`FtpSessionStatusTests.ServerGoesAway_TreeDotGoesBackToOffline` 在圆点变绿后立刻拆服务器、再刷新。加一行诊断实测：本机 6 次拆服务器时首次列目录都还没做完，刷新与它撞车（刷新先取消上一次导航，被取消的那次不报错），圆点变不变红就看调度。改为先等 `InitialLoadTask`（同文件第三条用例本来就这么等）；本机连跑 10 次全过，把 `Fault` 里的 `Faulted` 事件去掉时它会红。
+- macOS：`MiscExtensionTests` 的 XTEST 延迟用例按下延迟 150 毫秒、50 毫秒后断言「还没处理」，只留 100 毫秒余量，runner 忙起来 `Task.Delay(50)` 就睡过头。延迟改为 1 秒。

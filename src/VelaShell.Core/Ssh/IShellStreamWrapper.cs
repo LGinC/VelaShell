@@ -55,10 +55,10 @@ public interface IShellStreamWrapper : IAsyncDisposable
     void Flush();
 
     /// <summary>
-    /// 发送 SSH 窗口变更请求,使远端 PTY 匹配本地终端尺寸。
-    /// 像素尺寸报告为 0(仅使用字符单元尺寸)。
+    /// 让远端 PTY 匹配本地终端尺寸(SSH 上是一次 <c>window-change</c>)。
     /// </summary>
-    void Resize(int columns, int rows);
+    /// <param name="size">新的行列与像素尺寸。只认行列的传输(ConPTY、插件协议)忽略像素。</param>
+    void Resize(PtySize size);
 
     /// <summary>
     /// 打开这条流时顺带发生、值得让用户知道的事(已本地化,一条一行):

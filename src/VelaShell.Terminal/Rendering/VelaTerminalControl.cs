@@ -11,6 +11,7 @@ using Avalonia.Media.Immutable;
 using Avalonia.Media.TextFormatting;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using VelaShell.Core.Ssh;
 using VelaShell.Terminal.Emulation;
 using VelaShell.Terminal.Input;
 using VelaShell.Terminal.Semantics;
@@ -604,8 +605,11 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
     /// <summary>需要发往 PTY 的字节(用户键入、鼠标上报、粘贴及协议自动应答)。</summary>
     public event Action<byte[]>? UserInput;
 
-    /// <summary>网格 reflow 后新的列数/行数,供上层同步调整 PTY 尺寸。</summary>
-    public event Action<int, int>? PtySizeChanged;
+    /// <summary>网格 reflow 后新的 PTY 尺寸(行列 + 物理像素),供上层同步调整 PTY。</summary>
+    public event Action<PtySize>? PtySizeChanged;
+
+    /// <summary>当前网格的 PTY 尺寸。只读字段,不碰可视树,挂流时从哪个线程读都行。</summary>
+    public PtySize CurrentPtySize => PtySizeFor(Emulator.Columns, Emulator.Rows);
 
     /// <summary>将原始主机输出字节喂入模拟器以解析并显示。</summary>
     public void Feed(byte[] data) => Emulator.Feed(data);
@@ -822,7 +826,28 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         base.OnAttachedToVisualTree(e);
         // ActualThemeVariant 在挂树后才最终确定,构造时灌的是暗色缺省。
         ApplyThemePalette();
+
+        // 拖到缩放不同的显示器上,行列不变而像素变了:远端的像素认知也得跟上。
+        _scalingSource = TopLevel.GetTopLevel(this);
+        if (_scalingSource is not null)
+        {
+            _scalingSource.ScalingChanged += OnScalingChanged;
+        }
+        RaisePtySizeChangedIfPixelsMoved();
     }
+
+    /// <summary>离开可视树时退订缩放事件:控件会被重新挂到别的窗口(拆分、停靠)。</summary>
+    protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
+    {
+        base.OnDetachedFromVisualTree(e);
+        if (_scalingSource is not null)
+        {
+            _scalingSource.ScalingChanged -= OnScalingChanged;
+            _scalingSource = null;
+        }
+    }
+
+    private void OnScalingChanged(object? sender, EventArgs e) => RaisePtySizeChangedIfPixelsMoved();
 
     private void ApplyThemePalette()
     {
@@ -1841,6 +1866,8 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
             // 首帧若不记账,它会把每次输出都当成分家、反复空跑重排。
             _appliedColumns = cols;
             _appliedRows = rows;
+            // 改了字号但行列恰好没变时,像素变了。
+            RaisePtySizeChangedIfPixelsMoved();
             return;
         }
 
@@ -1858,7 +1885,7 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         ClearSelection();
         InvalidateTerminal();
         ScrollChanged?.Invoke();
-        PtySizeChanged?.Invoke(cols, rows);
+        RaisePtySizeChanged(cols, rows);
     }
 
     /// <summary>
@@ -1895,7 +1922,60 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         ClearSelection();
         InvalidateTerminal();
         ScrollChanged?.Invoke();
-        PtySizeChanged?.Invoke(cols, rows);
+        RaisePtySizeChanged(cols, rows);
+    }
+
+    // ---- PTY 尺寸 -----------------------------------------------------------
+
+    /// <summary>
+    /// 算像素用的显示缩放。只在 UI 线程上刷新,<see cref="CurrentPtySize" /> 读的是这份缓存 ——
+    /// 挂流可能发生在别的线程上,而那里不能去碰可视树。
+    /// </summary>
+    private double _ptyScaling = 1;
+
+    /// <summary>最近一次报出去的尺寸,用来判断「只有像素变了」时要不要再报一次。</summary>
+    private PtySize _reportedPtySize;
+
+    /// <summary>当前订阅着 <see cref="TopLevel.ScalingChanged" /> 的那个顶层。</summary>
+    private TopLevel? _scalingSource;
+
+    /// <summary>
+    /// 给定行列的 PTY 尺寸。像素 = 单元格尺寸(DIP)× 行列 × 显示缩放,即网格本身的物理像素;
+    /// 不含内边距、侧栏与滚动条留白 —— 远端拿它除以行列得出单元格尺寸,多算进去的边就成了误差。
+    /// </summary>
+    private PtySize PtySizeFor(int cols, int rows) =>
+        new(
+            cols,
+            rows,
+            (int)Math.Round(cols * CellWidthForTest * _ptyScaling),
+            (int)Math.Round(rows * CellHeightForTest * _ptyScaling)
+        );
+
+    private double CurrentRenderScaling() =>
+        RenderScalingOverrideForTest > 0 ? RenderScalingOverrideForTest : TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+
+    private void RaisePtySizeChanged(int cols, int rows)
+    {
+        _ptyScaling = CurrentRenderScaling();
+        _reportedPtySize = PtySizeFor(cols, rows);
+        PtySizeChanged?.Invoke(_reportedPtySize);
+    }
+
+    /// <summary>
+    /// 网格没变、像素变了(改了字号而行列恰好不变、换到缩放不同的显示器)时补报一次。
+    /// 还没拿到真实布局(<c>_appliedColumns == 0</c>)时不报:那时的网格是缺省的 120×32。
+    /// </summary>
+    private void RaisePtySizeChangedIfPixelsMoved()
+    {
+        if (_appliedColumns <= 0)
+        {
+            return;
+        }
+        _ptyScaling = CurrentRenderScaling();
+        if (PtySizeFor(_appliedColumns, _appliedRows) != _reportedPtySize)
+        {
+            RaisePtySizeChanged(_appliedColumns, _appliedRows);
+        }
     }
 
     // ---- Rendering ----------------------------------------------------------
@@ -1911,7 +1991,7 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
     private void RefreshPixelGrid()
     {
         var top = TopLevel.GetTopLevel(this);
-        double scale = RenderScalingOverrideForTest > 0 ? RenderScalingOverrideForTest : top?.RenderScaling ?? 1;
+        double scale = CurrentRenderScaling();
         Point offset = top is null ? default : this.TranslatePoint(default, top) ?? default;
         _pixels = new(offset.X + ContentPadding + GutterWidth(), offset.Y + ContentPadding, scale);
     }

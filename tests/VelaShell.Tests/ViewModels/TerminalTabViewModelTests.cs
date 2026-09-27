@@ -296,6 +296,52 @@ public class TerminalTabViewModelTests
         Assert.IsFalse(vm.RemoteShellExited);
     }
 
+    /// <summary>
+    /// 挂上传输时把模拟器当前的尺寸补推过去,像素一起:通道打开时 <c>pty-req</c> 的像素是 0,
+    /// 靠的就是这一次把它覆盖掉。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("TerminalTab")]
+    public async Task AttachTransport_PushesTheCurrentPtySize_IncludingPixels()
+    {
+        var size = new PtySize(132, 43, 1056, 731);
+        _terminalEmulator.CurrentPtySize.Returns(size);
+        IShellStreamWrapper stream = WritableStream();
+        var vm = new TerminalTabViewModel(_terminalEmulator);
+
+        await vm.AttachTransportAsync(stream);
+
+        WaitUntil(() => ResizeCalls(stream) > 0);
+        stream.Received(1).Resize(size);
+    }
+
+    /// <summary>控件报出来的尺寸原样交给传输,像素不在半路丢掉。</summary>
+    [TestMethod]
+    [TestCategory("TerminalTab")]
+    public async Task PtySizeChanged_ForwardsThePixelsToTheTransport()
+    {
+        IShellStreamWrapper stream = WritableStream();
+        var vm = new TerminalTabViewModel(_terminalEmulator);
+        await vm.AttachTransportAsync(stream);
+
+        var size = new PtySize(200, 60, 1600, 1200);
+        _terminalEmulator.PtySizeChanged += Raise.Event<Action<PtySize>>(size);
+
+        WaitUntil(() => ResizeCalls(stream) > 0);
+        stream.Received(1).Resize(size);
+    }
+
+    private static IShellStreamWrapper WritableStream()
+    {
+        IShellStreamWrapper stream = Substitute.For<IShellStreamWrapper>();
+        stream.CanWrite.Returns(true);
+        return stream;
+    }
+
+    /// <summary>尺寸在后台线程上串行发出(<c>DrainPtyResizeQueue</c>),只能数调用次数来等。</summary>
+    private static int ResizeCalls(IShellStreamWrapper stream) =>
+        stream.ReceivedCalls().Count(c => c.GetMethodInfo().Name == nameof(IShellStreamWrapper.Resize));
+
     /// <summary>一条读一次就到头的流,并按 <paramref name="reason" /> 交代原因。</summary>
     private static IShellStreamWrapper ClosingStream(ShellCloseReason reason)
     {

@@ -164,7 +164,7 @@ public sealed class PluginTerminalProtocolEndToEndTests
         Assert.AreEqual("login: ", Encoding.ASCII.GetString(buffer, 0, read));
 
         // 尺寸变化转达给插件。本协议没有尺寸上报机制,因此不该往线上发任何东西,但也不能抛。
-        stream.Resize(132, 43);
+        stream.Resize(new PtySize(132, 43));
 
         listener.Stop();
         await manager.DisposeAsync();

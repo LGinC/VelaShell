@@ -172,7 +172,7 @@ public sealed class PluginTerminalProtocolTests
         await stream.WriteAsync(Encoding.ASCII.GetBytes("hi"), 0, 2, CancellationToken.None);
         Assert.AreSequenceEqual(Encoding.ASCII.GetBytes("hi"), [.. terminal.Written]);
 
-        stream.Resize(132, 43);
+        stream.Resize(new PtySize(132, 43, 1056, 688)); // 像素到插件协议这一层为止,只转行列。
         DateTime deadline = DateTime.UtcNow.AddSeconds(5);
         while (terminal.LastResize is null && DateTime.UtcNow < deadline)
         {
