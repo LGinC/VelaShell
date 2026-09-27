@@ -38,6 +38,7 @@ public sealed class UnixSocketTests
         if (!Socket.OSSupportsUnixDomainSockets || OperatingSystem.IsWindows())
         {
             Assert.Inconclusive("Windows 上的 AF_UNIX 没有 Unix 文件权限");
+            return;
         }
         string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
         await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path, AuthorizationCookie = [1, 2, 3, 4] });

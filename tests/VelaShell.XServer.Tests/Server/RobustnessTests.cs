@@ -76,7 +76,7 @@ public sealed class RobustnessTests
             chain.Add(id);
         }
         await c.SendManyAsync(chain.Select((id, i) => CreateWindow(id, i == 0 ? c.RootWindow : chain[i - 1])));
-        await c.SendManyAsync(chain.Select(id => ((byte)8, (byte)0, (Action<XTestClient.Body>?)(b => b.U32(id)))));   // MapWindow
+        await c.SendManyAsync(chain.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (8, 0, b => b.U32(id))));   // MapWindow
         await c.SyncAsync();
 
         (byte op, byte data, Action<XTestClient.Body>? body) = CreateWindow(c.NewId(), chain[^1]);
@@ -188,7 +188,7 @@ public sealed class RobustnessTests
         handle = host.Mapped[top];
 
         // 500 条 MapWindow(不存在的窗口):每条一个 BadWindow。
-        await c.SendManyAsync(Enumerable.Range(0, 500).Select(_ => ((byte)8, (byte)0, (Action<XTestClient.Body>?)(b => b.U32(0x7FFFFF)))));
+        await c.SendManyAsync(Enumerable.Range(0, 500).Select<int, (byte, byte, Action<XTestClient.Body>?)>(_ => (8, 0, b => b.U32(0x7FFFFF))));
         await c.SyncAsync();
         Assert.AreEqual(0, loggedUnderLock, "没有一条日志是持着像素锁交出去的");
         Assert.IsLessThanOrEqualTo(100, logged, $"刷屏的错误每秒最多记 50 条,实际 {logged}");

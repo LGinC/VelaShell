@@ -195,8 +195,8 @@ public sealed class MiscExtensionTests
         await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
 
         // NotifyMSC 目标 MSC 在几十天之后:每条一个计时器。
-        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingNotifyMsc + 1).Select(i =>
-            (present, (byte)2, (Action<XTestClient.Body>?)(b => b.U32(window).U32((uint)i).U32(0).U32(100_000_000).U32(0).U32(0).U32(0).U32(0).U32(0)))));
+        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingNotifyMsc + 1).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+            (present, 2, b => b.U32(window).U32((uint)i).U32(0).U32(100_000_000).U32(0).U32(0).U32(0).U32(0).U32(0))));
         XMessage refused = await c.NextAsync(m => m.IsError && m.Sequence == last);
         Assert.AreEqual(11, refused.Detail, "超过上限:BadAlloc");
         await FakeInputAsync(c, xtest, 2, 38, delay: int.MaxValue);   // 挂一个 24 天的延迟
