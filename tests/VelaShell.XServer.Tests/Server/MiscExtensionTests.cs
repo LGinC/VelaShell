@@ -170,8 +170,10 @@ public sealed class MiscExtensionTests
         byte xtest = await MajorAsync(c, "XTEST");
         const byte a = 38;
 
-        // 按下延迟 150 毫秒、松开立即:旧的实现先执行松开(那时还没按下)、再按下,键就一直按着。
-        await FakeInputAsync(c, xtest, 2, a, delay: 150);
+        // 按下延迟 1 秒、松开立即:旧的实现先执行松开(那时还没按下)、再按下,键就一直按着。
+        // 延迟要远大于下面那 50 毫秒:原先是 150,只留 100 毫秒余量,macOS runner 忙起来
+        // Task.Delay(50) 就能睡过头,查的时候延迟已经到点,「延迟期间不处理」那条就红了。
+        await FakeInputAsync(c, xtest, 2, a, delay: 1000);
         await FakeInputAsync(c, xtest, 3, a, delay: 0);
         Task<XMessage> keymap = c.RequestAsync(44, 0);   // QueryKeymap:要等延迟到点、两条都做完才处理
         await Task.Delay(50);

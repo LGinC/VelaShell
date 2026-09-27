@@ -1200,3 +1200,9 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **不动插件 SDK**：插件视图的 `Resized` 对外仍是 `Action<int, int>`，经一个具名方法转一道，首个订阅者到来时挂、最后一个走时摘 —— 每次现包 lambda 的话 `-=` 永远摘不掉。
 
 **三、验证**：新增 `PtySizeReportingUiTests` 3 条（headless 真控件：当前尺寸带像素、拖大窗口后报出的尺寸像素非零且与新网格一致、只改缩放时正好补报一次且不重复报），把像素宽度改回 0 后三条全红；`TerminalTabViewModelTests` 2 条（挂流补推、控件报出的尺寸原样交给传输）；`ShellStreamWrapperResizeTests` 2 条（像素进 `SshTerminalSize`、负数按 0）；`PluginTerminalViewResizedTests` 1 条（插件收到行列、退订后不再回调）。线上载荷那一段由 `VelaShell.Ssh.Tests` 的「终端尺寸变化发出window_change」覆盖。全量 4809 条：4770 通过 / 1 失败 / 38 跳过，失败的仍是 §124 记过的 X11 靶机用例（本机靶机镜像旧，与本改动无关）；`dotnet build VelaShell.slnx -c Debug -warnaserror --no-incremental` 0 警告。文档：velashell-docs `{zh,en}/host/architecture.md` §9 时序图那一行（[velashell-docs#72](https://github.com/VelaShellLabs/velashell-docs/pull/72)，两个 PR 互引、一起合）。
+
+## ✅ 126. 2026-09-27 CI：修掉 PR #522 上两条随调度红的用例（CI 反馈）
+
+两条都与 §125 的改动无关，只改测试：
+- Linux：`FtpSessionStatusTests.ServerGoesAway_TreeDotGoesBackToOffline` 在圆点变绿后立刻拆服务器、再刷新。加一行诊断实测：本机 6 次拆服务器时首次列目录都还没做完，刷新与它撞车（刷新先取消上一次导航，被取消的那次不报错），圆点变不变红就看调度。改为先等 `InitialLoadTask`（同文件第三条用例本来就这么等）；本机连跑 10 次全过，把 `Fault` 里的 `Faulted` 事件去掉时它会红。
+- macOS：`MiscExtensionTests` 的 XTEST 延迟用例按下延迟 150 毫秒、50 毫秒后断言「还没处理」，只留 100 毫秒余量，runner 忙起来 `Task.Delay(50)` 就睡过头。延迟改为 1 秒。

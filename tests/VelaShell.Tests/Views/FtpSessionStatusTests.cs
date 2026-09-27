@@ -86,6 +86,10 @@ public sealed class FtpSessionStatusTests
             await AssertStatusAsync(node, SessionStatus.Connected, "连上后应先变绿。");
 
             SftpDocument document = vm.Layout.AllDocuments().OfType<SftpDocument>().Single();
+            // 先等首次列目录做完:圆点一变绿就往下走的话,拆服务器时它每次都还在路上,
+            // 刷新会和它撞车(刷新先取消上一次导航,被取消的那次不报错),
+            // 圆点变不变红就看调度 —— Linux runner 上撞到过一直绿着。同文件第三条用例也是这么等的。
+            await document.ViewModel.InitialLoadTask;
             server.Dispose();   // 服务器消失:后续任何远端操作都会失败
 
             await document.ViewModel.RemoteFiles.RefreshCommand.Execute().FirstAsync();
