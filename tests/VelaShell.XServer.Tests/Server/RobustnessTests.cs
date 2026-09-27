@@ -2,11 +2,27 @@ using VelaShell.XServer.Tests.TestKit;
 
 namespace VelaShell.XServer.Tests.Server;
 
-/// <summary>连接层的健壮性:主动断开真的断开、超大请求不会拖垮服务端。</summary>
+/// <summary>连接层的健壮性:主动断开真的断开、连接建立有时限、超大请求不会拖垮服务端。</summary>
 [TestClass]
 [TestCategory("X11Server")]
 public sealed class RobustnessTests
 {
+    [TestMethod]
+    public async Task 连接建立报文迟迟不发完_到了时限就断开()
+    {
+        await using X11Server server = new() { SetupTimeout = TimeSpan.FromMilliseconds(300) };
+        (Stream serverSide, Stream clientSide) = DuplexPair.Create();
+        Task serving = server.ServeAsync(serverSide, isLocal: true);
+        await clientSide.WriteAsync(new byte[] { (byte)'l', 0, 11, 0 });   // 12 字节的头只发了 4 字节,然后不动了
+        await clientSide.FlushAsync();
+        // 这条连接的服务任务结束(TCP / Unix 套接字随之由接受循环关掉);没有时限的话它一直挂着。
+        await serving.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // 按时发完的照常连上。
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        Assert.IsTrue((await c.RequestAsync(43, 0)).IsReply, "GetInputFocus");
+    }
+
     [TestMethod]
     public async Task KillClient之后被杀的客户端连接立即结束()
     {

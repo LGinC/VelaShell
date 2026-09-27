@@ -126,6 +126,13 @@ public sealed partial class X11Server
     /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync" />),不再查授权。</param>
     internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated);
 
+    /// <summary>
+    /// 连接建立的时限:读连接建立报文(12 字节的头与授权名 / 数据)、回失败,都要在这之内做完。
+    /// 对端连上来却迟迟不发完(卡住的,或者故意占着不放的),到点就断开 —— 否则每个这样的连接都一直占着一个套接字和一个任务,
+    /// 而 <see cref="MaxClients" /> 只数已经建立的客户端,拦不住它们。握手只是一个往返,走 SSH 转发的慢链路也绰绰有余。
+    /// </summary>
+    internal TimeSpan SetupTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
     private async Task ServeCoreAsync(Stream stream, Peer peer, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(stream);
@@ -133,13 +140,17 @@ public sealed partial class X11Server
         using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         CancellationToken ct = linked.Token;
         CancellationTokenSource? connection = null;
+        // 连接建立阶段的读写用它:到了 SetupTimeout 还没发完就取消。等执行线程登记客户端那一步不计在内 ——
+        // 那一步半途取消的话,执行线程照样登记了,却没人再用这个客户端。
+        using CancellationTokenSource setup = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        setup.CancelAfter(SetupTimeout);
 
         XClient? client = null;
         Task? writer = null;
         try
         {
             byte[] head = new byte[12];
-            await stream.ReadExactlyAsync(head, ct).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(head, setup.Token).ConfigureAwait(false);
             bool bigEndian = head[0] switch
             {
                 (byte)'B' => true,
@@ -150,13 +161,13 @@ public sealed partial class X11Server
             int nameLength = Read16(head.AsSpan(6), bigEndian);
             int dataLength = Read16(head.AsSpan(8), bigEndian);
             byte[] rest = new byte[XWire.Pad(nameLength) + XWire.Pad(dataLength)];
-            await stream.ReadExactlyAsync(rest, ct).ConfigureAwait(false);
+            await stream.ReadExactlyAsync(rest, setup.Token).ConfigureAwait(false);
             string authName = XWire.Latin1.GetString(rest, 0, nameLength);
             byte[] authData = rest.AsSpan(XWire.Pad(nameLength), dataLength).ToArray();
 
             if (major != 11)
             {
-                await SendSetupFailureAsync(stream, bigEndian, "Protocol version mismatch", ct).ConfigureAwait(false);
+                await SendSetupFailureAsync(stream, bigEndian, "Protocol version mismatch", setup.Token).ConfigureAwait(false);
                 return;
             }
             if (Authorize(authName, authData, peer) is { } reason)
@@ -168,14 +179,16 @@ public sealed partial class X11Server
                         Log($"connection refused: {reason}");
                     }
                 });
-                await SendSetupFailureAsync(stream, bigEndian, reason, ct).ConfigureAwait(false);
+                await SendSetupFailureAsync(stream, bigEndian, reason, setup.Token).ConfigureAwait(false);
                 return;
             }
 
+            setup.CancelAfter(Timeout.InfiniteTimeSpan);   // 报文收齐了:下面等执行线程登记,不计时
             client = await InvokeAsync(() => RegisterClient(bigEndian)).WaitAsync(ct).ConfigureAwait(false);
             if (client is null)
             {
-                await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", ct).ConfigureAwait(false);
+                setup.CancelAfter(SetupTimeout);
+                await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", setup.Token).ConfigureAwait(false);
                 return;
             }
             client.SameHost = peer.SameHost;
@@ -193,7 +206,17 @@ public sealed partial class X11Server
         catch (Exception ex) when (ex is IOException or EndOfStreamException or InvalidDataException
                                        or OperationCanceledException or ObjectDisposedException)
         {
-            // 对端走了、乱发、或者服务端在收工。
+            // 对端走了、乱发、连接建立超时,或者服务端在收工。
+            if (client is null && setup.IsCancellationRequested && !linked.IsCancellationRequested)
+            {
+                Post(null, () =>
+                {
+                    if (ShouldLogFrequent())
+                    {
+                        Log("connection setup timed out");
+                    }
+                });
+            }
         }
         finally
         {
