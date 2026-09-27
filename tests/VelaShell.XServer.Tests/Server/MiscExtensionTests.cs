@@ -200,6 +200,15 @@ public sealed class MiscExtensionTests
         XMessage refused = await c.NextAsync(m => m.IsError && m.Sequence == last);
         Assert.AreEqual(11, refused.Detail, "超过上限:BadAlloc");
         await FakeInputAsync(c, xtest, 2, 38, delay: int.MaxValue);   // 挂一个 24 天的延迟
+        // 延迟挂着时这个客户端之后的请求都暂存,没法用一次往返确认 FakeInput 已经执行;读端把它排进执行线程之前,
+        // InvokeAsync 可能先排进去(负载重时见过):轮询到它执行了为止。
+        using (CancellationTokenSource timeout = new(TimeSpan.FromSeconds(5)))
+        {
+            while (await server.InvokeAsync(() => server.PendingFakeInputDelays) == 0)
+            {
+                await Task.Delay(10, timeout.Token);
+            }
+        }
         Assert.AreEqual((1, X11Server.MaxPendingNotifyMsc), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)));
 
         Task serving = c.ServerTask;
