@@ -5081,7 +5081,7 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>Local X server that shows GUI programs from remote hosts via SSH X11 forwarding: the built-in one, or VcXsrv on Windows. Changes take effect the next time the X server starts.</value>
   </data>
   <data name="SetXServer_BuiltInNote" xml:space="preserve">
-    <value>Each X window opens as its own native window. SSH X11 forwarding connects straight into the built-in server without going through a local port; other local X programs can still use DISPLAY=localhost:N.</value>
+    <value>Each X window opens as its own native window. SSH X11 forwarding connects straight into the built-in server without going through a local port; other local X programs can still use DISPLAY=localhost:N — each start writes a fresh authorization cookie to ~/.Xauthority (removed on stop), and programs that cannot read it are refused.</value>
   </data>
   <data name="SetXServer_Engine" xml:space="preserve">
     <value>X server</value>

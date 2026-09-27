@@ -81,10 +81,10 @@ internal sealed partial class GlContext
 
             // 点、线、多边形
             0x0B11 => One(State.PointSize),                   // POINT_SIZE
-            0x0B12 or 0x846D => new GlValue([1, 64]),         // POINT_SIZE_RANGE / ALIASED_POINT_SIZE_RANGE
+            0x0B12 or 0x846D => new GlValue([1, MaxLineWidth]), // POINT_SIZE_RANGE / ALIASED_POINT_SIZE_RANGE
             0x0B13 => One(1),                                 // POINT_SIZE_GRANULARITY
             0x0B21 => One(State.LineWidth),                   // LINE_WIDTH
-            0x0B22 or 0x846E => new GlValue([1, 64]),         // LINE_WIDTH_RANGE / ALIASED_LINE_WIDTH_RANGE
+            0x0B22 or 0x846E => new GlValue([1, MaxLineWidth]), // LINE_WIDTH_RANGE / ALIASED_LINE_WIDTH_RANGE
             0x0B23 => One(1),                                 // LINE_WIDTH_GRANULARITY
             0x0B25 => One(0xFFFF),                            // LINE_STIPPLE_PATTERN
             0x0B26 => One(1),                                 // LINE_STIPPLE_REPEAT

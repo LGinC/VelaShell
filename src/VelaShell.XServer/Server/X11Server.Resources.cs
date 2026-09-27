@@ -15,6 +15,12 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
+    /// <summary>
+    /// XCMiscGetXIDList 一次最多给这么多个 ID(规范:给的可以比要的少)。count 可以是 2³² − 1:照单全收要把 200 万个 ID
+    /// 的空间整个扫一遍、回一个 8 MB 的回复;客户端用完一批再来要就是了。
+    /// </summary>
+    internal const uint MaxXidListCount = 1 << 16;
+
     internal T? Lookup<T>(uint id) where T : XResource =>
         _resources.TryGetValue(id, out XResource? r) ? r as T : null;
 
@@ -58,7 +64,7 @@ public sealed partial class X11Server
                 c.Reply(0, w => w.U32(start).U32(count).Zero(16));
                 break;
             case 2:
-                uint wanted = r.U32();
+                uint wanted = Math.Min(r.U32(), MaxXidListCount);
                 List<uint> ids = [];
                 for (uint i = 1; i <= XClient.ResourceMask && ids.Count < wanted; i++)
                 {

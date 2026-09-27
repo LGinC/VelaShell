@@ -44,6 +44,9 @@ internal sealed class ActiveGrab
 
     public XCursorResource? Cursor { get; set; }
 
+    /// <summary>指针抓取的 confine-to 窗口;它变得不可见时抓取随之解除。</summary>
+    public XWindow? ConfineTo { get; init; }
+
     /// <summary>XInput2 的抓取:事件以 XI2 格式、按 <see cref="Xi2Mask" /> 投递。</summary>
     public bool Xi2 { get; init; }
 
@@ -51,4 +54,7 @@ internal sealed class ActiveGrab
 
     /// <summary>由按钮按下自动(或被动抓取)激活 —— 按钮全部松开时自动解除。</summary>
     public bool ReleaseWhenButtonsUp { get; init; }
+
+    /// <summary>按钮按下时服务端自动建立的抓取(协议「ButtonPress」);激活 / 解除时不发 Grab / Ungrab 模式的 crossing。</summary>
+    public bool Automatic { get; init; }
 }

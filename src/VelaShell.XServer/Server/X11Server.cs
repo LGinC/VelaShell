@@ -145,16 +145,27 @@ public sealed partial class X11Server : IAsyncDisposable
     }
 
     /// <summary>
-    /// 在一条已经建立的双工流上服务一个 X 客户端,直到它断开或服务端收工。
+    /// 在一条已经建立的双工流上服务一个 X 客户端,直到它断开或服务端收工。按 <see cref="X11ServerOptions.AuthorizationCookie" /> 查授权。
     /// </summary>
-    /// <param name="stream">双工流(TCP、Unix 套接字、SSH 的 x11 通道……)。服务端<b>不释放</b>它:任务结束后由调用方释放。</param>
+    /// <param name="stream">双工流(TCP、Unix 套接字……)。服务端<b>不释放</b>它:任务结束后由调用方释放。</param>
     /// <param name="isLocal">
-    /// 对端算不算本机连接。没配置 <see cref="X11ServerOptions.AuthorizationCookie" /> 时只接受本机连接 ——
-    /// 只有确实来自本机、或已由别的环节验过身份(比如 SSH 转发已核对过假 cookie)的流才该传 true。
+    /// 对端算不算本机连接,只在<b>没配置</b> cookie 时起作用(那时只接受本机连接)。配置了 cookie 时一律要客户端带上它 ——
+    /// 已经由别的环节验过身份的流(比如 SSH 转发已核对过假 cookie)用 <see cref="ServeAuthenticatedAsync" />。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
     public Task ServeAsync(Stream stream, bool isLocal, CancellationToken cancellationToken = default) =>
-        ServeCoreAsync(stream, isLocal, sameHost: false, peerUid: null, cancellationToken);
+        ServeCoreAsync(stream, new Peer(isLocal, SameHost: false, Uid: null, LocalUser: false, Authenticated: false), cancellationToken);
+
+    /// <summary>
+    /// 在一条<b>调用方已经验过身份</b>的双工流上服务一个 X 客户端:不再查授权(不看 cookie,也不看是不是本机)。
+    /// </summary>
+    /// <param name="stream">
+    /// 只能是进程内接过来的流,比如 SSH 的 x11 通道经连接器接进来 —— 转发层已经核对过远端给的假 cookie。
+    /// 服务端<b>不释放</b>它:任务结束后由调用方释放。
+    /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task ServeAuthenticatedAsync(Stream stream, CancellationToken cancellationToken = default) =>
+        ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: true), cancellationToken);
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
@@ -208,7 +219,8 @@ public sealed partial class X11Server : IAsyncDisposable
 
     /// <summary>
     /// 按钮按下 / 松开(内区坐标)。1 左、2 中、3 右;滚轮向上 4、向下 5、向左 6、向右 7(宿主应当为每格滚动注入一次按下 + 松开);
-    /// 8、9 是后退 / 前进侧键。
+    /// 8、9 是后退 / 前进侧键。窗口已经不在时,按下照例忽略,松开照样生效(不挪指针)—— 按下之后窗口没了(弹出菜单一点就关),
+    /// 松开要是也丢了,X 这边那个按钮就一直按着、自动抓取也不解除。
     /// </summary>
     public void InjectPointerButton(XTopLevelWindow window, int x, int y, int button, bool pressed)
     {
@@ -220,6 +232,10 @@ public sealed partial class X11Server : IAsyncDisposable
             if (LiveTopLevel(window) is { } top)
             {
                 ApplyPointerButton(top, x, y, button, pressed);
+            }
+            else if (!pressed)
+            {
+                ApplyPointerButtonRelease(button);
             }
         });
     }

@@ -16,7 +16,7 @@
 
 服务端同时兼任**窗口管理器**(EWMH / ICCCM 属性、客户端提示解析、移动 / 缩放 / 最大化 / 关闭请求转交宿主)与
 **XSETTINGS 管理器**(DPI、缩放),CLIPBOARD(可选 PRIMARY)与宿主剪贴板互通。监听 TCP 与 Unix 套接字,
-也可以 `ServeAsync` 直接喂一条双工流(SSH 的 x11 通道)。真实的 `xterm`(含 Xft)、`xeyes`、`xclock`、
+也可以 `ServeAsync` 直接喂一条双工流;调用方已经验过身份的流(SSH 的 x11 通道,转发层核对过假 cookie)用 `ServeAuthenticatedAsync`。配置了 `AuthorizationCookie` 时 TCP(包括环回)要带 `MIT-MAGIC-COOKIE-1`;Unix 套接字文件只有属主能连,Linux 抽象命名空间里的连接按 uid 只放行同一个用户。真实的 `xterm`(含 Xft)、`xeyes`、`xclock`、
 GTK3 的 `zenity` / `gedit`、Qt5 的 `qt5ct`、`xdotool`、`xinput`、`xkbcomp`、`glxinfo` / `glxgears`(直接与间接两条路径)
 画得对、输入走得通、零协议错误。
 
@@ -25,7 +25,7 @@ using VelaShell.XServer;   // 公开类型全在这一个命名空间
 
 await using X11Server server = new(new X11ServerOptions { DisplayNumber = 1 }, host);   // host: IX11ServerHost
 await server.StartAsync();       // 监听 127.0.0.1:6001(Windows 以外还有 /tmp/.X11-unix/X1);server.Display 给出 DISPLAY
-// 或者不监听,直接喂一条双工流:await server.ServeAsync(stream, isLocal: true);
+// 或者不监听,直接喂一条双工流:await server.ServeAsync(stream, isLocal: true);(已验过身份的流:ServeAuthenticatedAsync(stream))
 
 // 宿主回调里拿到的 XTopLevelWindow 就是之后指名窗口的句柄;属性读快照(整份替换,先取到局部变量)。
 XTopLevelSnapshot s = window.Snapshot;
@@ -37,7 +37,8 @@ server.SetClipboardText(text);   // 宿主剪贴板 → X;反方向是 IX11Serve
 
 线程模型:全部协议状态只在一条执行线程上改;宿主调用的方法当场校验参数、只排工作项、不阻塞;宿主回调在放掉像素锁之后按顺序调用。
 窗口的属性是不可变快照(`XTopLevelSnapshot`),`TopLevelChanged` 说明变了哪几组(`XTopLevelChanges`)。
-每个客户端有输出积压与未执行请求两道上限,慢客户端或恶意客户端拖不垮服务端。
+每个客户端有输出积压与未执行请求(条数与字节)两道上限,连接建立有时限,窗口、区域、像素、属性、原子、GLX 等资源各有上限(超了回 BadAlloc),
+慢客户端或恶意客户端拖不垮服务端。
 
 | 目录 | 职责 |
 | --- | --- |

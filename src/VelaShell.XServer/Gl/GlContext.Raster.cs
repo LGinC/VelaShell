@@ -41,7 +41,16 @@ internal sealed partial class GlContext
     private int _fbWidth;
     private int _fbHeight;
     private int _clipX0, _clipY0, _clipX1, _clipY1;
-    private bool _depthTest, _stencilTest, _alphaTest, _blend, _logicOp, _fog, _colorSum, _anyColorMask, _fullColorMask;
+    private bool _depthTest, _stencilTest, _alphaTest, _blend, _logicOp, _fog, _colorSum, _anyColorMask;
+
+    /// <summary>写颜色时保留目标原值的位(ColorMask 关掉的通道);0 = 四个通道都写。</summary>
+    private uint _colorKeep;
+
+    /// <summary>绘制表面有没有 alpha 通道(没有的话目标 alpha 视为 1)。</summary>
+    private bool _surfaceAlpha;
+
+    /// <summary>写的颜色缓冲就是表面的前缓冲(单缓冲的 BACK 也落在这里):写了要记脏范围。</summary>
+    private bool _targetIsFront;
     private GlTexture? _activeTexture;
     private Vector4 _fogColor;
 
@@ -78,7 +87,10 @@ internal sealed partial class GlContext
         _fogColor = State.FogColor;
         _colorSum = State.Enabled.Contains(GlEnum.LIGHTING) && State.LightModelColorControl == GlEnum.SEPARATE_SPECULAR_COLOR;
         _anyColorMask = State.ColorMask[0] || State.ColorMask[1] || State.ColorMask[2] || State.ColorMask[3];
-        _fullColorMask = State.ColorMask[0] && State.ColorMask[1] && State.ColorMask[2] && State.ColorMask[3];
+        _colorKeep = (State.ColorMask[0] ? 0 : 0x00FF0000u) | (State.ColorMask[1] ? 0 : 0x0000FF00u)
+                     | (State.ColorMask[2] ? 0 : 0x000000FFu) | (State.ColorMask[3] ? 0 : 0xFF000000u);
+        _surfaceAlpha = surface.HasAlpha;
+        _targetIsFront = ReferenceEquals(_targetFront, surface.Front);
         _activeTexture = CompleteTexture();
         return _clipX0 < _clipX1 && _clipY0 < _clipY1;
     }
@@ -86,16 +98,15 @@ internal sealed partial class GlContext
     /// <summary>当前生效的纹理:2D 优先于 1D,不完整的视为未启用(§3.8.10、§3.8.15)。</summary>
     private GlTexture? CompleteTexture()
     {
-        foreach ((uint cap, uint bound) in new[] { (GlEnum.TEXTURE_2D, State.Texture2D), (GlEnum.TEXTURE_1D, State.Texture1D) })
+        (uint cap, uint bound) = State.Enabled.Contains(GlEnum.TEXTURE_2D) ? (GlEnum.TEXTURE_2D, State.Texture2D)
+            : State.Enabled.Contains(GlEnum.TEXTURE_1D) ? (GlEnum.TEXTURE_1D, State.Texture1D)
+            : (0u, 0u);
+        if (cap == 0)
         {
-            if (!State.Enabled.Contains(cap))
-            {
-                continue;
-            }
-            GlTexture? t = bound == 0 ? DefaultTexture(cap) : Shared.Textures.GetValueOrDefault(bound);
-            return t is not null && t.IsComplete ? t : null;
+            return null;
         }
-        return null;
+        GlTexture? t = bound == 0 ? DefaultTexture(cap) : Shared.Textures.GetValueOrDefault(bound);
+        return t is not null && t.IsComplete ? t : null;
     }
 
     // ------------------------------------------------------------------ 三角形
@@ -181,11 +192,12 @@ internal sealed partial class GlContext
         {
             return;
         }
-        int w = Math.Max(1, (int)MathF.Round(width));
-        // 沿主轴逐个像素中心取样;起点含、终点不含(菱形出口规则的常见近似)。
+        int w = Math.Clamp((int)MathF.Round(width), 1, MaxLineWidth);
+        // 沿主轴逐个像素中心取样;起点含、终点不含(菱形出口规则的常见近似)。主轴上只走裁剪范围之内的那一段。
         float start = xMajor ? MathF.Min(a.X, b.X) : MathF.Min(a.Y, b.Y);
         float end = xMajor ? MathF.Max(a.X, b.X) : MathF.Max(a.Y, b.Y);
-        int i0 = (int)MathF.Floor(start + 0.5f), i1 = (int)MathF.Floor(end + 0.5f);
+        int lo = xMajor ? _clipX0 : _clipY0, hi = xMajor ? _clipX1 : _clipY1;
+        int i0 = (int)Math.Clamp(MathF.Floor(start + 0.5f), lo, hi), i1 = (int)Math.Clamp(MathF.Floor(end + 0.5f), lo, hi);
         for (int i = i0; i < i1; i++)
         {
             float center = i + 0.5f;
@@ -220,7 +232,7 @@ internal sealed partial class GlContext
         {
             return;
         }
-        int s = Math.Max(1, (int)MathF.Round(size));
+        int s = Math.Clamp((int)MathF.Round(size), 1, MaxLineWidth);
         int x0 = (int)MathF.Floor(p.X - (s / 2f) + 0.5f), y0 = (int)MathF.Floor(p.Y - (s / 2f) + 0.5f);
         for (int y = Math.Max(y0, _clipY0); y < Math.Min(y0 + s, _clipY1); y++)
         {
@@ -304,9 +316,9 @@ internal sealed partial class GlContext
         if (_targetFront is { } front)
         {
             front[index] = Blend(front[index], color);
-            if (ReferenceEquals(front, surface.Front))
+            if (_targetIsFront)
             {
-                surface.FrontDirty = true;
+                surface.MarkFrontDirty(x, _fbHeight - 1 - y);
             }
         }
         if (_targetBack is { } back)
@@ -348,7 +360,6 @@ internal sealed partial class GlContext
     /// <summary>混合(或逻辑运算)后按颜色掩码合进目标像素。没有 alpha 的表面目标 alpha 视为 1。</summary>
     private uint Blend(uint dstPixel, Vector4 src)
     {
-        Vector4 dst = Unpack(dstPixel, Draw!.HasAlpha);
         Vector4 result = src;
         if (_logicOp)
         {
@@ -376,6 +387,7 @@ internal sealed partial class GlContext
         }
         else if (_blend)
         {
+            Vector4 dst = Unpack(dstPixel, _surfaceAlpha);
             Vector4 sf = BlendFactor(State.BlendSrcRgb, State.BlendSrcAlpha, src, dst);
             Vector4 df = BlendFactor(State.BlendDstRgb, State.BlendDstAlpha, src, dst);
             result = State.BlendEquation switch
@@ -389,13 +401,11 @@ internal sealed partial class GlContext
             result = Vector4.Clamp(result, Vector4.Zero, Vector4.One);
         }
         uint packed = Pack(result);
-        if (_fullColorMask)
+        if (_colorKeep == 0)
         {
-            return Draw.HasAlpha ? packed : packed | 0xFF000000;
+            return _surfaceAlpha ? packed : packed | 0xFF000000;
         }
-        uint keep = (State.ColorMask[0] ? 0 : 0x00FF0000u) | (State.ColorMask[1] ? 0 : 0x0000FF00u)
-                    | (State.ColorMask[2] ? 0 : 0x000000FFu) | (State.ColorMask[3] ? 0 : 0xFF000000u);
-        return (dstPixel & keep) | (packed & ~keep);
+        return (dstPixel & _colorKeep) | (packed & ~_colorKeep);
     }
 
     private Vector4 BlendFactor(uint rgb, uint alpha, Vector4 s, Vector4 d)
@@ -453,13 +463,12 @@ internal sealed partial class GlContext
         {
             color |= 0xFF000000;
         }
-        uint keep = (State.ColorMask[0] ? 0 : 0x00FF0000u) | (State.ColorMask[1] ? 0 : 0x0000FF00u)
-                    | (State.ColorMask[2] ? 0 : 0x000000FFu) | (State.ColorMask[3] ? 0 : 0xFF000000u);
+        uint keep = _colorKeep;
         float depth = (float)State.ClearDepth;
         uint stencilMask = State.StencilWriteMask & 0xFF;
         byte stencil = (byte)(State.ClearStencil & 0xFF);
         bool full = _clipX0 == 0 && _clipY0 == 0 && _clipX1 == _fbWidth && _clipY1 == _fbHeight;
-        foreach (uint[]? buffer in new[] { _targetFront, _targetBack })
+        foreach (uint[]? buffer in (ReadOnlySpan<uint[]?>)[_targetFront, _targetBack])
         {
             if ((mask & GlEnum.COLOR_BUFFER_BIT) == 0 || buffer is null || !_anyColorMask)
             {
@@ -481,7 +490,8 @@ internal sealed partial class GlContext
             }
             if (ReferenceEquals(buffer, surface.Front))
             {
-                surface.FrontDirty = true;
+                // 剪裁框(GL 坐标,y 向上)换成行:[H − y1, H − y0)。
+                surface.MarkFrontDirty(new XRect(_clipX0, _fbHeight - _clipY1, _clipX1 - _clipX0, _clipY1 - _clipY0));
             }
         }
         if ((mask & GlEnum.DEPTH_BUFFER_BIT) != 0 && State.DepthMask)

@@ -1,5 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using VelaShell.XServer.Protocol;
+using VelaShell.XServer.Resources;
+using VelaShell.XServer.Server;
 using VelaShell.XServer.Tests.TestKit;
 
 namespace VelaShell.XServer.Tests.Server;
@@ -81,6 +84,32 @@ public sealed partial class ShmTests
         {
             _ = ShmDt(address);
         }
+    }
+
+    [TestMethod]
+    public async Task 段的XID别的客户端来用时按附加时记下的属主与权限再核一次()
+    {
+        await using X11Server server = new();
+        XClient owner = new(1, bigEndian: false) { PeerUid = 1000 };
+        XClient sameUser = new(2, bigEndian: false) { PeerUid = 1000 };
+        XClient otherUser = new(3, bigEndian: false) { PeerUid = 2000 };
+        XClient unknown = new(4, bigEndian: false);   // 取不到 uid
+        // 段:属主 1000、权限 0644(别人只能读);地址 0 = 没真的映射,只测核对。
+        XShmSegment segment = new(owner.ResourceBase | 1, owner, shmid: 7, readOnly: false, address: 0,
+            new XShmAccess(Size: 64, Uid: 1000, Cuid: 1000, Perms: Convert.ToInt32("644", 8)));
+
+        await server.InvokeAsync(() =>
+        {
+            server.AddResource(owner, segment);
+            Assert.AreSame(segment, server.Segment(owner, segment.Id, write: true), "附加它的客户端");
+            Assert.AreSame(segment, server.Segment(sameUser, segment.Id, write: true), "同一个用户");
+            Assert.AreSame(segment, server.Segment(otherUser, segment.Id, write: false), "别的用户:0644 可读(ShmPutImage)");
+            Assert.AreEqual(XErrorCode.Access, Assert.Throws<XProtocolError>(() => server.Segment(otherUser, segment.Id, write: true)).Code,
+                "别的用户:不可写(ShmGetImage 会往段里写)");
+            Assert.AreEqual(XErrorCode.Access, Assert.Throws<XProtocolError>(() => server.Segment(unknown, segment.Id, write: false)).Code,
+                "取不到身份的一律不给");
+            return true;
+        });
     }
 
     [LibraryImport("libc", EntryPoint = "shmget")]

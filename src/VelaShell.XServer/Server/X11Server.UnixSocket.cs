@@ -6,15 +6,20 @@
 //   本地传输的约定:显示号 N 的服务端监听 /tmp/.X11-unix/XN(Linux 另有抽象命名空间里的同名套接字,
 //   Xlib / XCB 对 DISPLAY=:N 先试它),与 X.Org 的 Xtrans 行为一致。
 //
-//   本机客户端(DISPLAY=:N)走这里,比 TCP 快,也不必开端口。连进来的一律算本机连接。
+//   本机客户端(DISPLAY=:N)走这里,比 TCP 快,也不必开端口。连进来的一律算本机连接;是不是「运行服务端的这个用户」:
+//   套接字文件在 Listen 之前就改成 0600,连得上的只有属主(与 root);抽象命名空间没有文件权限,按 SO_PEERCRED 的 uid 核对。
 
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 
 namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
     private readonly List<(Socket Socket, string? File)> _unixListeners = [];
+
+    /// <summary>本进程的有效 uid(Linux;只有那里取得到对端的 uid,见 <see cref="PeerUidOf" />)。</summary>
+    private static readonly uint? ProcessUid = OperatingSystem.IsLinux() ? GetEffectiveUid() : null;
 
     /// <summary>Unix 套接字的路径:选项给了就用它,否则 Windows 以外默认 /tmp/.X11-unix/X{N};空字符串 = 不监听。</summary>
     private string? UnixSocketPath => _options.UnixSocketPath switch
@@ -86,9 +91,24 @@ public sealed partial class X11Server
     private void TryListen(string endpoint, string? file, CancellationToken cancellationToken)
     {
         Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        bool ownerOnly = false;
         try
         {
             socket.Bind(new UnixDomainSocketEndPoint(endpoint));
+            // 在 Listen 之前把套接字文件改成只有属主能读写:连接要对套接字文件有写权限,于是连得上的只有这个用户(与 root),
+            // 也就不必再要 cookie。还没 Listen,改权限之前没有人连得进来。改不了(文件系统不支持)就照常要 cookie。
+            if (file is not null && !OperatingSystem.IsWindows())
+            {
+                try
+                {
+                    File.SetUnixFileMode(file, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                    ownerOnly = true;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Log($"Unix socket {file}: cannot restrict permissions ({ex.Message}); clients need the cookie");
+                }
+            }
             socket.Listen(64);
         }
         catch (SocketException ex)
@@ -98,10 +118,10 @@ public sealed partial class X11Server
             return;
         }
         _unixListeners.Add((socket, file));
-        _ = AcceptUnixLoopAsync(socket, cancellationToken);
+        _ = AcceptUnixLoopAsync(socket, ownerOnly, cancellationToken);
     }
 
-    private async Task AcceptUnixLoopAsync(Socket listener, CancellationToken cancellationToken)
+    private async Task AcceptUnixLoopAsync(Socket listener, bool ownerOnly, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)
         {
@@ -114,17 +134,22 @@ public sealed partial class X11Server
             {
                 return;
             }
-            TrackConnection(ServeUnixAsync(connection, cancellationToken));
+            TrackConnection(ServeUnixAsync(connection, ownerOnly, cancellationToken));
         }
     }
 
-    private async Task ServeUnixAsync(Socket connection, CancellationToken cancellationToken)
+    /// <param name="connection">接进来的连接。</param>
+    /// <param name="ownerOnly">它连的是只有属主能连的套接字文件(见 <see cref="TryListen" />)。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    private async Task ServeUnixAsync(Socket connection, bool ownerOnly, CancellationToken cancellationToken)
     {
         uint? peerUid = PeerUidOf(connection);
+        bool localUser = ownerOnly || (peerUid is { } uid && uid == ProcessUid);
         await using NetworkStream stream = new(connection, ownsSocket: true);
         try
         {
-            await ServeCoreAsync(stream, isLocal: true, sameHost: true, peerUid, cancellationToken).ConfigureAwait(false);
+            await ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: true, peerUid, localUser, Authenticated: false),
+                cancellationToken).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
@@ -152,6 +177,9 @@ public sealed partial class X11Server
             return null;
         }
     }
+
+    [LibraryImport("libc", EntryPoint = "geteuid")]
+    private static partial uint GetEffectiveUid();
 
     private void StopUnixListeners()
     {

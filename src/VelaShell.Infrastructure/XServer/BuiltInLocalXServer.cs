@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using VelaShell.Core.Data;
 using VelaShell.Core.Resources;
 using VelaShell.Core.XServer;
@@ -20,6 +22,12 @@ namespace VelaShell.Infrastructure.XServer;
 /// <see cref="XServerDisplayResolution.Connector" /> 直接接进服务端,不绕本机端口。
 /// </para>
 /// <para>
+/// <b>授权</b>:每次启动生成一个随机的 <c>MIT-MAGIC-COOKIE-1</c>,TCP 连接(包括环回 —— 本机别的进程、别的用户都连得到那个端口)
+/// 必须带上它;cookie 写进用户的 <c>.Xauthority</c>(<see cref="XAuthorityFile" />,停下时撤出),本机 X 程序经 Xlib 自动带上。
+/// Unix 套接字只有同一个用户连得进来,不要 cookie。SSH 的 x11 通道经连接器进来,转发层已经核对过远端的假 cookie,
+/// 走 <see cref="X11Server.ServeAuthenticatedAsync" />。
+/// </para>
+/// <para>
 /// 状态变化(<see cref="StateChanged" />)在调用启动 / 停止的那个线程上触发,界面侧自己切回 UI 线程。
 /// </para>
 /// </remarks>
@@ -29,6 +37,7 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     private readonly Func<IEmbeddedXServerHost?> _host;
     private readonly Func<int, CancellationToken, Task<bool>> _isDisplayInUse;
     private readonly Func<CancellationToken, Task<bool>> _hasOtherDisplay;
+    private readonly string? _xauthorityPath;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Lock _stateLock = new();
 
@@ -38,25 +47,30 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     private XServerState _state = XServerState.Stopped;
     private bool _disposed;
 
+    /// <summary>写进 .Xauthority 的那一条(停下时按它撤);没写成为 null。</summary>
+    private (string Path, string Host, int Display, byte[] Cookie)? _published;
+
     /// <summary>构造。</summary>
     /// <param name="settings">设置服务(显示号、剪贴板、自动启动)。</param>
     /// <param name="host">取宿主;<see langword="null" /> 表示界面层没有提供,启动会失败。</param>
     public BuiltInLocalXServer(ISettingsService settings, Func<IEmbeddedXServerHost?> host)
-        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync)
+        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync, XAuthorityFile.DefaultPath)
     {
     }
 
-    /// <summary>可注入显示探测(单测用)。</summary>
+    /// <summary>可注入显示探测与 .Xauthority 的位置(单测用;<paramref name="xauthorityPath" /> 为 null 时不写)。</summary>
     internal BuiltInLocalXServer(
         ISettingsService settings,
         Func<IEmbeddedXServerHost?> host,
         Func<int, CancellationToken, Task<bool>> isDisplayInUse,
-        Func<CancellationToken, Task<bool>> hasOtherDisplay)
+        Func<CancellationToken, Task<bool>> hasOtherDisplay,
+        string? xauthorityPath = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _isDisplayInUse = isDisplayInUse;
         _hasOtherDisplay = hasOtherDisplay;
+        _xauthorityPath = xauthorityPath;
     }
 
     /// <inheritdoc />
@@ -141,9 +155,11 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
 
         SetState(XServerState.Starting, display);
+        byte[] cookie = RandomNumberGenerator.GetBytes(16);
         X11Server server = new(new X11ServerOptions
         {
             DisplayNumber = display,
+            AuthorizationCookie = cookie,
             SyncClipboard = options.Clipboard,
             SyncPrimary = options.Clipboard && options.CopyOnSelection,
             Log = static line => Trace.WriteLine($"[XServer] {line}"),
@@ -169,6 +185,7 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
                 : Strings.Format("XServer_ErrLaunch", ex.Message));
         }
 
+        PublishCookie(display, cookie);
         lock (_stateLock)
         {
             _server = server;
@@ -211,7 +228,44 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
         host?.Detach();
         await server.DisposeAsync().ConfigureAwait(false);
+        RetractCookie();
         SetStopped();
+    }
+
+    /// <summary>把 cookie 写进 .Xauthority,本机 X 程序经 Xlib 自动带上;写不成只记日志(SSH 转发不受影响)。</summary>
+    private void PublishCookie(int display, byte[] cookie)
+    {
+        if (_xauthorityPath is not { } path || HostName() is not { } hostName)
+        {
+            return;
+        }
+        if (XAuthorityFile.Add(path, hostName, display, cookie))
+        {
+            _published = (path, hostName, display, cookie);
+        }
+    }
+
+    /// <summary>撤掉启动时写进 .Xauthority 的那一条。</summary>
+    private void RetractCookie()
+    {
+        if (_published is { } published)
+        {
+            _published = null;
+            _ = XAuthorityFile.Remove(published.Path, published.Host, published.Display, published.Cookie);
+        }
+    }
+
+    private static string? HostName()
+    {
+        try
+        {
+            return Dns.GetHostName();
+        }
+        catch (SocketException ex)
+        {
+            Trace.WriteLine($"[XServer] cannot get the host name; the cookie is not published: {ex.Message}");
+            return null;
+        }
     }
 
     /// <inheritdoc />
@@ -276,9 +330,9 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     {
         try
         {
-            // ServeAsync 不拥有流:连接结束(客户端断开、服务端停下)后在这里释放,SSH 那一端随之读到 EOF。
-            // isLocal:SSH 转发层已经核对过远端给的假 cookie,这条流按本机连接对待。
-            await server.ServeAsync(stream, isLocal: true).ConfigureAwait(false);
+            // 服务端不拥有流:连接结束(客户端断开、服务端停下)后在这里释放,SSH 那一端随之读到 EOF。
+            // SSH 转发层已经核对过远端给的假 cookie:这条流不再查授权(服务端的 cookie 只给 TCP 上的本机程序)。
+            await server.ServeAuthenticatedAsync(stream).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or IOException or OperationCanceledException)
         {

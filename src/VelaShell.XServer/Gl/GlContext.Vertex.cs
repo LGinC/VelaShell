@@ -46,6 +46,14 @@ internal sealed partial class GlContext
 
     private readonly List<GlVertex> _primitive = [];
     private uint _primitiveMode = uint.MaxValue;
+
+    /// <summary>
+    /// 一对 Begin / End 之间最多收这么多个顶点。Begin 与 End 可以隔着任意多条请求,顶点一直攒着要到 End 才画;
+    /// 再多的记一次 OUT_OF_MEMORY、丢掉。
+    /// </summary>
+    public const int MaxPrimitiveVertices = 1 << 19;
+
+    private bool _primitiveOverflow;
     private Matrix4x4 _normalMatrix = Matrix4x4.Identity;
 
     public bool InBeginEnd => _primitiveMode != uint.MaxValue;
@@ -338,6 +346,7 @@ internal sealed partial class GlContext
         }
         _primitiveMode = mode;
         _primitive.Clear();
+        _primitiveOverflow = false;
     }
 
     private void End()
@@ -361,6 +370,15 @@ internal sealed partial class GlContext
     {
         if (!InBeginEnd)
         {
+            return;
+        }
+        if (_primitive.Count >= MaxPrimitiveVertices)
+        {
+            if (!_primitiveOverflow)
+            {
+                _primitiveOverflow = true;
+                SetError(GlEnum.OUT_OF_MEMORY);
+            }
             return;
         }
         _primitive.Add(Transform(obj));
@@ -948,7 +966,14 @@ internal sealed partial class GlContext
         {
             return;
         }
-        for (int v = 0; v < count && r.Remaining > 0; v++)
+        // 顶点数以数据里真有的为准:一个数组都没给(每个顶点 0 字节)时不空转 count 次。
+        int stride = 0;
+        foreach ((_, _, int bytes) in info)
+        {
+            stride += (bytes + 3) & ~3;
+        }
+        int vertices = stride == 0 ? 0 : Math.Min(count, r.Remaining / stride);
+        for (int v = 0; v < vertices; v++)
         {
             Vector4 position = new(0, 0, 0, 1);
             bool hasVertex = false;

@@ -191,4 +191,21 @@ public sealed class ImageTests
         await c.SyncAsync();
         Assert.IsFalse(handle.ReadPixels((_, _, _) => Assert.Fail("窗口已销毁,不该再调")));
     }
+
+    [TestMethod]
+    public async Task CopyArea深度不配回BadMatch_源不存在回BadDrawable()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint bitmap = c.NewId(), pixmap = c.NewId(), gc = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(bitmap).U32(c.RootWindow).U16(8).U16(8));
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0));
+
+        // 深度 1 → 深度 24:先核对深度再取像素(取出来的是租来的数组,抛错之后原先就还不回池里了)。
+        XMessage mismatch = await c.RequestAsync(62, 0, b => b.U32(bitmap).U32(pixmap).U32(gc).I16(0).I16(0).I16(0).I16(0).U16(8).U16(8));
+        Assert.AreEqual(8, mismatch.Detail, "BadMatch");
+        XMessage missing = await c.RequestAsync(62, 0, b => b.U32(pixmap).U32(0x7FFFFF).U32(gc).I16(0).I16(0).I16(0).I16(0).U16(8).U16(8));
+        Assert.AreEqual(9, missing.Detail, "BadDrawable");
+    }
 }

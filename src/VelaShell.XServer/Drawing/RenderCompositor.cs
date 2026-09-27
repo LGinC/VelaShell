@@ -22,6 +22,16 @@ internal static class RenderCompositor
     public static XRect Composite(byte op, RenderSource src, RenderSource? mask, bool componentAlpha, RenderTarget dst,
         int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
     {
+        // 源 / 遮罩与目标是同一块缓冲(同一张像素图、同一个顶层里的窗口):先把要读的那一块拷出来。逐行从上往下合成时,
+        // 目标在源下面(或同一行靠右)的话,后面要读的源行已经被前面写过了 —— 结果得像「先读完源再写」。
+        if (src is ImageSource sharedSource && ReferenceEquals(sharedSource.Buffer, dst.Buffer))
+        {
+            src = sharedSource.Detach(new XRect(srcX, srcY, width, height));
+        }
+        if (mask is ImageSource sharedMask && ReferenceEquals(sharedMask.Buffer, dst.Buffer))
+        {
+            mask = sharedMask.Detach(new XRect(maskX, maskY, width, height));
+        }
         if (TryFastPath(op, src, mask, componentAlpha, dst, srcX, srcY, maskX, maskY, dstX, dstY, width, height, out XRect fastDirty))
         {
             return fastDirty;
@@ -31,8 +41,13 @@ internal static class RenderCompositor
         uint depthMask = buffer.DepthMask;
         int x1 = int.MaxValue, y1 = int.MaxValue, x2 = int.MinValue, y2 = int.MinValue;
 
-        Argb[] srcRow = ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
-        Argb[] maskRow = ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
+        // 8888 目标上最常用的三种运算走整数:源与遮罩各取成 8 位预乘的一行(渐变、变换、重复、各种源格式都在取样里处理掉),
+        // 逐像素整数合成。其余运算、分量 alpha 与别的目标格式走浮点。
+        bool integer = Is8888(dst.Format) && !componentAlpha && op is RenderOps.Src or RenderOps.Over or RenderOps.Add;
+        Argb[] srcRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
+        Argb[] maskRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
+        uint[] srcRow8 = integer ? ArrayPool<uint>.Shared.Rent(Math.Max(1, width)) : [];
+        uint[] maskRow8 = integer && mask is not null ? ArrayPool<uint>.Shared.Rent(Math.Max(1, width)) : [];
         try
         {
             foreach (XRect clip in dst.Clip)
@@ -55,6 +70,21 @@ internal static class RenderCompositor
                     for (int by = r.Y; by < r.Bottom; by++)
                     {
                         buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width).Fill(value);
+                    }
+                    continue;
+                }
+
+                if (integer)
+                {
+                    Span<uint> s8 = srcRow8.AsSpan(0, r.Width);
+                    Span<uint> m8 = mask is null ? [] : maskRow8.AsSpan(0, r.Width);
+                    for (int by = r.Y; by < r.Bottom; by++)
+                    {
+                        int dx = r.X - dst.OriginX - dstX;
+                        int dy = by - dst.OriginY - dstY;
+                        src.FetchRow8888(srcX + dx, srcY + dy, s8);
+                        mask?.FetchRow8888(maskX + dx, maskY + dy, m8);
+                        CombineRow(op, s8, m8, buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width), dst.Format.HasAlpha, depthMask);
                     }
                     continue;
                 }
@@ -106,27 +136,84 @@ internal static class RenderCompositor
         }
         finally
         {
-            ArrayPool<Argb>.Shared.Return(srcRow);
-            ArrayPool<Argb>.Shared.Return(maskRow);
+            Return(srcRow);
+            Return(maskRow);
+            Return(srcRow8);
+            Return(maskRow8);
         }
         return x2 < x1 ? default : new XRect(x1, y1, x2 - x1, y2 - y1);
+
+        static void Return<T>(T[] array)
+        {
+            if (array.Length != 0)
+            {
+                ArrayPool<T>.Shared.Return(array);
+            }
+        }
     }
 
-    // ================================================================== 整数快路径
+    // ================================================================== 整数路径
 
-    /// <summary>x / 255 取整(x ≤ 255 × 255):乘法的结果换回 8 位,误差与浮点四舍五入一致。</summary>
-    private static uint Div255(uint x)
+    /// <summary>
+    /// 一行的整数合成:<paramref name="src" /> 是 8 位预乘的源,<paramref name="mask" /> 为空表示没有遮罩(否则只用它的 alpha),
+    /// 目标是 8888(<paramref name="dstAlpha" /> 为 false 时是 x8r8g8b8:读的时候 alpha 当 1,写的时候 alpha 字节写 0)。
+    /// </summary>
+    private static void CombineRow(byte op, ReadOnlySpan<uint> src, ReadOnlySpan<uint> mask, Span<uint> dst, bool dstAlpha, uint depthMask)
     {
-        x += 128;
-        return (x + (x >> 8)) >> 8;
+        uint keep = dstAlpha ? 0xFFFFFFFFu : 0x00FFFFFFu;
+        for (int i = 0; i < dst.Length; i++)
+        {
+            uint s = src[i];
+            if (!mask.IsEmpty)
+            {
+                uint m = mask[i] >> 24;
+                s = m == 255 ? s : m == 0 ? 0 : Argb8.Scale(s, m);
+            }
+            uint sa = s >> 24;
+            switch (op)
+            {
+                case RenderOps.Src:
+                    dst[i] = s & keep & depthMask;
+                    break;
+                case RenderOps.Over:
+                    {
+                        // 完全透明的源不改变目标(同浮点路径);不透明的源直接盖上。
+                        if (sa == 0)
+                        {
+                            break;
+                        }
+                        if (sa == 255)
+                        {
+                            dst[i] = s & keep & depthMask;
+                            break;
+                        }
+                        uint inv = 255 - sa, d = dst[i];
+                        uint oa = dstAlpha ? sa + Argb8.Div255((d >> 24) * inv) : 0;
+                        uint or = ((s >> 16) & 0xFF) + Argb8.Div255(((d >> 16) & 0xFF) * inv);
+                        uint og = ((s >> 8) & 0xFF) + Argb8.Div255(((d >> 8) & 0xFF) * inv);
+                        uint ob = (s & 0xFF) + Argb8.Div255((d & 0xFF) * inv);
+                        // 源没有按规矩预乘(颜色大于 alpha)时和会超过 255:夹住,免得进位到相邻通道。
+                        dst[i] = ((Math.Min(oa, 255) << 24) | (Math.Min(or, 255) << 16) | (Math.Min(og, 255) << 8) | Math.Min(ob, 255)) & depthMask;
+                        break;
+                    }
+                default:   // Add:逐通道饱和相加
+                    {
+                        uint d = dst[i];
+                        uint oa = dstAlpha ? Math.Min(sa + (d >> 24), 255) : 0;
+                        uint or = Math.Min(((s >> 16) & 0xFF) + ((d >> 16) & 0xFF), 255);
+                        uint og = Math.Min(((s >> 8) & 0xFF) + ((d >> 8) & 0xFF), 255);
+                        uint ob = Math.Min((s & 0xFF) + (d & 0xFF), 255);
+                        dst[i] = ((oa << 24) | (or << 16) | (og << 8) | ob) & depthMask;
+                        break;
+                    }
+            }
+        }
     }
-
-    private static uint ToByte(float v) => (uint)Math.Clamp((int)((v * 255) + 0.5f), 0, 255);
 
     private static bool Is8888(PictFormat f) => ReferenceEquals(f, PictFormat.A8R8G8B8) || ReferenceEquals(f, PictFormat.X8R8G8B8);
 
     /// <summary>
-    /// 两种占绝大多数的情形用整数算,不走逐像素的浮点解码 / 合成 / 编码:
+    /// 两种占绝大多数的情形不逐行取样,直接按源的存储整块算(比 <see cref="CombineRow" /> 那条整数路径还省一次取样):
     /// <list type="number">
     /// <item>纯色源 + 单字节遮罩(字形、梯形覆盖率)+ Over → 8888 目标(Xft 画字、cairo 画抗锯齿图形);</item>
     /// <item>8888 图像源(无变换、取样范围在图像之内)+ 无遮罩 + Src / Over → 8888 目标(cairo 贴图、窗口间拷贝)。</item>
@@ -159,7 +246,7 @@ internal static class RenderCompositor
     private static XRect OverSolidMask(Argb color, ByteMaskSource mask, RenderTarget dst, int maskDx, int maskDy,
         int dstX, int dstY, int width, int height)
     {
-        uint sa = ToByte(color.A), sr = ToByte(color.R), sg = ToByte(color.G), sb = ToByte(color.B);
+        uint sa = Argb8.ToByte(color.A), sr = Argb8.ToByte(color.R), sg = Argb8.ToByte(color.G), sb = Argb8.ToByte(color.B);
         bool dstAlpha = dst.Format.HasAlpha;
         uint opaque = (dstAlpha ? 0xFF000000u : 0) | (sr << 16) | (sg << 8) | sb;
         uint[] px = dst.Buffer.Pixels;
@@ -194,12 +281,12 @@ internal static class RenderCompositor
                         px[dRow + i] = opaque;
                         continue;
                     }
-                    uint a = Div255(sa * m), inv = 255 - a;
+                    uint a = Argb8.Div255(sa * m), inv = 255 - a;
                     uint d = px[dRow + i];
-                    uint oa = dstAlpha ? a + Div255((d >> 24) * inv) : 0;
-                    uint or = Div255(sr * m) + Div255(((d >> 16) & 0xFF) * inv);
-                    uint og = Div255(sg * m) + Div255(((d >> 8) & 0xFF) * inv);
-                    uint ob = Div255(sb * m) + Div255((d & 0xFF) * inv);
+                    uint oa = dstAlpha ? a + Argb8.Div255((d >> 24) * inv) : 0;
+                    uint or = Argb8.Div255(sr * m) + Argb8.Div255(((d >> 16) & 0xFF) * inv);
+                    uint og = Argb8.Div255(sg * m) + Argb8.Div255(((d >> 8) & 0xFF) * inv);
+                    uint ob = Argb8.Div255(sb * m) + Argb8.Div255((d & 0xFF) * inv);
                     // 各通道的两次取整最多凑出 256:夹到 255,免得进位到相邻通道。
                     px[dRow + i] = (Math.Min(oa, 255) << 24) | (Math.Min(or, 255) << 16) | (Math.Min(og, 255) << 8) | Math.Min(ob, 255);
                 }
@@ -264,10 +351,10 @@ internal static class RenderCompositor
                         continue;
                     }
                     uint inv = 255 - sa, d = to[i];
-                    uint oa = dstAlpha ? sa + Div255((d >> 24) * inv) : 0;
-                    uint or = ((s >> 16) & 0xFF) + Div255(((d >> 16) & 0xFF) * inv);
-                    uint og = ((s >> 8) & 0xFF) + Div255(((d >> 8) & 0xFF) * inv);
-                    uint ob = (s & 0xFF) + Div255((d & 0xFF) * inv);
+                    uint oa = dstAlpha ? sa + Argb8.Div255((d >> 24) * inv) : 0;
+                    uint or = ((s >> 16) & 0xFF) + Argb8.Div255(((d >> 16) & 0xFF) * inv);
+                    uint og = ((s >> 8) & 0xFF) + Argb8.Div255(((d >> 8) & 0xFF) * inv);
+                    uint ob = (s & 0xFF) + Argb8.Div255((d & 0xFF) * inv);
                     to[i] = (oa << 24) | (Math.Min(or, 255) << 16) | (Math.Min(og, 255) << 8) | Math.Min(ob, 255);
                 }
             }

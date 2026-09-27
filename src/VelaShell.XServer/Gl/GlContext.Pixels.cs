@@ -42,6 +42,32 @@ internal sealed partial class GlContext
         _ => null,
     };
 
+    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记账的对象;名字 0 的默认纹理与代理纹理每个上下文就几个,不记)。</summary>
+    private bool IsNamed(GlTexture texture) =>
+        texture.Name != 0 && Shared.Textures.TryGetValue(texture.Name, out GlTexture? named) && ReferenceEquals(named, texture);
+
+    /// <summary>给这个纹理的某一级换一张 <paramref name="bytes" /> 字节的图像放得下吗;放不下记 OUT_OF_MEMORY(先问再分配)。</summary>
+    private bool FitsTexture(GlTexture texture, int level, long bytes)
+    {
+        long delta = bytes - (texture.Levels[level]?.Texels.Length ?? 0);
+        if (!IsNamed(texture) || delta <= 0 || Shared.TextureBytes + delta <= GlShared.MaxTextureBytes)
+        {
+            return true;
+        }
+        SetError(GlEnum.OUT_OF_MEMORY);
+        return false;
+    }
+
+    /// <summary>换掉纹理的一级图像并记账。</summary>
+    private void StoreLevel(GlTexture texture, int level, GlTexImage? image)
+    {
+        if (IsNamed(texture))
+        {
+            Shared.TextureBytes += (image?.Texels.Length ?? 0) - (texture.Levels[level]?.Texels.Length ?? 0);
+        }
+        texture.Levels[level] = image;
+    }
+
     private void BindTexture(uint target, uint name)
     {
         if (target is not (GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D))
@@ -53,6 +79,11 @@ internal sealed partial class GlContext
         {
             if (!Shared.Textures.TryGetValue(name, out GlTexture? texture))
             {
+                if (Shared.Textures.Count >= GlShared.MaxTextures)
+                {
+                    SetError(GlEnum.OUT_OF_MEMORY);   // 绑一个没用过的名字就建一个纹理对象:名字同样有上限
+                    return;
+                }
                 texture = new GlTexture(name);
                 Shared.Textures[name] = texture;
             }
@@ -140,7 +171,7 @@ internal sealed partial class GlContext
     /// <summary>格式里的元素个数(Table A.2);不认识的返回 0。</summary>
     private static int FormatElements(uint format) => format switch
     {
-        GlEnum.RGBA or GlEnum.BGRA => 4,
+        GlEnum.RGBA or GlEnum.BGRA or GlEnum.ABGR_EXT => 4,
         GlEnum.RGB or GlEnum.BGR => 3,
         GlEnum.LUMINANCE_ALPHA => 2,
         GlEnum.COLOR_INDEX or GlEnum.STENCIL_INDEX or GlEnum.DEPTH_COMPONENT or GlEnum.RED or GlEnum.GREEN or GlEnum.BLUE
@@ -178,10 +209,25 @@ internal sealed partial class GlContext
     };
 
     /// <summary>
-    /// 按附录 A.2.1 解出 width × height 的像素矩形,每个像素给出 RGBA 浮点(第 0 行是图像的第一行,即 GL 里最下面一行)。
-    /// 格式或类型不认识时记 INVALID_ENUM 并返回 null。
+    /// 一张客户端图像在命令数据里的布局(附录 A.2.1、§3.6.4):每组几个元素、每个元素几字节、行跨度(按 Alignment 补齐)。
     /// </summary>
-    private Vector4[]? UnpackImage(ReadOnlySpan<byte> data, PixelStore store, int width, int height, uint format, uint type, bool bigEndian)
+    private readonly record struct ImageLayout(uint Format, uint Type, int Elements, int GroupElements, int ElementBytes, bool Packed,
+        long RowStride, PixelStore Store, bool ElementBigEndian)
+    {
+        public int GroupBytes => GroupElements * ElementBytes;
+
+        /// <summary>第 j 行第 i 个像素(组)在数据里的偏移。</summary>
+        public long Offset(int i, int j) => ((j + (long)Store.SkipRows) * RowStride) + ((i + (long)Store.SkipPixels) * GroupBytes);
+
+        /// <summary>数据装得下整张 width × height 的图像。</summary>
+        public bool Covers(int dataLength, int width, int height) =>
+            width == 0 || height == 0 || Offset(width - 1, height - 1) + GroupBytes <= dataLength;
+    }
+
+    /// <summary>
+    /// 按格式、类型与像素存储参数算出图像布局。格式或类型不认识时记 INVALID_ENUM、像素存储参数为负时记 INVALID_VALUE,返回 null。
+    /// </summary>
+    private ImageLayout? Layout(PixelStore store, int width, uint format, uint type, bool bigEndian)
     {
         int elements = FormatElements(format);
         (int nbytes, bool packed) = TypeSize(type);
@@ -190,49 +236,75 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return null;
         }
+        if (store.RowLength < 0 || store.SkipRows < 0 || store.SkipPixels < 0)
+        {
+            SetError(GlEnum.INVALID_VALUE);
+            return null;
+        }
+        int groupElements = packed ? 1 : elements;
+        long groups = store.RowLength > 0 ? store.RowLength : width;
+        long rowBytes = (long)nbytes * groupElements * groups;
+        long k = nbytes >= store.Alignment ? rowBytes : store.Alignment * ((rowBytes + store.Alignment - 1) / store.Alignment);
+        return new ImageLayout(format, type, elements, groupElements, nbytes, packed, k, store, store.SwapBytes ? !bigEndian : bigEndian);
+    }
+
+    /// <summary>读出第 j 行第 i 个像素的 RGBA;数据里没有这个像素时为 0。</summary>
+    private static Vector4 ReadGroup(ReadOnlySpan<byte> data, in ImageLayout layout, int i, int j, Span<float> comp)
+    {
+        long offset = layout.Offset(i, j);
+        int groupBytes = layout.GroupBytes;
+        if (offset < 0 || offset + groupBytes > data.Length)
+        {
+            return Vector4.Zero;
+        }
+        ReadOnlySpan<byte> group = data.Slice((int)offset, groupBytes);
+        comp.Clear();
+        comp[3] = 1;
+        if (layout.Packed)
+        {
+            uint word = layout.ElementBytes switch
+            {
+                1 => group[0],
+                2 => layout.ElementBigEndian ? BinaryPrimitives.ReadUInt16BigEndian(group) : BinaryPrimitives.ReadUInt16LittleEndian(group),
+                _ => layout.ElementBigEndian ? BinaryPrimitives.ReadUInt32BigEndian(group) : BinaryPrimitives.ReadUInt32LittleEndian(group),
+            };
+            (int Shift, int Bits)[] packing = PackedLayout(layout.Type);
+            for (int c = 0; c < 4; c++)
+            {
+                comp[c] = c < packing.Length ? ((word >> packing[c].Shift) & ((1u << packing[c].Bits) - 1)) / (float)((1u << packing[c].Bits) - 1) : 1;
+            }
+        }
+        else
+        {
+            for (int c = 0; c < layout.Elements; c++)
+            {
+                comp[c] = ReadElement(group.Slice(c * layout.ElementBytes, layout.ElementBytes), layout.Type, layout.ElementBigEndian);
+            }
+        }
+        return ToRgba(layout.Format, comp);
+    }
+
+    /// <summary>
+    /// 按附录 A.2.1 解出 width × height 的像素矩形,每个像素给出 RGBA 浮点(第 0 行是图像的第一行,即 GL 里最下面一行)。
+    /// 格式或类型不认识时记 INVALID_ENUM 并返回 null。纹理图像用;画像素矩形的命令逐行解、不整张解(见 <see cref="DrawPixels" />)。
+    /// </summary>
+    private Vector4[]? UnpackImage(ReadOnlySpan<byte> data, PixelStore store, int width, int height, uint format, uint type, bool bigEndian)
+    {
+        if (Layout(store, width, format, type, bigEndian) is not { } layout)
+        {
+            return null;
+        }
         if (width <= 0 || height <= 0)
         {
             return [];
         }
-        int groupElements = packed ? 1 : elements;
-        int groups = store.RowLength > 0 ? store.RowLength : width;
-        int rowBytes = nbytes * groupElements * groups;
-        int k = nbytes >= store.Alignment ? rowBytes : store.Alignment * ((rowBytes + store.Alignment - 1) / store.Alignment);
-        bool elementBigEndian = store.SwapBytes ? !bigEndian : bigEndian;
         var result = new Vector4[width * height];
         Span<float> comp = stackalloc float[4];
         for (int j = 0; j < height; j++)
         {
             for (int i = 0; i < width; i++)
             {
-                long offset = ((long)(j + store.SkipRows) * k) + ((long)(i + store.SkipPixels) * groupElements * nbytes);
-                if (offset < 0 || offset + (groupElements * nbytes) > data.Length)
-                {
-                    continue;
-                }
-                ReadOnlySpan<byte> group = data.Slice((int)offset, groupElements * nbytes);
-                if (packed)
-                {
-                    uint word = nbytes switch
-                    {
-                        1 => group[0],
-                        2 => elementBigEndian ? BinaryPrimitives.ReadUInt16BigEndian(group) : BinaryPrimitives.ReadUInt16LittleEndian(group),
-                        _ => elementBigEndian ? BinaryPrimitives.ReadUInt32BigEndian(group) : BinaryPrimitives.ReadUInt32LittleEndian(group),
-                    };
-                    (int Shift, int Bits)[] layout = PackedLayout(type);
-                    for (int c = 0; c < 4; c++)
-                    {
-                        comp[c] = c < layout.Length ? ((word >> layout[c].Shift) & ((1u << layout[c].Bits) - 1)) / (float)((1u << layout[c].Bits) - 1) : 1;
-                    }
-                }
-                else
-                {
-                    for (int c = 0; c < elements; c++)
-                    {
-                        comp[c] = ReadElement(group.Slice(c * nbytes, nbytes), type, elementBigEndian);
-                    }
-                }
-                result[(j * width) + i] = ToRgba(format, comp);
+                result[(j * width) + i] = ReadGroup(data, layout, i, j, comp);
             }
         }
         return result;
@@ -256,6 +328,7 @@ internal sealed partial class GlContext
         GlEnum.RGBA => new Vector4(c[0], c[1], c[2], c[3]),
         GlEnum.RGB => new Vector4(c[0], c[1], c[2], 1),
         GlEnum.BGRA => new Vector4(c[2], c[1], c[0], c[3]),
+        GlEnum.ABGR_EXT => new Vector4(c[3], c[2], c[1], c[0]),   // GL_EXT_abgr:分量次序 A、B、G、R
         GlEnum.BGR => new Vector4(c[2], c[1], c[0], 1),
         GlEnum.RED => new Vector4(c[0], 0, 0, 1),
         GlEnum.GREEN => new Vector4(0, c[0], 0, 1),
@@ -316,6 +389,10 @@ internal sealed partial class GlContext
             texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, []);
             return;
         }
+        if (!FitsTexture(texture, level, (long)w * h * 4))
+        {
+            return;
+        }
         // 数据为空(客户端传 NULL)时纹理内容未定义:这里填 0。边框像素只存内圈。
         byte[] texels = new byte[w * h * 4];
         if (r.Remaining > 0 && w > 0 && h > 0)
@@ -337,7 +414,7 @@ internal sealed partial class GlContext
                 }
             }
         }
-        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
+        StoreLevel(texture, level, new GlTexImage(w, h, internalFormat, baseFormat, texels));
     }
 
     private void TexSubImage(ref GlReader r, bool oneD)
@@ -361,7 +438,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
-        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || xoffset + width > image.Width || yoffset + height > image.Height)
+        // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
+        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || (long)xoffset + width > image.Width || (long)yoffset + height > image.Height)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;
@@ -395,6 +473,11 @@ internal sealed partial class GlContext
             return;
         }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
+        GlTexture texture = BoundTexture(target)!;
+        if (!FitsTexture(texture, level, Math.Max(0, (long)w * h * 4)))
+        {
+            return;
+        }
         byte[] texels = new byte[Math.Max(0, w * h * 4)];
         for (int j = 0; j < h; j++)
         {
@@ -403,7 +486,7 @@ internal sealed partial class GlContext
                 StoreTexel(texels, (j * w) + i, ReadColorPixel(x + i + border, y + j + (oneD ? 0 : border)), baseFormat);
             }
         }
-        BoundTexture(target)!.Levels[level] = new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels);
+        StoreLevel(texture, level, new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels));
     }
 
     private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height)
@@ -413,7 +496,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
-        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || xoffset + width > image.Width || yoffset + height > image.Height)
+        // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
+        if (xoffset < 0 || yoffset < 0 || width < 0 || height < 0 || (long)xoffset + width > image.Width || (long)yoffset + height > image.Height)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;
@@ -525,6 +609,10 @@ internal sealed partial class GlContext
 
     // ------------------------------------------------------------------ DrawPixels / Bitmap / CopyPixels
 
+    /// <summary>
+    /// DrawPixels(§3.6.4):数据得装得下整张图像,否则命令作废(INVALID_VALUE)—— 不然 width × height 就不受数据量约束。
+    /// 只解、只画按 PixelZoom 放大后落进裁剪范围的那部分源像素,一行一行来,不整张解成浮点。
+    /// </summary>
     private void DrawPixels(ref GlReader r)
     {
         PixelStore store = ReadPixelStore(ref r);
@@ -539,44 +627,87 @@ internal sealed partial class GlContext
         {
             return;   // 深度 / 模板 / 颜色索引的像素矩形不实现
         }
-        Vector4[]? pixels = UnpackImage(r.Rest(), store, width, height, format, type, r.BigEndian);
-        if (pixels is null || pixels.Length == 0)
+        if (Layout(store, width, format, type, r.BigEndian) is not { } layout)
         {
             return;
         }
-        DrawRectangle(pixels, width, height);
+        ReadOnlySpan<byte> data = r.Rest();
+        if (!layout.Covers(data.Length, width, height))
+        {
+            SetError(GlEnum.INVALID_VALUE);
+            return;
+        }
+        if (VisiblePixels(width, height) is not var (i0, i1, j0, j1))
+        {
+            return;
+        }
+        Vector4[] row = new Vector4[i1 - i0];
+        Span<float> comp = stackalloc float[4];
+        for (int j = j0; j < j1; j++)
+        {
+            for (int i = i0; i < i1; i++)
+            {
+                row[i - i0] = ReadGroup(data, layout, i, j, comp);
+            }
+            DrawRow(j, i0, row);
+        }
     }
 
-    /// <summary>把一个像素矩形按光栅位置与 PixelZoom 画出去(§3.6.5):每个源像素覆盖一块 zoom 大小的区域。</summary>
-    private void DrawRectangle(Vector4[] pixels, int width, int height)
+    /// <summary>
+    /// width × height 的像素矩形按光栅位置与 PixelZoom 放大之后,可能落进裁剪范围的那部分源像素 [I0, I1) × [J0, J1)
+    /// (略放宽一两个像素,<see cref="DrawRow" /> 逐个像素还会再裁);一个都落不进去返回 null。
+    /// </summary>
+    private (int I0, int I1, int J0, int J1)? VisiblePixels(int width, int height)
     {
         if (!PrepareRaster())
         {
-            return;
+            return null;
         }
+        (int i0, int i1) = VisibleRange(State.RasterPos.X, State.ZoomX, width, _clipX0, _clipX1);
+        (int j0, int j1) = VisibleRange(State.RasterPos.Y, State.ZoomY, height, _clipY0, _clipY1);
+        return i0 < i1 && j0 < j1 ? (i0, i1, j0, j1) : null;
+    }
+
+    /// <summary>源像素下标 [0, count) 里,放大 <paramref name="zoom" /> 倍、从 <paramref name="origin" /> 画起时可能落进 [lo, hi) 的一段。</summary>
+    private static (int First, int Last) VisibleRange(float origin, float zoom, int count, int lo, int hi)
+    {
+        if (count <= 0 || lo >= hi || zoom == 0 || !float.IsFinite(zoom) || !float.IsFinite(origin))
+        {
+            return (0, 0);
+        }
+        double a = (lo - 1.0 - origin) / zoom, b = (hi + 1.0 - origin) / zoom;
+        double first = Math.Floor(Math.Min(a, b)) - 1, last = Math.Ceiling(Math.Max(a, b)) + 1;
+        return ((int)Math.Clamp(first, 0, count), (int)Math.Clamp(last, 0, count));
+    }
+
+    /// <summary>画像素矩形的第 j 行里从第 i0 个起的一段(§3.6.5):每个源像素覆盖一块 zoom 大小的区域。</summary>
+    private void DrawRow(int j, int i0, ReadOnlySpan<Vector4> colors)
+    {
         float xr = State.RasterPos.X, yr = State.RasterPos.Y, z = State.RasterPos.Z;
         float zx = State.ZoomX, zy = State.ZoomY;
-        for (int j = 0; j < height; j++)
+        float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
+        int y0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), _clipY0, _clipY1);
+        int y1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(ya, yb) - 0.5f), _clipY0, _clipY1);
+        for (int n = 0; n < colors.Length && y0 < y1; n++)
         {
-            float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
-            int y0 = (int)MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), y1 = (int)MathF.Ceiling(MathF.Max(ya, yb) - 0.5f);
-            for (int i = 0; i < width; i++)
+            int i = i0 + n;
+            float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
+            int x0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), _clipX0, _clipX1);
+            int x1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(xa, xb) - 0.5f), _clipX0, _clipX1);
+            for (int y = y0; y < y1; y++)
             {
-                float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
-                int x0 = (int)MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), x1 = (int)MathF.Ceiling(MathF.Max(xa, xb) - 0.5f);
-                Vector4 color = pixels[(j * width) + i];
-                for (int y = Math.Max(y0, _clipY0); y < Math.Min(y1, _clipY1); y++)
+                for (int x = x0; x < x1; x++)
                 {
-                    for (int x = Math.Max(x0, _clipX0); x < Math.Min(x1, _clipX1); x++)
-                    {
-                        Fragment(x, y, z, color, Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
-                    }
+                    Fragment(x, y, z, colors[n], Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
                 }
             }
         }
     }
 
-    /// <summary>Bitmap(§3.7):置位的像素以光栅颜色生成片元,之后光栅位置按 (xmove, ymove) 前移。</summary>
+    /// <summary>
+    /// Bitmap(§3.7):置位的像素以光栅颜色生成片元,之后光栅位置按 (xmove, ymove) 前移。
+    /// 数据得装得下整张位图(否则 INVALID_VALUE、命令作废);只走落在裁剪范围里的那部分。
+    /// </summary>
     private void Bitmap(ref GlReader r)
     {
         r.Skip(1);
@@ -585,7 +716,7 @@ internal sealed partial class GlContext
         int rowLength = r.I32(), skipRows = r.I32(), skipPixels = r.I32(), alignment = r.I32();
         int width = r.I32(), height = r.I32();
         float xorig = r.F32(), yorig = r.F32(), xmove = r.F32(), ymove = r.F32();
-        if (width < 0 || height < 0)
+        if (width < 0 || height < 0 || rowLength < 0 || skipRows < 0 || skipPixels < 0)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;
@@ -595,32 +726,36 @@ internal sealed partial class GlContext
             return;
         }
         ReadOnlySpan<byte> bits = r.Rest();
-        if (width > 0 && height > 0 && PrepareRaster())
+        if (width > 0 && height > 0)
         {
             alignment = alignment is 1 or 2 or 4 or 8 ? alignment : 4;
-            int groups = rowLength > 0 ? rowLength : width;
-            int k = alignment * ((groups + (8 * alignment) - 1) / (8 * alignment));
-            int x0 = (int)MathF.Floor(State.RasterPos.X - xorig), y0 = (int)MathF.Floor(State.RasterPos.Y - yorig);
-            for (int j = 0; j < height; j++)
+            long groups = rowLength > 0 ? rowLength : width;
+            long k = alignment * ((groups + (8L * alignment) - 1) / (8L * alignment));
+            long needed = ((skipRows + (long)height - 1) * k) + ((skipPixels + (long)width - 1) / 8) + 1;
+            if (needed > bits.Length)
             {
-                int y = y0 + j;
-                if (y < _clipY0 || y >= _clipY1)
+                SetError(GlEnum.INVALID_VALUE);
+                return;
+            }
+            if (PrepareRaster())
+            {
+                // 位图左下角落在哪(先在浮点里夹一下,免得离谱的光栅位置转整数时溢出),只走它与裁剪范围相交的那一块。
+                long x0 = (long)Math.Clamp(MathF.Floor(State.RasterPos.X - xorig), -(float)int.MaxValue, int.MaxValue);
+                long y0 = (long)Math.Clamp(MathF.Floor(State.RasterPos.Y - yorig), -(float)int.MaxValue, int.MaxValue);
+                int iFrom = (int)Math.Clamp(_clipX0 - x0, 0, width), iTo = (int)Math.Clamp(_clipX1 - x0, 0, width);
+                int jFrom = (int)Math.Clamp(_clipY0 - y0, 0, height), jTo = (int)Math.Clamp(_clipY1 - y0, 0, height);
+                for (int j = jFrom; j < jTo; j++)
                 {
-                    continue;
-                }
-                for (int i = 0; i < width; i++)
-                {
-                    int bit = i + skipPixels;
-                    int index = ((j + skipRows) * k) + (bit / 8);
-                    if (index >= bits.Length)
+                    for (int i = iFrom; i < iTo; i++)
                     {
-                        continue;
-                    }
-                    int h = lsbFirst ? bit % 8 : 7 - (bit % 8);
-                    int x = x0 + i;
-                    if (((bits[index] >> h) & 1) != 0 && x >= _clipX0 && x < _clipX1)
-                    {
-                        Fragment(x, y, State.RasterPos.Z, State.RasterColor, Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
+                        int bit = i + skipPixels;
+                        long index = ((j + (long)skipRows) * k) + (bit / 8);
+                        int h = lsbFirst ? bit % 8 : 7 - (bit % 8);
+                        if (((bits[(int)index] >> h) & 1) != 0)
+                        {
+                            Fragment((int)(x0 + i), (int)(y0 + j), State.RasterPos.Z, State.RasterColor, Vector3.Zero,
+                                State.RasterTexCoord, State.RasterDistance);
+                        }
                     }
                 }
             }
@@ -628,6 +763,10 @@ internal sealed partial class GlContext
         State.RasterPos += new Vector4(xmove, ymove, 0, 0);
     }
 
+    /// <summary>
+    /// CopyPixels(§4.3.3):只拷读缓冲里真有的、放大后落进裁剪范围的那部分(读缓冲之外的源像素按规范未定义,不画);
+    /// 先把这部分源像素拷一份(源与目标可以在同一块缓冲里重叠),再一行一行画。
+    /// </summary>
     private void CopyPixels(int x, int y, int width, int height, uint type)
     {
         if (width < 0 || height < 0)
@@ -639,15 +778,34 @@ internal sealed partial class GlContext
         {
             return;   // 深度 / 模板的拷贝不实现
         }
-        var pixels = new Vector4[width * height];
-        for (int j = 0; j < height; j++)
+        if (Read is not { } s || ReadColorBuffer() is not { } buffer || VisiblePixels(width, height) is not var (i0, i1, j0, j1))
         {
-            for (int i = 0; i < width; i++)
-            {
-                pixels[(j * width) + i] = ReadColorPixel(x + i, y + j);
-            }
+            return;
         }
-        DrawRectangle(pixels, width, height);
+        i0 = (int)Math.Max(i0, -(long)x);
+        i1 = (int)Math.Min(i1, s.Width - (long)x);
+        j0 = (int)Math.Max(j0, -(long)y);
+        j1 = (int)Math.Min(j1, s.Height - (long)y);
+        if (i0 >= i1 || j0 >= j1)
+        {
+            return;
+        }
+        int w = i1 - i0, h = j1 - j0;
+        uint[] source = new uint[w * h];
+        for (int j = 0; j < h; j++)
+        {
+            int sy = s.Height - 1 - (y + j0 + j);   // GL 的 y 向上,缓冲的第 0 行在最上面
+            Array.Copy(buffer, (sy * s.Width) + x + i0, source, j * w, w);
+        }
+        Vector4[] row = new Vector4[w];
+        for (int j = 0; j < h; j++)
+        {
+            for (int i = 0; i < w; i++)
+            {
+                row[i] = Unpack(source[(j * w) + i], s.HasAlpha);
+            }
+            DrawRow(j0 + j, i0, row);
+        }
     }
 
     // ------------------------------------------------------------------ 读缓冲
@@ -667,6 +825,20 @@ internal sealed partial class GlContext
             return Vector4.Zero;
         }
         return Unpack(buffer[((s.Height - 1 - y) * s.Width) + x], s.HasAlpha);
+    }
+
+    /// <summary>ReadPixels 打包出来有多少字节(与 <see cref="ReadPixels" /> 的布局一致);格式或类型不认识时为 0。</summary>
+    public static long PackedSize(int width, int height, uint format, uint type)
+    {
+        int elements = FormatElements(format);
+        (int nbytes, bool packed) = TypeSize(type);
+        if (elements == 0 || nbytes == 0 || width <= 0 || height <= 0)
+        {
+            return 0;
+        }
+        long rowBytes = (long)nbytes * (packed ? 1 : elements) * width;
+        long k = nbytes >= 4 ? rowBytes : (rowBytes + 3) & ~3L;
+        return k * height;
     }
 
     /// <summary>
@@ -751,6 +923,9 @@ internal sealed partial class GlContext
                 break;
             case GlEnum.BGRA:
                 (o[0], o[1], o[2], o[3]) = (c.Z, c.Y, c.X, c.W);
+                break;
+            case GlEnum.ABGR_EXT:
+                (o[0], o[1], o[2], o[3]) = (c.W, c.Z, c.Y, c.X);
                 break;
             case GlEnum.BGR:
                 (o[0], o[1], o[2]) = (c.Z, c.Y, c.X);

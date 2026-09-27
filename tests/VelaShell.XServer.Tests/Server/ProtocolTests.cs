@@ -40,6 +40,43 @@ public sealed class ProtocolTests
     }
 
     [TestMethod]
+    public async Task 配了cookie时本机连接也要带上_调用方验过身份的流不查授权()
+    {
+        byte[] cookie = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16];
+        await using X11Server server = new(new X11ServerOptions { AuthorizationCookie = cookie });
+
+        await using XTestClient local = await XTestClient.ConnectAsync(server, isLocal: true);
+        Assert.AreEqual(0, local.SetupReply[0], "环回 TCP 也要 cookie:本机别的进程、别的用户都连得到那个端口");
+
+        await using XTestClient authenticated = await XTestClient.ConnectAsync(server, authenticated: true);
+        Assert.AreEqual(1, authenticated.SetupReply[0], "SSH 的 x11 通道经进程内连接器接进来:转发层已经核对过假 cookie");
+    }
+
+    [TestMethod]
+    public async Task 授权规则_按对端的来路逐条判断()
+    {
+        byte[] cookie = [9, 9, 9, 9];
+        await using X11Server withCookie = new(new X11ServerOptions { AuthorizationCookie = cookie });
+        await using X11Server without = new();
+        const string mit = "MIT-MAGIC-COOKIE-1";
+        X11Server.Peer tcpLocal = new(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: false);
+        X11Server.Peer tcpRemote = tcpLocal with { IsLocal = false };
+        X11Server.Peer ownerSocket = new(IsLocal: true, SameHost: true, Uid: null, LocalUser: true, Authenticated: false);
+        X11Server.Peer otherUser = new(IsLocal: true, SameHost: true, Uid: 4242, LocalUser: false, Authenticated: false);
+
+        Assert.IsNull(withCookie.Authorize(mit, cookie, tcpRemote), "对的 cookie");
+        Assert.IsNotNull(withCookie.Authorize(mit, [9, 9, 9, 8], tcpLocal), "错的 cookie");
+        Assert.IsNotNull(withCookie.Authorize("", [], tcpLocal), "配了 cookie:环回 TCP 不带就拒");
+        Assert.IsNull(withCookie.Authorize("", [], ownerSocket), "只有属主能连的套接字文件:同一个用户");
+        Assert.IsNull(withCookie.Authorize(mit, cookie, otherUser), "别的用户带了对的 cookie 也行");
+        Assert.IsNull(withCookie.Authorize("", [], tcpLocal with { Authenticated = true }), "调用方验过身份");
+
+        Assert.IsNull(without.Authorize("", [], tcpLocal), "没配 cookie:本机放行");
+        Assert.IsNotNull(without.Authorize("", [], tcpRemote), "没配 cookie:外面的拒");
+        Assert.IsNotNull(without.Authorize("", [], otherUser), "抽象命名空间里连进来的别的用户:没配 cookie 也拒");
+    }
+
+    [TestMethod]
     public async Task 没配cookie时只接受本机连接()
     {
         await using X11Server server = new();

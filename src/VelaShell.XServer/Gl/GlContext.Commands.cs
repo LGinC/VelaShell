@@ -22,7 +22,7 @@ internal sealed partial class GlContext
         switch (opcode)
         {
             case 1:   // CallList
-                CallList(r.U32());
+                _ = CallList(r.U32());
                 break;
             case 2:   // CallLists
                 CallLists(ref r);
@@ -506,9 +506,9 @@ internal sealed partial class GlContext
                 break;
             case 4118:   // PrioritizeTextures
                 {
-                    int n = r.I32();
-                    uint[] names = [.. ReadInts(ref r, Math.Max(0, n)).Select(f => (uint)f)];
-                    float[] priorities = ReadFloats(ref r, Math.Max(0, n));
+                    int n = Math.Clamp(r.I32(), 0, r.Remaining / 8);   // 名字与优先级各 4 字节:以数据里真有的为准,不按声称的 n 分配
+                    uint[] names = [.. ReadInts(ref r, n).Select(f => (uint)f)];
+                    float[] priorities = ReadFloats(ref r, n);
                     for (int i = 0; i < names.Length; i++)
                     {
                         if (Shared.Textures.TryGetValue(names[i], out GlTexture? t))
@@ -583,7 +583,10 @@ internal sealed partial class GlContext
                 SetError(GlEnum.INVALID_ENUM);
                 return;
             }
-            CallList(State.ListBase + offset);
+            if (!CallList(State.ListBase + offset))
+            {
+                return;   // 预算用完:剩下的不再逐个空转
+            }
         }
     }
 

@@ -22,24 +22,24 @@ public sealed partial class X11Server
     private const byte BigRequestsMajor = 128;
     private const byte XcMiscMajor = 129;
     private const byte ShapeMajor = 130, ShapeEventBase = 64;                                  // ShapeNotify
-    private const byte XFixesMajor = 131, XFixesEventBase = 65, XFixesErrorBase = 128;         // SelectionNotify +0、CursorNotify +1;BadRegion +0
-    private const byte RandRMajor = 132, RandREventBase = 67, RandRErrorBase = 129;            // ScreenChangeNotify +0、Notify +1;BadOutput / BadCrtc / BadMode / BadProvider
-    private const byte RenderMajor = 133, RenderErrorBase = 133;                               // PictFormat +0、Picture +1、PictOp +2、GlyphSet +3、Glyph +4
+    private const byte XFixesMajor = 131, XFixesEventBase = 65, XFixesErrorBase = 128;         // SelectionNotify +0、CursorNotify +1;BadRegion +0、BadBarrier +1
+    private const byte RandRMajor = 132, RandREventBase = 67, RandRErrorBase = 130;            // ScreenChangeNotify +0、Notify +1;BadOutput / BadCrtc / BadMode / BadProvider
+    private const byte RenderMajor = 133, RenderErrorBase = 134;                               // PictFormat +0、Picture +1、PictOp +2、GlyphSet +3、Glyph +4
     private const byte GenericEventMajor = 134;
     private const byte XTestMajor = 135;
     private const byte XineramaMajor = 136;
     private const byte ScreenSaverMajor = 137, ScreenSaverEventBase = 69;                      // ScreenSaverNotify
     private const byte DpmsMajor = 138;
     private const byte XResMajor = 139;
-    private const byte SyncMajor = 140, SyncEventBase = 70, SyncErrorBase = 138;               // CounterNotify +0、AlarmNotify +1;Counter +0、Alarm +1、Fence +2
-    private const byte DamageMajor = 141, DamageEventBase = 72, DamageErrorBase = 141;         // DamageNotify;BadDamage
+    private const byte SyncMajor = 140, SyncEventBase = 70, SyncErrorBase = 139;               // CounterNotify +0、AlarmNotify +1;Counter +0、Alarm +1、Fence +2
+    private const byte DamageMajor = 141, DamageEventBase = 72, DamageErrorBase = 142;         // DamageNotify;BadDamage
     private const byte CompositeMajor = 142;
-    private const byte DbeMajor = 143, DbeErrorBase = 142;                                     // BadBuffer
+    private const byte DbeMajor = 143, DbeErrorBase = 143;                                     // BadBuffer
     private const byte PresentMajor = 144;                                                     // 事件走 GenericEvent
-    private const byte XInputMajor = 145, XInputEventBase = 74, XInputErrorBase = 144;         // XI 1.x 的 17 个事件;BadDevice +0 … BadClass +4
-    private const byte XkbMajor = 146, XkbEventBase = 73, XkbErrorBase = 143;                  // 一个事件码(子类型在 xkbType);BadKeyboard
-    private const byte ShmMajor = 147, ShmEventBase = 91, ShmErrorBase = 149;                  // Completion;BadShmSeg
-    internal const byte GlxMajor = 148, GlxEventBase = 92, GlxErrorBase = 150;                  // PbufferClobber;BadContext +0 … GLXBadProfileARB +13;internal:GlxExtension 在类外
+    private const byte XInputMajor = 145, XInputEventBase = 74, XInputErrorBase = 145;         // XI 1.x 的 17 个事件;BadDevice +0 … BadClass +4
+    private const byte XkbMajor = 146, XkbEventBase = 73, XkbErrorBase = 144;                  // 一个事件码(子类型在 xkbType);BadKeyboard
+    private const byte ShmMajor = 147, ShmEventBase = 91, ShmErrorBase = 150;                  // Completion;BadShmSeg
+    internal const byte GlxMajor = 148, GlxEventBase = 92, GlxErrorBase = 151;                  // PbufferClobber;BadContext +0 … GLXBadProfileARB +13;internal:GlxExtension 在类外
 
     /// <summary>按名字查(QueryExtension)。</summary>
     private readonly Dictionary<string, Extension> _extensions = [with(StringComparer.Ordinal)];
@@ -49,6 +49,9 @@ public sealed partial class X11Server
 
     /// <summary>注册顺序(清理钩子按这个顺序调)。</summary>
     private readonly List<Extension> _extensionList = [];
+
+    /// <summary>GLX 扩展(测试看它的内部状态用)。</summary>
+    internal GlxExtension Glx => _glx;
 
     private void InitExtensions()
     {
@@ -60,7 +63,7 @@ public sealed partial class X11Server
             FirstEvent = XFixesEventBase,
             EventCount = 2,
             FirstError = XFixesErrorBase,
-            ErrorCount = 1,
+            ErrorCount = 2,
             ClientClosed = CleanupXFixes,
             WindowDestroyed = CleanupXFixes,
         });
@@ -75,7 +78,7 @@ public sealed partial class X11Server
         });
         Register(new Extension("RENDER", RenderMajor, Render) { FirstError = RenderErrorBase, ErrorCount = 5 });
         Register(new Extension("Generic Event Extension", GenericEventMajor, GenericEventExtension));
-        Register(new Extension("XTEST", XTestMajor, XTest));
+        Register(new Extension("XTEST", XTestMajor, XTest) { ClientClosed = CleanupXTest });
         Register(new Extension("XINERAMA", XineramaMajor, Xinerama));
         Register(new Extension("MIT-SCREEN-SAVER", ScreenSaverMajor, ScreenSaverExtension)
         {

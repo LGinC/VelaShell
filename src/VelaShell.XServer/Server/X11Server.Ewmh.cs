@@ -69,7 +69,7 @@ public sealed partial class X11Server
     private uint _netWmStateAtom, _netWmTypeAtom, _wmStateAtom;
 
     // 刷新窗口快照时要读的属性的原子,初始化时算好。
-    private uint _netWmNameAtom, _wmProtocolsAtom, _wmDeleteWindowAtom, _motifHintsAtom, _netWmOpacityAtom,
+    private uint _netWmNameAtom, _wmProtocolsAtom, _wmDeleteWindowAtom, _wmTakeFocusAtom, _motifHintsAtom, _netWmOpacityAtom,
         _gtkFrameExtentsAtom, _netWmPidAtom, _wmClientMachineAtom, _wmRoleAtom, _netWmIconAtom;
 
     /// <summary>宿主给每个顶层设的外框尺寸(_NET_FRAME_EXTENTS):左、右、上、下。</summary>
@@ -86,6 +86,7 @@ public sealed partial class X11Server
         _netWmNameAtom = Intern("_NET_WM_NAME");
         _wmProtocolsAtom = Intern("WM_PROTOCOLS");
         _wmDeleteWindowAtom = Intern("WM_DELETE_WINDOW");
+        _wmTakeFocusAtom = Intern("WM_TAKE_FOCUS");
         _motifHintsAtom = Intern("_MOTIF_WM_HINTS");
         _netWmOpacityAtom = Intern("_NET_WM_WINDOW_OPACITY");
         _gtkFrameExtentsAtom = Intern("_GTK_FRAME_EXTENTS");

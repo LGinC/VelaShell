@@ -103,6 +103,10 @@ internal sealed class XWindow : XResource
     /// <summary>XInput2 的事件选择:客户端 → 按 evtype 的位掩码(选主设备的、选从设备的分开记)。</summary>
     public Dictionary<XClient, (ulong Master, ulong Slave)> Xi2Selections { get; } = [];
 
+    /// <summary>这个客户端在这个窗口上有没有经 XI2 选 <paramref name="evtype" />。</summary>
+    public bool Xi2Selects(XClient client, int evtype) =>
+        Xi2Selections.TryGetValue(client, out (ulong Master, ulong Slave) masks) && ((masks.Master | masks.Slave) & (1UL << evtype)) != 0;
+
     /// <summary>这个窗口上有没有客户端经 XI2 选了 <paramref name="evtype" />。</summary>
     public bool AnyXi2Selects(int evtype)
     {
@@ -220,6 +224,37 @@ internal sealed class XWindow : XResource
             y += w.Y + w.BorderWidth;
         }
         return (x, y);
+    }
+
+    /// <summary>嵌套层数:根为 0,顶层为 1,逐层加一。</summary>
+    public int Level
+    {
+        get
+        {
+            int level = 0;
+            for (XWindow? w = Parent; w is not null; w = w.Parent)
+            {
+                level++;
+            }
+            return level;
+        }
+    }
+
+    /// <summary>子树的高度:没有子窗口为 0,只有一层子窗口为 1。用显式栈走,不递归。</summary>
+    public int SubtreeHeight()
+    {
+        int height = 0;
+        Stack<(XWindow Window, int Depth)> pending = new();
+        pending.Push((this, 0));
+        while (pending.TryPop(out (XWindow Window, int Depth) item))
+        {
+            height = Math.Max(height, item.Depth);
+            foreach (XWindow child in item.Window.Children)
+            {
+                pending.Push((child, item.Depth + 1));
+            }
+        }
+        return height;
     }
 
     /// <summary>是不是 <paramref name="ancestor" /> 的后代(不含自己)。</summary>

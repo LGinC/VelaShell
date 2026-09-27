@@ -100,6 +100,33 @@ internal sealed class PictFormat
     }
 }
 
+/// <summary>8 位预乘 ARGB(0xAARRGGBB)的整数运算:合成器的整数路径与各取样源共用。</summary>
+internal static class Argb8
+{
+    /// <summary>x / 255 四舍五入(x ≤ 255 × 255):乘法的结果换回 8 位,误差与浮点四舍五入一致。</summary>
+    public static uint Div255(uint x)
+    {
+        x += 128;
+        return (x + (x >> 8)) >> 8;
+    }
+
+    public static uint ToByte(float v) => (uint)Math.Clamp((int)((v * 255) + 0.5f), 0, 255);
+
+    /// <summary>浮点的预乘颜色量化成 0xAARRGGBB。</summary>
+    public static uint Pack(in Argb c) => (ToByte(c.A) << 24) | (ToByte(c.R) << 16) | (ToByte(c.G) << 8) | ToByte(c.B);
+
+    /// <summary>四个通道各乘 m / 255(m 为 0–255),取整同 <see cref="Div255" />。</summary>
+    public static uint Scale(uint p, uint m)
+    {
+        // 两个通道一组,各占一个 16 位的格子:乘积加 128 最大 65153,再加上高字节也不进位到隔壁格子。
+        uint rb = ((p & 0x00FF00FFu) * m) + 0x00800080u;
+        uint ag = (((p >> 8) & 0x00FF00FFu) * m) + 0x00800080u;
+        rb = ((rb + ((rb >> 8) & 0x00FF00FFu)) >> 8) & 0x00FF00FFu;
+        ag = (ag + ((ag >> 8) & 0x00FF00FFu)) & 0xFF00FF00u;
+        return rb | ag;
+    }
+}
+
 /// <summary>RENDER 的合成运算:按通道算 result = src × Fa + dst × Fb,或 PDF 混合模式。</summary>
 internal static class RenderOps
 {

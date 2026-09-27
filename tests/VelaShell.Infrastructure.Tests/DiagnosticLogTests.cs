@@ -47,6 +47,29 @@ public sealed class DiagnosticLogTests : IDisposable
     }
 
     [TestMethod]
+    public void Listener_StopsAtTheDailyCap_AfterWritingOneNotice()
+    {
+        var listener = new RollingFileTraceListener(_directory, "test-", maxBytesPerDay: 400);
+
+        for (int i = 0; i < 100; i++)
+        {
+            listener.WriteLine($"line {i:D3} — something is flooding the log");
+        }
+
+        string path = Path.Combine(_directory, $"test-{DateTime.Now:yyyyMMdd}.log");
+        string[] lines = File.ReadAllLines(path);
+        Assert.IsLessThan(12, lines.Length, "到了上限就不再写");
+        Assert.Contains("log size limit", lines[^1], StringComparison.Ordinal);
+        Assert.AreEqual(1, lines.Count(l => l.Contains("log size limit", StringComparison.Ordinal)), "说明只写一行");
+        Assert.IsLessThan(600L, new FileInfo(path).Length);
+
+        // 换一个监听器(应用重启)接着写同一天的文件:额度按文件现有的大小算。
+        var again = new RollingFileTraceListener(_directory, "test-", maxBytesPerDay: 400);
+        again.WriteLine("after restart");
+        Assert.DoesNotContain("after restart", File.ReadAllText(path), StringComparison.Ordinal);
+    }
+
+    [TestMethod]
     public void Listener_StampsEveryLineWithATimestampAndThreadId()
     {
         var listener = new RollingFileTraceListener(_directory, "test-");

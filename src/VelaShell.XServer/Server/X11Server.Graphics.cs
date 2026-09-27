@@ -55,6 +55,10 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, depth);
         }
+        if ((long)width * height > PixelBuffer.MaxPixels)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 65535² 一块就是 16 GB
+        }
         AddResource(c, new XPixmap(id, c, width, height, depth));
     }
 
@@ -227,6 +231,10 @@ public sealed partial class X11Server
         gc.ClipXOrigin = r.I16();
         gc.ClipYOrigin = r.I16();
         List<XRect> rects = [];
+        if (r.Remaining / 8 > Region.MaxRects)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);   // 每次画都要按它建一次区域(Rasterizer),块数与区域同一个上限
+        }
         while (r.Remaining >= 8)
         {
             rects.Add(new XRect(r.I16(), r.I16(), r.U16(), r.U16()));
@@ -535,14 +543,15 @@ public sealed partial class X11Server
         short sx = r.I16(), sy = r.I16(), dx = r.I16(), dy = r.I16();
         ushort width = r.U16(), height = r.U16();
         XGc gc = Gc(gcId);
-        if (ReadSource(src, sx, sy, width, height, out byte srcDepth) is not { } source)
+        // 先核对深度再取像素:ReadSource 给的是租来的池化数组,拿到之后再抛 BadMatch / BadDrawable,它就还不回池里了。
+        if (DrawableDepth(src) != DrawableDepth(dst))
+        {
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
         {
             SendNoExposure(c, gc, dst, XOpcode.CopyArea);
             return;
-        }
-        if (srcDepth != DrawableDepth(dst))
-        {
-            throw new XProtocolError(XErrorCode.Match);
         }
         XRect avail = source.Available;
         try

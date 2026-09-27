@@ -46,12 +46,8 @@ internal sealed class Rasterizer
         Region effective = clip.Clone().Intersect(buffer.Bounds);
         if (gc.ClipRects is { } rects)
         {
-            Region gcClip = new();
-            foreach (XRect r in rects)
-            {
-                gcClip.Union(r.Offset(gc.ClipXOrigin + originX, gc.ClipYOrigin + originY));
-            }
-            effective.Intersect(gcClip);
+            int dx = gc.ClipXOrigin + originX, dy = gc.ClipYOrigin + originY;
+            effective.Intersect(Region.FromRects(rects).Translate(dx, dy));
         }
         _clip = [.. effective.Rects];
         XRect bounds = effective.Bounds;

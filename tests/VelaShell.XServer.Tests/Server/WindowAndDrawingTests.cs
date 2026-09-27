@@ -77,6 +77,42 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 取消映射子窗口露出父窗口与下面的兄弟_兄弟收到Expose()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint top, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0xFF0000, 0);   // 父窗口:红
+
+        // 下面的 A:(0,0) 20×20 绿,选了 Exposure;上面的 B:(10,10) 20×20 蓝,后建、堆在 A 上面;B 里还套着白色的 C。
+        uint a = c.NewId(), b = c.NewId(), inner = c.NewId();
+        await c.SendAsync(1, 24, x => x.U32(a).U32(top).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x802).U32(0x00FF00).U32(ExposureMask));
+        await c.SendAsync(1, 24, x => x.U32(b).U32(top).I16(10).I16(10).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x2).U32(0x0000FF));
+        await c.SendAsync(1, 24, x => x.U32(inner).U32(b).I16(2).I16(2).U16(6).U16(6).U16(0).U16(1).U32(0).U32(0x2).U32(0xFFFFFF));
+        foreach (uint id in (uint[])[a, b, inner])
+        {
+            await c.SendAsync(8, 0, x => x.U32(id));
+        }
+        await c.SyncAsync();
+        (uint[] px, int w, _) = RecordingHost.Snapshot(handle);
+        Assert.AreEqual(0x0000FFu, px[(11 * w) + 11], "重叠处是上面的 B");
+        Assert.AreEqual(0xFFFFFFu, px[(13 * w) + 13], "B 里的 C");
+        XMessage mapped = await c.NextEventAsync(12);
+        Assert.AreEqual((a, 20, 20), (mapped.U32(4), mapped.U16(12), mapped.U16(14)), "A 映射时的 Expose");
+
+        // 取消映射只从父窗口这棵子树走起重画:父窗口的背景、下面的 A 都要补上,C 随 B 一起不见。
+        await c.SendAsync(10, 0, x => x.U32(b));
+        await c.SyncAsync();
+        (px, w, _) = RecordingHost.Snapshot(handle);
+        Assert.AreEqual(0x00FF00u, px[(11 * w) + 11], "重叠处露出下面的 A");
+        Assert.AreEqual(0x00FF00u, px[(13 * w) + 13], "C 那块也露出 A");
+        Assert.AreEqual(0xFF0000u, px[(25 * w) + 25], "A 之外露出父窗口的背景");
+        XMessage exposed = await c.NextEventAsync(12);
+        Assert.AreEqual((a, 10, 10, 10, 10), (exposed.U32(4), exposed.U16(8), exposed.U16(10), exposed.U16(12), exposed.U16(14)),
+            "A 露出来的那一块(A 的坐标)发了 Expose");
+    }
+
+    [TestMethod]
     public async Task 填矩形与CopyArea画到像素上并回NoExposure()
     {
         using RecordingHost host = new();
@@ -252,5 +288,83 @@ public sealed class WindowAndDrawingTests
         byte[] title = Encoding.Latin1.GetBytes("xterm");
         await c.SendAsync(18, 0, b => b.U32(win).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)title.Length).Bytes(title));
         await host.WaitForAsync(() => handle.Snapshot.Title == "xterm");
+    }
+
+    [TestMethod]
+    public async Task SendEvent不许发GenericEvent与没登记的事件码_收件人的协议流不会错位()
+    {
+        await using X11Server server = new();
+        await using XTestClient sender = await XTestClient.ConnectAsync(server);
+        await using XTestClient receiver = await XTestClient.ConnectAsync(server);
+        uint window = receiver.NewId();
+        await receiver.SendAsync(1, 0, b => b.U32(window).U32(receiver.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+        await receiver.SyncAsync();
+
+        // GenericEvent:长度字段写 1000 —— 收件人会以为后面还有 4000 字节,把之后的回复、事件都当成它的一部分。
+        byte[] generic = new byte[32];
+        generic[0] = 35;
+        generic[4] = 0xE8;
+        generic[5] = 0x03;
+        XMessage refused = await sender.RequestAsync(25, 0, b => b.U32(window).U32(0).Bytes(generic));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(2, refused.Detail, "BadValue");
+
+        byte[] unassigned = new byte[32];
+        unassigned[0] = 50;   // 核心的 36–63 没有定义
+        XMessage alsoRefused = await sender.RequestAsync(25, 0, b => b.U32(window).U32(0).Bytes(unassigned));
+        Assert.AreEqual(2, alsoRefused.Detail, "BadValue");
+
+        byte[] clientMessage = new byte[32];
+        clientMessage[0] = 33;
+        clientMessage[1] = 32;
+        BitConverter.GetBytes(window).CopyTo(clientMessage, 4);
+        await sender.SendAsync(25, 0, b => b.U32(window).U32(0).Bytes(clientMessage));   // 空掩码:发给窗口的创建者
+        await sender.SyncAsync();
+        XMessage delivered = await receiver.NextEventAsync(33);
+        Assert.AreEqual(window, delivered.U32(4));
+        XMessage focus = await receiver.RequestAsync(43, 0);
+        Assert.IsTrue(focus.IsReply, "收件人的协议流没有错位");
+    }
+
+    [TestMethod]
+    public async Task 顶层窗口没了之后宿主注入的松开照样生效_按钮不会一直按着()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0x4);   // ButtonPress:按下时自动抓取
+        server.InjectPointerButton(handle, 5, 5, 1, pressed: true);
+        await c.NextEventAsync(4);
+
+        await c.SendAsync(4, 0, b => b.U32(win));   // 弹出菜单一点就关:窗口在按钮松开之前销毁
+        await c.SyncAsync();
+        server.InjectPointerButton(handle, 5, 5, 1, pressed: false);
+        XMessage pointer = await c.RequestAsync(38, 0, b => b.U32(c.RootWindow));   // QueryPointer
+        Assert.AreEqual(0, pointer.U16(24) & 0x100, "Button1 松开了");
+    }
+
+    [TestMethod]
+    public async Task CirculateNotify的place在第16字节()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint parent, _) = await MapWindowAsync(c, host, 0, 0x80000);   // SubstructureNotify
+        uint lower = c.NewId(), upper = c.NewId();
+        foreach (uint child in (uint[])[lower, upper])
+        {
+            await c.SendAsync(1, 0, b => b.U32(child).U32(parent).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+            await c.SendAsync(8, 0, b => b.U32(child));
+        }
+
+        await c.SendAsync(13, 1, b => b.U32(parent));   // CirculateWindow LowerHighest:最上面的 upper 沉到底
+        XMessage lowered = await c.NextEventAsync(26);
+        Assert.AreEqual(parent, lowered.U32(4), "event");
+        Assert.AreEqual(upper, lowered.U32(8), "window");
+        Assert.AreEqual(1, lowered.Bytes[16], "place = Bottom");
+
+        await c.SendAsync(13, 0, b => b.U32(parent));   // RaiseLowest:又浮上来
+        XMessage raised = await c.NextEventAsync(26);
+        Assert.AreEqual(0, raised.Bytes[16], "place = Top");
     }
 }

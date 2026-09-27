@@ -12,7 +12,8 @@
 //   远端经 SSH 来的客户端给的 shmid 在这台机器上毫无意义。只在 Linux 上提供 —— 段的大小要可靠地取到,
 //   而 shmctl 的结构体布局各平台不同。1.2 的 AttachFd / CreateSegment 要经套接字传文件描述符,不支持。
 //   访问控制:连接对端的 uid(SO_PEERCRED)须是段的属主或创建者,或者段的权限对其他人开放 —— 否则一个本机客户端
-//   可以借服务端之手读写别的用户的共享内存。
+//   可以借服务端之手读写别的用户的共享内存。段的 XID 别的客户端也能拿来用:不是附加它的那个客户端时,按附加时记下的
+//   属主与权限再核一次(ShmPutImage 要读权限,ShmGetImage 要写权限)。
 //   共享像素图(CreatePixmap)不支持:服务端的像素图是托管的缓冲;QueryVersion 如实回 shared-pixmaps = False。
 
 using System.Runtime.InteropServices;
@@ -47,7 +48,7 @@ public sealed partial class X11Server
                 break;
             case 2:   // Detach
                 {
-                    XShmSegment segment = Segment(r.U32());
+                    XShmSegment segment = Segment(c, r.U32(), write: false);
                     RemoveResource(segment.Id);
                     segment.Detach();
                     break;
@@ -65,8 +66,19 @@ public sealed partial class X11Server
         }
     }
 
-    private XShmSegment Segment(uint id) =>
-        Lookup<XShmSegment>(id) ?? throw new XProtocolError((XErrorCode)ShmErrorBase, id);
+    /// <summary>
+    /// 按 XID 找段;不是附加它的那个客户端来用时,核对这个客户端的 uid 对段有没有所需的权限(读 / 写)——
+    /// 附加时只核对了附加者,别的客户端(比如持 cookie 连进来的别的用户)拿到 XID 就能借服务端之手读写它。
+    /// </summary>
+    internal XShmSegment Segment(XClient c, uint id, bool write)
+    {
+        XShmSegment segment = Lookup<XShmSegment>(id) ?? throw new XProtocolError((XErrorCode)ShmErrorBase, id);
+        if (!ReferenceEquals(segment.Owner, c) && !MayAccess(c, segment.Access, readOnly: !write))
+        {
+            throw new XProtocolError(XErrorCode.Access, id);
+        }
+        return segment;
+    }
 
     [SupportedOSPlatform("linux")]
     private void ShmAttach(XClient c, XRequestReader r)
@@ -83,7 +95,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Access, (uint)shmid);
         }
-        XShmSegment segment = new(id, c, shmid, readOnly, address, info.Size);
+        XShmSegment segment = new(id, c, shmid, readOnly, address, info);
         try
         {
             AddResource(c, segment);
@@ -96,7 +108,7 @@ public sealed partial class X11Server
     }
 
     /// <summary>对端 uid 是段的属主或创建者,或段对其他人开放了所需的权限。</summary>
-    private static bool MayAccess(XClient c, (long Size, uint Uid, uint Cuid, int Perms) info, bool readOnly)
+    private static bool MayAccess(XClient c, XShmAccess info, bool readOnly)
     {
         if (c.PeerUid is not { } uid)
         {
@@ -122,7 +134,7 @@ public sealed partial class X11Server
         r.Skip(1);
         uint segmentId = r.U32();
         uint offset = r.U32();
-        XShmSegment segment = Segment(segmentId);
+        XShmSegment segment = Segment(c, segmentId, write: false);   // 服务端从段里读
         XGc gc = Gc(gcId);
         byte targetDepth = DrawableDepth(drawable);
         if (srcX + srcWidth > totalWidth || srcY + srcHeight > totalHeight)
@@ -169,7 +181,7 @@ public sealed partial class X11Server
         uint planeMask = r.U32();
         byte format = r.U8();
         r.Skip(3);
-        XShmSegment segment = Segment(r.U32());
+        XShmSegment segment = Segment(c, r.U32(), write: true);      // 服务端往段里写
         uint offset = r.U32();
         if (segment.ReadOnly)
         {
@@ -204,7 +216,7 @@ public sealed partial class X11Server
     // ------------------------------------------------------------------ System V 共享内存
 
     /// <summary>/proc/sysvipc/shm 里这个 shmid 的大小、属主、创建者与权限;没有时为 null。</summary>
-    private static (long Size, uint Uid, uint Cuid, int Perms)? FindShmSegment(int shmid)
+    private static XShmAccess? FindShmSegment(int shmid)
     {
         string[] lines;
         try
@@ -234,7 +246,7 @@ public sealed partial class X11Server
             {
                 continue;
             }
-            return (long.Parse(cols[sizeCol], System.Globalization.CultureInfo.InvariantCulture),
+            return new XShmAccess(long.Parse(cols[sizeCol], System.Globalization.CultureInfo.InvariantCulture),
                 uint.Parse(cols[uidCol], System.Globalization.CultureInfo.InvariantCulture),
                 uint.Parse(cols[cuidCol], System.Globalization.CultureInfo.InvariantCulture),
                 Convert.ToInt32(cols[permsCol], 8));

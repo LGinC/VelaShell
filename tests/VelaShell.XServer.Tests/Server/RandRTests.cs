@@ -14,7 +14,7 @@ public sealed class RandRTests
     {
         XMessage q = await c.RequestAsync(98, 0, b => b.U16(5).U16(0).Bytes(Encoding.Latin1.GetBytes("RANDR")).Pad());
         Assert.AreEqual(1, q.Bytes[8], "RANDR 应当存在");
-        Assert.AreEqual(129, q.Bytes[11], "first-error");
+        Assert.AreEqual(130, q.Bytes[11], "first-error(XFIXES 占 128、129)");
         return q.Bytes[9];
     }
 
@@ -81,7 +81,7 @@ public sealed class RandRTests
 
         XMessage bad = await c.RequestAsync(major, 9, b => b.U32(0x12345).U32(0));
         Assert.IsTrue(bad.IsError);
-        Assert.AreEqual(129, bad.Bytes[1]);
+        Assert.AreEqual(130, bad.Bytes[1], "BadOutput = first-error + 0");
 
         XMessage set = await c.RequestAsync(major, 21, b => b.U32(0x40).U32(0).U32(0).I16(0).I16(0).U32(0).U16(1).U16(0));
         Assert.IsTrue(set.IsReply);

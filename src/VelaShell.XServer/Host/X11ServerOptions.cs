@@ -54,7 +54,10 @@ public sealed class X11ServerOptions
     public string KeyboardLayout { get; init; } = "us";
 
     /// <summary>
-    /// <c>MIT-MAGIC-COOKIE-1</c> 授权 cookie;null = 不要求授权、只接受来自本机的连接(与 X.Org 的主机访问控制行为一致)。
+    /// <c>MIT-MAGIC-COOKIE-1</c> 授权 cookie。配置了就要求 TCP 连接(<b>包括环回</b>:本机别的进程、别的用户都连得到那个端口)
+    /// 与没法确认是同一个用户的 Unix 套接字连接带上它;null = 不要求 cookie、只接受来自本机的连接
+    /// (与 X.Org 的主机访问控制行为一致)。不论配没配:Unix 套接字文件只有属主能连,Linux 抽象命名空间里的连接按 uid 只放行同一个用户;
+    /// 宿主经 <see cref="X11Server.ServeAuthenticatedAsync" /> 喂进来的流不查授权。
     /// </summary>
     public byte[]? AuthorizationCookie { get; init; }
 

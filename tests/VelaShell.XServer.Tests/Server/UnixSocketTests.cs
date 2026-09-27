@@ -33,6 +33,28 @@ public sealed class UnixSocketTests
     }
 
     [TestMethod]
+    public async Task 套接字文件只有属主能读写_配了cookie时同一个用户不带也能连()
+    {
+        if (!Socket.OSSupportsUnixDomainSockets || OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("Windows 上的 AF_UNIX 没有 Unix 文件权限");
+            return;
+        }
+        string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path, AuthorizationCookie = [1, 2, 3, 4] });
+        await server.StartAsync();
+        Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path), "0600:别的用户连不进来");
+
+        using Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        await socket.ConnectAsync(new UnixDomainSocketEndPoint(path));
+        await using NetworkStream stream = new(socket);
+        await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        byte[] head = new byte[8];
+        await stream.ReadExactlyAsync(head).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(1, head[0], "同一个用户经套接字文件连进来,不必带 cookie");
+    }
+
+    [TestMethod]
     public async Task 套接字文件后面有别的服务端在听时不删不抢()
     {
         if (!Socket.OSSupportsUnixDomainSockets)

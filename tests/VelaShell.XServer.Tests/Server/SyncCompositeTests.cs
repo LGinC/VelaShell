@@ -190,6 +190,39 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task 被Await挂住的请求按字节计入背压_攒到上限就不再读()
+    {
+        await using X11Server server = new();
+        await using XTestClient waiter = await XTestClient.ConnectAsync(server);
+        await using XTestClient setter = await XTestClient.ConnectAsync(server);
+        (byte sync, _, _) = await ExtAsync(waiter, "SYNC");
+        await waiter.RequestAsync(sync, 0, b => b.U8(3).U8(1).U16(0));
+        (byte bigRequests, _, _) = await ExtAsync(waiter, "BIG-REQUESTS");
+        await waiter.RequestAsync(bigRequests, 0);   // BigReqEnable
+        uint counter = setter.NewId();
+        await setter.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(0));
+        await setter.SyncAsync();
+        await waiter.SendAsync(sync, 7, b => b.U32(counter).U32(0).I32(0).U32(5).U32(2).I32(0).U32(0));   // Await(counter ≥ 5)
+
+        // 48 条 1 MB 的 NoOperation:只数条数(1024)的话全都读进来挂着;按字节算,攒到 32 MB 读端就停。
+        byte[] payload = new byte[1 << 20];
+        Task flood = Task.Run(async () =>
+        {
+            for (int i = 0; i < 48; i++)
+            {
+                await waiter.SendAsync(127, 0, b => b.Bytes(payload), bigRequest: true);
+            }
+        });
+        await Task.Delay(500);
+        Assert.IsFalse(flood.IsCompleted, "挂住的请求攒到字节上限,读端不再读,客户端写不进去");
+
+        await setter.SendAsync(sync, 3, b => b.U32(counter).I32(0).U32(7));   // 放行
+        await flood.WaitAsync(TimeSpan.FromSeconds(10));
+        XMessage focus = await waiter.RequestAsync(43, 0);
+        Assert.IsTrue(focus.IsReply, "放行之后一条条照常执行完");
+    }
+
+    [TestMethod]
     public async Task IDLETIME上的负向跨越报警器在用户输入时触发()
     {
         using RecordingHost host = new();

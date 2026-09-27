@@ -84,137 +84,160 @@ public sealed partial class X11Server
             flags |= flag;
         }
 
-        for (int i = 0; i < count; i++)
+        // 按收到的顺序逐条生效;出错时停在这一条,错误里带「已经生效了几条」,之前的改动不撤回(XI2「XIChangeHierarchy」),
+        // 照样为它们发 HierarchyEvent。
+        int applied = 0;
+        try
         {
-            ushort type = r.U16();
-            ushort length = r.U16();
-            if (length < 1 || (length - 1) * 4 > r.Remaining)
+            for (int i = 0; i < count; i++)
             {
-                throw new XProtocolError(XErrorCode.Length);
-            }
-            XRequestReader b = r.Slice((length - 1) * 4);
-            switch (type)
-            {
-                case 1:   // AddMaster
-                    {
-                        ushort nameLength = b.U16();
-                        b.Bool();   // send_core:所有主设备都产生核心事件
-                        bool enable = b.Bool();
-                        string name = XWire.Latin1.GetString(b.Bytes(nameLength));
-                        ushort pointerId = NextDeviceId(), keyboardId = (ushort)(pointerId + 1);
-                        _xiDevices[pointerId] = new XiDevice(pointerId, pointer: true, master: true, name + " pointer")
+                ushort type = r.U16();
+                ushort length = r.U16();
+                if (length < 1 || (length - 1) * 4 > r.Remaining)
+                {
+                    throw new XProtocolError(XErrorCode.Length);
+                }
+                XRequestReader b = r.Slice((length - 1) * 4);
+                switch (type)
+                {
+                    case 1:   // AddMaster
                         {
-                            Attachment = keyboardId,
-                            Enabled = enable,
-                        };
-                        _xiDevices[keyboardId] = new XiDevice(keyboardId, pointer: false, master: true, name + " keyboard")
-                        {
-                            Attachment = pointerId,
-                            Enabled = enable,
-                        };
-                        Note(pointerId, 1 | (enable ? 64u : 0));
-                        Note(keyboardId, 1 | (enable ? 64u : 0));
-                        break;
-                    }
-                case 2:   // RemoveMaster
-                    {
-                        ushort id = b.U16();
-                        byte returnMode = b.U8();
-                        b.Skip(1);
-                        ushort returnPointer = b.U16(), returnKeyboard = b.U16();
-                        // AttachToMaster 而没指定挂到哪(0):挂回虚拟核心设备 —— xinput remove-master 默认就这么发。
-                        returnPointer = returnPointer == 0 ? XiMasterPointer : returnPointer;
-                        returnKeyboard = returnKeyboard == 0 ? XiMasterKeyboard : returnKeyboard;
-                        if (!_xiDevices.TryGetValue(id, out XiDevice? master) || !master.Master)
-                        {
-                            throw BadDevice(id);
-                        }
-                        XiDevice pointerMaster = master.Pointer ? master : _xiDevices[master.Attachment];
-                        XiDevice keyboardMaster = master.Pointer ? _xiDevices[master.Attachment] : master;
-                        if (pointerMaster.Id == XiMasterPointer)
-                        {
-                            throw BadDevice(id);   // 虚拟核心设备不能删除
-                        }
-                        if (returnMode is not (1 or 2))
-                        {
-                            throw new XProtocolError(XErrorCode.Value, returnMode);
-                        }
-                        if (returnMode == 2 && (!IsMasterDevice(returnPointer) || !IsPointerDevice(returnPointer)
-                                                || !IsMasterDevice(returnKeyboard) || IsPointerDevice(returnKeyboard)
-                                                || returnPointer == pointerMaster.Id || returnKeyboard == keyboardMaster.Id))
-                        {
-                            throw new XProtocolError(XErrorCode.Match);
-                        }
-                        foreach (XiDevice slave in _xiDevices.Values.Where(d => !d.Master).ToArray())
-                        {
-                            if (slave.Attachment == pointerMaster.Id || slave.Attachment == keyboardMaster.Id)
+                            ushort nameLength = b.U16();
+                            b.Bool();   // send_core:所有主设备都产生核心事件
+                            bool enable = b.Bool();
+                            string name = XWire.Latin1.GetString(b.Bytes(nameLength));
+                            ushort pointerId = NextDeviceId(), keyboardId = (ushort)(pointerId + 1);
+                            _xiDevices[pointerId] = new XiDevice(pointerId, pointer: true, master: true, name + " pointer")
                             {
-                                slave.Attachment = returnMode == 2 ? (slave.Pointer ? returnPointer : returnKeyboard) : (ushort)0;
-                                Note(slave.Id, returnMode == 2 ? 16u : 32u);
+                                Attachment = keyboardId,
+                                Enabled = enable,
+                            };
+                            _xiDevices[keyboardId] = new XiDevice(keyboardId, pointer: false, master: true, name + " keyboard")
+                            {
+                                Attachment = pointerId,
+                                Enabled = enable,
+                            };
+                            Note(pointerId, 1 | (enable ? 64u : 0));
+                            Note(keyboardId, 1 | (enable ? 64u : 0));
+                            break;
+                        }
+                    case 2:   // RemoveMaster
+                        {
+                            ushort id = b.U16();
+                            byte returnMode = b.U8();
+                            b.Skip(1);
+                            ushort returnPointer = b.U16(), returnKeyboard = b.U16();
+                            // AttachToMaster 而没指定挂到哪(0):挂回虚拟核心设备 —— xinput remove-master 默认就这么发。
+                            returnPointer = returnPointer == 0 ? XiMasterPointer : returnPointer;
+                            returnKeyboard = returnKeyboard == 0 ? XiMasterKeyboard : returnKeyboard;
+                            if (!_xiDevices.TryGetValue(id, out XiDevice? master) || !master.Master)
+                            {
+                                throw BadDevice(id);
                             }
+                            XiDevice pointerMaster = master.Pointer ? master : _xiDevices[master.Attachment];
+                            XiDevice keyboardMaster = master.Pointer ? _xiDevices[master.Attachment] : master;
+                            if (pointerMaster.Id == XiMasterPointer)
+                            {
+                                throw BadDevice(id);   // 虚拟核心设备不能删除
+                            }
+                            if (returnMode is not (1 or 2))
+                            {
+                                throw new XProtocolError(XErrorCode.Value, returnMode);
+                            }
+                            if (returnMode == 2 && (!IsMasterDevice(returnPointer) || !IsPointerDevice(returnPointer)
+                                                    || !IsMasterDevice(returnKeyboard) || IsPointerDevice(returnKeyboard)
+                                                    || returnPointer == pointerMaster.Id || returnKeyboard == keyboardMaster.Id))
+                            {
+                                throw new XProtocolError(XErrorCode.Match);
+                            }
+                            foreach (XiDevice slave in _xiDevices.Values.Where(d => !d.Master).ToArray())
+                            {
+                                if (slave.Attachment == pointerMaster.Id || slave.Attachment == keyboardMaster.Id)
+                                {
+                                    slave.Attachment = returnMode == 2 ? (slave.Pointer ? returnPointer : returnKeyboard) : (ushort)0;
+                                    Note(slave.Id, returnMode == 2 ? 16u : 32u);
+                                }
+                            }
+                            _xiDevices.Remove(pointerMaster.Id);
+                            _xiDevices.Remove(keyboardMaster.Id);
+                            _deviceProperties.Remove(pointerMaster.Id);
+                            _deviceProperties.Remove(keyboardMaster.Id);
+                            Note(pointerMaster.Id, 2);
+                            Note(keyboardMaster.Id, 2);
+                            break;
                         }
-                        _xiDevices.Remove(pointerMaster.Id);
-                        _xiDevices.Remove(keyboardMaster.Id);
-                        _deviceProperties.Remove(pointerMaster.Id);
-                        _deviceProperties.Remove(keyboardMaster.Id);
-                        Note(pointerMaster.Id, 2);
-                        Note(keyboardMaster.Id, 2);
-                        break;
-                    }
-                case 3:   // AttachSlave
-                    {
-                        ushort id = b.U16(), masterId = b.U16();
-                        if (!_xiDevices.TryGetValue(id, out XiDevice? slave) || slave.Master)
+                    case 3:   // AttachSlave
                         {
-                            throw BadDevice(id);
+                            ushort id = b.U16(), masterId = b.U16();
+                            if (!_xiDevices.TryGetValue(id, out XiDevice? slave) || slave.Master)
+                            {
+                                throw BadDevice(id);
+                            }
+                            if (!_xiDevices.TryGetValue(masterId, out XiDevice? master) || !master.Master)
+                            {
+                                throw BadDevice(masterId);
+                            }
+                            if (master.Pointer != slave.Pointer)
+                            {
+                                throw new XProtocolError(XErrorCode.Match);
+                            }
+                            if (slave.Attachment != masterId)
+                            {
+                                slave.Attachment = masterId;
+                                Note(id, 16);
+                            }
+                            break;
                         }
-                        if (!_xiDevices.TryGetValue(masterId, out XiDevice? master) || !master.Master)
+                    case 4:   // DetachSlave
                         {
-                            throw BadDevice(masterId);
+                            ushort id = b.U16();
+                            if (!_xiDevices.TryGetValue(id, out XiDevice? slave) || slave.Master)
+                            {
+                                throw BadDevice(id);
+                            }
+                            if (slave.Attachment != 0)
+                            {
+                                slave.Attachment = 0;
+                                Note(id, 32);
+                            }
+                            break;
                         }
-                        if (master.Pointer != slave.Pointer)
-                        {
-                            throw new XProtocolError(XErrorCode.Match);
-                        }
-                        if (slave.Attachment != masterId)
-                        {
-                            slave.Attachment = masterId;
-                            Note(id, 16);
-                        }
-                        break;
-                    }
-                case 4:   // DetachSlave
-                    {
-                        ushort id = b.U16();
-                        if (!_xiDevices.TryGetValue(id, out XiDevice? slave) || slave.Master)
-                        {
-                            throw BadDevice(id);
-                        }
-                        if (slave.Attachment != 0)
-                        {
-                            slave.Attachment = 0;
-                            Note(id, 32);
-                        }
-                        break;
-                    }
-                default:
-                    throw new XProtocolError(XErrorCode.Value, type);
+                    default:
+                        throw new XProtocolError(XErrorCode.Value, type);
+                }
+                applied++;
             }
         }
-        if (flags != 0)
+        catch (XProtocolError error)
         {
-            SendHierarchyChanged(flags, changed);
+            throw new XProtocolError(error.Code, (uint)applied);
+        }
+        finally
+        {
+            if (flags != 0)
+            {
+                SendHierarchyChanged(flags, changed);
+            }
         }
     }
 
+    /// <summary>
+    /// 设备 ID 上限:XI 1.x 的 ListInputDevices 等请求里设备 ID 是 CARD8,新建的主设备也得让老客户端认得出。
+    /// 主设备成对分配(指针偶数、键盘紧随其后),上限之内分完了 AddMaster 回 BadAlloc。
+    /// </summary>
+    private const int MaxXiDeviceId = byte.MaxValue;
+
+    /// <summary>下一对空闲的主设备 ID(指针 ID;键盘是它加一)。分完了抛 BadAlloc —— 用 int 走,不会回绕成死循环。</summary>
     private ushort NextDeviceId()
     {
-        ushort id = 6;
-        while (_xiDevices.ContainsKey(id) || _xiDevices.ContainsKey((ushort)(id + 1)))
+        for (int id = 6; id + 1 <= MaxXiDeviceId; id += 2)
         {
-            id += 2;
+            if (!_xiDevices.ContainsKey((ushort)id) && !_xiDevices.ContainsKey((ushort)(id + 1)))
+            {
+                return (ushort)id;
+            }
         }
-        return id;
+        throw new XProtocolError(XErrorCode.Alloc);
     }
 
     /// <summary>HierarchyEvent:发给在根窗口上选了它的客户端,带全部设备(被删掉的也带一条,flags 说明发生了什么)。</summary>

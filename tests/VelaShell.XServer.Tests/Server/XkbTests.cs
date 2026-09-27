@@ -189,4 +189,38 @@ public sealed class XkbTests
         byte[] control = modifiers.Bytes.AsSpan(32 + (2 * per), per).ToArray();
         CollectionAssert.Contains(control, (byte)37, "键码 37 在 Control 行");
     }
+
+    [TestMethod]
+    public async Task 锁存的修饰键只作用于下一个非修饰键_SetMap的修饰映射只能落在声明的区间里()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte xkb, _) = await XkbAsync(c);
+        uint top = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(top).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0x800).U32(0x1));   // KeyPress
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        server.FocusTopLevel(host.Mapped[top]);
+
+        // LatchLockState:锁存 Shift。
+        await c.SendAsync(xkb, 5, b => b.U16(UseCoreKbd).U8(0).U8(0).U8(0).U8(0).U8(1).U8(1).U8(0).U8(0).U16(0));
+        await c.SyncAsync();
+        server.InjectKey(XKeycodes.A, pressed: true);
+        Assert.AreEqual(1, (await c.NextEventAsync(2)).U16(28) & 1, "下一个键带着锁存的 Shift");
+        server.InjectKey(XKeycodes.A, pressed: false);
+        server.InjectKey(XKeycodes.B, pressed: true);
+        Assert.AreEqual(0, (await c.NextEventAsync(2)).U16(28) & 1, "用过一次就解除了");
+        server.InjectKey(XKeycodes.B, pressed: false);
+        XMessage state = await c.RequestAsync(xkb, 4, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(0, state.Bytes[10], "latchedMods = 0");
+
+        // SetMap 的修饰映射声明区间是键码 37 起 1 个,项里却给了 50:BadValue。
+        XMessage refused = await c.RequestAsync(xkb, 9, b => b.U16(UseCoreKbd).U16(0x4).U16(0).U8(8).U8(255)
+            .U8(0).U8(0).U8(0).U8(0).U16(0).U8(0).U8(0).U16(0).U8(0).U8(0).U8(0).U8(0).U8(0).U8(0)
+            .U8(37).U8(1).U8(1).U8(0).U8(0).U8(0).U16(0)
+            .U8(50).U8(0x04).U16(0));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(2, refused.Bytes[1], "BadValue");
+    }
 }

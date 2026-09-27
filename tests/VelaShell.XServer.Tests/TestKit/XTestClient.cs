@@ -115,10 +115,10 @@ internal sealed class XTestClient : IAsyncDisposable
 
     /// <summary>连上服务端(内存双工),走完连接建立。建立失败时返回的 SetupReply[0] 为 0。</summary>
     public static async Task<XTestClient> ConnectAsync(X11Server server, bool bigEndian = false, bool isLocal = true,
-        string authName = "", byte[]? authData = null)
+        string authName = "", byte[]? authData = null, bool authenticated = false)
     {
         (Stream serverSide, Stream clientSide) = DuplexPair.Create();
-        Task serverTask = server.ServeAsync(serverSide, isLocal);
+        Task serverTask = authenticated ? server.ServeAuthenticatedAsync(serverSide) : server.ServeAsync(serverSide, isLocal);
         return await HandshakeAsync(clientSide, serverTask, bigEndian, authName, authData);
     }
 
@@ -189,6 +189,27 @@ internal sealed class XTestClient : IAsyncDisposable
     /// <summary>发一条请求,返回它的序号。</summary>
     public async Task<ushort> SendAsync(byte opcode, byte data, Action<Body>? body = null, bool bigRequest = false)
     {
+        await _stream.WriteAsync(Encode(opcode, data, body, bigRequest));
+        await _stream.FlushAsync();
+        return ++_sequence;
+    }
+
+    /// <summary>一次写出一批请求(几万条的用例用,省掉每条一次 flush),返回最后一条的序号。</summary>
+    public async Task<ushort> SendManyAsync(IEnumerable<(byte Opcode, byte Data, Action<Body>? Body)> requests)
+    {
+        List<byte> batch = [];
+        foreach ((byte opcode, byte data, Action<Body>? body) in requests)
+        {
+            batch.AddRange(Encode(opcode, data, body, bigRequest: false));
+            _sequence++;
+        }
+        await _stream.WriteAsync(batch.ToArray());
+        await _stream.FlushAsync();
+        return _sequence;
+    }
+
+    private byte[] Encode(byte opcode, byte data, Action<Body>? body, bool bigRequest)
+    {
         Body b = new(BigEndian);
         body?.Invoke(b);
         b.Pad();
@@ -206,9 +227,7 @@ internal sealed class XTestClient : IAsyncDisposable
             request.AddRange(U16Bytes((ushort)((payload.Length + 4) / 4), BigEndian));
         }
         request.AddRange(payload);
-        await _stream.WriteAsync(request.ToArray());
-        await _stream.FlushAsync();
-        return ++_sequence;
+        return [.. request];
     }
 
     /// <summary>发请求并等它的回复(或错误)。</summary>

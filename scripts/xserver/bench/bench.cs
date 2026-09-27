@@ -7,6 +7,7 @@
 //   dotnet run -c Release -p:SignAssembly=false scripts/xserver/bench/bench.cs   (仓库里没有签名密钥,Release 需关掉签名)
 //
 // 场景:核心填充、32 位 PutImage(小块与整窗)、Xft 式字形合成(a8 字形 + 纯色源 + Over)、ARGB 图像 Over 合成、
+// RENDER 通用路径(线性渐变源、带缩放变换的双线性源、ARGB 源 + a8 遮罩)、GLX 单缓冲的小三角形(每个 Render 请求一个)、
 // RENDER 多矩形填充、指针移动注入(窗口选了 PointerMotion)、请求往返延迟;
 // 最后量整窗 PutImage 满载时宿主读像素(另一条线程每 16 毫秒读一次整窗)要等多久 —— 宿主 UI 线程卡不卡看的就是它。
 // 数字只用来比较前后改动,不同机器之间不可比。
@@ -55,6 +56,29 @@ c.Request(53, 32, b => b.U32(argbPixmap).U32(window).U16(100).U16(100));
 uint argbPicture = c.NewId();
 c.Request(render, 4, b => b.U32(argbPicture).U32(argbPixmap).U32(argb).U32(0));
 c.Request(render, 26, b => b.U8(1).U8(0).U8(0).U8(0).U32(argbPicture).U16(0x8000).U16(0x4000).U16(0).U16(0x8000).I16(0).I16(0).U16(100).U16(100));
+// 线性渐变(三个色标,中间半透明):cairo / Qt 画按钮底色、标题栏。
+uint gradient = c.NewId();
+c.Request(render, 34, b => b.U32(gradient).U32(0).U32(0).U32(100 << 16).U32(100 << 16).U32(3)
+    .U32(0).U32(0x8000).U32(0x10000)
+    .U16(0xFFFF).U16(0).U16(0).U16(0xFFFF).U16(0).U16(0xFFFF).U16(0).U16(0x8000).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF));
+// 同一张 ARGB 像素图的另一个 picture:放大两倍、双线性(缩放预览、HiDPI 下的图标)。
+uint scaledPicture = c.NewId();
+c.Request(render, 4, b => b.U32(scaledPicture).U32(argbPixmap).U32(argb).U32(0));
+c.Request(render, 28, b => b.U32(scaledPicture).U32(0x8000).U32(0).U32(0).U32(0).U32(0x8000).U32(0).U32(0).U32(0).U32(0x10000));
+c.Request(render, 30, b => b.U32(scaledPicture).U16(8).U16(0).Bytes("bilinear"u8.ToArray()));
+// 100×100 的 a8 遮罩:半透明的斜坡(圆角、阴影的形状遮罩)。
+uint maskPixmap = c.NewId();
+c.Request(53, 8, b => b.U32(maskPixmap).U32(window).U16(100).U16(100));
+uint maskPicture = c.NewId();
+c.Request(render, 4, b => b.U32(maskPicture).U32(maskPixmap).U32(a8).U32(0));
+uint maskGc = c.NewId();
+c.Request(55, 0, b => b.U32(maskGc).U32(maskPixmap).U32(0));
+byte[] ramp = new byte[100 * 100];
+for (int i = 0; i < ramp.Length; i++)
+{
+    ramp[i] = (byte)(i % 100 * 255 / 99);
+}
+c.Request(72, 2, b => b.U32(maskPixmap).U32(maskGc).U16(100).U16(100).I16(0).I16(0).U8(0).U8(8).U16(0).Bytes(ramp));
 await c.SyncAsync();
 
 byte[] image = new byte[200 * 100 * 4];
@@ -64,6 +88,22 @@ Random.Shared.NextBytes(frame);
 byte[] frameRequest = Client.Encode(72, 2, b => b.U32(window).U32(gc).U16(800).U16(600).I16(0).I16(0).U8(0).U8(24).U16(0).Bytes(frame), big: true);
 byte bigRequests = await c.QueryExtensionAsync("BIG-REQUESTS");
 await c.RequestAsync(bigRequests, 0);
+// GLX 间接渲染、单缓冲(FBConfig 0x102)绑在整个窗口上:每个 Render 请求画一个约 20 像素的小三角形(单缓冲的 GL 程序逐条画、画完就该看得见)。
+byte glx = await c.QueryExtensionAsync("GLX");
+uint glContext = c.NewId();
+c.Request(glx, 24, b => b.U32(glContext).U32(0x102).U32(0).U32(0x8014).U32(0).U8(0).U8(0).U16(0));   // CreateNewContext
+byte[] made = await c.RequestAsync(glx, 5, b => b.U32(window).U32(glContext).U32(0));                 // MakeCurrent
+uint glTag = BinaryPrimitives.ReadUInt32LittleEndian(made.AsSpan(8));
+byte[][] triangles = new byte[64][];
+for (int k = 0; k < triangles.Length; k++)
+{
+    float x = -0.9f + (k % 8 * 0.22f), y = -0.9f + (k / 8 * 0.22f);
+    triangles[k] = Client.Encode(glx, 1, b => GlCommands(b.U32(glTag),
+        (8, [k % 3 == 0 ? 1f : 0f, k % 3 == 1 ? 1f : 0f, k % 3 == 2 ? 1f : 0f]),                   // Color3fv
+        (4, [BitConverter.UInt32BitsToSingle(4)]),                                                  // Begin(TRIANGLES)
+        (66, [x, y]), (66, [x + 0.05f, y]), (66, [x, y + 0.066f]),                                  // Vertex2fv
+        (23, [])));                                                                                 // End
+}
 // FillRectangles:50 个 10×10 的矩形(cairo / Qt 清背景一个请求里常有几十个)。
 Action<Client.Body> fillRects = b =>
 {
@@ -74,7 +114,7 @@ Action<Client.Body> fillRects = b =>
     }
 };
 
-Console.WriteLine($"{"场景",-34}{"次数",8}{"耗时 ms",10}{"每秒",14}{"CPU ms",10}");
+Console.WriteLine($"{"场景",-34}{"次数",8}{"耗时 ms",10}{"每秒",14}{"CPU ms",10}{"分配 B/次",12}");
 await RunAsync("PolyFillRectangle 50×50", 20_000, i =>
     c.Request(70, 0, b => b.U32(window).U32(gc).I16((short)(i % 700)).I16((short)(i % 500)).U16(50).U16(50)));
 await RunAsync("PutImage 200×100 32 bpp", 2_000, i =>
@@ -88,11 +128,22 @@ await RunAsync("CompositeGlyphs8 ×10(Xft 文字)", 20_000, i =>
 await RunAsync("Composite ARGB 100×100 Over", 5_000, i =>
     c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(argbPicture).U32(0).U32(picture)
         .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite 线性渐变 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(gradient).U32(0).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite 放大 2 倍双线性 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(scaledPicture).U32(0).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("Composite ARGB + a8 遮罩 100×100 Over", 5_000, i =>
+    c.Request(render, 8, b => b.U8(3).U8(0).U8(0).U8(0).U32(argbPicture).U32(maskPicture).U32(picture)
+        .I16(0).I16(0).I16(0).I16(0).I16((short)(i % 700)).I16((short)(i % 500)).U16(100).U16(100)));
+await RunAsync("GLX 单缓冲 Render 小三角形", 5_000, i => c.Raw(triangles[i % triangles.Length]));
 await RunAsync("PutImage 800×600 整窗(BIG-REQUESTS)", 1_000, _ => c.Raw(frameRequest));
 await RunAsync("RenderFillRectangles ×50", 5_000, _ => c.Request(render, 26, fillRects));
 XTopLevelWindow mapped = host.Mapped ?? throw new InvalidOperationException("窗口没映射");
 await RunAsync("指针移动注入(选了 PointerMotion)", 50_000, i => server.InjectPointerMotion(mapped, i % 800, (i / 800) % 600));
 
+long roundTripStart = GC.GetTotalAllocatedBytes(precise: true);
 Stopwatch rt = Stopwatch.StartNew();
 const int roundTrips = 5_000;
 for (int i = 0; i < roundTrips; i++)
@@ -100,7 +151,8 @@ for (int i = 0; i < roundTrips; i++)
     await c.SyncAsync();
 }
 rt.Stop();
-Console.WriteLine($"{"往返 GetInputFocus(串行)",-34}{roundTrips,8}{rt.Elapsed.TotalMilliseconds,10:F0}{roundTrips / rt.Elapsed.TotalSeconds,14:F0}");
+long roundTripAllocated = GC.GetTotalAllocatedBytes(precise: true) - roundTripStart;
+Console.WriteLine($"{"往返 GetInputFocus(串行)",-34}{roundTrips,8}{rt.Elapsed.TotalMilliseconds,10:F0}{roundTrips / rt.Elapsed.TotalSeconds,14:F0}{"",10}{roundTripAllocated / roundTrips,12}");
 
 // 整窗 PutImage 满载时,宿主每 16 毫秒读一次整窗像素:每次要等多久才拿到锁并读完。
 XTopLevelWindow handle = mapped;
@@ -125,17 +177,34 @@ waits.Sort();
 Console.WriteLine($"宿主读整窗像素(整窗 PutImage 满载):{waits.Count} 次,中位 {waits[waits.Count / 2]:F2} ms,"
     + $"p99 {waits[(int)(waits.Count * 0.99)]:F2} ms,最长 {waits[^1]:F2} ms");
 
+// GLX 渲染命令:每条 2 字节长度(含 4 字节头)、2 字节操作码,参数都是 4 字节。
+static Client.Body GlCommands(Client.Body b, params (ushort Opcode, float[] Values)[] commands)
+{
+    foreach ((ushort opcode, float[] values) in commands)
+    {
+        b.U16((ushort)(4 + (values.Length * 4))).U16(opcode);
+        foreach (float v in values)
+        {
+            b.U32(BitConverter.SingleToUInt32Bits(v));
+        }
+    }
+    return b;
+}
+
 async Task RunAsync(string name, int count, Action<int> send)
 {
     // 先不计时跑一遍:让分层 JIT 把热路径升到优化代码,量的是长期运行的服务端的稳态,不是冷启动。
     await SendBatchAsync(count, send);
     // CPU 时间(整个进程,含测试客户端;客户端那份前后一样,差出来的是服务端):吞吐被别的环节卡住时,省下的功夫在这一列看得出来。
+    // 托管堆分配(整个进程,含测试客户端拼请求的那份;同一场景前后比较时客户端那份不变)。
     TimeSpan cpu = Process.GetCurrentProcess().TotalProcessorTime;
+    long allocated = GC.GetTotalAllocatedBytes(precise: true);
     Stopwatch sw = Stopwatch.StartNew();
     await SendBatchAsync(count, send);
     sw.Stop();
     double cpuMs = (Process.GetCurrentProcess().TotalProcessorTime - cpu).TotalMilliseconds;
-    Console.WriteLine($"{name,-34}{count,8}{sw.Elapsed.TotalMilliseconds,10:F0}{count / sw.Elapsed.TotalSeconds,14:F0}{cpuMs,10:F0}");
+    long perRequest = (GC.GetTotalAllocatedBytes(precise: true) - allocated) / count;
+    Console.WriteLine($"{name,-34}{count,8}{sw.Elapsed.TotalMilliseconds,10:F0}{count / sw.Elapsed.TotalSeconds,14:F0}{cpuMs,10:F0}{perRequest,12}");
 }
 
 async Task SendBatchAsync(int count, Action<int> send)

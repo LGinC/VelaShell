@@ -5527,7 +5527,7 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>本机 X 服务端,用于经 SSH X11 转发在本机显示远端的图形程序:内置的,或 Windows 上的 VcXsrv。改动在下次启动 X Server 时生效。</value>
   </data>
   <data name="SetXServer_BuiltInNote" xml:space="preserve">
-    <value>每个 X 窗口都是一个独立的原生窗口。SSH 的 X11 转发直接接进内置服务端,不经本机端口;本机其它 X 程序照样可以用 DISPLAY=localhost:N 连它。</value>
+    <value>每个 X 窗口都是一个独立的原生窗口。SSH 的 X11 转发直接接进内置服务端,不经本机端口;本机其它 X 程序照样可以用 DISPLAY=localhost:N 连它 —— 每次启动生成新的授权 cookie、写进 ~/.Xauthority(停止时撤出),读不到它的程序连不进来。</value>
   </data>
   <data name="SetXServer_Engine" xml:space="preserve">
     <value>X 服务端</value>

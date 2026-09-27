@@ -208,4 +208,50 @@ public sealed class XInputTests
         XMessage error = await c.RequestAsync(xi, 43, b => b.U8(1).U8(0).U8(0).U8(0).U16(2).U16(3).U16(2).U8(1).U8(0).U16(0).U16(0));
         Assert.IsTrue(error.IsError, "删虚拟核心指针:BadDevice");
     }
+
+    [TestMethod]
+    public async Task AddMaster分完设备ID回BadAlloc_错误里带已生效的条数_之前的改动照样生效()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        await SelectAsync(c, xi, c.RootWindow, 0, 1u << 11);   // HierarchyChanged
+
+        // 一条请求里 255 个 AddMaster:设备 ID 是 CARD8(XI 1.x),6–255 只容得下 125 对。
+        XMessage error = await c.RequestAsync(xi, 43, b =>
+        {
+            b.U8(255).U8(0).U8(0).U8(0);
+            for (int i = 0; i < 255; i++)
+            {
+                b.U16(1).U16(3).U16(1).U8(1).U8(1).Bytes("m"u8.ToArray()).Pad();
+            }
+        });
+        Assert.IsTrue(error.IsError);
+        Assert.AreEqual(11, error.Bytes[1], "BadAlloc");
+        Assert.AreEqual(125u, error.U32(4), "bad value = 已经生效的条数");
+
+        XMessage changed = await NextXiAsync(c, xi, 11);
+        Assert.AreEqual(254, changed.U16(20), "num_info:原来四个 + 125 对");
+        XMessage all = await c.RequestAsync(xi, 48, b => b.U16(0).U16(0));
+        Assert.AreEqual(254, all.U16(8));
+    }
+
+    [TestMethod]
+    public async Task XI2按钮事件的buttons是事件之前的按钮状态()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint top = await MapTopAsync(c, host);
+        await SelectAsync(c, xi, top, 0, (1u << 4) | (1u << 5));   // ButtonPress | ButtonRelease
+        await c.SyncAsync();
+
+        server.InjectPointerButton(host.Mapped[top], 3, 3, 1, pressed: true);
+        XMessage press = await NextXiAsync(c, xi, 4);
+        Assert.AreEqual(0, press.Bytes[80] & 0x02, "按下:按钮 1 在事件之前还没按着");
+        server.InjectPointerButton(host.Mapped[top], 3, 3, 1, pressed: false);
+        XMessage release = await NextXiAsync(c, xi, 5);
+        Assert.AreEqual(0x02, release.Bytes[80] & 0x02, "松开:事件之前还按着");
+    }
 }

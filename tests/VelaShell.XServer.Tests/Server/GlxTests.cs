@@ -157,7 +157,7 @@ public sealed class GlxTests
         Assert.AreEqual(0u, error.U32(8));
         XMessage bad = await c.RequestAsync(glx, 115, b => b.U32(tag + 100));
         Assert.IsTrue(bad.IsError);
-        Assert.AreEqual(150 + 4, bad.Bytes[1], "GLXBadContextTag");
+        Assert.AreEqual(151 + 4, bad.Bytes[1], "GLXBadContextTag");
     }
 
     [TestMethod]
@@ -297,5 +297,405 @@ public sealed class GlxTests
         await RenderAsync(c, glx, tag, new Commands().Add(1, b => b.U32(list)));
         XMessage error = await c.RequestAsync(glx, 115, b => b.U32(tag));
         Assert.AreEqual(0x0505u, error.U32(8), "超出预算:OUT_OF_MEMORY");
+    }
+
+    private const uint Compile = 0x1300, UnsignedByteType = 0x1401, Color = 0x1800, OutOfMemory = 0x0505, InvalidValue = 0x0501;
+
+    private static async Task<uint> GlErrorAsync(XTestClient c, byte glx, uint tag) => (await c.RequestAsync(glx, 115, b => b.U32(tag))).U32(8);
+
+    [TestMethod]
+    public async Task 显示列表的每次调用都计入展开预算_调一百万个空列表也会停下()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        uint first = (await c.RequestAsync(glx, 104, b => b.U32(tag).I32(2))).U32(8);   // GenLists:first 是 A,first + 1 是空列表 E
+        Assert.IsLessThan(256u, first + 1, "列表名装得进一个字节");
+
+        // A = CallLists(6 万个 E):E 是空的,旧实现里调它一条都不计。
+        const int n = 60000;
+        byte empty = (byte)(first + 1);
+        await c.SendAsync(glx, 101, b => b.U32(tag).U32(first).U32(Compile));
+        await RenderAsync(c, glx, tag, new Commands().Add(2, b => b.I32(n).U32(UnsignedByteType).Bytes([.. Enumerable.Repeat(empty, n)])));
+        await c.SendAsync(glx, 102, b => b.U32(tag));
+
+        // 再调 6 万次 A:一共 36 亿次调用。
+        byte a = (byte)first;
+        await RenderAsync(c, glx, tag, new Commands().Add(2, b => b.I32(n).U32(UnsignedByteType).Bytes([.. Enumerable.Repeat(a, n)])));
+        Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag), "预算用完,记 OUT_OF_MEMORY");
+    }
+
+    [TestMethod]
+    public async Task GenLists与DeleteLists的range到2的31次方也立即返回()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        XMessage huge = await c.RequestAsync(glx, 104, b => b.U32(tag).I32(int.MaxValue));
+        Assert.AreEqual(0u, huge.U32(8), "名字不够:不生成任何名字,返回 0");
+        uint list = (await c.RequestAsync(glx, 104, b => b.U32(tag).I32(3))).U32(8);
+        Assert.AreNotEqual(0u, list);
+
+        await c.SendAsync(glx, 103, b => b.U32(tag).U32(0).I32(int.MaxValue));        // DeleteLists [0, 2^31)
+        XMessage isList = await c.RequestAsync(glx, 141, b => b.U32(tag).U32(list));
+        Assert.AreEqual(0u, isList.U32(8), "删掉了");
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
+    public async Task DrawArrays不给数组时不空转_线宽夹到上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(193, b => b.I32(int.MaxValue).I32(0).U32(Triangles).U32(0).U32(0))    // DrawArrays:20 亿个顶点、0 个数组,后面还有几个字节
+            .Add(95, b => F(b, 1e9f))                                                  // LineWidth 10 亿
+            .Add(8, b => F(b, 1, 1, 0))
+            .Add(4, b => b.U32(1))                                                     // Begin(LINES)
+            .Add(66, b => F(b, -1, 0)).Add(66, b => F(b, 1, 0))
+            .Add(23));
+        await c.SendAsync(glx, 11, b => b.U32(tag).U32(window));
+        Assert.AreEqual(0xFFFF00u, await PixelAsync(c, window, Width / 2, (Height / 2) - 10), "线宽夹到 64:整个窗口高度都盖住了");
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+    }
+
+    /// <summary>DrawPixels 的参数:像素存储头(默认)、宽高、格式、类型,再是数据。</summary>
+    private static XTestClient.Body DrawPixels(XTestClient.Body b, int width, int height, byte[] rgba) =>
+        b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(4).I32(width).I32(height).U32(Rgba).U32(UnsignedByte).Bytes(rgba);
+
+    [TestMethod]
+    public async Task DrawPixels与CopyPixels按放大倍数画出_只走裁剪范围里的那部分()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        // 2×2:下面一行红、绿,上面一行蓝、白;从左下角 (0, 0) 起放大 10 倍。
+        byte[] image = [255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255];
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(127, b => b.U32(ColorBit))
+            .Add(34, b => F(b, -1, -1))                                                // RasterPos2fv → 窗口 (0, 0)
+            .Add(165, b => F(b, 10, 10))                                               // PixelZoom
+            .Add(173, b => DrawPixels(b, 2, 2, image))
+            .Add(34, b => F(b, 0, -1))                                                 // 窗口 (30, 0)
+            .Add(165, b => F(b, 1, 1))
+            .Add(172, b => b.I32(0).I32(0).I32(20).I32(20).U32(Color))                 // CopyPixels 左下 20×20
+            .Add(34, b => F(b, -1, -1))
+            .Add(172, b => b.I32(0).I32(0).I32(int.MaxValue).I32(int.MaxValue).U32(Color)));   // 巨大的源:只拷缓冲里有的
+        await c.SendAsync(glx, 11, b => b.U32(tag).U32(window));
+
+        // X 的 y 向下:GL 窗口 y = 5 是 X 的第 34 行。
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 5, 34));
+        Assert.AreEqual(0x00FF00u, await PixelAsync(c, window, 15, 34));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 5, 24));
+        Assert.AreEqual(0xFFFFFFu, await PixelAsync(c, window, 15, 24));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 35, 34), "CopyPixels 拷到 (30, 0)");
+        Assert.AreEqual(0xFFFFFFu, await PixelAsync(c, window, 45, 24));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
+    public async Task 像素矩形与位图的数据装不下声明的尺寸时作废()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(34, b => F(b, -1, -1))
+            .Add(173, b => DrawPixels(b, 100000, 100000, [1, 2, 3, 4])));             // 声称 10^10 个像素,只带 4 字节
+        Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(5, b => F(b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1).I32(100000).I32(100000), 0, 0, 0, 0).U32(0xFFFFFFFF)));   // Bitmap
+        Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
+    public async Task Begin与End之间的顶点有上限_超了记OUT_OF_MEMORY()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(4, b => b.U32(0)));   // Begin(POINTS)
+        const int perRequest = 20000;
+        for (int sent = 0; sent <= Gl.GlContext.MaxPrimitiveVertices; sent += perRequest)
+        {
+            Commands vertices = new();
+            for (int i = 0; i < perRequest; i++)
+            {
+                vertices.Add(66, b => F(b, 0, 0));
+            }
+            await RenderAsync(c, glx, tag, vertices);
+        }
+        await RenderAsync(c, glx, tag, new Commands().Add(23));                  // End
+        Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
+    public async Task PrioritizeTextures声称的个数不按它分配_ReadPixels的回复大小有上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(4118, b => b.I32(int.MaxValue)));   // n = 2^31 − 1,后面没有数据
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有 BadImplementation 之类的错误");
+
+        // 8000 × 8000 的 RGBA FLOAT:1 GB 的回复。
+        XMessage huge = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(8000).I32(8000).U32(Rgba).U32(0x1406).U8(0).U8(0).U16(0));
+        Assert.IsTrue(huge.IsError);
+        Assert.AreEqual(11, huge.Bytes[1], "BadAlloc");
+        XMessage small = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(2).I32(2).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.IsTrue(small.IsReply, "正常大小照常回");
+    }
+
+    private const uint SingleBufferedRgb = 0x102, RgbaType = 0x8014;
+
+    [TestMethod]
+    public async Task 像素图释放后同一个ID的新像素图拿到新表面_不会读到上一个的内容()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pixmap = c.NewId(), glxPixmap = c.NewId(), context = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));
+        await c.SendAsync(glx, 22, b => b.U32(0).U32(SingleBufferedRgb).U32(pixmap).U32(glxPixmap).U32(0));        // CreatePixmap(GLX 1.3)
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(glxPixmap).U32(glxPixmap).U32(context))).U32(8);
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 1, 0, 0, 1)).Add(127, b => b.U32(ColorBit)));
+        XMessage red = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.AreEqual(255, red.Bytes[32], "先画成红色");
+
+        await c.RequestAsync(glx, 26, b => b.U32(tag).U32(0).U32(0).U32(0));                                          // 放下当前上下文
+        await c.SendAsync(glx, 23, b => b.U32(glxPixmap));                                                              // DestroyPixmap(GLX)
+        await c.SendAsync(54, 0, b => b.U32(pixmap));                                                                   // FreePixmap
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));                                 // 同一个 ID 建新像素图
+        await c.SendAsync(glx, 22, b => b.U32(0).U32(SingleBufferedRgb).U32(pixmap).U32(glxPixmap).U32(0));
+        uint again = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(glxPixmap).U32(glxPixmap).U32(context))).U32(8);
+        XMessage fresh = await c.RequestAsync(glx, 111, b => b.U32(again).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.AreEqual(0, fresh.Bytes[32], "新像素图的表面是新的,不是上一个画过的红色");
+    }
+
+    [TestMethod]
+    public async Task 单缓冲每个Render请求只拷画过的那一块_不盖掉窗口里别处X画的内容()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        uint context = c.NewId();
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 5, b => b.U32(window).U32(context).U32(0))).U32(8);
+
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 0, 0, 1, 1)).Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 1, 1), "单缓冲:清除随 Render 请求就出现在窗口里");
+
+        // 左上角用 X 画一块绿色;GL 接着只在右上角画一个小三角形。
+        uint gc = c.NewId();
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(window).U32(0x4).U32(0x00FF00));
+        await c.SendAsync(70, 0, b => b.U32(window).U32(gc).I16(0).I16(0).U16(4).U16(4));
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(8, b => F(b, 1, 0, 0))
+            .Add(4, b => b.U32(Triangles))
+            .Add(66, b => F(b, 0.6f, 0.6f)).Add(66, b => F(b, 0.9f, 0.6f)).Add(66, b => F(b, 0.6f, 0.9f))
+            .Add(23));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 50, 6), "三角形拷进了窗口");
+        Assert.AreEqual(0x00FF00u, await PixelAsync(c, window, 1, 1), "GL 没画的地方不重拷整块前缓冲,X 画的绿色还在");
+    }
+
+    [TestMethod]
+    public async Task 客户端断开时它的Pbuffer表面随之释放()
+    {
+        await using X11Server server = new();
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pbuffer = c.NewId(), context = c.NewId();
+        await c.SendAsync(glx, 27, b => b.U32(0).U32(SingleBufferedRgb).U32(pbuffer).U32(2).U32(0x8041).U32(64).U32(0x8040).U32(64));   // CreatePbuffer 64×64
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        XMessage made = await c.RequestAsync(glx, 26, b => b.U32(0).U32(pbuffer).U32(pbuffer).U32(context));
+        Assert.IsTrue(made.IsReply);
+        Assert.AreEqual(1, await server.InvokeAsync(() => server.Glx.SurfaceCount));
+
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(0, await server.InvokeAsync(() => server.Glx.SurfaceCount), "断开时表面随之释放");
+    }
+
+    [TestMethod]
+    public void 显示列表与纹理记账_超了上限记OUT_OF_MEMORY_删掉之后销账()
+    {
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null);
+        gl.NewList(1, Compile);
+        for (int i = 0; i < 70; i++)
+        {
+            gl.ExecuteOrCompile(130, new byte[1 << 20], bigEndian: false);   // 每条 1 MB,共 70 MB
+        }
+        gl.EndList();
+        Assert.AreEqual(OutOfMemory, gl.GetError());
+        Assert.IsLessThanOrEqualTo(Gl.GlShared.MaxListBytes, gl.Shared.ListBytes);
+        gl.DeleteLists(1, 1);
+        Assert.AreEqual(0L, gl.Shared.ListBytes, "删掉之后销账");
+
+        // 纹理:4×4 的 RGBA 记 64 字节,删掉销账;名字总数有上限。
+        gl.ExecuteOrCompile(4117, [.. BitConverter.GetBytes(Texture2D), .. BitConverter.GetBytes(7u)], bigEndian: false);   // BindTexture
+        List<byte> image = [0, 0, 0, 0, .. new byte[16]];   // 像素存储头:不交换、MSB、行长 / 跳过 0、对齐 4(下面改)
+        image[16] = 4;
+        foreach (uint value in (uint[])[Texture2D, 0, Rgba, 4, 4, 0, Rgba, UnsignedByte])
+        {
+            image.AddRange(BitConverter.GetBytes(value));
+        }
+        image.AddRange(new byte[64]);
+        gl.ExecuteOrCompile(110, [.. image], bigEndian: false);   // TexImage2D
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(64L, gl.Shared.TextureBytes);
+        gl.DeleteTextures([7]);
+        Assert.AreEqual(0L, gl.Shared.TextureBytes);
+
+        Assert.IsNotNull(gl.GenTextures(Gl.GlShared.MaxTextures));
+        Assert.IsNull(gl.GenTextures(1), "名字用完了");
+    }
+
+    [TestMethod]
+    public async Task MakeCurrent因表面太大回BadAlloc时不留下任何效果_上下文随后还能用()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        uint huge = c.NewId();   // 5000 × 5000:超过 GLX 表面 4096² 的上限
+        await c.SendAsync(1, 0, b => b.U32(huge).U32(c.RootWindow).I16(0).I16(0).U16(5000).U16(5000).U16(0).U16(1).U32(0).U32(0));
+        uint context = c.NewId();
+        await c.SendAsync(glx, 3, b => b.U32(context).U32(RootVisual).U32(0).U32(0).U8(0).U8(0).U16(0));
+
+        XMessage refused = await c.RequestAsync(glx, 5, b => b.U32(huge).U32(context).U32(0));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(11, refused.Bytes[1], "BadAlloc");
+
+        XMessage made = await c.RequestAsync(glx, 5, b => b.U32(window).U32(context).U32(0));
+        Assert.IsTrue(made.IsReply, "上一次失败没有把上下文挂在一个看不见的标签上:这次照常成为当前");
+    }
+
+    [TestMethod]
+    public async Task 声明了的GL_EXT_abgr真能用_DrawPixels与ReadPixels按ABGR排分量()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint abgr = 0x8000;
+
+        // 一个像素:A = FF、B = 30、G = 20、R = 10。
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(34, b => F(b, -1, -1))
+            .Add(173, b => b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(4).I32(1).I32(1).U32(abgr).U32(UnsignedByte)
+                .Bytes([0xFF, 0x30, 0x20, 0x10])));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag), "ABGR 是认识的格式");
+        XMessage rgba = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        CollectionAssert.AreEqual(new byte[] { 0x10, 0x20, 0x30, 0xFF }, rgba.Bytes[32..36]);
+        XMessage back = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(abgr).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        CollectionAssert.AreEqual(new byte[] { 0xFF, 0x30, 0x20, 0x10 }, back.Bytes[32..36]);
+    }
+
+    [TestMethod]
+    public async Task RenderLarge拼出来的长度与第一段声明的对不上回GLXBadLargeRequest()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const byte badLargeRequest = 151 + 7;
+        byte[] small = [.. BitConverter.GetBytes(0x3F800000u), .. BitConverter.GetBytes(0u), .. BitConverter.GetBytes(0u), .. BitConverter.GetBytes(0x3F800000u)];   // ClearColor 1, 0, 0, 1
+
+        // 声明比实际多 1000 字节:最后一段到了还不够 —— 命令被截断了。
+        await c.SendAsync(glx, 2, b => b.U32(tag).U16(1).U16(2).U32((uint)small.Length).U32((uint)(8 + small.Length + 1000)).U32(130).Bytes(small));
+        XMessage truncated = await c.RequestAsync(glx, 2, b => b.U32(tag).U16(2).U16(2).U32(4).U32(0));
+        Assert.IsTrue(truncated.IsError);
+        Assert.AreEqual(badLargeRequest, truncated.Bytes[1]);
+
+        // 声明正好是小参数,第二段却还带 8 字节:拼起来比声明的长。
+        await c.SendAsync(glx, 2, b => b.U32(tag).U16(1).U16(2).U32((uint)small.Length).U32((uint)(8 + small.Length)).U32(130).Bytes(small));
+        XMessage overlong = await c.RequestAsync(glx, 2, b => b.U32(tag).U16(2).U16(2).U32(8).U32(0).U32(0));
+        Assert.IsTrue(overlong.IsError);
+        Assert.AreEqual(badLargeRequest, overlong.Bytes[1]);
+    }
+
+    [TestMethod]
+    public async Task TexSubImage的偏移加宽度在int上溢出时照样回INVALID_VALUE()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        static XTestClient.Body Store(XTestClient.Body b) => b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1);
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4117, b => b.U32(Texture2D).U32(1))                                                       // BindTexture 1
+            .Add(110, b => Store(b).U32(Texture2D).I32(0).U32(Rgba).I32(2).I32(2).I32(0).U32(Rgba).U32(UnsignedByte)
+                .Bytes(new byte[16])));                                                                     // TexImage2D 2×2
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+
+        // xoffset = 2^31 − 1、width = 2:相加在 int 上溢出成负数。
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4100, b => Store(b).U32(Texture2D).I32(0).I32(int.MaxValue).I32(0).I32(2).I32(2).U32(Rgba).U32(UnsignedByte).U32(0)
+                .Bytes(new byte[16])));
+        Assert.AreEqual(InvalidValue, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有 BadImplementation");
+    }
+
+    [TestMethod]
+    public async Task RenderMode只在之前是反馈或选择模式时回复()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint render = 0x1C00, feedback = 0x1C01;
+
+        ushort toFeedback = await c.SendAsync(glx, 107, b => b.U32(tag).U32(feedback));   // 之前是渲染模式:没有回复
+        await c.SyncAsync();
+        Assert.IsFalse(await c.NextAsync(m => m.Sequence == toFeedback, 100).ContinueWith(t => t.IsCompletedSuccessfully), "没有回复");
+
+        XMessage back = await c.RequestAsync(glx, 107, b => b.U32(tag).U32(render));        // 之前是反馈模式:有回复
+        Assert.IsTrue(back.IsReply);
+        Assert.AreEqual(0u, back.U32(12), "n = 0:反馈不实现");
+        Assert.AreEqual(render, back.U32(16), "new mode");
     }
 }
