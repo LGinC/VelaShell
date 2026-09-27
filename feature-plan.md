@@ -30,26 +30,23 @@
 
 ## 🎯 建议的下一步
 
-按「杠杆 ÷ 成本」排，下面五件最值得先动：
+按「杠杆 ÷ 成本」排，下面四件最值得先动（内置 X 服务端全库审查的 31 项已在 `plan.md` §124 修完）：
 
-1. **内置 X 服务端审查的 A 组与 C 组**（🔴 P0，[见下文](#-内置-x-服务端velashellxserver全库审查的待修项)）——
-   几个请求就能卡死整个 VelaShell 窗口，本机任何进程都能连进来记键盘。它默认开着，这个洞比任何新功能都急。
-2. **11 条「怎么改都绿」的 UI 用例**（🔴 P0）—— 断言失败被整个吞掉，等于这几块界面没有测试。
+1. **11 条「怎么改都绿」的 UI 用例**（🔴 P0）—— 断言失败被整个吞掉，等于这几块界面没有测试。
    不修，后面每一次改动都在裸奔。
-3. **keyboard-interactive 动态码界面**（🟠 P1）—— 库已支持、宿主缺一个输 OTP 的弹窗；
+2. **keyboard-interactive 动态码界面**（🟠 P1）—— 库已支持、宿主缺一个输 OTP 的弹窗；
    目前 2FA 服务器上的失败提示是**错的**，用户会照着去反复改密码。
-4. **录制与日志的输出脱敏**（🟠 P1）—— `cat .env`、`kubectl get secret` 的输出正原样落盘，是现实风险。
-5. **算法协商可配**（🟡 P2）—— 连老网络设备的刚需；诊断那一半已经有了，只差把清单落到连接配置上。
+3. **录制与日志的输出脱敏**（🟠 P1）—— `cat .env`、`kubectl get secret` 的输出正原样落盘，是现实风险。
+4. **算法协商可配**（🟡 P2）—— 连老网络设备的刚需；诊断那一半已经有了，只差把清单落到连接配置上。
 
 ## 📊 待办分布
 
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| 一、欠账 | 6 | 5 | 9 | 10 | **30** |
+| 一、欠账 | 5 | 5 | 9 | 10 | **29** |
 | 二、路线图 | — | 5 | 17 | 13 | **35** |
 | 三、文档待同步 | — | — | — | — | **14** |
 
-> 欠账里的「内置 X 服务端全库审查」按一项计，它自己拆成 A–E 五组、31 个子项。
 
 ---
 
@@ -109,62 +106,6 @@
 | ⏳ | 🟡 P2 | **拆 SSH 库的两个上帝类** | `SshConnection` 约 2,960 行（四个 partial）、`SshChannel` 1,388 行，远过 `src/VelaShell.Ssh/AGENTS.md` 4.4 的 800 行（`plan.md` §117） | 拆成 internal 协作者而不是更多 partial：`SshChannel` 的收发窗口与 stdin 泵、`SshConnection` 的收包分发与全局请求账本。**纯重构，单独开 PR**，`VelaShell.Ssh.Tests` 与互操作用例是安全网 |
 | ⏳ | 🟡 P2 | **SSH 库剩余中文诊断文本的界面本地化** | 英 / 日 / 韩界面仍会看到库的中文原文：认证逐条尝试记录（`SshAuthAttempt.ToString` / `Detail`）、`SshChannelException` 的建议、`KnownHostLookup.CertificateProblem`、带路径 / 指纹 / 端口的私钥与证书消息（`plan.md` §117） | **先在库里补结构化出处**（`Detail` 的种类、证书问题的枚举），宿主 `SshInterop` 再按枚举出五语言文案 —— 不在宿主里解析句子（`AGENTS.md` 4.5） |
 | ⏳ | 🟢 P3 | **SSH PTY 像素尺寸贯通** | `window-change` 的像素字段恒为 0：`IShellStreamWrapper.Resize(int, int)` 与 `ITerminalEmulator.PtySizeChanged` 都只带行列。换成 VelaShell.Ssh 后库这一侧已不卡（`TerminalSize` 带像素，`pty-req` 与 `window-change` 两条路都能发） | 宿主侧一次改完：新增共享结构 `PtySize`（行列 + 物理像素），`PtySizeChanged` 改携带它（像素 = 单元格尺寸 × 行列 × `RenderScaling`），`ITerminalEmulator` 加 `CurrentPtySize` 供挂流时重推；`Resize` 改收 `PtySize`，SSH 实现传像素，ConPTY 与插件流忽略像素。**不动插件 SDK**：插件视图 API 的 `Resized` 对外仍是 `Action<int,int>`，内部用命名方法适配以便退订。初始 `pty-req` 维持 0（布局前不知道像素，首个 `window-change` 会覆盖）。验收：拖拽缩放后 `window-change` 载荷像素非零 |
-
-### 🔴 内置 X 服务端（VelaShell.XServer）全库审查的待修项
-
-> 2026-09-25 审查五个子系统，报了约 70 项，去重后 32 项，都读过完整代码路径；渲染路径那几项已在 `plan.md` §114 改掉。
-> 2026-09-26 逐项对着代码复核：原第 31 项（`XTopLevelWindow` 的字段被 UI 线程无同步地读、会读到新 X 旧 Y）已随 `plan.md` §116 修掉 ——
-> 属性改成不可变的 `XTopLevelSnapshot`，经 `Volatile.Read` / `Volatile.Write` 整份发布，已从下表删除；**其余 31 项都还在，代码与审查时一致**。
-> ⚠️ 执行线程卡住时它握着像素锁，宿主 UI 线程下一次读像素就跟着卡死 —— A 组不只是「X 程序不动了」，而是**整个 VelaShell 窗口冻住**。
-> 建议分五批，每项配用例、先撤修复确认用例会红。优先级：A、C 组 🔴 P0，B 组 🟠 P1，D、E 组 🟡 P2。
-
-**A 组 · 卡死或打垮进程（少量请求即可）**
-
-1. 窗口无限嵌套，`DestroyTree` / `ExposeRecursive` 递归栈溢出、整个进程退出（客户端断开的清理也会触发；`Windows.cs`、`Exposure.cs`）→ 限深度与每客户端窗口数，两处改显式栈。
-2. XFIXES `DeletePointerBarrier` 对任意 ID 调 `RemoveResource`，一个请求就能删掉根窗口、默认颜色表或别人的窗口（`XFixes.cs`）→ 专用资源类型 + 属主核对。
-3. XIChangeHierarchy 的 AddMaster 无上限，`NextDeviceId`（`ushort`）回绕后死循环（`XiHierarchy.cs`）。
-4. 连满 1000 个客户端后 `RegisterClient` 死循环（`Connection.cs`）→ 加 MaxClients、回连接失败。
-5. `Region.Union` 是 O(n²)，SHAPE / XFIXES 区域（一个请求可到 200 万块）与棋盘格位图遮罩能让执行线程算很久（`Region.cs`）→ 限块数，长远改按 y 分带（即 ㉗）。
-6. GLX 间接渲染：CallList(s) 不计入 400 万预算；GenLists / DeleteLists 的 range 到 2³¹（GenLists 回绕死循环）；DrawArrays 无数组时空转 count 次；线宽不封顶；DrawPixels / CopyPixels / Bitmap 不裁剪不校验。
-
-**B 组 · 内存**
-
-7. 未执行请求只数条数：1024 × 16 MB = 16 GB / 客户端，SYNC Await 与 GrabServer 挂住的请求一直占着 → 加字节预算。
-8. CreatePixmap 与顶层缓冲不限尺寸（32767² 一次 4 GB，`Width * Height` 还会 int 溢出）。
-9. ChangeProperty 的 Append 与 InternAtom 都无上限。
-10. XTEST 延迟输入与 Present NotifyMSC 每条一个 `Task.Delay`，无上限、断开不取消；XTEST 的按下 / 松开还会乱序导致按键卡住。
-11. GLX：Begin / End 顶点、显示列表、纹理无上限；PrioritizeTextures 按未校验的 n 分配；ReadPixels 回复可达 1 GB；pbuffer / 像素图表面断开后不释放（复用同一 XID 的客户端能读到上一个的内容）。
-12. XC-MISC GetXIDList、X-Resource QueryClientIds 的代价无界。
-
-**C 组 · 访问控制**
-
-13. 内置服务端没配 cookie：本机任何进程（Linux 上包括别的用户，抽象命名空间的套接字没有文件权限可言）都能连进来读窗口、记键盘、经 XTEST 注入输入；`PeerUid` 取了没用 → 启动时生成 MIT-MAGIC-COOKIE-1，SSH 连接器走进程内的受信流。
-14. MIT-SHM 的段按 XID 就能被别的客户端用（uid 只在 Attach 时核对）。
-15. SendEvent 放行 GenericEvent（35），能让别的客户端的协议流错位。
-16. 每条协议错误在像素锁里同步写日志文件，不限流，日志文件也不封顶。
-
-**D 组 · 正确性**
-
-17. 抓取窗口变得不可见时不自动解除抓取。
-18. 焦点事件的 detail 总是 Nonlinear，没有虚拟事件与 KeymapNotify。
-19. 宿主按钮状态只靠一个 bool：失去捕获 / 切走窗口后 X 那边一直按着；服务端还丢掉已销毁顶层上的松开。
-20. `FocusTopLevel` 不看 override-redirect / input=False；WM_TAKE_FOCUS 没实现。
-21. 同步抓取的冻结队列无上限，放行时一项里整批回放，指针与键盘的相对顺序会乱。
-22. 抓取期间 Enter / Leave 仍发给所有客户端，没有 Grab / Ungrab 模式的 crossing。
-23. CirculateNotify 的 place 写在第 20 字节（应为 16）。
-24. GLX MakeCurrent 先改状态再抛 BadAlloc，上下文卡在一个幽灵 tag 上。
-25. XKB 锁存的修饰键不被下一个键清掉；SetMap 的修饰映射不校验键码；XI2 ButtonPress 的 buttons 含正在按下的那个。
-26. 零碎：抓取时键盘事件按指针窗口而不是焦点取源；CloseDownMode 的 Retain 不生效；CopyArea 深度不配时池化数组没还；RENDER 同一缓冲上下重叠的 Composite 按行顺序会读到已覆盖的行；GL_EXT_abgr 声明了没实现；RenderLarge 不核对声明的长度；TexSubImage 的边界 int 溢出；RenderMode 的回复条件待对照规范确认。
-
-**E 组 · 性能与设计**
-
-27. Region 改成按 y 分带（顺带解决 5）。
-28. RENDER 通用路径（渐变、带变换的源）逐像素浮点 → 整数内核。
-29. GLX 单缓冲每个 Render 请求整窗拷一次、LINQ 找表面、每片元重复读状态。
-30. 每条请求为诊断日志分配一个字符串（宿主总设了 `Log`）；回复与事件的闭包和数组；请求缓冲池化（要先让 `XRequestReader` 自带长度）。
-31. 连接建立没有超时。
-
-> 设计层面的提醒（不是缺陷）：所有 SSH 会话共享一个受信的显示，一台被攻破的远端机能看到、也能操作别的会话里的 X 程序 —— 已登记到[文档待同步](#三文档待同步velashell-docs)。
 
 ### 🪟 窗口与外观
 
@@ -314,7 +255,7 @@
 | `plan.md` §68 标签页协议图标 | `交互与界面规格.md` 补标签条图标口径（SSH / 文件协议 / 插件协议三种字形，本地终端不画）。SDK 的三个图标字段写进 `sdk/sdk-reference.md` | 未开始 |
 | `plan.md` §65 防空闲 | 连接对话框「防空闲（秒）」：按间隔往 PTY 送一个 `NUL`、只在真空闲时发、**只按会话没有全局开关**（刻意的） | 未开始 |
 | `plan.md` §61 回滚行数 | 调小**当场生效**，超出的历史立刻裁掉、不可恢复；只作用于主屏，全屏程序的备用屏恒无回滚 | 未开始 |
-| `plan.md` §114 内置 X 服务端 | 写明设计层面的提醒：所有 SSH 会话共享一个受信的显示，一台被攻破的远端机能看到、也能操作别的会话里的 X 程序 | 未开始 |
+| `plan.md` §124 内置 X 服务端全库审查修复 | `{zh,en}/xserver/design/architecture.md`：§5 线程模型补未执行请求的字节预算、日志放锁之后交出并限流、请求缓冲池化；§7 授权改写（启动时生成 cookie 并写进 `.Xauthority`、Unix 套接字 0600 与对端 uid、SSH 连接器走 `ServeAuthenticatedAsync`）并补各项资源上限与连接建立时限；§10 决策记录。连同 §114 欠下的设计层面提醒：所有 SSH 会话共享一个受信的显示，一台被攻破的远端机能看到、也能操作别的会话里的 X 程序 | [velashell-docs#71](https://github.com/VelaShellLabs/velashell-docs/pull/71) 已开，与宿主 PR 一起合 |
 | `en/` 树 | `zh/` 有 **8 篇** `en/` 里没有：Redis 调研、S3 两篇、系统密钥链调研、凭据管理器集成设计、三份 `release-process.md`。缺口已在 `en/host/README.md` 与根 README 逐篇列出（不再是静默漂移），翻译本身仍欠着 | 未开始 |
 
 ---
