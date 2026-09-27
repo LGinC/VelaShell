@@ -1176,7 +1176,7 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 
 §114 审查登记的 31 项(A–E 五组)全部修掉,一项一提交(共 38 个,第 26 项的零碎项分开提),每项配用例、先撤修复确认用例会红;守 `src/VelaShell.XServer/AGENTS.md` 的净室规程。
 
-**一、卡死与打垮进程(A 组)**:窗口嵌套限 256 层、每客户端 32768 个,销毁与重画改显式栈;`DestroyPointerBarrier` 只认指针屏障(原先对任意 ID 调删除,一个请求就能删掉根窗口),补上 BadBarrier;XIChangeHierarchy 设备 ID 到 255 为止;客户端上限 255;`Region` 改按 y 分带、并 / 交 / 差线性归并,块数上限 16384 加归并预算,客户端要的区域超限回 BadAlloc;GLX 的 CallList 计入执行预算,GenLists / DrawArrays / 线宽 / DrawPixels / CopyPixels / Bitmap 封顶或裁剪。
+**一、卡死与打垮进程(A 组)**:窗口嵌套限 256 层、每客户端 32768 个,销毁与重画改显式栈;映射 / 取消映射只从那棵子树走起重画(原先从顶层走遍整棵树、每个窗口的可见区域再沿祖先算一遍,映射一个 d 层深的窗口是 O(d²),256 层的链逐个映射要 8 秒,开 PR 之后才发现);`DestroyPointerBarrier` 只认指针屏障(原先对任意 ID 调删除,一个请求就能删掉根窗口),补上 BadBarrier;XIChangeHierarchy 设备 ID 到 255 为止;客户端上限 255;`Region` 改按 y 分带、并 / 交 / 差线性归并,块数上限 16384 加归并预算,客户端要的区域超限回 BadAlloc;GLX 的 CallList 计入执行预算,GenLists / DrawArrays / 线宽 / DrawPixels / CopyPixels / Bitmap 封顶或裁剪。
 
 **二、内存(B 组)**:未执行请求按字节计(每客户端 32 MB);像素缓冲 2²⁶ 像素;属性值 32 MB、客户端建的原子 2¹⁸ 个;XTEST 的 FakeInput 延迟期间挂起该客户端(协议语义,原先每条一个 `Task.Delay`、按下与松开还会乱序)、Present NotifyMSC 每客户端 256 条,断开即取消;GLX 顶点 / 显示列表 / 纹理记账封顶,表面随资源与客户端释放;XC-MISC / X-Resource 的代价封顶。
 
@@ -1186,4 +1186,4 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 
 **五、性能(E 组)**:RENDER 在 8888 目标上整数合成(线性渐变 Over 4.2k → 7.2k 次 / 秒、ARGB + a8 遮罩 3.8k → 19.3k);GLX 单缓冲每个 Render 请求只拷画过的外接矩形(小三角形 4.2k → 约 46k,也不再盖掉窗口里别处 X 画的内容);请求缓冲池化(`XRequestReader` 自带长度),回复与事件在按线程复用的写入器里拼,指针事件与 GetInputFocus 不分配闭包(整窗 PutImage 1.1k → 1.6k,CPU 少四成);连接建立 30 秒时限。基准脚本加了四个场景与每次请求的分配字节一列。⚠️ 这台机器上进程内基准是双峰的(同一份代码能差 1.5 倍,像是线程落在大小核上),前后比较各跑两遍以上再下结论。
 
-**六、验证**:XServer.Tests 213 条通过,Linux 容器里 Unix 套接字权限与真实 MIT-SHM 的用例也跑过;新增 `XAuthorityFileTests` 与宿主松开按钮的无头用例。全量 4800 条:4761 通过 / 1 失败 / 38 跳过,失败的是 Core.Tests 的 X11 靶机用例 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce`,`main` 上同样失败(本机靶机镜像旧,同 §116)。整个解决方案一起跑时 `MiscExtensionTests` 那条 XTEST 延迟用例红过一次:延迟挂着时没法用往返确认 FakeInput 已执行,改为轮询。文档:velashell-docs `xserver/design/architecture.md` §4、§5、§7、§10,补上 §114 欠的「所有 SSH 会话共享一个受信的显示」提醒([velashell-docs#71](https://github.com/VelaShellLabs/velashell-docs/pull/71),两个 PR 互引、一起合)。
+**六、验证**:XServer.Tests 213 条通过,Linux 容器里 Unix 套接字权限与真实 MIT-SHM 的用例也跑过;新增 `XAuthorityFileTests` 与宿主松开按钮的无头用例。全量 4800 条:4761 通过 / 1 失败 / 38 跳过,失败的是 Core.Tests 的 X11 靶机用例 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce`,`main` 上同样失败(本机靶机镜像旧,同 §116)。整个解决方案一起跑时 `MiscExtensionTests` 那条 XTEST 延迟用例红过一次:延迟挂着时没法用往返确认 FakeInput 已执行,改为轮询。⚠️ 本地一开始没按 CI 的 `dotnet build VelaShell.slnx -c Debug -warnaserror` 构建,测试工程里四处警告(CS8620 ×3、CA1416)到 PR 的 CI 上才报成错误;改测试之前先用这条命令构建。文档:velashell-docs `xserver/design/architecture.md` §4、§5、§7、§10,补上 §114 欠的「所有 SSH 会话共享一个受信的显示」提醒([velashell-docs#71](https://github.com/VelaShellLabs/velashell-docs/pull/71),两个 PR 互引、一起合)。
