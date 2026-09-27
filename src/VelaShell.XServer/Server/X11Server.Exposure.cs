@@ -186,16 +186,22 @@ public sealed partial class X11Server
     // ------------------------------------------------------------------ Expose
 
     /// <summary>
-    /// 重画顶层里落在 <paramref name="region" />(缓冲坐标)内的一切:各窗口的边框与背景,
+    /// 重画 <paramref name="root" /> 这棵子树里落在 <paramref name="region" />(所属顶层的缓冲坐标)内的一切:各窗口的边框与背景,
     /// 并给选了 Exposure 的客户端发 Expose(每个窗口一组,count 递减到 0)。
     /// </summary>
-    private void ExposeWindowTree(XWindow top, Region region)
+    /// <param name="root">
+    /// 从哪个窗口走起:顶层,或者确知 <paramref name="region" /> 只可能露出其子树的那个窗口 —— 映射一个窗口只露出它自己与它的下级,
+    /// 取消映射只露出父窗口这棵子树里的东西。别的窗口的可见区域与这块不相交,不必走:每个窗口的可见区域都要沿祖先算一遍,
+    /// 嵌套 256 层时从顶层走起,映射一次就是几万次区域运算。
+    /// </param>
+    /// <param name="region">要重画的范围。</param>
+    private void ExposeWindowTree(XWindow root, Region region)
     {
-        if (top.Buffer is null || region.IsEmpty)
+        if (root.TopLevel is not { Buffer: not null } top || region.IsEmpty)
         {
             return;
         }
-        ExposeSubtree(top, region);
+        ExposeSubtree(root, region);
         MarkDamage(top, region);
     }
 
@@ -203,14 +209,15 @@ public sealed partial class X11Server
     /// 先序走一遍子树:先画窗口自己(边框、背景、Expose),再按堆叠顺序从下到上走子窗口。
     /// 显式栈、不递归 —— 一棵够深的树递归下去会把执行线程的栈压爆、整个进程退出。
     /// </summary>
-    /// <param name="top">顶层窗口。</param>
-    /// <param name="region">要重画的范围(缓冲坐标)。</param>
-    private static void ExposeSubtree(XWindow top, Region region)
+    /// <param name="root">子树的根(顶层或其下的窗口)。</param>
+    /// <param name="region">要重画的范围(所属顶层的缓冲坐标)。</param>
+    private static void ExposeSubtree(XWindow root, Region region)
     {
         XRect bounds = region.Bounds;
         // 每项带着窗口内区原点在缓冲里的位置(往下走时逐层累加)。
         Stack<(XWindow Window, int X, int Y)> pending = new();
-        pending.Push((top, 0, 0));
+        (int rootX, int rootY) = root.OffsetInTopLevel();
+        pending.Push((root, rootX, rootY));
         while (pending.TryPop(out (XWindow Window, int X, int Y) item))
         {
             XWindow w = item.Window;

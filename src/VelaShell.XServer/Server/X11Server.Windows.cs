@@ -381,9 +381,9 @@ public sealed partial class X11Server
             _host.TopLevelMapped(handle);
             OnTopLevelMappedEwmh(window);
         }
-        else if (window.TopLevel is { } top)
+        else
         {
-            ExposeWindowTree(top, VisibleOuter(window));
+            ExposeWindowTree(window, VisibleOuter(window));   // 映射只露出它自己与它的下级
         }
         UpdatePointerWindow();
     }
@@ -420,9 +420,9 @@ public sealed partial class X11Server
                 OnTopLevelUnmappedEwmh(window);
             }
         }
-        else if (wasViewable && window.TopLevel is { } top)
+        else if (wasViewable)
         {
-            ExposeWindowTree(top, old);
+            ExposeWindowTree(window.Parent!, old);   // 露出来的是父窗口、下面的兄弟及其子树:都在父窗口这棵子树里
         }
         if (_focus is { } focus && (ReferenceEquals(focus, window) || focus.IsDescendantOf(window)))
         {

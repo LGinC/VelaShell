@@ -77,6 +77,42 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 取消映射子窗口露出父窗口与下面的兄弟_兄弟收到Expose()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint top, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0xFF0000, 0);   // 父窗口:红
+
+        // 下面的 A:(0,0) 20×20 绿,选了 Exposure;上面的 B:(10,10) 20×20 蓝,后建、堆在 A 上面;B 里还套着白色的 C。
+        uint a = c.NewId(), b = c.NewId(), inner = c.NewId();
+        await c.SendAsync(1, 24, x => x.U32(a).U32(top).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x802).U32(0x00FF00).U32(ExposureMask));
+        await c.SendAsync(1, 24, x => x.U32(b).U32(top).I16(10).I16(10).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x2).U32(0x0000FF));
+        await c.SendAsync(1, 24, x => x.U32(inner).U32(b).I16(2).I16(2).U16(6).U16(6).U16(0).U16(1).U32(0).U32(0x2).U32(0xFFFFFF));
+        foreach (uint id in (uint[])[a, b, inner])
+        {
+            await c.SendAsync(8, 0, x => x.U32(id));
+        }
+        await c.SyncAsync();
+        (uint[] px, int w, _) = RecordingHost.Snapshot(handle);
+        Assert.AreEqual(0x0000FFu, px[(11 * w) + 11], "重叠处是上面的 B");
+        Assert.AreEqual(0xFFFFFFu, px[(13 * w) + 13], "B 里的 C");
+        XMessage mapped = await c.NextEventAsync(12);
+        Assert.AreEqual((a, 20, 20), (mapped.U32(4), mapped.U16(12), mapped.U16(14)), "A 映射时的 Expose");
+
+        // 取消映射只从父窗口这棵子树走起重画:父窗口的背景、下面的 A 都要补上,C 随 B 一起不见。
+        await c.SendAsync(10, 0, x => x.U32(b));
+        await c.SyncAsync();
+        (px, w, _) = RecordingHost.Snapshot(handle);
+        Assert.AreEqual(0x00FF00u, px[(11 * w) + 11], "重叠处露出下面的 A");
+        Assert.AreEqual(0x00FF00u, px[(13 * w) + 13], "C 那块也露出 A");
+        Assert.AreEqual(0xFF0000u, px[(25 * w) + 25], "A 之外露出父窗口的背景");
+        XMessage exposed = await c.NextEventAsync(12);
+        Assert.AreEqual((a, 10, 10, 10, 10), (exposed.U32(4), exposed.U16(8), exposed.U16(10), exposed.U16(12), exposed.U16(14)),
+            "A 露出来的那一块(A 的坐标)发了 Expose");
+    }
+
+    [TestMethod]
     public async Task 填矩形与CopyArea画到像素上并回NoExposure()
     {
         using RecordingHost host = new();
