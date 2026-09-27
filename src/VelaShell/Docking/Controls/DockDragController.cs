@@ -80,9 +80,11 @@ internal sealed class DockDragController(DockWorkspaceControl owner)
             }
             if (BoundsOf(groupControl.TabStripPanel) is { } stripBounds && stripBounds.Contains(position))
             {
-                int index = ComputeInsertIndex(groupControl, group, position);
+                // 固定标签只能落在固定区里,普通标签只能落在它之后;插入线也画在真正会落下的位置,
+                // 而不是指针底下那个其实去不了的地方。
+                int index = DockWorkspace.ClampInsertIndex(group, _document, ComputeInsertIndex(groupControl, group, position));
                 _pending = (group, DockPosition.Center, index);
-                owner.Overlay.ShowInsertion(InsertionLine(groupControl, group, index, stripBounds));
+                owner.Overlay.ShowInsertion(InsertionLine(groupControl, group, index, stripBounds, position));
                 return;
             }
         }
@@ -133,11 +135,25 @@ internal sealed class DockDragController(DockWorkspaceControl owner)
     private int ComputeInsertIndex(DockGroupControl groupControl, DockGroup group, Point position)
     {
         bool verticalStrip = group.TabsPosition != DockTabsPosition.Top;
+        bool rows = IsMultiRow(group);
         for (int i = 0; i < group.Documents.Count; i++)
         {
-            if (groupControl.TabsItemsControl.ContainerFromIndex(i) is not { } container || BoundsOf(container) is not { } rect)
+            if (TabBounds(groupControl, i) is not { } rect)
             {
                 continue;
+            }
+            if (rows)
+            {
+                // 多排:先找指针所在的那一排,排内再按中线比。指针那一排走完了还没命中,
+                // 就插在下一排的开头 —— 与插在这一排末尾是同一个下标。
+                if (position.Y >= rect.Bottom)
+                {
+                    continue;
+                }
+                if (position.Y < rect.Top)
+                {
+                    return i;
+                }
             }
             double middle = verticalStrip ? rect.Center.Y : rect.Center.X;
             double pointer = verticalStrip ? position.Y : position.X;
@@ -149,29 +165,47 @@ internal sealed class DockDragController(DockWorkspaceControl owner)
         return group.Documents.Count;
     }
 
-    /// <summary>插入位置线:落在第 index 个标签的前缘(越界则贴最后一个标签的后缘)。</summary>
-    private Rect InsertionLine(DockGroupControl groupControl, DockGroup group, int index, Rect stripBounds)
+    /// <summary>
+    /// 插入位置线:落在第 index 个标签的前缘(越界则贴最后一个标签的后缘)。
+    /// 多排时"这一排的末尾"与"下一排的开头"是同一个下标,线画在指针所在的那一排,且只有一排高。
+    /// </summary>
+    private Rect InsertionLine(DockGroupControl groupControl, DockGroup group, int index, Rect stripBounds, Point position)
     {
         bool verticalStrip = group.TabsPosition != DockTabsPosition.Top;
-        double edge;
-        if (group.Documents.Count == 0)
+        bool rows = IsMultiRow(group);
+        int count = group.Documents.Count;
+        if (count == 0)
         {
-            edge = verticalStrip ? stripBounds.Y : stripBounds.X;
+            return verticalStrip
+                       ? new Rect(stripBounds.X, stripBounds.Y - 1, stripBounds.Width, 2)
+                       : new Rect(stripBounds.X - 1, stripBounds.Y, 2, stripBounds.Height);
         }
-        else
+        bool atRowEnd = rows && index > 0 && index < count
+                        && TabBounds(groupControl, index - 1) is { } previous
+                        && TabBounds(groupControl, index) is { } next
+                        && next.Top >= previous.Bottom - 0.5
+                        && position.Y >= previous.Top && position.Y < previous.Bottom;
+        bool trailing = index >= count || atRowEnd;
+        int anchor = trailing ? Math.Min(index, count) - 1 : index;
+        Rect rect = TabBounds(groupControl, anchor) ?? stripBounds;
+        double edge = verticalStrip
+                          ? trailing ? rect.Bottom : rect.Y
+                          : trailing ? rect.Right : rect.X;
+        if (verticalStrip)
         {
-            int anchor = Math.Min(index, group.Documents.Count - 1);
-            Rect rect = groupControl.TabsItemsControl.ContainerFromIndex(anchor) is { } container
-                            ? BoundsOf(container) ?? stripBounds
-                            : stripBounds;
-            edge = verticalStrip
-                       ? index >= group.Documents.Count ? rect.Bottom : rect.Y
-                       : index >= group.Documents.Count ? rect.Right : rect.X;
+            return new Rect(stripBounds.X, edge - 1, stripBounds.Width, 2);
         }
-        return verticalStrip
-                   ? new Rect(stripBounds.X, edge - 1, stripBounds.Width, 2)
+        return rows
+                   ? new Rect(edge - 1, rect.Y, 2, rect.Height)
                    : new Rect(edge - 1, stripBounds.Y, 2, stripBounds.Height);
     }
+
+    /// <summary>这条标签条眼下是不是换行成了多排(只有顶置的标签条会)。</summary>
+    private bool IsMultiRow(DockGroup group) =>
+        group.TabsPosition == DockTabsPosition.Top && owner.Workspace?.MultiRowTabs == true;
+
+    private Rect? TabBounds(DockGroupControl groupControl, int index) =>
+        groupControl.TabsItemsControl.ContainerFromIndex(index) is { } container ? BoundsOf(container) : null;
 
     private void OnPointerReleased(object? sender, PointerReleasedEventArgs e)
     {

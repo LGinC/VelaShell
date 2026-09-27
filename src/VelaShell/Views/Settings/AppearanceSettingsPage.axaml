@@ -161,6 +161,14 @@
         <ComboBoxItem Content="{loc:Localize SetAppear_SidebarRight}" />
       </ComboBox>
     </Grid>
+    <!-- 多行显示标签页(#521):名字与标签右键菜单里那一项用同一个键,两处说的是同一个开关。 -->
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="row-label" Text="{loc:Localize Dock_MultiRowTabs}" />
+        <TextBlock Classes="row-desc" Text="{loc:Localize SetAppear_MultiRowTabsDesc}" TextWrapping="Wrap" />
+      </StackPanel>
+      <ToggleSwitch Grid.Column="1" IsChecked="{Binding Appearance.MultiRowTabs}" VerticalAlignment="Center" />
+    </Grid>
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="2">
         <TextBlock Classes="row-label" Text="{loc:Localize SetAppear_WindowState}" />

@@ -49,21 +49,30 @@
       <MenuItem Header="{loc:Localize Dock_Close}" Click="CloseTab_Click" />
       <MenuItem Header="{loc:Localize Dock_CloseOthers}" Click="CloseOthers_Click" />
       <MenuItem Header="{loc:Localize Dock_CloseAll}" Click="CloseAll_Click" />
+      <MenuItem Header="{loc:Localize Dock_CloseLeft}" Click="CloseLeft_Click" />
+      <MenuItem Header="{loc:Localize Dock_CloseRight}" Click="CloseRight_Click" />
+      <Separator />
+      <MenuItem Header="{loc:Localize Dock_PinTab}" Click="PinTab_Click" IsVisible="{Binding !IsPinned}" />
+      <MenuItem Header="{loc:Localize Dock_UnpinTab}" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}" />
       <Separator />
       <MenuItem Header="{loc:Localize Dock_SplitHorizontal}" Click="SplitHorizontal_Click" />
       <MenuItem Header="{loc:Localize Dock_SplitVertical}" Click="SplitVertical_Click" />
       <MenuItem Header="{loc:Localize Dock_ToggleMaximizePane}" Click="ToggleMaximizePane_Click" />
+      <Separator />
+      <MenuItem x:Name="MultiRowTabsMenuItem" Header="{loc:Localize Dock_MultiRowTabs}"
+                ToggleType="CheckBox" Click="ToggleMultiRowTabs_Click" />
     </ContextMenu>
   </UserControl.ContextMenu>
 
   <Border x:Name="TabRoot" MinHeight="32" Padding="14,0" BorderThickness="0,2,0,0"
           BorderBrush="Transparent" VerticalAlignment="Stretch">
-    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+    <!-- 三栏,只有标题能伸缩(收窄时出省略号),见 DockTabItem。 -->
+    <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
       <!-- 面板图标:插件在 PanelOptions.Icon 里自报的那个,没给才是通用插头(在 TabIcon 里兜底)。
            实心的品牌 logo 要连视框与填充一起绑 —— 只绑几何的话,一个 1024 视框的 logo
            会被按 24 缩放,放大四十多倍,屏幕上什么也看不见。 -->
       <!-- DataContext 收窄到 TabIcon:TabIcon 为 null 时绑 TabIcon.Geometry 会在调试输出里刷 "Value is null"(见 DockTabItem)。 -->
-      <pc:LucideIcon Width="13" Height="13"
+      <pc:LucideIcon Width="13" Height="13" Margin="0,0,8,0"
                      DataContext="{Binding TabIcon}"
                      x:DataType="services:TabIcon"
                      Data="{Binding Geometry}"
@@ -71,13 +80,20 @@
                      Fill="{Binding Fill}"
                      IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
                      Foreground="{DynamicResource VelaAccent}" />
-      <TextBlock Text="{Binding Title}" VerticalAlignment="Center" ToolTip.ShowDelay="250"
+      <TextBlock Grid.Column="1" Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                 VerticalAlignment="Center" ToolTip.ShowDelay="250"
                  ToolTip.Placement="Pointer" ToolTip.Tip="{Binding Tooltip}" />
-      <Button Background="Transparent" Padding="0" Width="14" Height="14" BorderThickness="0"
-              HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="CloseTab_Click">
-        <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.x}"
-                       Foreground="{DynamicResource VelaTextTertiary}" />
-      </Button>
-    </StackPanel>
+      <Panel Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center">
+        <Button Classes="tab-end" Click="CloseTab_Click" IsVisible="{Binding !IsPinned}">
+          <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.x}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+        <Button Classes="tab-end" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}"
+                ToolTip.Tip="{loc:Localize Dock_UnpinTab}">
+          <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.pin}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+      </Panel>
+    </Grid>
   </Border>
 </UserControl>

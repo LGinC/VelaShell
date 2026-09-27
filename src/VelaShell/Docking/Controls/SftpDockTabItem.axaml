@@ -65,6 +65,9 @@
       <MenuItem Header="{loc:Localize Dock_CloseLeft}" Click="CloseLeft_Click" />
       <MenuItem Header="{loc:Localize Dock_CloseRight}" Click="CloseRight_Click" />
       <Separator />
+      <MenuItem Header="{loc:Localize Dock_PinTab}" Click="PinTab_Click" IsVisible="{Binding !IsPinned}" />
+      <MenuItem Header="{loc:Localize Dock_UnpinTab}" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}" />
+      <Separator />
       <MenuItem Header="{loc:Localize Dock_SplitHorizontal}" Click="SplitHorizontal_Click" />
       <MenuItem Header="{loc:Localize Dock_SplitVertical}" Click="SplitVertical_Click" />
       <MenuItem Header="{loc:Localize Dock_ToggleMaximizePane}" Click="ToggleMaximizePane_Click" />
@@ -74,35 +77,47 @@
         <MenuItem Header="{loc:Localize Dock_TabsLeft}" Click="TabsLeft_Click" />
         <MenuItem Header="{loc:Localize Dock_TabsRight}" Click="TabsRight_Click" />
       </MenuItem>
+      <MenuItem x:Name="MultiRowTabsMenuItem" Header="{loc:Localize Dock_MultiRowTabs}"
+                ToggleType="CheckBox" Click="ToggleMultiRowTabs_Click" />
     </ContextMenu>
   </UserControl.ContextMenu>
 
   <Border x:Name="TabRoot" MinHeight="32" Padding="14,0" BorderThickness="0,2,0,0"
           BorderBrush="Transparent" VerticalAlignment="Stretch">
-    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-      <Ellipse Width="7" Height="7" VerticalAlignment="Center" Classes="dot"
-               Classes.connected="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
-               Classes.connecting="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}" />
-      <Border Width="3" Height="12" CornerRadius="1.5" VerticalAlignment="Center"
-              Background="{Binding ConnectionAccentBrush}" />
-      <!-- 协议图标随连接类型走:SFTP / FTP 是 hard-drive,插件的文件协议(S3…)是通用插头。
-           原先这里写死 folder-open —— 那画的是"文件夹"这个动作,而标签要答的是"哪一种连接"。 -->
-      <!-- DataContext 收窄到 TabIcon:TabIcon 为 null 时绑 TabIcon.Geometry 会在调试输出里刷 "Value is null"(见 DockTabItem)。 -->
-      <pc:LucideIcon Width="13" Height="13"
-                     DataContext="{Binding TabIcon}"
-                     x:DataType="services:TabIcon"
-                     Data="{Binding Geometry}"
-                     ViewBoxSize="{Binding ViewBoxSize}"
-                     Fill="{Binding Fill}"
-                     IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
-                     Foreground="{Binding $parent[local:SftpDockTabItem].((docking:SftpDocument)DataContext).ConnectionAccentBrush}" />
-      <TextBlock Text="{Binding Title}" VerticalAlignment="Center" ToolTip.ShowDelay="250"
+    <!-- 三栏,只有标题能伸缩(收窄时出省略号),见 DockTabItem。 -->
+    <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+      <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,8,0">
+        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Classes="dot"
+                 Classes.connected="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
+                 Classes.connecting="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}" />
+        <Border Width="3" Height="12" CornerRadius="1.5" VerticalAlignment="Center"
+                Background="{Binding ConnectionAccentBrush}" />
+        <!-- 协议图标随连接类型走:SFTP / FTP 是 hard-drive,插件的文件协议(S3…)是通用插头。
+             原先这里写死 folder-open —— 那画的是"文件夹"这个动作,而标签要答的是"哪一种连接"。 -->
+        <!-- DataContext 收窄到 TabIcon:TabIcon 为 null 时绑 TabIcon.Geometry 会在调试输出里刷 "Value is null"(见 DockTabItem)。 -->
+        <pc:LucideIcon Width="13" Height="13"
+                       DataContext="{Binding TabIcon}"
+                       x:DataType="services:TabIcon"
+                       Data="{Binding Geometry}"
+                       ViewBoxSize="{Binding ViewBoxSize}"
+                       Fill="{Binding Fill}"
+                       IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
+                       Foreground="{Binding $parent[local:SftpDockTabItem].((docking:SftpDocument)DataContext).ConnectionAccentBrush}" />
+      </StackPanel>
+      <TextBlock Grid.Column="1" Text="{Binding Title}" TextTrimming="CharacterEllipsis"
+                 VerticalAlignment="Center" ToolTip.ShowDelay="250"
                  ToolTip.Placement="Pointer" ToolTip.Tip="{Binding ConnectionTooltip}" />
-      <Button Background="Transparent" Padding="0" Width="14" Height="14" BorderThickness="0"
-              HorizontalContentAlignment="Center" VerticalContentAlignment="Center" Click="CloseTab_Click">
-        <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.x}"
-                       Foreground="{DynamicResource VelaTextTertiary}" />
-      </Button>
-    </StackPanel>
+      <Panel Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center">
+        <Button Classes="tab-end" Click="CloseTab_Click" IsVisible="{Binding !IsPinned}">
+          <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.x}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+        <Button Classes="tab-end" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}"
+                ToolTip.Tip="{loc:Localize Dock_UnpinTab}">
+          <pc:LucideIcon Width="11" Height="11" Data="{DynamicResource Icon.pin}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+      </Panel>
+    </Grid>
   </Border>
 </UserControl>

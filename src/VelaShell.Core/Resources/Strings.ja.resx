@@ -463,6 +463,15 @@
   <data name="Dock_TabsTop" xml:space="preserve">
     <value>上</value>
   </data>
+  <data name="Dock_MultiRowTabs" xml:space="preserve">
+    <value>タブを複数行で表示</value>
+  </data>
+  <data name="Dock_PinTab" xml:space="preserve">
+    <value>タブを固定</value>
+  </data>
+  <data name="Dock_UnpinTab" xml:space="preserve">
+    <value>タブの固定を解除</value>
+  </data>
   <data name="Docker" xml:space="preserve">
     <value>Docker</value>
   </data>
@@ -1893,6 +1902,9 @@
   <data name="SetAppear_SidebarPositionDesc" xml:space="preserve">
     <value>// サイドバーをウィンドウの左右どちらに表示するか</value>
   </data>
+  <data name="SetAppear_MultiRowTabsDesc" xml:space="preserve">
+    <value>// タブが 1 行に収まらないとき、幅を詰めて横スクロールする代わりに次の行へ折り返す。タブの右クリックメニューからも切り替え可能</value>
+  </data>
   <data name="SetAppear_SidebarRight" xml:space="preserve">
     <value>右</value>
   </data>
@@ -2921,6 +2933,9 @@
   </data>
   <data name="Sc_NoteNeedsSplit" xml:space="preserve">
     <value>画面分割時のみ有効</value>
+  </data>
+  <data name="Sc_NoteNotPinned" xml:space="preserve">
+    <value>固定したタブは除く</value>
   </data>
   <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
     <value>^_ を占有します。送信するには Ctrl+Shift+- を使ってください</value>

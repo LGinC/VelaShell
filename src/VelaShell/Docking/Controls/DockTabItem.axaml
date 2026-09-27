@@ -115,6 +115,20 @@
       <MenuItem Header="{loc:Localize Dock_CloseLeft}" Click="CloseLeft_Click" />
       <MenuItem Header="{loc:Localize Dock_CloseRight}" Click="CloseRight_Click" />
       <Separator />
+      <!-- 固定 / 取消固定(#521):两项按状态二选一显示,与 Visual Studio 的「固定选项卡」同一口径。 -->
+      <MenuItem Header="{loc:Localize Dock_PinTab}" Click="PinTab_Click" IsVisible="{Binding !IsPinned}">
+        <MenuItem.Icon>
+          <pc:LucideIcon Width="13" Height="13" Data="{DynamicResource Icon.pin}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </MenuItem.Icon>
+      </MenuItem>
+      <MenuItem Header="{loc:Localize Dock_UnpinTab}" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}">
+        <MenuItem.Icon>
+          <pc:LucideIcon Width="13" Height="13" Data="{DynamicResource Icon.pin}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </MenuItem.Icon>
+      </MenuItem>
+      <Separator />
       <MenuItem Header="{loc:Localize Dock_SplitHorizontal}" Click="SplitHorizontal_Click">
         <MenuItem.Icon>
           <pc:LucideIcon Width="13" Height="13" Data="{DynamicResource Icon.columns-2}"
@@ -144,6 +158,9 @@
         <MenuItem Header="{loc:Localize Dock_TabsLeft}" Click="TabsLeft_Click" />
         <MenuItem Header="{loc:Localize Dock_TabsRight}" Click="TabsRight_Click" />
       </MenuItem>
+      <!-- 多行显示标签页(#521):整个工作区一个开关;勾选状态由 DockTabItemBase 在菜单打开时填。 -->
+      <MenuItem x:Name="MultiRowTabsMenuItem" Header="{loc:Localize Dock_MultiRowTabs}"
+                ToggleType="CheckBox" Click="ToggleMultiRowTabs_Click" />
     </ContextMenu>
   </UserControl.ContextMenu>
 
@@ -153,80 +170,94 @@
           BorderThickness="0,2,0,0"
           BorderBrush="Transparent"
           VerticalAlignment="Stretch">
-    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+    <!-- 三栏:状态与标识 | 标题 | × 或图钉。只有标题那一栏能伸缩 —— 标签条放不下时
+         DockTabPanel 把标签收窄,削掉的只是标题(出省略号),图标与按钮原样不动。
+         间距照旧:状态与标识之间 8、色条与图标到标题 6、标题到按钮 8。 -->
+    <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
+      <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,6,0">
 
-      <!-- 同步输入频道字母:置于状态点之前,以频道标识色着色。 -->
-      <TextBlock Text="{Binding Terminal.SyncChannelLetter}"
-                 IsVisible="{Binding Terminal.IsInSyncChannel}"
-                 Foreground="{Binding Terminal.SyncChannelBrush}"
-                 FontWeight="Bold"
-                 VerticalAlignment="Center">
-        <TextBlock.RenderTransform>
-          <TranslateTransform Y="-1" />
-        </TextBlock.RenderTransform>
-      </TextBlock>
-
-      <!-- 状态点:上移 1px,补偿 mono 标题下伸部把视觉中心抬高。 -->
-      <Ellipse Width="7" Height="7" VerticalAlignment="Center" Classes="dot"
-               Classes.connected="{Binding Terminal.ConnectionStatus, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
-               Classes.connecting="{Binding Terminal.ConnectionStatus, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}">
-        <Ellipse.RenderTransform>
-          <TranslateTransform Y="-1" />
-        </Ellipse.RenderTransform>
-      </Ellipse>
-
-      <StackPanel Orientation="Horizontal" Spacing="6">
-        <!-- 连接标识色条:与 SFTP 面板头部同色联动(ConnectionAccent),本地终端为透明。 -->
-        <Border Width="3" Height="12" CornerRadius="1.5"
-                VerticalAlignment="Center"
-                Background="{Binding Terminal.ConnectionAccentBrush}">
-          <Border.RenderTransform>
+        <!-- 同步输入频道字母:置于状态点之前,以频道标识色着色。 -->
+        <TextBlock Text="{Binding Terminal.SyncChannelLetter}"
+                   IsVisible="{Binding Terminal.IsInSyncChannel}"
+                   Foreground="{Binding Terminal.SyncChannelBrush}"
+                   FontWeight="Bold"
+                   VerticalAlignment="Center">
+          <TextBlock.RenderTransform>
             <TranslateTransform Y="-1" />
-          </Border.RenderTransform>
-        </Border>
-        <!-- 协议图标:SSH 是带框的终端字形,插件协议终端(串口/Telnet)是通用的插头。
-             本地终端没有配置,TabIcon 为 null —— 连位置一起收掉,别在标签里留一块空。
-             DataContext 收窄到 TabIcon 本身:直接绑 Terminal.TabIcon.Geometry 的话,本地终端上
-             路径走到 null 就断,每个标签往调试输出里刷三条 "Value is null"。DataContext 为 null 时
-             绑定静默不取值;可见性看 $self.DataContext 是不是 null,前景色要回到标签本身的数据上下文($parent)。 -->
-        <pc:LucideIcon Width="13" Height="13" VerticalAlignment="Center"
-                       DataContext="{Binding Terminal.TabIcon}"
-                       x:DataType="services:TabIcon"
-                       Data="{Binding Geometry}"
-                       ViewBoxSize="{Binding ViewBoxSize}"
-                       Fill="{Binding Fill}"
-                       IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
-                       Foreground="{Binding $parent[local:DockTabItem].((docking:TerminalDocument)DataContext).Terminal.ConnectionAccentBrush}">
-          <pc:LucideIcon.RenderTransform>
-            <TranslateTransform Y="-1" />
-          </pc:LucideIcon.RenderTransform>
-        </pc:LucideIcon>
-        <!-- 标题:悬停 400ms 浮出该会话的资源面板(§4B.4/§11)。
-             Tip 绑定 VM 而非直接内嵌视图:直接内嵌会在每个标签创建时就 eager 实例化
-             整个 ResourceMonitorView(磁盘列表 + 进度条 + 十余条活绑定),N 个标签
-             N 份常驻;改为 DataTemplate 后视图只在首次悬停弹出时才构造。 -->
-        <TextBlock Text="{Binding Title}"
-                   VerticalAlignment="Center"
-                   ToolTip.ShowDelay="400"
-                   ToolTip.Placement="Pointer"
-                   ToolTip.Tip="{Binding Terminal.ResourceMonitor}">
-          <TextBlock.DataTemplates>
-            <DataTemplate DataType="vm:ResourceMonitorViewModel">
-              <views:ResourceMonitorView />
-            </DataTemplate>
-          </TextBlock.DataTemplates>
+          </TextBlock.RenderTransform>
         </TextBlock>
+
+        <!-- 状态点:上移 1px,补偿 mono 标题下伸部把视觉中心抬高。 -->
+        <Ellipse Width="7" Height="7" VerticalAlignment="Center" Classes="dot"
+                 Classes.connected="{Binding Terminal.ConnectionStatus, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
+                 Classes.connecting="{Binding Terminal.ConnectionStatus, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}">
+          <Ellipse.RenderTransform>
+            <TranslateTransform Y="-1" />
+          </Ellipse.RenderTransform>
+        </Ellipse>
+
+        <StackPanel Orientation="Horizontal" Spacing="6">
+          <!-- 连接标识色条:与 SFTP 面板头部同色联动(ConnectionAccent),本地终端为透明。 -->
+          <Border Width="3" Height="12" CornerRadius="1.5"
+                  VerticalAlignment="Center"
+                  Background="{Binding Terminal.ConnectionAccentBrush}">
+            <Border.RenderTransform>
+              <TranslateTransform Y="-1" />
+            </Border.RenderTransform>
+          </Border>
+          <!-- 协议图标:SSH 是带框的终端字形,插件协议终端(串口/Telnet)是通用的插头。
+               本地终端没有配置,TabIcon 为 null —— 连位置一起收掉,别在标签里留一块空。
+               DataContext 收窄到 TabIcon 本身:直接绑 Terminal.TabIcon.Geometry 的话,本地终端上
+               路径走到 null 就断,每个标签往调试输出里刷三条 "Value is null"。DataContext 为 null 时
+               绑定静默不取值;可见性看 $self.DataContext 是不是 null,前景色要回到标签本身的数据上下文($parent)。 -->
+          <pc:LucideIcon Width="13" Height="13" VerticalAlignment="Center"
+                         DataContext="{Binding Terminal.TabIcon}"
+                         x:DataType="services:TabIcon"
+                         Data="{Binding Geometry}"
+                         ViewBoxSize="{Binding ViewBoxSize}"
+                         Fill="{Binding Fill}"
+                         IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
+                         Foreground="{Binding $parent[local:DockTabItem].((docking:TerminalDocument)DataContext).Terminal.ConnectionAccentBrush}">
+            <pc:LucideIcon.RenderTransform>
+              <TranslateTransform Y="-1" />
+            </pc:LucideIcon.RenderTransform>
+          </pc:LucideIcon>
+        </StackPanel>
       </StackPanel>
 
-      <!-- 关闭 x:11px lucide,与 11px 标题安静并排。 -->
-      <Button Background="Transparent" Padding="0" Width="14" Height="14"
-              BorderThickness="0"
-              HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
-              Click="CloseTab_Click">
-        <pc:LucideIcon Width="11" Height="11"
-                       Data="{DynamicResource Icon.x}"
-                       Foreground="{DynamicResource VelaTextTertiary}" />
-      </Button>
-    </StackPanel>
+      <!-- 标题:悬停 400ms 浮出该会话的资源面板(§4B.4/§11)。
+           Tip 绑定 VM 而非直接内嵌视图:直接内嵌会在每个标签创建时就 eager 实例化
+           整个 ResourceMonitorView(磁盘列表 + 进度条 + 十余条活绑定),N 个标签
+           N 份常驻;改为 DataTemplate 后视图只在首次悬停弹出时才构造。 -->
+      <TextBlock Grid.Column="1"
+                 Text="{Binding Title}"
+                 TextTrimming="CharacterEllipsis"
+                 VerticalAlignment="Center"
+                 ToolTip.ShowDelay="400"
+                 ToolTip.Placement="Pointer"
+                 ToolTip.Tip="{Binding Terminal.ResourceMonitor}">
+        <TextBlock.DataTemplates>
+          <DataTemplate DataType="vm:ResourceMonitorViewModel">
+            <views:ResourceMonitorView />
+          </DataTemplate>
+        </TextBlock.DataTemplates>
+      </TextBlock>
+
+      <!-- 关闭 x:11px lucide,与 11px 标题安静并排。固定的标签换成一枚图钉,点它取消固定 ——
+           中键与批量关闭都绕开固定标签,这里若还留着 ×,图钉就只剩个装饰。 -->
+      <Panel Grid.Column="2" Margin="8,0,0,0" VerticalAlignment="Center">
+        <Button Classes="tab-end" Click="CloseTab_Click" IsVisible="{Binding !IsPinned}">
+          <pc:LucideIcon Width="11" Height="11"
+                         Data="{DynamicResource Icon.x}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+        <Button Classes="tab-end" Click="UnpinTab_Click" IsVisible="{Binding IsPinned}"
+                ToolTip.Tip="{loc:Localize Dock_UnpinTab}">
+          <pc:LucideIcon Width="11" Height="11"
+                         Data="{DynamicResource Icon.pin}"
+                         Foreground="{DynamicResource VelaTextTertiary}" />
+        </Button>
+      </Panel>
+    </Grid>
   </Border>
 </UserControl>

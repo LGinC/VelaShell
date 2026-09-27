@@ -662,6 +662,30 @@ public class MainWindowViewModelTests
         Assert.IsNull(vm.Sidebar.SessionTree?.SelectedNode);
     }
 
+    [TestMethod]
+    public async Task MultiRowTabs_FollowsTheSetting_AndTheTabMenuToggleIsPersisted()
+    {
+        var settingsService = new MemorySettingsService(
+            new AppSettings { Appearance = new() { MultiRowTabs = true } });
+        MainWindowViewModel vm = await CreateInitializedVmAsync(settingsService);
+
+        Assert.IsTrue(vm.Layout.MultiRowTabs, "启动时把设置铺到布局上");
+        Assert.AreEqual(0, settingsService.SaveCount, "把设置回灌到布局,不该绕回来再存一遍");
+
+        // 标签右键菜单里的「多行显示标签页」改的就是这个开关。
+        vm.Layout.MultiRowTabs = false;
+        Assert.IsTrue(
+            SpinWait.SpinUntil(() => settingsService.SaveCount == 1, TimeSpan.FromSeconds(5)),
+            "菜单里切过之后要写回设置,设置页与下次启动都认这一个值");
+        Assert.IsFalse(settingsService.Current.Appearance.MultiRowTabs);
+
+        // 设置页保存 → 布局跟着变。
+        var fromSettingsPage = new AppSettings { Appearance = new() { MultiRowTabs = true } };
+        await settingsService.SaveSettingsAsync(fromSettingsPage);
+        Assert.IsTrue(vm.Layout.MultiRowTabs);
+        Assert.AreEqual(2, settingsService.SaveCount, "只有设置页那一次保存,回灌时不再多存");
+    }
+
     private sealed class MemorySettingsService(AppSettings initial) : ISettingsService
     {
         private int _saveCount;

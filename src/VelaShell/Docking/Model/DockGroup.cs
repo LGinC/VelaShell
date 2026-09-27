@@ -10,6 +10,9 @@ public sealed class DockGroup : DockNode
     /// <summary>本组标签条中承载的全部文档,顺序即标签显示顺序。</summary>
     public ObservableCollection<DockDocument> Documents { get; } = [];
 
+    /// <summary>本组已固定的标签数;它们总是占着 <see cref="Documents" /> 的前这么多位。</summary>
+    public int PinnedCount => Documents.Count(document => document.IsPinned);
+
     /// <summary>本组当前显示的文档(标签选中态)。</summary>
     public DockDocument? ActiveDocument
     {

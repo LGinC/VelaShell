@@ -216,8 +216,8 @@ StatusBar (24px, bg-sidebar)
 | Element | Height | Notes |
 |---|---|---|
 | Title bar | 28px | Every window: main window, standalone windows and dialogs (`Border.window-titlebar`, height set once in `Themes/WindowChrome.axaml`). Exceptions (no title bar, header stays 48px): the settings window, whose top-left strip is the navigation header (drag area, no window buttons); and the message dialog (notice / confirm / prompt), which has no close button — it closes from its button bar or Esc. Main window `bg-sidebar`, bottom 1px `VelaBorderPrimary`; window buttons are 27×27 squares (side = bar − 1px border). A subtitle or action buttons that do not fit go in a row below the title bar. On macOS windows with traffic lights take the system title bar height (28pt today) so the lights share its centre line |
-| Tab bar | 36px | `bg-page`, contains 32px tab items |
-| Tab item | 32px | Active: `VelaTabActiveBg` + 2px top accent; inactive: `VelaTabInactiveBg` |
+| Tab bar | 36px | `bg-page`, contains 32px tab items. With *Show Tabs in Multiple Rows* on, every extra row adds 35px (rows are 35px tall, the 1px separator stays below the last row) |
+| Tab item | 32px | Active: `VelaTabActiveBg` + 2px top accent; inactive: `VelaTabInactiveBg`. Width follows the title; when one row is too narrow the widest tabs shrink first (title ellipsis, icons and the end button untouched) down to 120px, then the strip scrolls. A pinned tab sorts first and shows a pin (click = unpin) where the close `x` would be |
 | Toolbar | 36px | Sidebar toolbar, file browser header |
 | Column header | 26px | `VelaBgSurface`, bottom 1px `VelaBorderPrimary` |
 | File row | 28px | `padding:[0,14]`, bottom 1px `VelaBorderPrimary` |
@@ -484,7 +484,7 @@ Windows Explorer semantics, both orientations, application-wide (ScrollViewer, l
 - Session tree: right-click on session row
 - File browser: right-click on file row or empty list area
 - Column headers: right-click toggles column visibility
-- Tab bar: right-click on tab (close, duplicate, sync input, etc.)
+- Tab bar: right-click on tab (sync input, close / close others / close all / close left / close right -- the four bulk closes skip pinned tabs, pin / unpin, split, maximize pane, tab position, show tabs in multiple rows)
 
 ---
 

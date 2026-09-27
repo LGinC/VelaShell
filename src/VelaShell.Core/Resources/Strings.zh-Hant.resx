@@ -1269,6 +1269,15 @@
   <data name="Dock_TabsTop" xml:space="preserve">
     <value>頂端</value>
   </data>
+  <data name="Dock_MultiRowTabs" xml:space="preserve">
+    <value>多列顯示分頁</value>
+  </data>
+  <data name="Dock_PinTab" xml:space="preserve">
+    <value>固定分頁</value>
+  </data>
+  <data name="Dock_UnpinTab" xml:space="preserve">
+    <value>取消固定分頁</value>
+  </data>
   <data name="Editor_DiscardAndClose" xml:space="preserve">
     <value>捨棄並關閉</value>
   </data>
@@ -2142,6 +2151,9 @@
   </data>
   <data name="SetAppear_SidebarPositionDesc" xml:space="preserve">
     <value>// 側邊欄顯示在視窗左側或右側</value>
+  </data>
+  <data name="SetAppear_MultiRowTabsDesc" xml:space="preserve">
+    <value>// 分頁一列放不下時換到下一列,而不是縮窄後橫向捲動。分頁右鍵選單裡也能切換</value>
   </data>
   <data name="SetAppear_SidebarRight" xml:space="preserve">
     <value>右側</value>
@@ -3138,6 +3150,9 @@
   </data>
   <data name="Sc_NoteNeedsSplit" xml:space="preserve">
     <value>僅在分割畫面時生效</value>
+  </data>
+  <data name="Sc_NoteNotPinned" xml:space="preserve">
+    <value>固定的分頁除外</value>
   </data>
   <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
     <value>會佔用 ^_;要傳送它請用 Ctrl+Shift+-</value>

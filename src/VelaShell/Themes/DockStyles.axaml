@@ -161,6 +161,18 @@
         <Setter Property="Cursor" Value="SizeAll" />
     </Style>
 
+    <!-- 标签右端那一枚按钮:普通标签是 ×(关闭),固定标签是图钉(取消固定)。14px 见方、无底无边,
+         五种标签共用;原先这组属性内联在每个 × 上,加了图钉之后抽到这里,两枚按钮才不会各长各的。 -->
+    <Style Selector="Button.tab-end">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="Width" Value="14" />
+        <Setter Property="Height" Value="14" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+
     <!-- 标签条溢出控件(design nunbT pZGS4):24px,圆角 3,悬停 bg-hover。 -->
     <Style Selector=":is(Button).tab-nav">
         <Setter Property="Width" Value="24" />

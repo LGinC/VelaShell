@@ -22,12 +22,18 @@ public partial class DockGroupControl : UserControl
     /// <summary>一格滚轮翻过的像素数:约合半个标签,连滚几下能过一屏,又不会一下窜到头。</summary>
     private const double WheelStep = 80;
 
+    /// <summary>标签条一排的高度(不含下方 1px 分割线);多排时每排也是这个高度。</summary>
+    private const double TabStripRowHeight = 35;
+
     private Func<DockDocument, Control?>? _viewResolver;
     private int _contentMotionGeneration;
     private readonly Transitions _contentTransitions;
     private readonly Transitions _indicatorTransitions;
     private bool _indicatorPlaced;
     private (double X, double Y, double W, double H) _indicatorGeometry = (-1, -1, -1, -1);
+    private Orientation _tabsOrientation = Orientation.Horizontal;
+    private bool _multiRowTabs;
+    private bool _revealActiveTab;
 
     /// <summary>初始化控件,订阅标签滚动变化并注册全组激活的指针处理器。</summary>
     public DockGroupControl()
@@ -37,6 +43,9 @@ public partial class DockGroupControl : UserControl
             ?? throw new InvalidOperationException("ContentHost transitions are not configured.");
         _indicatorTransitions = ActiveTabIndicator.Transitions
             ?? throw new InvalidOperationException("ActiveTabIndicator transitions are not configured.");
+        // 面板按当前的排向与多排开关现造:模板只在面板(重新)生成时才调用,
+        // 之后的切换直接改活面板的属性(ApplyTabStripLayout),不重建标签。
+        TabsHost.ItemsPanel = new FuncTemplate<Panel?>(CreateTabPanel);
         TabScroll.ScrollChanged += (_, _) => UpdateScrollButtons();
         // 隧道阶段接管滚轮:ScrollViewer 自己会把滚轮当纵向滚动,而标签条是横排的,
         // 于是"在标签条上滚一下"什么也不会发生,标签一多就只能去够右端那两枚小箭头。
@@ -103,14 +112,16 @@ public partial class DockGroupControl : UserControl
         WorkspaceControl = workspaceControl;
         _viewResolver = viewResolver;
         workspace.ActiveDocumentChanged += OnWorkspaceActiveDocumentChanged;
+        workspace.PropertyChanged += OnWorkspacePropertyChanged;
         if (Group is { } group)
         {
             group.PropertyChanged += OnGroupPropertyChanged;
             group.Documents.CollectionChanged += OnDocumentsChanged;
-            ApplyTabsPosition(group.TabsPosition);
         }
+        ApplyTabStripLayout();
         UpdateContent();
         UpdateActivePaneState();
+        _revealActiveTab = true;
     }
 
     private void OnDocumentsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -122,6 +133,14 @@ public partial class DockGroupControl : UserControl
     }
 
     private void OnWorkspaceActiveDocumentChanged(DockDocument? document) => UpdateActivePaneState();
+
+    private void OnWorkspacePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DockWorkspace.MultiRowTabs))
+        {
+            ApplyTabStripLayout();
+        }
+    }
 
     /// <summary>本组是否是"活动窗格"(承载着全局激活文档的那一格),供样式弱化其余窗格的强调线。</summary>
     private void UpdateActivePaneState() =>
@@ -147,9 +166,13 @@ public partial class DockGroupControl : UserControl
         group.PropertyChanged -= OnGroupPropertyChanged;
         group.Documents.CollectionChanged -= OnDocumentsChanged;
         workspace.ActiveDocumentChanged -= OnWorkspaceActiveDocumentChanged;
+        workspace.PropertyChanged -= OnWorkspacePropertyChanged;
         group.PropertyChanged += OnGroupPropertyChanged;
         group.Documents.CollectionChanged += OnDocumentsChanged;
         workspace.ActiveDocumentChanged += OnWorkspaceActiveDocumentChanged;
+        workspace.PropertyChanged += OnWorkspacePropertyChanged;
+        // 离树期间多排开关可能被切过(另一个窗格的右键菜单、设置页),重挂时对齐一次。
+        ApplyTabStripLayout();
         UpdateActivePaneState();
         if (ContentHost.Target is null)
         {
@@ -172,6 +195,7 @@ public partial class DockGroupControl : UserControl
         if (Workspace is { } workspace)
         {
             workspace.ActiveDocumentChanged -= OnWorkspaceActiveDocumentChanged;
+            workspace.PropertyChanged -= OnWorkspacePropertyChanged;
         }
         // 释放对缓存视图的引用,避免下一个宿主收养时双父级;若本实例被重挂,
         // OnAttachedToVisualTree 会自愈(重订阅 + 重填内容)。
@@ -183,11 +207,12 @@ public partial class DockGroupControl : UserControl
         switch (e.PropertyName)
         {
             case nameof(DockGroup.ActiveDocument):
+                _revealActiveTab = true;
                 UpdateContent();
                 UpdateActiveTabIndicator();
                 break;
             case nameof(DockGroup.TabsPosition):
-                ApplyTabsPosition(Group?.TabsPosition ?? DockTabsPosition.Top);
+                ApplyTabStripLayout();
                 break;
         }
     }
@@ -209,12 +234,21 @@ public partial class DockGroupControl : UserControl
             _indicatorGeometry = (-1, -1, -1, -1);
             return;
         }
+        if (_revealActiveTab)
+        {
+            // 激活的标签滚进可视区(DESIGN.md「Tab scroll」):从「所有标签页」下拉里挑一个、
+            // Ctrl+Tab 切到溢出区里的那个,都该让人看得见它。放在布局回调里做,容器这时才有边界;
+            // 没有溢出(或多排)时 ScrollViewer 无处可滚,这一句什么也不做。
+            _revealActiveTab = false;
+            container.BringIntoView();
+        }
         Point origin = container.TranslatePoint(default, TabsOverlay) ?? default;
         bool vertical = (Group?.TabsPosition ?? DockTabsPosition.Top) != DockTabsPosition.Top;
         (double X, double Y, double W, double H) geometry = vertical
             ? (Group?.TabsPosition == DockTabsPosition.Left ? Math.Max(0, TabsOverlay.Bounds.Width - 2) : 0,
                Math.Round(origin.Y), 2, Math.Round(container.Bounds.Height))
-            : (Math.Round(origin.X), 0, Math.Round(container.Bounds.Width), 2);
+            // 横排贴激活标签的顶边;单排时那就是 0,多排时是它所在那一排的顶。
+            : (Math.Round(origin.X), Math.Round(origin.Y), Math.Round(container.Bounds.Width), 2);
         if (geometry == _indicatorGeometry && ActiveTabIndicator.IsVisible)
         {
             return; // 布局回调高频触发;几何没变就绝不重写属性,避免过渡被反复重启。
@@ -300,12 +334,15 @@ public partial class DockGroupControl : UserControl
     }
 
     /// <summary>
-    /// 标签位置(右键菜单“标签位置”):Top 为默认;Left/Right 时标签条纵排、
-    /// 分割线立起、滚动方向改为垂直(溢出三连钮按宽度判定,纵排时自然隐藏)。
+    /// 标签条的摆法:标签位置(右键菜单“标签位置”)与「多行显示标签页」两个开关合起来决定。
+    /// Top 为默认;Left/Right 时标签条纵排、分割线立起、滚动方向改为垂直(溢出三连钮按宽度判定,
+    /// 纵排时自然隐藏)。顶置且开了多排时两个方向都不滚:面板拿到确定的宽度去换行,高度随排数长。
     /// </summary>
-    private void ApplyTabsPosition(DockTabsPosition position)
+    private void ApplyTabStripLayout()
     {
+        DockTabsPosition position = Group?.TabsPosition ?? DockTabsPosition.Top;
         bool vertical = position != DockTabsPosition.Top;
+        bool multiRow = !vertical && Workspace?.MultiRowTabs == true;
         DockPanel.SetDock(TabStripArea, position switch
         {
             DockTabsPosition.Left => Dock.Left,
@@ -320,19 +357,31 @@ public partial class DockGroupControl : UserControl
         });
         StripSeparator.Height = vertical ? double.NaN : 1;
         StripSeparator.Width = vertical ? 1 : double.NaN;
-        TabStripArea.MinHeight = vertical ? 0 : 35;
-        TabStripArea.MinWidth = vertical ? 35 : 0;
-        TabScroll.HorizontalScrollBarVisibility = vertical
+        TabStripArea.MinHeight = vertical ? 0 : TabStripRowHeight;
+        TabStripArea.MinWidth = vertical ? TabStripRowHeight : 0;
+        TabScroll.HorizontalScrollBarVisibility = vertical || multiRow
                                                       ? Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled
                                                       : Avalonia.Controls.Primitives.ScrollBarVisibility.Hidden;
         TabScroll.VerticalScrollBarVisibility = vertical
                                                     ? Avalonia.Controls.Primitives.ScrollBarVisibility.Hidden
                                                     : Avalonia.Controls.Primitives.ScrollBarVisibility.Disabled;
-        TabsHost.ItemsPanel = new FuncTemplate<Panel?>(() => new StackPanel
+        _tabsOrientation = vertical ? Orientation.Vertical : Orientation.Horizontal;
+        _multiRowTabs = multiRow;
+        if (TabsHost.ItemsPanelRoot is DockTabPanel panel)
         {
-            Orientation = vertical ? Orientation.Vertical : Orientation.Horizontal
-        });
+            panel.Orientation = _tabsOrientation;
+            panel.MultiRow = _multiRowTabs;
+        }
+        // 换了摆法,激活标签可能被挤到了视口外(比如从多排切回单排)。
+        _revealActiveTab = true;
     }
+
+    private DockTabPanel CreateTabPanel() => new()
+    {
+        Orientation = _tabsOrientation,
+        MultiRow = _multiRowTabs,
+        MinRowHeight = TabStripRowHeight
+    };
 
     // ---- 溢出控件(设计 nunbT pZGS4) ----
 
