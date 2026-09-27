@@ -48,6 +48,20 @@ public sealed class DockWorkspace : DockElement
         private set => SetField(ref field, value);
     }
 
+    /// <summary>
+    /// 标签放不下时换行成多排(<c>true</c>),还是留在一排里横向滚动(<c>false</c>,默认)。
+    /// </summary>
+    /// <remarks>
+    /// 整个工作区一个开关、所有窗格一起变,与 Visual Studio 的「多行显示选项卡」同一口径;
+    /// 宿主把它与设置里的 <c>AppearanceOptions.MultiRowTabs</c> 双向对齐。只对顶置的标签条生效 ——
+    /// 停到左 / 右侧的标签条本来就是一个标签一行。
+    /// </remarks>
+    public bool MultiRowTabs
+    {
+        get;
+        set => SetField(ref field, value);
+    }
+
     /// <summary>全局激活文档(最后交互的组的选中标签),驱动 ActiveTerminalTab/状态栏联动。</summary>
     public DockDocument? ActiveDocument
     {
@@ -240,6 +254,9 @@ public sealed class DockWorkspace : DockElement
         int index = group.Documents.IndexOf(oldDocument);
         bool wasGroupActive = ReferenceEquals(group.ActiveDocument, oldDocument);
         bool wasWorkspaceActive = ReferenceEquals(ActiveDocument, oldDocument);
+        // 固定也一并接手:用户在「连接中」时就把它固定了,连上之后不该又掉回普通标签堆里。
+        // 位置原样不动,所以"固定的在前"这条顺序不会被打破。
+        newDocument.IsPinned = oldDocument.IsPinned;
         group.Documents[index] = newDocument;
         if (wasGroupActive)
         {
@@ -416,7 +433,10 @@ public sealed class DockWorkspace : DockElement
         DocumentClosed?.Invoke(document);
     }
 
-    /// <summary>关闭同组内除该文档以外的所有标签(组内语义与原 Dock 一致)。</summary>
+    // 下面四个批量关闭一律**绕开已固定的标签**(#521):固定就是为了让某几条会话
+    // 挺过"一把关掉一片"。要关固定标签得冲着它本人去 —— 右键「关闭」、Ctrl+W,或先取消固定。
+
+    /// <summary>关闭同组内除该文档与已固定标签以外的所有标签(组内语义与原 Dock 一致)。</summary>
     public void CloseOtherDocuments(DockDocument document)
     {
         if (FindGroup(document) is not { } group)
@@ -424,10 +444,10 @@ public sealed class DockWorkspace : DockElement
             return;
         }
         // 经 RequestCloseMany:一次确认放行全部,而不是逐个弹框。
-        RequestCloseMany([.. group.Documents.Where(d => !ReferenceEquals(d, document))]);
+        RequestCloseMany([.. group.Documents.Where(d => !d.IsPinned && !ReferenceEquals(d, document))]);
     }
 
-    /// <summary>关闭该文档所在组的所有标签(含自身)。</summary>
+    /// <summary>关闭该文档所在组的所有未固定标签(含自身,除非它自己就是固定的)。</summary>
     /// <remarks>经 <see cref="RequestCloseMany" />:一次询问放行全部,而不是逐个弹框。</remarks>
     public void CloseAllDocuments(DockDocument document)
     {
@@ -435,13 +455,13 @@ public sealed class DockWorkspace : DockElement
         {
             return;
         }
-        RequestCloseMany([.. group.Documents]);
+        RequestCloseMany([.. group.Documents.Where(d => !d.IsPinned)]);
     }
 
-    /// <summary>关闭同组内位于该文档左侧的所有标签。</summary>
+    /// <summary>关闭同组内位于该文档左侧的所有未固定标签。</summary>
     public void CloseLeftDocuments(DockDocument document) => CloseToSide(document, left: true);
 
-    /// <summary>关闭同组内位于该文档右侧的所有标签。</summary>
+    /// <summary>关闭同组内位于该文档右侧的所有未固定标签。</summary>
     public void CloseRightDocuments(DockDocument document) => CloseToSide(document, left: false);
 
     private void CloseToSide(DockDocument document, bool left)
@@ -451,12 +471,63 @@ public sealed class DockWorkspace : DockElement
             return;
         }
         int index = group.Documents.IndexOf(document);
-        DockDocument[] targets = left
-                                     ? [.. group.Documents.Take(index)]
-                                     : [.. group.Documents.Skip(index + 1)];
+        IEnumerable<DockDocument> side = left
+                                             ? group.Documents.Take(index)
+                                             : group.Documents.Skip(index + 1);
         // 「关闭左侧/右侧」同样要过确认闸 —— 一次静默关掉半屏已连接会话,
         // 恰恰是这道闸要防的事故。
-        RequestCloseMany(targets);
+        RequestCloseMany([.. side.Where(d => !d.IsPinned)]);
+    }
+
+    // ---- 固定标签 ----
+
+    /// <summary>
+    /// 固定或取消固定一个标签,并把它挪到固定区与普通区的交界处。
+    /// </summary>
+    /// <remarks>
+    /// 固定 = 排到固定区的末尾,取消固定 = 排到普通区的开头 —— 两种情况下标签都只挪到
+    /// "离原位最近的合法位置",用户的视线不用满条去找它(VS Code 同一做法)。
+    /// </remarks>
+    /// <param name="document">要改的标签;不在工作区内时为空操作。</param>
+    /// <param name="pinned">固定(<c>true</c>)还是取消固定。</param>
+    public void SetPinned(DockDocument document, bool pinned)
+    {
+        ArgumentNullException.ThrowIfNull(document);
+        if (document.IsPinned == pinned || FindGroup(document) is not { } group)
+        {
+            return;
+        }
+        int boundary = group.PinnedCount; // 改之前的固定区长度 = 交界处
+        document.IsPinned = pinned;
+        int from = group.Documents.IndexOf(document);
+        int to = pinned ? boundary : boundary - 1;
+        if (from != to)
+        {
+            group.Documents.Move(from, to);
+        }
+    }
+
+    /// <summary>
+    /// 把"插到第 <paramref name="index" /> 个标签前面"收进 <paramref name="document" /> 能去的区间:
+    /// 固定标签只能落在固定区里,普通标签只能落在固定区之后。
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="index" /> 按<b>插入前</b>的集合计(同组拖动时文档本身还在里面),
+    /// 与拖拽控制器算插入线的口径一致;同组、跨组两种情况用同一个公式都对,
+    /// 因为固定区长度里是否算上文档本身,恰好就是它能落的边界。
+    /// </remarks>
+    /// <param name="target">要落进去的组。</param>
+    /// <param name="document">被拖的文档。</param>
+    /// <param name="index">原始插入位。</param>
+    /// <returns>收进合法区间后的插入位。</returns>
+    public static int ClampInsertIndex(DockGroup target, DockDocument document, int index)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(document);
+        int pinned = target.PinnedCount;
+        return document.IsPinned
+                   ? Math.Clamp(index, 0, pinned)
+                   : Math.Clamp(index, pinned, target.Documents.Count);
     }
 
     // ---- 拆分与停靠 ----
@@ -514,7 +585,7 @@ public sealed class DockWorkspace : DockElement
         ActivateDocument(document);
     }
 
-    /// <summary>组内拖拽重排。</summary>
+    /// <summary>组内拖拽重排;固定标签只在固定区里挪,普通标签只在固定区之后挪。</summary>
     public void MoveDocument(DockDocument document, int newIndex)
     {
         if (FindGroup(document) is not { } group)
@@ -522,7 +593,10 @@ public sealed class DockWorkspace : DockElement
             return;
         }
         int oldIndex = group.Documents.IndexOf(document);
-        newIndex = Math.Clamp(newIndex, 0, group.Documents.Count - 1);
+        int pinned = group.PinnedCount;
+        newIndex = document.IsPinned
+                       ? Math.Clamp(newIndex, 0, pinned - 1)
+                       : Math.Clamp(newIndex, pinned, group.Documents.Count - 1);
         if (oldIndex != newIndex)
         {
             group.Documents.Move(oldIndex, newIndex);
@@ -545,7 +619,9 @@ public sealed class DockWorkspace : DockElement
         {
             source.ActiveDocument = source.Documents.FirstOrDefault();
         }
-        target.Documents.Insert(index < 0 || index > target.Documents.Count ? target.Documents.Count : index, document);
+        // 固定身份跟着标签走,落点收进它在目标组里能去的那一段(-1 = 那一段的末尾)。
+        int insertAt = ClampInsertIndex(target, document, index < 0 ? target.Documents.Count : index);
+        target.Documents.Insert(insertAt, document);
         CollapseIfEmpty(source);
         ActivateDocument(document);
     }

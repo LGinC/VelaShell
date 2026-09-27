@@ -329,6 +329,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         // 关闭已连接会话前的确认闸。装在工作区这一层,六个关闭入口(标签 ×、Ctrl+W、
         // 命令面板、右键的 关闭其他/全部/左侧/右侧)一处管住。
         Layout.CloseInterceptor = ConfirmCloseDocumentsAsync;
+        // 标签右键菜单里切了「多行显示标签页」:写回设置,设置页与下次启动都认这一个值。
+        Layout.PropertyChanged += OnLayoutPropertyChanged;
 
         // 网络恢复 / 睡眠唤醒:立刻把断开的会话拉起来,而不是干等下一个退避周期。
         if (connectivityMonitor is { } connectivity)
@@ -1800,6 +1802,45 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     {
         Sidebar.IsQuickCommandsVisible =
             _quickCommandRunner is not null && settings.Appearance.ShowQuickCommandsPanel;
+        Layout.MultiRowTabs = settings.Appearance.MultiRowTabs;
+    }
+
+    private void OnLayoutPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(DockWorkspace.MultiRowTabs))
+        {
+            PersistMultiRowTabs(Layout.MultiRowTabs);
+        }
+    }
+
+    /// <summary>
+    /// 标签右键菜单切换「多行显示标签页」后写回持久化设置。设置本来就是这个值时(启动、
+    /// 设置页保存后回灌到布局)什么也不做 —— 否则每次保存设置都会绕回来再存一遍。
+    /// </summary>
+    /// <param name="multiRow">切换后的值。</param>
+    private void PersistMultiRowTabs(bool multiRow)
+    {
+        if (_settingsService is null || _latestSettings?.Appearance.MultiRowTabs == multiRow)
+        {
+            return;
+        }
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                AppSettings settings = await _settingsService.GetSettingsAsync().ConfigureAwait(false);
+                if (settings.Appearance.MultiRowTabs == multiRow)
+                {
+                    return;
+                }
+                settings.Appearance.MultiRowTabs = multiRow;
+                await _settingsService.SaveSettingsAsync(settings).ConfigureAwait(false);
+            }
+            catch
+            {
+                // 写回失败只影响下次启动的初始值,界面上已经切过去了。
+            }
+        });
     }
 
     private void ApplySidebarState(AppState state)

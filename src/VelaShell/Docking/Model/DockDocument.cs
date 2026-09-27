@@ -2,7 +2,7 @@ namespace VelaShell.Docking.Model;
 
 /// <summary>
 /// 一个可停靠文档(= 一个标签页)。对应原 Dock.Model 的 Document,只保留
-/// 本应用实际用到的成员:浮动/固定(Pin)按产品决策永久禁用,故不建模。
+/// 本应用实际用到的成员:浮动与原 Dock 的 Pin(钉到侧边自动隐藏)按产品决策永久禁用,故不建模。
 /// </summary>
 public abstract class DockDocument : DockElement
 {
@@ -18,6 +18,25 @@ public abstract class DockDocument : DockElement
 
     /// <summary>是否允许用户关闭该文档标签,默认允许。</summary>
     public bool CanClose { get; init; } = true;
+
+    /// <summary>
+    /// 标签是否已固定(Visual Studio 的「固定选项卡」,#521)。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 与原 Dock 的 Pin 不是一回事:那个是把面板钉到侧边自动隐藏,这里只是标签条上的一种身份 ——
+    /// 固定的标签排在组的最前面,「关闭其他 / 全部 / 左侧 / 右侧」都绕开它,中键也关不掉它。
+    /// </para>
+    /// <para>
+    /// setter 不公开:「固定的都排在前面」是组内顺序的不变式,得由
+    /// <see cref="DockWorkspace.SetPinned" /> 连同位置一起改,单改这个标志会把顺序改乱。
+    /// </para>
+    /// </remarks>
+    public bool IsPinned
+    {
+        get;
+        internal set => SetField(ref field, value);
+    }
 
     /// <summary>
     /// 这个文档是不是一次**会话**(而不是一块工具面板)。

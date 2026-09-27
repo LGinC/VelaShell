@@ -1160,6 +1160,15 @@ If this keeps happening, close any other VelaShell windows and try again.</value
   <data name="Dock_TabsTop" xml:space="preserve">
     <value>Top</value>
   </data>
+  <data name="Dock_MultiRowTabs" xml:space="preserve">
+    <value>Show Tabs in Multiple Rows</value>
+  </data>
+  <data name="Dock_PinTab" xml:space="preserve">
+    <value>Pin Tab</value>
+  </data>
+  <data name="Dock_UnpinTab" xml:space="preserve">
+    <value>Unpin Tab</value>
+  </data>
   <data name="Editor_DiscardAndClose" xml:space="preserve">
     <value>Discard and close</value>
   </data>
@@ -2033,6 +2042,9 @@ Paste anyway?</value>
   </data>
   <data name="SetAppear_SidebarPositionDesc" xml:space="preserve">
     <value>// Show the sidebar on the left or right side of the window</value>
+  </data>
+  <data name="SetAppear_MultiRowTabsDesc" xml:space="preserve">
+    <value>// When tabs don't fit on one row, wrap them onto more rows instead of shrinking and scrolling. Also in the tab right-click menu</value>
   </data>
   <data name="SetAppear_SidebarRight" xml:space="preserve">
     <value>Right</value>
@@ -3029,6 +3041,9 @@ Paste anyway?</value>
   </data>
   <data name="Sc_NoteNeedsSplit" xml:space="preserve">
     <value>Only when the window is split</value>
+  </data>
+  <data name="Sc_NoteNotPinned" xml:space="preserve">
+    <value>Not on pinned tabs</value>
   </data>
   <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
     <value>Takes over ^_; use Ctrl+Shift+- to send it</value>

@@ -174,7 +174,7 @@ public static class ShortcutCatalog
                     Item("Sc_ZoomFont", [Ctrl, K("Sc_KeyWheel")]),
                     Item("Sc_FastScroll", [Alt, K("Sc_KeyWheel")]),
                     // 停靠区的三个鼠标手势:不写进来就只有读过源码的人知道它们存在。
-                    Item("CloseTab", [K("Sc_KeyTabItem"), K("Sc_KeyMiddleClick")]),
+                    Item("CloseTab", [K("Sc_KeyTabItem"), K("Sc_KeyMiddleClick")], "Sc_NoteNotPinned"),
                     Item("Sc_ScrollTabs", [K("Sc_KeyTabStrip"), K("Sc_KeyWheel")]),
                     Item("Dock_EqualizePanes", [K("Sc_KeySplitter"), K("Sc_KeyDoubleClick")], "Sc_NoteNeedsSplit"),
                     Item("Sc_GutterMenu", [K("Sc_KeyGutter"), K("Sc_KeyRightClick")]),

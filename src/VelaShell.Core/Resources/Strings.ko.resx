@@ -463,6 +463,15 @@
   <data name="Dock_TabsTop" xml:space="preserve">
     <value>상단</value>
   </data>
+  <data name="Dock_MultiRowTabs" xml:space="preserve">
+    <value>탭을 여러 줄로 표시</value>
+  </data>
+  <data name="Dock_PinTab" xml:space="preserve">
+    <value>탭 고정</value>
+  </data>
+  <data name="Dock_UnpinTab" xml:space="preserve">
+    <value>탭 고정 해제</value>
+  </data>
   <data name="Docker" xml:space="preserve">
     <value>Docker</value>
   </data>
@@ -1893,6 +1902,9 @@
   <data name="SetAppear_SidebarPositionDesc" xml:space="preserve">
     <value>// 사이드바를 창의 왼쪽 또는 오른쪽에 표시</value>
   </data>
+  <data name="SetAppear_MultiRowTabsDesc" xml:space="preserve">
+    <value>// 탭이 한 줄에 다 들어가지 않으면 폭을 줄여 가로로 스크롤하는 대신 다음 줄로 넘김. 탭 오른쪽 클릭 메뉴에서도 전환 가능</value>
+  </data>
   <data name="SetAppear_SidebarRight" xml:space="preserve">
     <value>오른쪽</value>
   </data>
@@ -2921,6 +2933,9 @@
   </data>
   <data name="Sc_NoteNeedsSplit" xml:space="preserve">
     <value>화면이 분할된 경우에만</value>
+  </data>
+  <data name="Sc_NoteNotPinned" xml:space="preserve">
+    <value>고정된 탭은 제외</value>
   </data>
   <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
     <value>^_ 를 가로챕니다. 보내려면 Ctrl+Shift+- 를 사용하세요</value>

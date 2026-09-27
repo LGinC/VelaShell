@@ -173,6 +173,8 @@ public sealed class DockPaneUiTests
             {
                 workspace.AddDocument(new TestDocument($"标签编号 {index}"));
             }
+            // 激活的标签会被滚进可视区;激活第一个,标签条才从开头起步。
+            workspace.ActivateDocument(workspace.PrimaryGroup.Documents[0]);
 
             var dock = new DockWorkspaceControl { Workspace = workspace };
             var window = new Window { Width = 260, Height = 300, Content = dock };

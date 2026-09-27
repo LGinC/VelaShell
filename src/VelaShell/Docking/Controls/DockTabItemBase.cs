@@ -8,10 +8,21 @@ using VelaShell.Docking.Model;
 
 namespace VelaShell.Docking.Controls;
 
-/// <summary>共用的激活、选中、拖拽、关闭、拆分与标签位置行为。</summary>
+/// <summary>共用的激活、选中、拖拽、关闭、固定、拆分与标签位置行为。</summary>
 public abstract class DockTabItemBase : UserControl
 {
+    /// <summary>
+    /// 右键菜单里「多行显示标签页」那一项的名字。五种标签各自在 XAML 里声明这一项,
+    /// 打开菜单时由基类按名字找到它、填上当前状态。
+    /// </summary>
+    /// <remarks>
+    /// 勾选状态没法直接绑:菜单的数据上下文是文档,而这个开关属于整个工作区;
+    /// 菜单又开在独立的弹出层里,<c>$parent</c> 够不到标签本身。
+    /// </remarks>
+    internal const string MultiRowTabsMenuItemName = "MultiRowTabsMenuItem";
+
     private DockGroupControl? _owner;
+    private ContextMenu? _hookedMenu;
 
     /// <summary>经数据上下文绑定到本标签的文档。</summary>
     protected DockDocument? Document => DataContext as DockDocument;
@@ -29,6 +40,8 @@ public abstract class DockTabItemBase : UserControl
         {
             group.PropertyChanged += OnGroupPropertyChanged;
         }
+        _hookedMenu = ContextMenu;
+        _hookedMenu?.Opening += OnContextMenuOpening;
         UpdateSelected();
     }
 
@@ -40,7 +53,43 @@ public abstract class DockTabItemBase : UserControl
         {
             group.PropertyChanged -= OnGroupPropertyChanged;
         }
+        _hookedMenu?.Opening -= OnContextMenuOpening;
+        _hookedMenu = null;
         _owner = null;
+    }
+
+    /// <summary>
+    /// 菜单打开前填上「多行显示标签页」的勾选状态。标签条停在左 / 右侧时它不起作用,置灰而不是藏起来 ——
+    /// 藏起来的话,用户会以为这个功能不见了。
+    /// </summary>
+    private void OnContextMenuOpening(object? sender, CancelEventArgs e)
+    {
+        if (sender is not ContextMenu menu || FindMenuItem(menu.Items, MultiRowTabsMenuItemName) is not { } item)
+        {
+            return;
+        }
+        item.IsChecked = Workspace?.MultiRowTabs == true;
+        item.IsEnabled = Workspace is not null && Group?.TabsPosition is null or DockTabsPosition.Top;
+    }
+
+    private static MenuItem? FindMenuItem(IEnumerable<object?> items, string name)
+    {
+        foreach (object? entry in items)
+        {
+            if (entry is not MenuItem item)
+            {
+                continue;
+            }
+            if (item.Name == name)
+            {
+                return item;
+            }
+            if (FindMenuItem(item.Items, name) is { } nested)
+            {
+                return nested;
+            }
+        }
+        return null;
     }
 
     /// <summary>左键单击激活文档,按下时发起拖拽。</summary>
@@ -57,8 +106,13 @@ public abstract class DockTabItemBase : UserControl
         {
             // 中键关标签:浏览器与各家编辑器通用的手势,省掉"先瞄准那枚 11px 的 ×"。
             // 同样走 RequestClose —— 已连接会话的确认闸对哪个入口都得生效。
+            // 固定的标签不响应(VS Code 默认同样如此):中键是最容易误触的关闭方式,
+            // 而固定它正是为了不被随手关掉;真要关就右键「关闭」或 Ctrl+W。
             e.Handled = true;
-            workspace.RequestClose(document);
+            if (!document.IsPinned)
+            {
+                workspace.RequestClose(document);
+            }
             return;
         }
         if (point.Properties.IsLeftButtonPressed)
@@ -94,6 +148,19 @@ public abstract class DockTabItemBase : UserControl
     protected void CloseLeft_Click(object? sender, RoutedEventArgs e) => Workspace?.CloseLeftDocuments(Document!);
     /// <summary>关闭当前标签右侧的全部文档。</summary>
     protected void CloseRight_Click(object? sender, RoutedEventArgs e) => Workspace?.CloseRightDocuments(Document!);
+    /// <summary>固定当前标签:挪到固定区末尾,批量关闭与中键都绕开它。</summary>
+    protected void PinTab_Click(object? sender, RoutedEventArgs e) => Workspace?.SetPinned(Document!, pinned: true);
+    /// <summary>取消固定当前标签(右键菜单,或固定标签上替代 × 的那枚图钉)。</summary>
+    protected void UnpinTab_Click(object? sender, RoutedEventArgs e) => Workspace?.SetPinned(Document!, pinned: false);
+
+    /// <summary>切换「多行显示标签页」:整个工作区一起变,宿主负责写回设置。</summary>
+    protected void ToggleMultiRowTabs_Click(object? sender, RoutedEventArgs e)
+    {
+        if (Workspace is { } workspace)
+        {
+            workspace.MultiRowTabs = !workspace.MultiRowTabs;
+        }
+    }
     /// <summary>把本窗格最大化到整片工作区,或从最大化状态还原。</summary>
     protected void ToggleMaximizePane_Click(object? sender, RoutedEventArgs e)
     {

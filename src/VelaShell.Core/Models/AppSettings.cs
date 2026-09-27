@@ -462,6 +462,16 @@ public class AppearanceOptions : ObservableOptions
         set => Set(ref field, value);
     } = "top";
 
+    /// <summary>
+    /// 标签一排放不下时是否换行成多排(#521)。默认关:一排里先收窄最宽的标签,
+    /// 收到下限仍放不下再横向滚动。标签页右键菜单里的「多行显示标签页」改的也是这一项。
+    /// </summary>
+    public bool MultiRowTabs
+    {
+        get;
+        set => Set(ref field, value);
+    }
+
     /// <summary>是否显示菜单栏。</summary>
     public bool ShowMenuBar
     {

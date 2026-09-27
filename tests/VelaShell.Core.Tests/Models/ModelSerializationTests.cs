@@ -239,6 +239,19 @@ public class ModelSerializationTests
     }
 
     [TestMethod]
+    public void AppearanceOptions_MultiRowTabs_DefaultsOffAndRoundTrips()
+    {
+        Assert.IsFalse(new AppearanceOptions().MultiRowTabs, "默认一排:先收窄、再滚动");
+
+        var settings = new AppSettings { Appearance = { MultiRowTabs = true } };
+        string json = JsonSerializer.Serialize(settings, _options);
+        Assert.Contains("\"multiRowTabs\": true", json);
+        AppSettings back = JsonSerializer.Deserialize<AppSettings>(json, _options)!;
+
+        Assert.IsTrue(back.Appearance.MultiRowTabs);
+    }
+
+    [TestMethod]
     public void AppearanceOptions_BackgroundImage_DefaultsAndRoundTrip()
     {
         // 默认:无背景图,行为与旧版一致(路径空、图片不透明度 100、内容背景不透明度 85 但仅在设图后生效)。
