@@ -497,12 +497,11 @@ public sealed partial class X11Server
             client.MotionHint = (eventWindow, _motionHintEpoch);
             detail = 1;   // Hint
         }
-        uint time = Now;
-        ushort state = State;
-        int px = _pointerX, py = _pointerY;
-        client.Event(code, detail, w => w
-            .U32(time).U32(Root.Id).U32(eventWindow.Id).U32(child)
-            .I16(px).I16(py).I16(px - ex).I16(py - ey).U16(state).Bool(true));
+        // 指针移动每次都走这里:值经状态传进静态 lambda,不为每个事件分配闭包。
+        client.Event(code, detail, (Time: Now, Root: Root.Id, Event: eventWindow.Id, Child: child,
+                X: _pointerX, Y: _pointerY, EventX: _pointerX - ex, EventY: _pointerY - ey, State),
+            static (w, e) => w.U32(e.Time).U32(e.Root).U32(e.Event).U32(e.Child)
+                .I16(e.X).I16(e.Y).I16(e.EventX).I16(e.EventY).U16(e.State).Bool(true));
     }
 
     /// <summary>Enter / Leave 的 mode(协议附录 B「EnterNotify」)。</summary>
@@ -1049,7 +1048,7 @@ public sealed partial class X11Server
             { } f when ReferenceEquals(f, Root) => 1,
             { } f => f.Id,
         };
-        c.Reply(_focusRevertTo, w => w.U32(id).Zero(20));
+        c.Reply(_focusRevertTo, id, static (w, focus) => w.U32(focus).Zero(20));   // XSync 的往返都是它:不分配闭包
     }
 
     // ================================================================== 抓取请求

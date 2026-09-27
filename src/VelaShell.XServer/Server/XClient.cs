@@ -6,6 +6,7 @@
 //   附录 B「Syntactic Conventions」(回复:32 字节起、长度以 4 字节计;事件:恰好 32 字节;
 //   错误:32 字节,含序号、出错的值、次 / 主操作码)
 
+using System.Text;
 using System.Threading.Channels;
 using VelaShell.XServer.Protocol;
 
@@ -68,8 +69,26 @@ internal sealed class XClient : IDisposable
     /// <summary>这个客户端眼下拥有的窗口数(见 <c>X11Server.MaxWindowsPerClient</c>)。</summary>
     public int WindowCount { get; set; }
 
-    /// <summary>最近几条请求的「主.次」操作码(只在开了诊断日志时记),出错时一并打印,便于看出错前客户端在干什么。</summary>
-    public Queue<string> RecentRequests { get; } = new();
+    // 最近几条请求的主、次操作码(主 << 16 | 次),环形覆盖;出错时一并打印,便于看出错前客户端在干什么。
+    // 每条请求都记,所以记成整数 —— 拼字符串只在真要打印时做。
+    private readonly uint[] _recentRequests = new uint[8];
+    private int _requestCount;
+
+    /// <summary>记下刚开始执行的一条请求。</summary>
+    public void NoteRequest(byte major, ushort minor) => _recentRequests[_requestCount++ & 7] = ((uint)major << 16) | minor;
+
+    /// <summary>最近几条请求(从早到晚),「主.次」以空格隔开。</summary>
+    public string RecentRequests()
+    {
+        int count = Math.Min(_requestCount, _recentRequests.Length);
+        StringBuilder text = new();
+        for (int i = _requestCount - count; i < _requestCount; i++)
+        {
+            uint entry = _recentRequests[i & 7];
+            text.Append(text.Length == 0 ? "" : " ").Append(entry >> 16).Append('.').Append(entry & 0xFFFF);
+        }
+        return text.ToString();
+    }
 
     public Channel<byte[]> Output { get; } = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions { SingleReader = true });
 
@@ -163,33 +182,68 @@ internal sealed class XClient : IDisposable
         Output.Writer.TryWrite(bytes);
     }
 
-    /// <summary>发一条回复:头(1、data、序号、长度)+ 由 <paramref name="body" /> 写的内容,补齐到至少 32 字节。</summary>
-    public void Reply(byte data, Action<XWriter> body)
+    // 回复、事件、错误先在一个写入器里拼好,再按实际长度拷出一份交给写出端。拼的那个按线程复用(几乎都在执行线程上),
+    // 每条消息只分配交出去的那一份;拼到一半又要拼另一条(拼回复时发事件)的,借不到就另起一个。
+    [ThreadStatic]
+    private static XWriter? _scratch;
+
+    /// <summary>复用的写入器最多留着这么大的缓冲:偶尔一条几 MB 的回复(GetImage)拼完就放掉,不一直占着。</summary>
+    private const int MaxScratchCapacity = 64 * 1024;
+
+    private XWriter Borrow()
     {
-        XWriter w = Writer(64);
+        XWriter? w = _scratch;
+        _scratch = null;
+        return w is null ? new XWriter(BigEndian, 64) : w.Reset(BigEndian);
+    }
+
+    /// <summary>拷出前 <paramref name="length" /> 字节,把写入器还回去。</summary>
+    private static byte[] Finish(XWriter w, int length)
+    {
+        byte[] bytes = w.CopyPrefix(length);
+        if (w.Capacity <= MaxScratchCapacity)
+        {
+            _scratch = w;
+        }
+        return bytes;
+    }
+
+    /// <summary>发一条回复:头(1、data、序号、长度)+ 由 <paramref name="body" /> 写的内容,补齐到至少 32 字节。</summary>
+    public void Reply(byte data, Action<XWriter> body) => Reply(data, body, static (w, write) => write(w));
+
+    /// <summary>
+    /// 同 <see cref="Reply(byte, Action{XWriter})" />,内容所需的值经 <paramref name="state" /> 传进去:
+    /// <paramref name="body" /> 写成不捕获变量的静态 lambda,就不必每条回复分配一个闭包(频繁的请求用)。
+    /// </summary>
+    public void Reply<TState>(byte data, TState state, Action<XWriter, TState> body)
+    {
+        XWriter w = Borrow();
         w.U8(1).U8(data).U16(Sequence).U32(0);
-        body(w);
+        body(w, state);
         if (w.Length < 32)
         {
             w.Zero(32 - w.Length);
         }
         w.Pad4();
         w.PatchU32(4, (uint)((w.Length - 32) / 4));
-        Send(w.ToArray());
+        Send(Finish(w, w.Length));
     }
 
     /// <summary>发一个事件:恰好 32 字节,由 <paramref name="body" /> 写序号之后的 28 字节。</summary>
-    public void Event(byte code, byte detail, Action<XWriter> body, bool sent = false)
+    public void Event(byte code, byte detail, Action<XWriter> body, bool sent = false) =>
+        Event(code, detail, body, static (w, write) => write(w), sent);
+
+    /// <summary>同 <see cref="Event(byte, byte, Action{XWriter}, bool)" />,值经 <paramref name="state" /> 传进去(见带状态的 Reply)。</summary>
+    public void Event<TState>(byte code, byte detail, TState state, Action<XWriter, TState> body, bool sent = false)
     {
-        XWriter w = Writer();
+        XWriter w = Borrow();
         w.U8((byte)(code | (sent ? XEventCode.SentFlag : 0))).U8(detail).U16(Sequence);
-        body(w);
+        body(w, state);
         if (w.Length < 32)
         {
             w.Zero(32 - w.Length);
         }
-        byte[] bytes = w.ToArray();
-        Send(bytes.Length == 32 ? bytes : bytes[..32]);
+        Send(Finish(w, 32));
     }
 
     /// <summary>
@@ -198,7 +252,7 @@ internal sealed class XClient : IDisposable
     /// </summary>
     public void GenericEvent(byte extension, ushort evtype, Action<XWriter> body)
     {
-        XWriter w = Writer(64);
+        XWriter w = Borrow();
         w.U8(XEventCode.GenericEvent).U8(extension).U16(Sequence).U32(0).U16(evtype);
         body(w);
         if (w.Length < 32)
@@ -207,7 +261,7 @@ internal sealed class XClient : IDisposable
         }
         w.Pad4();
         w.PatchU32(4, (uint)((w.Length - 32) / 4));
-        Send(w.ToArray());
+        Send(Finish(w, w.Length));
     }
 
     /// <summary>这个客户端经 Generic Event Extension 声明过的版本;没声明过的客户端不该收到 GenericEvent。</summary>
@@ -228,9 +282,9 @@ internal sealed class XClient : IDisposable
     /// <summary>发一条错误。</summary>
     public void Error(XErrorCode code, uint badValue, ushort minorOpcode, byte majorOpcode)
     {
-        XWriter w = Writer();
+        XWriter w = Borrow();
         w.U8(0).U8((byte)code).U16(Sequence).U32(badValue).U16(minorOpcode).U8(majorOpcode).Zero(21);
-        Send(w.ToArray());
+        Send(Finish(w, 32));
     }
 
     public override string ToString() => $"client#{Index}";

@@ -23,13 +23,14 @@ public sealed partial class X11Server
     private XClient? _serverGrabber;
 
     /// <summary>一项工作:客户端的一条请求(<see cref="Request" />),或者一段要在执行线程上跑的代码。</summary>
-    private readonly record struct WorkItem(XClient? Client, Action? Action, byte[]? Request = null);
+    /// <summary>执行线程上的一项工作:一段代码,或者一条请求(<see cref="Request" /> 是池里租来的缓冲,前 <see cref="RequestLength" /> 字节是请求)。</summary>
+    private readonly record struct WorkItem(XClient? Client, Action? Action, byte[]? Request = null, int RequestLength = 0);
 
     /// <summary>把一件事排进执行线程。可以在任意线程上调。</summary>
     internal void Post(XClient? client, Action action) => _work.Writer.TryWrite(new WorkItem(client, action));
 
     /// <summary>把客户端的一条请求排进执行线程(不为每条请求分配闭包)。</summary>
-    private void PostRequest(XClient client, byte[] request) => _work.Writer.TryWrite(new WorkItem(client, null, request));
+    private void PostRequest(XClient client, byte[] request, int length) => _work.Writer.TryWrite(new WorkItem(client, null, request, length));
 
     /// <summary>排进执行线程并等它做完(连接建立等少数需要结果的地方用)。</summary>
     internal Task<T> InvokeAsync<T>(Func<T> func)
@@ -202,7 +203,7 @@ public sealed partial class X11Server
         {
             if (item.Request is { } request)
             {
-                ExecuteRequest(item.Client!, request);
+                ExecuteRequest(item.Client!, request, item.RequestLength);
             }
             else
             {

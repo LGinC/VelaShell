@@ -5,6 +5,7 @@
 //   X Window System Protocol, X Version 11 —— 第 4 节「Errors」(出错时请求不产生任何效果、错误带序号与操作码)、
 //   附录 B「Requests」(操作码表)
 
+using System.Buffers;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Server;
 
@@ -12,29 +13,35 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
-    /// <summary>执行一条请求。只在执行线程上调用。</summary>
-    private void ExecuteRequest(XClient client, byte[] request)
+    /// <summary>
+    /// 执行一条请求。只在执行线程上调用。<paramref name="request" /> 是读端从池里租的缓冲(前 <paramref name="length" /> 字节是请求),
+    /// 执行完就还回池里 —— 请求的内容只经 <see cref="XRequestReader" /> 读,要留下的一律拷出去,不会有人在这之后再读这块缓冲。
+    /// </summary>
+    private void ExecuteRequest(XClient client, byte[] request, int length)
     {
-        client.PendingRequests.Release();   // 这条请求已从队列里取出:读端可以再读一条
-        client.ReleaseRequestBytes(request.Length);
-        if (client.Closed)
+        try
         {
-            return;
+            client.PendingRequests.Release();   // 这条请求已从队列里取出:读端可以再读一条
+            client.ReleaseRequestBytes(length);
+            if (!client.Closed)
+            {
+                Execute(client, new XRequestReader(request, length, client.BigEndian));
+            }
         }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(request);
+        }
+    }
+
+    private void Execute(XClient client, XRequestReader r)
+    {
         unchecked
         {
             client.Sequence++;
         }
-        XRequestReader r = new(request, client.BigEndian);
         ushort minor = r.Opcode >= XOpcode.FirstExtension ? r.Data : (ushort)0;
-        if (_options.Log is not null)
-        {
-            if (client.RecentRequests.Count == 8)
-            {
-                client.RecentRequests.Dequeue();
-            }
-            client.RecentRequests.Enqueue($"{r.Opcode}.{minor}");
-        }
+        client.NoteRequest(r.Opcode, minor);
         try
         {
             Dispatch(client, r);
@@ -44,7 +51,7 @@ public sealed partial class X11Server
             if (ShouldLogFrequent())
             {
                 Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
-                    + $"(之前:{string.Join(' ', client.RecentRequests)})");
+                    + $"(之前:{client.RecentRequests()})");
             }
             client.Error(error.Code, error.BadValue, minor, r.Opcode);
         }

@@ -1,10 +1,11 @@
 using VelaShell.XServer.Drawing;
 using VelaShell.XServer.Fonts;
+using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Resources;
 
 namespace VelaShell.XServer.Tests.Drawing;
 
-/// <summary>纯函数部分:区域运算、光栅化、字体目录、颜色名。</summary>
+/// <summary>纯函数部分:区域运算、光栅化、字体目录、颜色名、请求读取。</summary>
 [TestClass]
 [TestCategory("X11Server")]
 public sealed class UnitTests
@@ -111,4 +112,22 @@ public sealed class UnitTests
 
     [TestMethod]
     public void 认不出来的颜色名返回null() => Assert.IsNull(ColorNames.Lookup("not-a-colour"));
+
+    [TestMethod]
+    public void 请求读取器只读到请求的长度_池里租来的缓冲后面的旧字节读不到()
+    {
+        // 池里租来的缓冲比请求长,后面还留着上一条请求的字节(0xAA)。
+        byte[] buffer = new byte[64];
+        Array.Fill(buffer, (byte)0xAA);
+        byte[] request = [7, 0, 3, 0, 1, 0, 0, 0, 2, 0, 0, 0];   // 头 + 两个 CARD32,共 12 字节
+        request.CopyTo(buffer, 0);
+        XRequestReader r = new(buffer, request.Length, bigEndian: false);
+        Assert.AreEqual(12, r.Length);
+        Assert.AreEqual(8, r.Remaining);
+        Assert.AreEqual(1u, r.U32());
+        Assert.AreEqual(2u, r.U32());
+        Assert.AreEqual(0, r.Rest().Length, "Rest 不含请求之后的字节");
+        XProtocolError error = Assert.ThrowsExactly<XProtocolError>(() => r.U32());
+        Assert.AreEqual(XErrorCode.Length, error.Code, "读过请求的长度是 BadLength,不会读到后面的旧字节");
+    }
 }

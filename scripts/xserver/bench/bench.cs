@@ -114,7 +114,7 @@ Action<Client.Body> fillRects = b =>
     }
 };
 
-Console.WriteLine($"{"场景",-34}{"次数",8}{"耗时 ms",10}{"每秒",14}{"CPU ms",10}");
+Console.WriteLine($"{"场景",-34}{"次数",8}{"耗时 ms",10}{"每秒",14}{"CPU ms",10}{"分配 B/次",12}");
 await RunAsync("PolyFillRectangle 50×50", 20_000, i =>
     c.Request(70, 0, b => b.U32(window).U32(gc).I16((short)(i % 700)).I16((short)(i % 500)).U16(50).U16(50)));
 await RunAsync("PutImage 200×100 32 bpp", 2_000, i =>
@@ -143,6 +143,7 @@ await RunAsync("RenderFillRectangles ×50", 5_000, _ => c.Request(render, 26, fi
 XTopLevelWindow mapped = host.Mapped ?? throw new InvalidOperationException("窗口没映射");
 await RunAsync("指针移动注入(选了 PointerMotion)", 50_000, i => server.InjectPointerMotion(mapped, i % 800, (i / 800) % 600));
 
+long roundTripStart = GC.GetTotalAllocatedBytes(precise: true);
 Stopwatch rt = Stopwatch.StartNew();
 const int roundTrips = 5_000;
 for (int i = 0; i < roundTrips; i++)
@@ -150,7 +151,8 @@ for (int i = 0; i < roundTrips; i++)
     await c.SyncAsync();
 }
 rt.Stop();
-Console.WriteLine($"{"往返 GetInputFocus(串行)",-34}{roundTrips,8}{rt.Elapsed.TotalMilliseconds,10:F0}{roundTrips / rt.Elapsed.TotalSeconds,14:F0}");
+long roundTripAllocated = GC.GetTotalAllocatedBytes(precise: true) - roundTripStart;
+Console.WriteLine($"{"往返 GetInputFocus(串行)",-34}{roundTrips,8}{rt.Elapsed.TotalMilliseconds,10:F0}{roundTrips / rt.Elapsed.TotalSeconds,14:F0}{"",10}{roundTripAllocated / roundTrips,12}");
 
 // 整窗 PutImage 满载时,宿主每 16 毫秒读一次整窗像素:每次要等多久才拿到锁并读完。
 XTopLevelWindow handle = mapped;
@@ -194,12 +196,15 @@ async Task RunAsync(string name, int count, Action<int> send)
     // 先不计时跑一遍:让分层 JIT 把热路径升到优化代码,量的是长期运行的服务端的稳态,不是冷启动。
     await SendBatchAsync(count, send);
     // CPU 时间(整个进程,含测试客户端;客户端那份前后一样,差出来的是服务端):吞吐被别的环节卡住时,省下的功夫在这一列看得出来。
+    // 托管堆分配(整个进程,含测试客户端拼请求的那份;同一场景前后比较时客户端那份不变)。
     TimeSpan cpu = Process.GetCurrentProcess().TotalProcessorTime;
+    long allocated = GC.GetTotalAllocatedBytes(precise: true);
     Stopwatch sw = Stopwatch.StartNew();
     await SendBatchAsync(count, send);
     sw.Stop();
     double cpuMs = (Process.GetCurrentProcess().TotalProcessorTime - cpu).TotalMilliseconds;
-    Console.WriteLine($"{name,-34}{count,8}{sw.Elapsed.TotalMilliseconds,10:F0}{count / sw.Elapsed.TotalSeconds,14:F0}{cpuMs,10:F0}");
+    long perRequest = (GC.GetTotalAllocatedBytes(precise: true) - allocated) / count;
+    Console.WriteLine($"{name,-34}{count,8}{sw.Elapsed.TotalMilliseconds,10:F0}{count / sw.Elapsed.TotalSeconds,14:F0}{cpuMs,10:F0}{perRequest,12}");
 }
 
 async Task SendBatchAsync(int count, Action<int> send)

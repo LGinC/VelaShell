@@ -33,14 +33,23 @@ internal sealed class XProtocolError(XErrorCode code, uint badValue = 0)
 internal sealed class XRequestReader
 {
     private readonly byte[] _data;
+    private readonly int _length;
     private readonly bool _bigEndian;
     private int _pos;
 
     /// <param name="data">整条请求(含 4 字节头;BIG-REQUESTS 的扩展长度已剥掉)。</param>
     /// <param name="bigEndian">客户端是不是大端。</param>
-    public XRequestReader(byte[] data, bool bigEndian)
+    public XRequestReader(byte[] data, bool bigEndian) : this(data, data.Length, bigEndian)
+    {
+    }
+
+    /// <param name="data">放着这条请求的缓冲(可以是池里租来的、比请求长的数组)。</param>
+    /// <param name="length">请求的长度:只读前这么多字节,后面的是缓冲里别的东西。</param>
+    /// <param name="bigEndian">客户端是不是大端。</param>
+    public XRequestReader(byte[] data, int length, bool bigEndian)
     {
         _data = data;
+        _length = length;
         _bigEndian = bigEndian;
         _pos = 4;
     }
@@ -63,14 +72,14 @@ internal sealed class XRequestReader
     public byte Data => _data[1];
 
     /// <summary>剩余可读字节数。</summary>
-    public int Remaining => _data.Length - _pos;
+    public int Remaining => _length - _pos;
 
     /// <summary>整条请求的长度(字节)。</summary>
-    public int Length => _data.Length;
+    public int Length => _length;
 
     private ReadOnlySpan<byte> Take(int count)
     {
-        if (count < 0 || _pos + count > _data.Length)
+        if (count < 0 || _pos + count > _length)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
@@ -106,7 +115,7 @@ internal sealed class XRequestReader
     {
         byte[] bytes = Take(count).ToArray();
         int pad = XWire.Pad(count) - count;
-        if (pad > 0 && _pos + pad <= _data.Length)
+        if (pad > 0 && _pos + pad <= _length)
         {
             _pos += pad;
         }
@@ -126,7 +135,7 @@ internal sealed class XRequestReader
 internal sealed class XWriter
 {
     private byte[] _buffer;
-    private readonly bool _bigEndian;
+    private bool _bigEndian;
 
     public XWriter(bool bigEndian, int capacity = 32)
     {
@@ -136,6 +145,20 @@ internal sealed class XWriter
 
     /// <summary>已写的字节数。</summary>
     public int Length { get; private set; }
+
+    /// <summary>缓冲的大小。</summary>
+    public int Capacity => _buffer.Length;
+
+    /// <summary>清空重用,顺带换成要发给的那个客户端的字节序。</summary>
+    public XWriter Reset(bool bigEndian)
+    {
+        _bigEndian = bigEndian;
+        Length = 0;
+        return this;
+    }
+
+    /// <summary>已写的前 <paramref name="count" /> 字节拷成一个新数组 —— 复用的写入器交出内容时用,缓冲留着接着写下一条。</summary>
+    public byte[] CopyPrefix(int count) => _buffer.AsSpan(0, count).ToArray();
 
     private Span<byte> Grow(int count)
     {
