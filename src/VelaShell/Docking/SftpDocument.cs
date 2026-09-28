@@ -1,7 +1,5 @@
 using Avalonia.Controls;
 using Avalonia.Media;
-using VelaShell.Docking.Controls;
-using VelaShell.Docking.Model;
 using VelaShell.Services;
 using VelaShell.ViewModels;
 using VelaShell.Views;
@@ -9,7 +7,7 @@ using VelaShell.Views;
 namespace VelaShell.Docking;
 
 /// <summary>独立的、与会话绑定的双栏 SFTP 文件浏览器的停靠文档。</summary>
-public sealed class SftpDocument : DockDocument, IDockViewProvider
+public sealed class SftpDocument : SftpDocumentBase
 {
     /// <summary>从给定的视图模型初始化 SFTP 停靠文档。</summary>
     public SftpDocument(SftpDocumentViewModel viewModel)
@@ -23,8 +21,11 @@ public sealed class SftpDocument : DockDocument, IDockViewProvider
     /// <summary>SFTP 文档的后台视图模型。</summary>
     public SftpDocumentViewModel ViewModel { get; }
 
+    /// <inheritdoc />
+    public override ISftpDocumentContent Content => ViewModel;
+
     /// <summary>从连接配置派生的强调色画刷,用于视觉标识。</summary>
-    public IBrush ConnectionAccentBrush => ConnectionAccent.BrushForProfile(ViewModel.Profile);
+    public override IBrush ConnectionAccentBrush => ConnectionAccent.BrushForProfile(ViewModel.Profile);
 
     /// <summary>
     /// 插件文件协议(S3 …)由插件自报的标签页图标;宿主内建的 SFTP / FTP 为 null。
@@ -32,12 +33,12 @@ public sealed class SftpDocument : DockDocument, IDockViewProvider
     public PluginSdk.PluginIcon? PluginTabIcon { get; set; }
 
     /// <summary>标签页上的协议图标。SFTP / FTP 的标签里是双栏文件浏览器,不是终端。</summary>
-    public TabIcon? TabIcon => ConnectionIcon.ForSession(ViewModel.Profile, PluginTabIcon);
+    public override TabIcon? TabIcon => ConnectionIcon.ForSession(ViewModel.Profile, PluginTabIcon);
 
     /// <summary>显示连接详情与配置信息的提示文本。</summary>
-    public string ConnectionTooltip =>
+    public override string ConnectionTooltip =>
         $"{Title} · SFTP · {ViewModel.Profile.Username}@{ViewModel.Profile.Host}:{ViewModel.Profile.Port}";
 
     /// <summary>创建用于停靠的 SFTP 文档视图。</summary>
-    public Control CreateView() => new SftpDocumentView { DataContext = ViewModel };
+    public override Control CreateView() => new SftpDocumentView { DataContext = ViewModel };
 }

@@ -97,6 +97,10 @@ public sealed class SessionTreeViewModel : ReactiveObject
             TogglePinSelectedAsync,
             hasSelectedSession
         );
+        OpenDualSftpCommand = ReactiveCommand.Create(
+            RaiseOpenDualSftp,
+            this.WhenAnyValue(x => x.CanOpenDualSelection)
+        );
     }
 
     /// <summary>树的根级节点集合,包含各分组节点及直接挂在根级的未分组会话。</summary>
@@ -225,6 +229,11 @@ public sealed class SessionTreeViewModel : ReactiveObject
             }
         }
         var keep = new HashSet<SessionTreeNodeViewModel>(desired);
+        // 双选里有一条被折叠收进去(或整棵树重建)了:看不见的那条不该还算"选中",双选就此结束。
+        if (_dualSelection.Any(node => !keep.Contains(node)))
+        {
+            ClearDualSelection();
+        }
         SessionTreeNodeViewModel? selected = SelectedNode;
 
         for (int i = Rows.Count - 1; i >= 0; i--)
@@ -272,11 +281,120 @@ public sealed class SessionTreeViewModel : ReactiveObject
     public static string EmptyStateMessage => Strings.Get("Svc_AddFirstConnection");
 
     /// <summary>当前选中的树节点;命令的可用性依据其是否为非分组会话节点判定。</summary>
+    /// <remarks>
+    /// 选中挪到 Ctrl 双选之外的节点(普通单击、键盘上下、折叠分组把选中项收进去)就结束双选 ——
+    /// 否则那两行还亮着,右键却对着另一行弹菜单。
+    /// </remarks>
     public SessionTreeNodeViewModel? SelectedNode
     {
         get;
-        set => this.RaiseAndSetIfChanged(ref field, value);
+        set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            if (_dualSelection.Count > 0 && (value is null || !_dualSelection.Contains(value)))
+            {
+                ClearDualSelection();
+            }
+        }
     }
+
+    /// <summary>
+    /// Ctrl 双选:恰好两条会话,按选中先后排列(先选的 = 左栏);没有双选时为空。
+    /// </summary>
+    /// <remarks>
+    /// <b>不变式:要么 0 条,要么 2 条。</b>一条就是普通的单选,由 <see cref="SelectedNode" /> 表示,
+    /// 不在这里重复记一份 —— 两处各记一条迟早对不上。
+    /// </remarks>
+    private readonly List<SessionTreeNodeViewModel> _dualSelection = [];
+
+    /// <summary>Ctrl 双选的两条会话(先选的在前);没有双选时为空。</summary>
+    public IReadOnlyList<SessionTreeNodeViewModel> DualSelection => _dualSelection;
+
+    /// <summary>当前是否有一组 Ctrl 双选(右键弹的是双选专用菜单)。</summary>
+    public bool HasDualSelection => _dualSelection.Count == 2;
+
+    /// <summary>双选的两条是否都能在双栏 SFTP 中打开(都是 SSH / SFTP / FTP)。</summary>
+    public bool CanOpenDualSelection => HasDualSelection && _dualSelection.All(static node => node.CanOpenInDualSftp);
+
+    /// <summary>
+    /// Ctrl + 单击一条会话:把它加入或移出双选。
+    /// </summary>
+    /// <remarks>
+    /// <list type="bullet">
+    ///   <item>已有一条普通选中的会话时,Ctrl 点另一条 → 两条组成双选,先选的那条在左。</item>
+    ///   <item>已经选满两条再 Ctrl 点第三条 → 最早选的那条出局,其余依次顺延(新点的这条排在右)。</item>
+    ///   <item>Ctrl 点已在选择里的那条 → 把它移出;只剩一条就退回普通单选。</item>
+    ///   <item>分组行不参与。</item>
+    /// </list>
+    /// 同一条配置不会出现两次:选择按节点记,而一条配置在树上只有一个节点。
+    /// </remarks>
+    /// <param name="node">被 Ctrl 单击的会话行。</param>
+    public void ToggleDualSelection(SessionTreeNodeViewModel node)
+    {
+        ArgumentNullException.ThrowIfNull(node);
+        if (node.IsGroup)
+        {
+            return;
+        }
+        List<SessionTreeNodeViewModel> picked = _dualSelection.Count > 0
+            ? [.. _dualSelection]
+            : SelectedNode is { IsGroup: false } current ? [current] : [];
+        if (!picked.Remove(node))
+        {
+            if (picked.Count == 2)
+            {
+                picked.RemoveAt(0);
+            }
+            picked.Add(node);
+        }
+        ApplyDualSelection(picked.Count == 2 ? picked : []);
+        // 选中项落在最后点的那条上(移出时落在剩下那条上),两边一起亮;全移空了就什么都不选。
+        SelectedNode = picked.Contains(node) ? node : picked.LastOrDefault();
+    }
+
+    /// <summary>结束 Ctrl 双选(普通单击、重建树时)。</summary>
+    public void ClearDualSelection()
+    {
+        if (_dualSelection.Count > 0)
+        {
+            ApplyDualSelection([]);
+        }
+    }
+
+    private void ApplyDualSelection(IReadOnlyList<SessionTreeNodeViewModel> picked)
+    {
+        foreach (SessionTreeNodeViewModel old in _dualSelection)
+        {
+            old.DualSelectionOrder = 0;
+        }
+        _dualSelection.Clear();
+        _dualSelection.AddRange(picked);
+        for (int i = 0; i < _dualSelection.Count; i++)
+        {
+            _dualSelection[i].DualSelectionOrder = i + 1;
+        }
+        this.RaisePropertyChanged(nameof(DualSelection));
+        this.RaisePropertyChanged(nameof(HasDualSelection));
+        this.RaisePropertyChanged(nameof(CanOpenDualSelection));
+    }
+
+    /// <summary>把双选的两条交给宿主打开成一个双栏远程文档(先选的在左)。</summary>
+    private void RaiseOpenDualSftp()
+    {
+        if (!CanOpenDualSelection
+            || !_sessionCache.TryGetValue(_dualSelection[0].Id, out SessionProfile? left)
+            || !_sessionCache.TryGetValue(_dualSelection[1].Id, out SessionProfile? right))
+        {
+            return;
+        }
+        OpenDualSftpRequested?.Invoke(left, right);
+    }
+
+    /// <summary>「在双栏 SFTP 中打开」:Ctrl 双选两条会话后的专用右键菜单项。</summary>
+    public ReactiveCommand<RxVoid, RxVoid> OpenDualSftpCommand { get; }
+
+    /// <summary>右键「在双栏 SFTP 中打开」:由宿主连接两条会话并建出双栏远程文档(参数依次为左栏、右栏)。</summary>
+    public event Action<SessionProfile, SessionProfile>? OpenDualSftpRequested;
 
     /// <summary>分组节点(供“移动到分组”子菜单绑定);随 LoadTreeAsync 同步。</summary>
     public ObservableCollection<SessionTreeNodeViewModel> GroupNodes { get; } = [];

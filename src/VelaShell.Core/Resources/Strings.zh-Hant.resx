@@ -120,6 +120,21 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="DualSftp_CompareSummary" xml:space="preserve">
+    <value>左欄 {0} 項不同 · 右欄 {1} 項不同 · {2} 項相同</value>
+  </data>
+  <data name="DualSftp_CopyToLeft" xml:space="preserve">
+    <value>複製到左欄</value>
+  </data>
+  <data name="DualSftp_CopyToLeftTip" xml:space="preserve">
+    <value>把右欄選取的檔案與資料夾經本機串流傳到左欄目前目錄(不寫入本機磁碟)</value>
+  </data>
+  <data name="DualSftp_CopyToRight" xml:space="preserve">
+    <value>複製到右欄</value>
+  </data>
+  <data name="DualSftp_CopyToRightTip" xml:space="preserve">
+    <value>把左欄選取的檔案與資料夾經本機串流傳到右欄目前目錄(不寫入本機磁碟)</value>
+  </data>
   <data name="Monitor_CacheBuffers" xml:space="preserve">
     <value>快取 / 緩衝</value>
   </data>
@@ -468,6 +483,12 @@
   <data name="Monitor_WindowSeconds" xml:space="preserve">
     <value>{0} 秒前</value>
   </data>
+  <data name="Msg_Relayed" xml:space="preserve">
+    <value>已中轉</value>
+  </data>
+  <data name="Msg_Relaying" xml:space="preserve">
+    <value>中轉中</value>
+  </data>
   <data name="Ready" xml:space="preserve">
     <value>就緒</value>
   </data>
@@ -548,6 +569,12 @@
   </data>
   <data name="Modified" xml:space="preserve">
     <value>修改時間</value>
+  </data>
+  <data name="Tree_OpenDualSftp" xml:space="preserve">
+    <value>在雙欄 SFTP 中開啟</value>
+  </data>
+  <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
+    <value>只有 SSH、SFTP 與 FTP 連線可以並排開啟</value>
   </data>
   <data name="Upload" xml:space="preserve">
     <value>上傳</value>

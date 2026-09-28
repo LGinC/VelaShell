@@ -478,6 +478,21 @@
   <data name="Download" xml:space="preserve">
     <value>ダウンロード</value>
   </data>
+  <data name="DualSftp_CompareSummary" xml:space="preserve">
+    <value>左 {0} 件が異なる · 右 {1} 件が異なる · {2} 件が同一</value>
+  </data>
+  <data name="DualSftp_CopyToLeft" xml:space="preserve">
+    <value>左へコピー</value>
+  </data>
+  <data name="DualSftp_CopyToLeftTip" xml:space="preserve">
+    <value>右で選択したファイルとフォルダーを、このコンピューター経由のストリームで左の現在のフォルダーへ転送します(ローカルディスクには書き込みません)</value>
+  </data>
+  <data name="DualSftp_CopyToRight" xml:space="preserve">
+    <value>右へコピー</value>
+  </data>
+  <data name="DualSftp_CopyToRightTip" xml:space="preserve">
+    <value>左で選択したファイルとフォルダーを、このコンピューター経由のストリームで右の現在のフォルダーへ転送します(ローカルディスクには書き込みません)</value>
+  </data>
   <data name="Edit" xml:space="preserve">
     <value>編集</value>
   </data>
@@ -876,6 +891,12 @@
   </data>
   <data name="Monitor_WindowSeconds" xml:space="preserve">
     <value>{0} 秒前</value>
+  </data>
+  <data name="Msg_Relayed" xml:space="preserve">
+    <value>転送済み</value>
+  </data>
+  <data name="Msg_Relaying" xml:space="preserve">
+    <value>転送中</value>
   </data>
   <data name="Sftp_NewSymlink" xml:space="preserve">
     <value>シンボリックリンクを作成</value>
@@ -3275,6 +3296,12 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Tree_EditConnection" xml:space="preserve">
     <value>接続を編集</value>
+  </data>
+  <data name="Tree_OpenDualSftp" xml:space="preserve">
+    <value>2 ペイン SFTP で開く</value>
+  </data>
+  <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
+    <value>並べて開けるのは SSH、SFTP、FTP 接続のみです</value>
   </data>
   <data name="Tree_OpenInNewTab" xml:space="preserve">
     <value>新しいタブで開く</value>

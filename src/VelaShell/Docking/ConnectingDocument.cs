@@ -26,10 +26,14 @@ public sealed class ConnectingDocument : DockDocument, IDockViewProvider
     /// <summary>建一个「连接中」占位标签。</summary>
     /// <param name="profile">正在连接的配置。</param>
     /// <param name="typeLabel">连接类型的展示名(SFTP / FTP / S3 / Redis…),写进副标题与提示。</param>
-    public ConnectingDocument(SessionProfile profile, string typeLabel)
+    /// <param name="displayName">
+    /// 标签与覆盖层上的名称;不给则取配置的显示名。双栏远程文档一次连两台,写成「A ⇄ B」。
+    /// </param>
+    public ConnectingDocument(SessionProfile profile, string typeLabel, string? displayName = null)
     {
         Profile = profile ?? throw new ArgumentNullException(nameof(profile));
         TypeLabel = typeLabel;
+        _displayName = displayName;
         // 占位标签的 Id 不能取会话 id —— 那玩意儿正是还没有的东西。用一个进程内唯一值,
         // 与真文档换手之后它就随占位一起消失了。
         Id = $"connecting-{Guid.NewGuid():N}";
@@ -57,9 +61,13 @@ public sealed class ConnectingDocument : DockDocument, IDockViewProvider
         }
     }
 
-    /// <summary>标签与覆盖层里指代这条连接的名称:优先用配置的显示名,没起名才退回主机。</summary>
+    private readonly string? _displayName;
+
+    /// <summary>
+    /// 标签与覆盖层里指代这条连接的名称:建标签时给了就用它,否则优先用配置的显示名,没起名才退回主机。
+    /// </summary>
     public string DisplayName =>
-        string.IsNullOrWhiteSpace(Profile.Name) ? Profile.Host : Profile.Name;
+        _displayName ?? (string.IsNullOrWhiteSpace(Profile.Name) ? Profile.Host : Profile.Name);
 
     /// <summary>
     /// 标签上的状态圆点。与终端 / SFTP / 工作台标签共用一套 <see cref="SessionStatus" />,

@@ -145,6 +145,81 @@ public class SftpService : ISftpService
         }
     }
 
+    /// <summary>
+    /// 把一条顺序读的流写成远端文件(覆盖)。与 <see cref="UploadFileAsync" /> 同一条写入路径
+    /// (底层库的并发写窗口、上传限速、收尾补报 100%、尽力而为的时间戳),只是源从本地文件换成了调用方给的流。
+    /// </summary>
+    /// <remarks>
+    /// 续传与 <see cref="UploadFileAsync" /> 同一套核实(此刻的远端长度、回退一个在途写入窗口、比对尾部),
+    /// 只是比对的另一方是源流 —— 所以续传时源必须可 Seek(SFTP 的读流可以,FTP 的数据流不行)。
+    /// </remarks>
+    public async Task UploadStreamAsync(Guid sessionId,
+        Stream source,
+        string remotePath,
+        long length,
+        DateTime? lastWriteTime = null,
+        IProgress<TransferProgress>? progress = null,
+        long resumeOffset = 0,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (resumeOffset > 0 && !source.CanSeek)
+        {
+            throw new ArgumentException("Resuming a streamed upload needs a seekable source.", nameof(source));
+        }
+        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        var reporter = new TransferProgressThrottle(progress, GetUnixFileName(remotePath), length);
+        Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
+        (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+
+        if (resumeOffset > 0)
+        {
+            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, source, length, cancellationToken).ConfigureAwait(false);
+            // 核实时两边都被定位过;整份重传要从头读(续传由下面的 UploadAsync 自己定位到起点)。
+            if (resumeOffset == 0)
+            {
+                source.Seek(0, SeekOrigin.Begin);
+            }
+        }
+
+        // 限速包装刻意不释放:它自己不持有任何资源,而释放它会连带关掉调用方的源流 ——
+        // 流归调用方(契约如此),它还要在 await using 里自己收尾。
+        Stream input = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
+        try
+        {
+            if (resumeOffset > 0)
+            {
+                await client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await client.UploadAsync(input, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+            }
+            reporter.ReportFinal(length);
+            if (preserveTimestamps && lastWriteTime is { } mtime && mtime != default)
+            {
+                DateTime utc = mtime.Kind == DateTimeKind.Utc ? mtime : mtime.ToUniversalTime();
+                try
+                {
+                    await client.SetLastWriteTimeAsync(remotePath, new DateTimeOffset(utc), cancellationToken).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    throw;
+                }
+                catch
+                {
+                    // 时间戳只是尽力而为(理由同 UploadFileAsync)。
+                }
+            }
+        }
+        catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is not OperationCanceledException)
+        {
+            // 兜底,理由同 UploadFileAsync。
+            throw new OperationCanceledException(cancellationToken);
+        }
+    }
+
     /// <summary>将远端文件下载到本地路径,可选限速与进度回报;按设置可保留文件修改时间戳。</summary>
     public async Task DownloadFileAsync(Guid sessionId,
         string remotePath,
@@ -636,6 +711,21 @@ public class SftpService : ISftpService
         long localLength,
         CancellationToken cancellationToken)
     {
+        await using Stream local = OpenLocalRead(localPath);
+        return await ResolveUploadResumeAsync(client, remotePath, local, localLength, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 同上,只是源换成了调用方给的可 Seek 的流(双栏远程之间的中转:源是另一台机器上的文件)。
+    /// 源流由调用方负责释放;这里会移动它的位置,调用方按返回值重新定位。
+    /// </summary>
+    private static async Task<long> ResolveUploadResumeAsync(ISftpClientWrapper client,
+        string remotePath,
+        Stream source,
+        long sourceLength,
+        CancellationToken cancellationToken)
+    {
+        long localLength = sourceLength;
         long remoteLength = await client.GetFileSizeAsync(remotePath, cancellationToken).ConfigureAwait(false);
 
         // 远端不存在/为空,或已不短于本地:都不构成"传了一半",退化为整份重传(覆盖写)。
@@ -653,8 +743,7 @@ public class SftpService : ISftpService
             return 0;
         }
         await using Stream remote = await client.OpenAsync(remotePath, FileMode.Open, FileAccess.Read, cancellationToken).ConfigureAwait(false);
-        await using Stream local = OpenLocalRead(localPath);
-        if (!await TailMatchesAsync(remote, local, candidate, cancellationToken).ConfigureAwait(false))
+        if (!await TailMatchesAsync(remote, source, candidate, cancellationToken).ConfigureAwait(false))
         {
             throw new VelaSftpResumeMismatchException(Strings.Format("SftpSvc_ResumeUploadMismatch", remotePath));
         }
@@ -662,7 +751,7 @@ public class SftpService : ISftpService
     }
 
     /// <summary>
-    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync" />:
+    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, string, long, CancellationToken)" />:
     /// 以"此刻本地文件的实际长度"为准,并比对尾部确认本地那半截确实是远端文件的前缀。
     /// </summary>
     /// <returns>经核实的续传偏移量;返回 0 表示应整份重下(覆盖本地残留)。</returns>

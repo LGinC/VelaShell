@@ -257,6 +257,12 @@ public sealed class SerializedSftpServiceTests
             return InvokeAsync("Upload", cancellationToken);
         }
 
+        public Task UploadStreamAsync(Guid sessionId, Stream source, string remotePath, long length, DateTime? lastWriteTime = null, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default)
+        {
+            progress?.Report(CreateTransferProgress(remotePath));
+            return InvokeAsync("UploadStream", cancellationToken);
+        }
+
         public Task DownloadFileAsync(Guid sessionId, string remotePath, string localPath, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default)
         {
             progress?.Report(CreateTransferProgress(remotePath));

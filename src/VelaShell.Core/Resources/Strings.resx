@@ -16,6 +16,21 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="DualSftp_CompareSummary" xml:space="preserve">
+    <value>Left: {0} different · Right: {1} different · {2} identical</value>
+  </data>
+  <data name="DualSftp_CopyToLeft" xml:space="preserve">
+    <value>Copy to left</value>
+  </data>
+  <data name="DualSftp_CopyToLeftTip" xml:space="preserve">
+    <value>Stream the files and folders selected on the right into the left pane&apos;s current folder through this computer (nothing is written to local disk)</value>
+  </data>
+  <data name="DualSftp_CopyToRight" xml:space="preserve">
+    <value>Copy to right</value>
+  </data>
+  <data name="DualSftp_CopyToRightTip" xml:space="preserve">
+    <value>Stream the files and folders selected on the left into the right pane&apos;s current folder through this computer (nothing is written to local disk)</value>
+  </data>
   <data name="Monitor_CacheBuffers" xml:space="preserve">
     <value>Cache / buffers</value>
   </data>
@@ -364,6 +379,12 @@
   <data name="Monitor_WindowSeconds" xml:space="preserve">
     <value>{0}s ago</value>
   </data>
+  <data name="Msg_Relayed" xml:space="preserve">
+    <value>Relayed</value>
+  </data>
+  <data name="Msg_Relaying" xml:space="preserve">
+    <value>Relaying</value>
+  </data>
   <data name="Ready" xml:space="preserve">
     <value>Ready</value>
   </data>
@@ -447,6 +468,12 @@
   </data>
   <data name="Modified" xml:space="preserve">
     <value>Modified</value>
+  </data>
+  <data name="Tree_OpenDualSftp" xml:space="preserve">
+    <value>Open in dual-pane SFTP</value>
+  </data>
+  <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
+    <value>Only SSH, SFTP and FTP connections can be opened side by side</value>
   </data>
   <data name="Upload" xml:space="preserve">
     <value>Upload</value>

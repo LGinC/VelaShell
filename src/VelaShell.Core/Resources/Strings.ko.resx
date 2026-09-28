@@ -478,6 +478,21 @@
   <data name="Download" xml:space="preserve">
     <value>다운로드</value>
   </data>
+  <data name="DualSftp_CompareSummary" xml:space="preserve">
+    <value>왼쪽 {0}개 다름 · 오른쪽 {1}개 다름 · {2}개 동일</value>
+  </data>
+  <data name="DualSftp_CopyToLeft" xml:space="preserve">
+    <value>왼쪽으로 복사</value>
+  </data>
+  <data name="DualSftp_CopyToLeftTip" xml:space="preserve">
+    <value>오른쪽에서 선택한 파일과 폴더를 이 컴퓨터를 거쳐 스트리밍으로 왼쪽의 현재 폴더에 전송합니다(로컬 디스크에 쓰지 않음)</value>
+  </data>
+  <data name="DualSftp_CopyToRight" xml:space="preserve">
+    <value>오른쪽으로 복사</value>
+  </data>
+  <data name="DualSftp_CopyToRightTip" xml:space="preserve">
+    <value>왼쪽에서 선택한 파일과 폴더를 이 컴퓨터를 거쳐 스트리밍으로 오른쪽의 현재 폴더에 전송합니다(로컬 디스크에 쓰지 않음)</value>
+  </data>
   <data name="Edit" xml:space="preserve">
     <value>편집</value>
   </data>
@@ -876,6 +891,12 @@
   </data>
   <data name="Monitor_WindowSeconds" xml:space="preserve">
     <value>{0}초 전</value>
+  </data>
+  <data name="Msg_Relayed" xml:space="preserve">
+    <value>전송됨</value>
+  </data>
+  <data name="Msg_Relaying" xml:space="preserve">
+    <value>전송 중</value>
   </data>
   <data name="Sftp_NewSymlink" xml:space="preserve">
     <value>심볼릭 링크 만들기</value>
@@ -3275,6 +3296,12 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   </data>
   <data name="Tree_EditConnection" xml:space="preserve">
     <value>연결 편집</value>
+  </data>
+  <data name="Tree_OpenDualSftp" xml:space="preserve">
+    <value>2창 SFTP에서 열기</value>
+  </data>
+  <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
+    <value>SSH, SFTP, FTP 연결만 나란히 열 수 있습니다</value>
   </data>
   <data name="Tree_OpenInNewTab" xml:space="preserve">
     <value>새 탭에서 열기</value>

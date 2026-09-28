@@ -7,7 +7,7 @@
              xmlns:pc="using:VelaShell.Controls.Controls"
              xmlns:loc="using:VelaShell.Localization"
              x:Class="VelaShell.Docking.Controls.SftpDockTabItem"
-             x:DataType="docking:SftpDocument"
+             x:DataType="docking:SftpDocumentBase"
              FontSize="{DynamicResource VelaFontSize11}"
              VerticalAlignment="Stretch">
   <UserControl.Styles>
@@ -88,8 +88,8 @@
     <Grid ColumnDefinitions="Auto,*,Auto" VerticalAlignment="Center">
       <StackPanel Orientation="Horizontal" Spacing="8" Margin="0,0,8,0">
         <Ellipse Width="7" Height="7" VerticalAlignment="Center" Classes="dot"
-                 Classes.connected="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
-                 Classes.connecting="{Binding ViewModel.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}" />
+                 Classes.connected="{Binding Content.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connected}"
+                 Classes.connecting="{Binding Content.Status, Converter={x:Static conv:SessionStatusEqualsConverter.Instance}, ConverterParameter=Connecting}" />
         <Border Width="3" Height="12" CornerRadius="1.5" VerticalAlignment="Center"
                 Background="{Binding ConnectionAccentBrush}" />
         <!-- 协议图标随连接类型走:SFTP / FTP 是 hard-drive,插件的文件协议(S3…)是通用插头。
@@ -102,7 +102,7 @@
                        ViewBoxSize="{Binding ViewBoxSize}"
                        Fill="{Binding Fill}"
                        IsVisible="{Binding $self.DataContext, Converter={x:Static ObjectConverters.IsNotNull}}"
-                       Foreground="{Binding $parent[local:SftpDockTabItem].((docking:SftpDocument)DataContext).ConnectionAccentBrush}" />
+                       Foreground="{Binding $parent[local:SftpDockTabItem].((docking:SftpDocumentBase)DataContext).ConnectionAccentBrush}" />
       </StackPanel>
       <TextBlock Grid.Column="1" Text="{Binding Title}" TextTrimming="CharacterEllipsis"
                  VerticalAlignment="Center" ToolTip.ShowDelay="250"
