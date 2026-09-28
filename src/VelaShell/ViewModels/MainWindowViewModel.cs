@@ -371,22 +371,20 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         // (切标签重绑、驱逐后的占位)属于程序行为,Skip(1) 跳过替换瞬间的初值,
         // 不污染标签状态。
         this.WhenAnyValue(x => x.FileBrowser)
-            .Select(browser => browser
+            .SwitchMap(browser => browser
                 .WhenAnyValue(b => b.IsVisible)
                 .Skip(1)
                 .Select(visible => (browser.SessionId, Visible: visible)))
-            .Switch()
             .Subscribe(change => RememberFileBrowserStateForTab(change.SessionId, change.Visible));
 
         // 状态栏随活动标签同步:活动标签变化时以及该标签自身的连接状态/延迟变化时刷新。
         this.WhenAnyValue(x => x.ActiveTerminalTab)
-            .Select(tab =>
+            .SwitchMap(tab =>
                 tab is null
                     ? Signal.Emit(RxVoid.Default)
                     : tab.WhenAnyValue(t => t.ConnectionStatus, t => t.Latency)
                         .Select(_ => RxVoid.Default)
             )
-            .Switch()
             .Subscribe(_ => UpdateStatusBarForActiveTab());
 
         // 选区字符数:只订阅**活动**标签那一个控件,切标签时改挂。
@@ -395,12 +393,11 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             .Subscribe(_ => RebindSelectionCounter());
 
         this.WhenAnyValue(x => x.ActiveTerminalTab)
-            .Select(tab =>
+            .SwitchMap(tab =>
                 tab is null
                     ? Signal.Emit(RxVoid.Default)
                     : tab.WhenAnyValue(t => t.IsConnected).Select(_ => RxVoid.Default)
             )
-            .Switch()
             .Subscribe(_ =>
             {
                 this.RaisePropertyChanged(nameof(CanToggleFileBrowser));
@@ -445,22 +442,20 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         _ = _paletteRecency.LoadAsync();
         OpenCommandPaletteCommand = ReactiveCommand.Create(() => CommandPalette.Open());
         IObservable<bool> canToggleFileBrowser = this.WhenAnyValue(x => x.ActiveTerminalTab)
-            .Select(tab =>
+            .SwitchMap(tab =>
                 tab is null
                     ? Signal.Emit(false)
                     : tab.WhenAnyValue(t => t.IsConnected).Select(_ => CanToggleFileBrowser)
-            )
-            .Switch();
+            );
         ToggleFileBrowserCommand = ReactiveCommand.Create(ToggleFileBrowser, canToggleFileBrowser);
         // 侧栏折叠与会话状态无关(没有活动标签时照样能收),故不挂 canExecute。
         ToggleSidebarCommand = ReactiveCommand.Create(ToggleSidebar);
         IObservable<bool> canOpenProcessManager = this.WhenAnyValue(x => x.ActiveTerminalTab)
-            .Select(tab =>
+            .SwitchMap(tab =>
                 tab is null
                     ? Signal.Emit(false)
                     : tab.WhenAnyValue(t => t.IsConnected).Select(_ => CanOpenProcessManager)
-            )
-            .Switch();
+            );
         OpenProcessManagerCommand = ReactiveCommand.Create(OpenProcessManager, canOpenProcessManager);
         OpenResourceMonitorCommand = ReactiveCommand.Create(OpenResourceMonitor, canOpenProcessManager);
         // 命令注入状态栏,而不是让状态栏去 $parent[Window].DataContext 找:
