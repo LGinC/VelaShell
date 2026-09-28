@@ -608,4 +608,33 @@ public class PluginInstallUninstallTests
                           "这一次是宿主亲手解的包,从此就钉得住发布者了。");
         await manager.DisposeAsync();
     }
+
+    [TestMethod]
+    public async Task UnreadableTrustStore_BlocksInstallAndTrust_UntilTheUserResetsIt()
+    {
+        // 用户实际撞上的形状:信任库由旧密钥加密,secret.key 换过之后
+        // "信任发布者并安装"两步都失败,且重启也不会好。
+        using var engine = new SonnetDbEngine(Path.Combine(_trustDbRoot, "unreadable-trust-db"));
+        await new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_trustDbRoot, "old.key")))
+            .SaveAsync(new PluginTrustState());
+        var repository = new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_trustDbRoot, "new.key")));
+        using var publisher = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        string package = BuildSignedVpx(publisher, "acme.after-reset");
+
+        PluginManager manager = CreateManager(repository);
+        await manager.StartAsync();
+        Assert.Contains("authentication failed", await manager.GetTrustStoreErrorAsync() ?? "");
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(() => manager.TrustPackagePublisherAsync(package));
+        await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+            () => manager.InstallFromVpxAsync(package, allowUntrustedPackage: true));
+        Assert.DoesNotContain(p => p.Id == "acme.after-reset", manager.Plugins);
+
+        Assert.IsNotNull(await manager.ResetTrustStoreAsync(), "读不出来的旧文档要留备份。");
+
+        Assert.IsNull(await manager.GetTrustStoreErrorAsync());
+        await manager.TrustPackagePublisherAsync(package);
+        await manager.InstallFromVpxAsync(package);
+        Assert.Contains(p => p.Id == "acme.after-reset", manager.Plugins);
+        await manager.DisposeAsync();
+    }
 }

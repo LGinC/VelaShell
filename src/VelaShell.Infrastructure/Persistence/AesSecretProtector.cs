@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.Cryptography;
 using System.Text;
@@ -105,6 +106,13 @@ public sealed class AesSecretProtector : ISecretProtector
             {
                 return stored;
             }
+
+            // 文件在、却用不了(换了 Windows 账户 / 重装系统后 DPAPI 解不开,或者被截断):
+            // 先把它原样挪开再生成新密钥。直接覆盖的话,换回原账户、找回原密钥的那条路就被这里亲手堵死了,
+            // 连"密钥被换过"这件事本身都查无实据 —— 用它加密的连接口令与插件信任库会一并变成永远解不开的密文。
+            string aside = $"{keyFilePath}.unreadable-{DateTime.UtcNow:yyyyMMddHHmmss}";
+            File.Move(keyFilePath, aside, overwrite: true);
+            Trace.WriteLine($"[Secrets] {keyFilePath} could not be used; kept it as '{aside}' and generated a new key");
         }
         byte[] key = RandomNumberGenerator.GetBytes(32);
         WriteKey(keyFilePath, key);

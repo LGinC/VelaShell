@@ -4370,6 +4370,17 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
 신뢰하면 같은 키로 서명된 이후 패키지도 신뢰됩니다. 플러그인은 사용자 권한으로 코드를 실행할 수 있습니다.</value></data>
   <data name="PluginManager_InstallAnyway" xml:space="preserve"><value>계속 설치</value></data>
   <data name="PluginManager_TrustAndInstall" xml:space="preserve"><value>게시자를 신뢰하고 설치</value></data>
+  <data name="PluginManager_TrustStoreBrokenTitle" xml:space="preserve"><value>플러그인 신뢰 저장소를 읽을 수 없습니다</value></data>
+  <data name="PluginManager_TrustStoreBrokenWarning" xml:space="preserve"><value>이 기기의 플러그인 신뢰 저장소를 복호화할 수 없습니다. 고치기 전까지는 어떤 플러그인도 설치할 수 없고 새 게시자를 신뢰할 수도 없습니다.
+
+원인: {0}
+
+대개 암호화 키(~/.velashell/secret.key)가 바뀐 경우입니다. 예를 들어 Windows 계정을 바꿨거나, 시스템을 다시 설치했거나, 다른 컴퓨터에서 데이터 폴더를 복사해 온 경우입니다. 원래 키를 되찾을 수 있다면 재설정하지 말고 VelaShell을 닫은 뒤 키를 되돌려 놓으세요.
+
+재설정하면 빈 신뢰 저장소가 새로 만들어집니다(읽을 수 없는 저장소는 백업으로 남습니다). 신뢰했던 게시자를 다시 신뢰해야 하며, 설치된 플러그인의 변조 감지 영수증도 사라집니다. 재설정한 뒤 VelaShell을 다시 시작해 설치된 플러그인을 다시 검증하세요.</value></data>
+  <data name="PluginManager_TrustStoreReset" xml:space="preserve"><value>신뢰 저장소 재설정</value></data>
+  <data name="PluginManager_TrustStoreResetDone" xml:space="preserve"><value>플러그인 신뢰 저장소를 재설정했습니다. 설치된 플러그인을 다시 불러오려면 VelaShell을 다시 시작하세요.</value></data>
+  <data name="PluginManager_TrustStoreResetFailed" xml:space="preserve"><value>플러그인 신뢰 저장소를 재설정할 수 없습니다: {0}</value></data>
   <data name="PluginManager_PublisherChangedTitle" xml:space="preserve"><value>플러그인 게시자가 바뀌었습니다</value></data>
   <data name="PluginManager_PublisherChangedWarning" xml:space="preserve"><value>"{0}"을(를) 설치할 때 쓴 패키지는 다음 게시자가 서명했습니다:
 

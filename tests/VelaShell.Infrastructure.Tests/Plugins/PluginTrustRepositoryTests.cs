@@ -96,6 +96,40 @@ public sealed class PluginTrustRepositoryTests
     }
 
     [TestMethod]
+    public async Task Load_AfterKeyChanged_FailsWithAuthenticationError()
+    {
+        // 用户实际撞上的形状:文档由旧密钥加密,secret.key 换过之后再读。
+        using var engine = new SonnetDbEngine(Path.Combine(_root, "db"));
+        await new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_root, "old.key")))
+            .SaveAsync(new PluginTrustState());
+        var repository = new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_root, "new.key")));
+
+        InvalidDataException ex = await Assert.ThrowsExactlyAsync<InvalidDataException>(() => repository.LoadAsync());
+        Assert.Contains("authentication failed", ex.Message);
+    }
+
+    [TestMethod]
+    public async Task Reset_KeepsUnreadableDocumentAsBackup_AndLoadsAgain()
+    {
+        using var engine = new SonnetDbEngine(Path.Combine(_root, "db"));
+        await new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_root, "old.key")))
+            .SaveAsync(new PluginTrustState());
+        string original = (await engine.WithCollectionAsync(SonnetDbEngine.ConfigCollection,
+            collection => collection.Get("plugin_trust_v1")?.Json))!;
+        var repository = new PluginTrustRepository(engine, new AesSecretProtector(Path.Combine(_root, "new.key")));
+
+        string? backupId = await repository.ResetAsync();
+
+        Assert.IsNotNull(backupId);
+        string? backup = await engine.WithCollectionAsync(SonnetDbEngine.ConfigCollection,
+            collection => collection.Get(backupId)?.Json);
+        Assert.AreEqual(original, backup, "读不出来的文档应原样留作备份,密钥找回来时还能恢复。");
+        PluginTrustState reloaded = await repository.LoadAsync();
+        Assert.IsEmpty(reloaded.Publishers);
+        Assert.IsEmpty(reloaded.Receipts);
+    }
+
+    [TestMethod]
     public async Task Load_MigratesLegacyJsonOnce_ThenRemovesItFromActiveUse()
     {
         using var publisher = ECDsa.Create(ECCurve.NamedCurves.nistP256);

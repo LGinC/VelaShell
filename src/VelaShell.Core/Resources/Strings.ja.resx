@@ -4370,6 +4370,17 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
 信頼すると、同じ鍵で署名された今後のパッケージも信頼されます。プラグインはユーザー権限でコードを実行できます。</value></data>
   <data name="PluginManager_InstallAnyway" xml:space="preserve"><value>続行してインストール</value></data>
   <data name="PluginManager_TrustAndInstall" xml:space="preserve"><value>発行元を信頼してインストール</value></data>
+  <data name="PluginManager_TrustStoreBrokenTitle" xml:space="preserve"><value>プラグイン信頼ストアを読み込めません</value></data>
+  <data name="PluginManager_TrustStoreBrokenWarning" xml:space="preserve"><value>このデバイスのプラグイン信頼ストアを復号できません。修復するまで、プラグインのインストールも新しい発行元の信頼もできません。
+
+原因：{0}
+
+多くの場合、暗号化キー（~/.velashell/secret.key）が変わったことが原因です。たとえば Windows アカウントの切り替え、OS の再インストール、別の PC からのデータフォルダーのコピーなどです。元のキーを復元できる場合は、リセットせずに VelaShell を終了してキーを戻してください。
+
+リセットすると空の信頼ストアが作成されます（読み込めなかったストアはバックアップとして残ります）。信頼済みの発行元は再度信頼する必要があり、インストール済みプラグインの改ざん検知用レシートも失われます。リセット後は VelaShell を再起動して、インストール済みプラグインを再検証してください。</value></data>
+  <data name="PluginManager_TrustStoreReset" xml:space="preserve"><value>信頼ストアをリセット</value></data>
+  <data name="PluginManager_TrustStoreResetDone" xml:space="preserve"><value>プラグイン信頼ストアをリセットしました。インストール済みプラグインを再読み込みするには VelaShell を再起動してください。</value></data>
+  <data name="PluginManager_TrustStoreResetFailed" xml:space="preserve"><value>プラグイン信頼ストアをリセットできませんでした：{0}</value></data>
   <data name="PluginManager_PublisherChangedTitle" xml:space="preserve"><value>プラグインの発行元が変わりました</value></data>
   <data name="PluginManager_PublisherChangedWarning" xml:space="preserve"><value>「{0}」をインストールしたパッケージは、次の発行元が署名していました：
 

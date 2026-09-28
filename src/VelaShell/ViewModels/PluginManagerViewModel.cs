@@ -404,6 +404,25 @@ public sealed class PluginManagerViewModel : ReactiveObject, IDisposable
     public Task<string> TrustPackagePublisherAsync(string vpxPath) =>
         _manager.TrustPackagePublisherAsync(vpxPath);
 
+    /// <summary>信任库读不出来时的原因;可用时为 <see langword="null" />。</summary>
+    public Task<string?> GetTrustStoreErrorAsync() => _manager.GetTrustStoreErrorAsync();
+
+    /// <summary>重建读不出来的信任库。调用方已向用户说明代价并取得确认。</summary>
+    public async Task<bool> ResetTrustStoreAsync()
+    {
+        try
+        {
+            await _manager.ResetTrustStoreAsync().ConfigureAwait(false);
+            SetNotice(Strings.Get("PluginManager_TrustStoreResetDone"));
+            return true;
+        }
+        catch (Exception ex)
+        {
+            SetNotice(Strings.Format("PluginManager_TrustStoreResetFailed", ex.Message));
+            return false;
+        }
+    }
+
     /// <summary>从 .vpx 文件安装。未知来源只能由界面明确确认后单次放行。</summary>
     /// <param name="vpxPath">包路径。</param>
     /// <param name="allowUntrustedPackage">是否单次放行未签名 / 发布者陌生的包。</param>

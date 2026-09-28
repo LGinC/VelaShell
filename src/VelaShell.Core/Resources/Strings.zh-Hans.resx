@@ -4598,6 +4598,27 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="PluginManager_TrustAndInstall" xml:space="preserve">
     <value>信任发布者并安装</value>
   </data>
+  <data name="PluginManager_TrustStoreBrokenTitle" xml:space="preserve">
+    <value>插件信任库无法读取</value>
+  </data>
+  <data name="PluginManager_TrustStoreBrokenWarning" xml:space="preserve">
+    <value>本机的插件信任库无法解密。修好之前，任何插件都装不上，也无法信任新的发布者。
+
+原因：{0}
+
+这通常是加密密钥（~/.velashell/secret.key）变了，例如切换了 Windows 账户、重装了系统，或数据目录是从别的电脑拷来的。如果能找回原来的密钥，请关闭 VelaShell 后把它放回去，不要重置。
+
+重置会新建一个空的信任库（读不出来的那份会留作备份）。已信任的发布者需要重新信任，已安装插件的防篡改收据也会丢失。重置后请重启 VelaShell，让已安装插件重新校验。</value>
+  </data>
+  <data name="PluginManager_TrustStoreReset" xml:space="preserve">
+    <value>重置信任库</value>
+  </data>
+  <data name="PluginManager_TrustStoreResetDone" xml:space="preserve">
+    <value>插件信任库已重置。请重启 VelaShell 以重新加载已安装插件。</value>
+  </data>
+  <data name="PluginManager_TrustStoreResetFailed" xml:space="preserve">
+    <value>无法重置插件信任库：{0}</value>
+  </data>
   <data name="PluginManager_PublisherChangedTitle" xml:space="preserve">
     <value>插件的发布者变了</value>
   </data>

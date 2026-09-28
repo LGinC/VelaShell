@@ -4598,6 +4598,27 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="PluginManager_TrustAndInstall" xml:space="preserve">
     <value>信任發行者並安裝</value>
   </data>
+  <data name="PluginManager_TrustStoreBrokenTitle" xml:space="preserve">
+    <value>無法讀取外掛信任庫</value>
+  </data>
+  <data name="PluginManager_TrustStoreBrokenWarning" xml:space="preserve">
+    <value>本機的外掛信任庫無法解密。修好之前，任何外掛都裝不上，也無法信任新的發行者。
+
+原因：{0}
+
+這通常是加密金鑰（~/.velashell/secret.key）變了，例如切換了 Windows 帳戶、重灌了系統，或資料目錄是從別的電腦複製來的。如果能找回原本的金鑰，請關閉 VelaShell 後把它放回去，不要重設。
+
+重設會新建一個空的信任庫（讀不出來的那份會保留作備份）。已信任的發行者需要重新信任，已安裝外掛的防竄改收據也會遺失。重設後請重新啟動 VelaShell，讓已安裝外掛重新驗證。</value>
+  </data>
+  <data name="PluginManager_TrustStoreReset" xml:space="preserve">
+    <value>重設信任庫</value>
+  </data>
+  <data name="PluginManager_TrustStoreResetDone" xml:space="preserve">
+    <value>外掛信任庫已重設。請重新啟動 VelaShell 以重新載入已安裝外掛。</value>
+  </data>
+  <data name="PluginManager_TrustStoreResetFailed" xml:space="preserve">
+    <value>無法重設外掛信任庫：{0}</value>
+  </data>
   <data name="PluginManager_PublisherChangedTitle" xml:space="preserve">
     <value>外掛的發行者變了</value>
   </data>
