@@ -313,8 +313,19 @@ public sealed class SessionTreeViewModel : ReactiveObject
     /// <summary>当前是否有一组 Ctrl 双选(右键弹的是双选专用菜单)。</summary>
     public bool HasDualSelection => _dualSelection.Count == 2;
 
-    /// <summary>双选的两条是否都能在双栏 SFTP 中打开(都是 SSH / SFTP / FTP)。</summary>
-    public bool CanOpenDualSelection => HasDualSelection && _dualSelection.All(static node => node.CanOpenInDualSftp);
+    /// <summary>双选的两条是否都能在双栏 SFTP 中打开(SSH / SFTP / FTP / 插件的文件协议)。</summary>
+    public bool CanOpenDualSelection =>
+        HasDualSelection
+        && _dualSelection.All(node =>
+            node.CanOpenInDualSftp
+            && (DualSftpFilter is not { } filter
+                || (_sessionCache.TryGetValue(node.Id, out SessionProfile? profile) && filter(profile))));
+
+    /// <summary>
+    /// 宿主给的补充判断:这条配置能不能进双栏。树只认得连接类型,插件协议是文件协议还是工作台要问插件注册表
+    /// (见 <see cref="SessionTreeNodeViewModel.CanOpenInDualSftp" />)。为 null 时只看连接类型。
+    /// </summary>
+    public Func<SessionProfile, bool>? DualSftpFilter { get; set; }
 
     /// <summary>
     /// Ctrl + 单击一条会话:把它加入或移出双选。

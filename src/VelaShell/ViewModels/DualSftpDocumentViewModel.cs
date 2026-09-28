@@ -1,10 +1,12 @@
 using System.ComponentModel;
 using ReactiveUI;
 using ReactiveUI.Primitives;
+using ReactiveUI.Primitives.Signals;
 using VelaShell.Core.DirectorySync;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Sftp;
+using VelaShell.PluginSdk.Protocols;
 using VelaShell.Services;
 
 namespace VelaShell.ViewModels;
@@ -14,13 +16,26 @@ namespace VelaShell.ViewModels;
 /// </summary>
 /// <param name="Profile">连接所用的配置(登录弹窗可能改过其中的字段)。</param>
 /// <param name="SessionId">已建立的会话标识。</param>
-/// <param name="Session">SSH 会话;FTP 没有长驻的会话对象,为 null。</param>
+/// <param name="Session">SSH 会话;FTP 与插件协议没有长驻的会话对象,为 null。</param>
 /// <param name="DisconnectAsync">关文档时断开该会话的回调。</param>
 public sealed record DualSftpEndpoint(
     SessionProfile Profile,
     Guid SessionId,
     SshSession? Session,
-    Func<Guid, CancellationToken, Task> DisconnectAsync);
+    Func<Guid, CancellationToken, Task> DisconnectAsync)
+{
+    /// <summary>插件协议(S3、WebDAV…)的描述:右键动作与标签图标从这里来;内建协议为 null。</summary>
+    public ProtocolDescriptor? Protocol { get; init; }
+
+    /// <summary>
+    /// 这一栏能不能接收从另一栏流式搬来的文件。内建协议恒能;插件协议看它有没有兼实现
+    /// <c>IProtocolStreamUpload</c> —— 不能的那一栏仍可作为源(流式读每个插件都有)。
+    /// </summary>
+    public bool AcceptsStreamedUploads { get; init; } = true;
+
+    /// <summary>执行插件协议的右键动作;协议没声明动作时为 null。</summary>
+    public Func<string, string, Task>? InvokeProtocolAction { get; init; }
+}
 
 /// <summary>
 /// 「远程 + 远程」双栏文件标签:两栏各连一台机器,文件经本机内存流式中转(不落盘),
@@ -77,8 +92,13 @@ public sealed class DualSftpDocumentViewModel : ReactiveObject, ISftpDocumentCon
         RightFiles.DualPeer = LeftFiles;
         Title = $"{LeftFiles.ServerDisplayName} ⇄ {RightFiles.ServerDisplayName}";
 
-        CopyLeftToRightCommand = ReactiveCommand.CreateFromTask(() => RightFiles.ReceiveFromPeerAsync([.. LeftFiles.SelectedFiles], _lifetime.Token));
-        CopyRightToLeftCommand = ReactiveCommand.CreateFromTask(() => LeftFiles.ReceiveFromPeerAsync([.. RightFiles.SelectedFiles], _lifetime.Token));
+        // 接收不了流式上传的那一栏(插件没实现这一面),往它那边的按钮直接置灰,不让用户点了才知道。
+        CopyLeftToRightCommand = ReactiveCommand.CreateFromTask(
+            () => RightFiles.ReceiveFromPeerAsync([.. LeftFiles.SelectedFiles], _lifetime.Token),
+            Signal.Emit(right.AcceptsStreamedUploads));
+        CopyRightToLeftCommand = ReactiveCommand.CreateFromTask(
+            () => LeftFiles.ReceiveFromPeerAsync([.. RightFiles.SelectedFiles], _lifetime.Token),
+            Signal.Emit(left.AcceptsStreamedUploads));
         CompareDirectoriesCommand = ReactiveCommand.CreateFromTask(CompareDirectoriesAsync);
 
         LeftFiles.PropertyChanged += OnPanePropertyChanged;
@@ -99,6 +119,9 @@ public sealed class DualSftpDocumentViewModel : ReactiveObject, ISftpDocumentCon
 
     /// <summary>右栏所用的连接配置。</summary>
     public SessionProfile RightProfile => _right.Profile;
+
+    /// <summary>左栏若是插件协议,插件自报的图标(标签页用);内建协议或没给图标时为 null。</summary>
+    public PluginSdk.PluginIcon? LeftPluginIcon => _left.Protocol?.Icon;
 
     /// <inheritdoc />
     public string Title { get; }
@@ -215,7 +238,7 @@ public sealed class DualSftpDocumentViewModel : ReactiveObject, ISftpDocumentCon
         Func<Task<string?>>? getDefaultEditorPath)
     {
         SessionProfile profile = endpoint.Profile;
-        return new(sftp, endpoint.SessionId)
+        var pane = new FileBrowserViewModel(sftp, endpoint.SessionId)
         {
             ServerDisplayName = string.IsNullOrWhiteSpace(profile.Name) ? profile.Host : profile.Name,
             // 两栏各带自己那台机器的标识色:两边都是远端,光看路径分不清哪栏是哪台。
@@ -226,7 +249,15 @@ public sealed class DualSftpDocumentViewModel : ReactiveObject, ISftpDocumentCon
             IsDragEnabled = true,
             GetDefaultEditorPath = getDefaultEditorPath,
             InitialRemotePath = profile.Ftp?.InitialRemotePath,
+            AcceptsStreamedUploads = endpoint.AcceptsStreamedUploads,
         };
+        // 插件协议的右键动作(S3 的「复制分享链接」之类),与单栏文档同一种接法。
+        if (endpoint.Protocol is { Actions.Count: > 0 } protocol && endpoint.InvokeProtocolAction is { } invoke)
+        {
+            pane.SetProtocolActions(protocol.DisplayName, protocol.Actions);
+            pane.InvokeProtocolAction = invoke;
+        }
+        return pane;
     }
 
     private async Task LoadAsync()

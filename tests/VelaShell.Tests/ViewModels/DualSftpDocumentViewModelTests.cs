@@ -175,6 +175,56 @@ public class DualSftpDocumentViewModelTests
         await sftp.DidNotReceiveWithAnyArgs().UploadStreamAsync(default, null!, null!, 0);
     }
 
+    [TestMethod]
+    public async Task APaneThatCannotReceive_DisablesTheCopyTowardIt_AndRefusesTransfers()
+    {
+        // 右栏是一个没实现流式上传的插件协议:往它那边的按钮置灰,代码调用也被拒并说明原因;反方向照常。
+        ISftpService sftp = Substitute.For<ISftpService>();
+        var vm = new DualSftpDocumentViewModel(
+            new(Profile("alpha", ConnectionType.SSH), Left, null, (_, _) => Task.CompletedTask),
+            new(Profile("bucket", ConnectionType.Plugin), Right, null, (_, _) => Task.CompletedTask) { AcceptsStreamedUploads = false },
+            sftp,
+            new TransferOptions());
+
+        Assert.IsFalse(await vm.CopyLeftToRightCommand.CanExecute.FirstAsync());
+        Assert.IsTrue(await vm.CopyRightToLeftCommand.CanExecute.FirstAsync());
+        await vm.RightFiles.ReceiveFromPeerAsync([new(Entry("/src/a.txt"))]);
+        Assert.IsNotNull(vm.RightFiles.ErrorMessage);
+        await sftp.DidNotReceiveWithAnyArgs().UploadStreamAsync(default, null!, null!, 0);
+        await vm.CloseAsync();
+    }
+
+    [TestMethod]
+    public async Task APluginPane_GetsItsProtocolsRightClickActions()
+    {
+        (string Action, string Path)? invoked = null;
+        var protocol = new VelaShell.PluginSdk.Protocols.ProtocolDescriptor
+        {
+            Id = "acme.s3",
+            DisplayName = "S3",
+            Actions = [new("share", "Copy share link", VelaShell.PluginSdk.Protocols.ProtocolActionScope.File)],
+        };
+        var vm = new DualSftpDocumentViewModel(
+            new(Profile("alpha", ConnectionType.SSH), Left, null, (_, _) => Task.CompletedTask),
+            new(Profile("bucket", ConnectionType.Plugin), Right, null, (_, _) => Task.CompletedTask)
+            {
+                Protocol = protocol,
+                InvokeProtocolAction = (action, path) =>
+                {
+                    invoked = (action, path);
+                    return Task.CompletedTask;
+                },
+            },
+            Substitute.For<ISftpService>(),
+            new TransferOptions());
+
+        Assert.IsNotNull(vm.RightFiles.InvokeProtocolAction, "插件栏要带上协议的右键动作。");
+        Assert.IsNull(vm.LeftFiles.InvokeProtocolAction);
+        await vm.RightFiles.InvokeProtocolAction("share", "/bucket/a.txt");
+        Assert.AreEqual(("share", "/bucket/a.txt"), invoked);
+        await vm.CloseAsync();
+    }
+
     private static void FailWhileWriting(ISftpService sftp, string target) =>
         sftp.UploadStreamAsync(Right, Arg.Any<Stream>(), target, Arg.Any<long>(), Arg.Any<DateTime?>(),
                 Arg.Any<IProgress<TransferProgress>?>(), Arg.Any<long>(), Arg.Any<CancellationToken>())

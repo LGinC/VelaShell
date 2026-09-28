@@ -127,16 +127,34 @@ public class RemoteRelayTests
     }
 
     [TestMethod]
-    public async Task CopyFile_FromAnUnseekableSource_StartsOver()
+    public async Task CopyFile_FromAnUnseekableSource_AskedToResume_ReportsItCannotVerify()
     {
-        // FTP 的读流是一条顺序的数据连接:没法回头核实尾部,续不了,整份重传。
+        // FTP 的读流是一条顺序的数据连接:回不了头,核实不了目标上那个较短的同名文件是不是上一次的半截。
+        // 悄悄整份重传等于不经询问覆盖它 —— 要按「对不上」报,交回同名冲突策略,且目标一个字节都不能碰。
+        ISftpService source = Substitute.For<ISftpService>();
+        source.GetFileInfoAsync(SourceSession, "/a/x", Arg.Any<CancellationToken>()).Returns(RemoteFile("/a/x", 10, default));
+        source.OpenReadAsync(SourceSession, "/a/x", Arg.Any<CancellationToken>())
+              .Returns(_ => Task.FromResult<Stream>(new SequentialStream(new byte[10])));
+        ISftpService target = Substitute.For<ISftpService>();
+        bool writing = false;
+
+        await Assert.ThrowsExactlyAsync<VelaSftpResumeMismatchException>(() => RemoteRelay.CopyFileAsync(
+            source, SourceSession, "/a/x", target, TargetSession, "/b/x", writing: () => writing = true, resumeOffset: 4));
+
+        Assert.IsFalse(writing, "目标没被碰过,不能被当成半截文件清掉。");
+        await target.DidNotReceiveWithAnyArgs().UploadStreamAsync(default, null!, null!, 0);
+    }
+
+    [TestMethod]
+    public async Task CopyFile_FromAnUnseekableSource_WithoutResume_StreamsNormally()
+    {
         ISftpService source = Substitute.For<ISftpService>();
         source.GetFileInfoAsync(SourceSession, "/a/x", Arg.Any<CancellationToken>()).Returns(RemoteFile("/a/x", 10, default));
         source.OpenReadAsync(SourceSession, "/a/x", Arg.Any<CancellationToken>())
               .Returns(_ => Task.FromResult<Stream>(new SequentialStream(new byte[10])));
         ISftpService target = Substitute.For<ISftpService>();
 
-        await RemoteRelay.CopyFileAsync(source, SourceSession, "/a/x", target, TargetSession, "/b/x", resumeOffset: 4);
+        await RemoteRelay.CopyFileAsync(source, SourceSession, "/a/x", target, TargetSession, "/b/x");
 
         await target.Received(1).UploadStreamAsync(TargetSession, Arg.Any<Stream>(), "/b/x", 10, Arg.Any<DateTime?>(),
             Arg.Any<IProgress<TransferProgress>?>(), 0, Arg.Any<CancellationToken>());

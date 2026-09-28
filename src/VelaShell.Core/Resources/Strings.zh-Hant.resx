@@ -120,6 +120,9 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="DualSftp_CannotReceive" xml:space="preserve">
+    <value>{0} 不能接收從另一台伺服器串流傳來的檔案(它的外掛不支援從串流上傳)。</value>
+  </data>
   <data name="DualSftp_CompareSummary" xml:space="preserve">
     <value>左欄 {0} 項不同 · 右欄 {1} 項不同 · {2} 項相同</value>
   </data>
@@ -134,6 +137,9 @@
   </data>
   <data name="DualSftp_CopyToRightTip" xml:space="preserve">
     <value>把左欄選取的檔案與資料夾經本機串流傳到右欄目前目錄(不寫入本機磁碟)</value>
+  </data>
+  <data name="DualSftp_NotAFileProtocol" xml:space="preserve">
+    <value>{0} 不是檔案協定,不能在雙欄檔案分頁中開啟。</value>
   </data>
   <data name="Monitor_CacheBuffers" xml:space="preserve">
     <value>快取 / 緩衝</value>
@@ -543,6 +549,9 @@
   <data name="Copy" xml:space="preserve">
     <value>複製</value>
   </data>
+  <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
+    <value>無法核實 {0} 的續傳起點(來源端不能回讀,或目標端不支援續傳),依同名衝突處理。</value>
+  </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>已選 {0} 字元</value>
   </data>
@@ -574,7 +583,7 @@
     <value>在雙欄 SFTP 中開啟</value>
   </data>
   <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
-    <value>只有 SSH、SFTP 與 FTP 連線可以並排開啟</value>
+    <value>只有 SSH、SFTP、FTP 與外掛的檔案協定可以並排開啟</value>
   </data>
   <data name="Upload" xml:space="preserve">
     <value>上傳</value>

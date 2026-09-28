@@ -16,6 +16,9 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="DualSftp_CannotReceive" xml:space="preserve">
+    <value>{0} cannot take files streamed from another server (its plugin does not support streamed uploads).</value>
+  </data>
   <data name="DualSftp_CompareSummary" xml:space="preserve">
     <value>Left: {0} different · Right: {1} different · {2} identical</value>
   </data>
@@ -30,6 +33,9 @@
   </data>
   <data name="DualSftp_CopyToRightTip" xml:space="preserve">
     <value>Stream the files and folders selected on the left into the right pane&apos;s current folder through this computer (nothing is written to local disk)</value>
+  </data>
+  <data name="DualSftp_NotAFileProtocol" xml:space="preserve">
+    <value>{0} is not a file protocol and cannot be opened in a dual-pane file tab.</value>
   </data>
   <data name="Monitor_CacheBuffers" xml:space="preserve">
     <value>Cache / buffers</value>
@@ -441,6 +447,9 @@
   <data name="Copy" xml:space="preserve">
     <value>Copy</value>
   </data>
+  <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
+    <value>Cannot verify where to resume {0} (the source cannot be read back, or the target cannot resume), so it is handled as a same-name conflict.</value>
+  </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>{0} chars selected</value>
   </data>
@@ -473,7 +482,7 @@
     <value>Open in dual-pane SFTP</value>
   </data>
   <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
-    <value>Only SSH, SFTP and FTP connections can be opened side by side</value>
+    <value>Only SSH, SFTP, FTP and plugin file protocols can be opened side by side</value>
   </data>
   <data name="Upload" xml:space="preserve">
     <value>Upload</value>

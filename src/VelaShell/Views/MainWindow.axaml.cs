@@ -455,6 +455,8 @@ public partial class MainWindow : Window
                     Dispatcher.UIThread.Post(() => FireAndForget.Run(() => vm.OpenSftpForProfileAsync(profile)));
 
                 // Ctrl 双选两条连接后的「在双栏 SFTP 中打开」:两台远端并排,先选的在左。
+                // 能不能进双栏由宿主判断(插件协议要问注册表,树自己问不到)。
+                tree.DualSftpFilter = vm.CanOpenInDualSftp;
                 tree.OpenDualSftpRequested += (left, right) =>
                     Dispatcher.UIThread.Post(() => FireAndForget.Run(() => vm.OpenDualSftpDocumentAsync(left, right)));
 

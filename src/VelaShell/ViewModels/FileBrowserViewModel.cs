@@ -2010,6 +2010,12 @@ public class FileBrowserViewModel : ReactiveObject
     public FileBrowserViewModel? DualPeer { get; set; }
 
     /// <summary>
+    /// 本栏能不能接收从 <see cref="DualPeer" /> 流式搬来的文件。插件协议没实现流式上传时为 false:
+    /// 这一栏仍可作为源,但往它这边搬会被拒(拖放不接、按钮置灰)。
+    /// </summary>
+    public bool AcceptsStreamedUploads { get; init; } = true;
+
+    /// <summary>
     /// 把另一栏(<see cref="DualPeer" />)选中的条目搬进本栏当前目录:文件夹递归,冲突策略、并发上限、
     /// 进度、取消、失败重试、断点续传与普通上传完全共用;字节经本机内存流式中转,不落盘。
     /// </summary>
@@ -2020,6 +2026,12 @@ public class FileBrowserViewModel : ReactiveObject
         ArgumentNullException.ThrowIfNull(entries);
         if (DualPeer is not { } peer)
         {
+            return;
+        }
+        if (!AcceptsStreamedUploads)
+        {
+            // 界面上的入口都已经关了(按钮置灰、拖放不接),走到这里是代码调用 —— 说清楚,别静默什么都不做。
+            ErrorMessage = Strings.Format("DualSftp_CannotReceive", ServerDisplayName);
             return;
         }
         RemoteFileInfoViewModel[] targets = [.. entries.Where(static f => !f.IsParentEntry)];
