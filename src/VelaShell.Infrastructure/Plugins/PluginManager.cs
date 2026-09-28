@@ -594,6 +594,63 @@ public sealed class PluginManager(PluginManagerOptions options) : IAsyncDisposab
         }
     }
 
+    /// <summary>
+    /// 信任库读不出来时的原因;可用(或根本没配信任库)时为 <see langword="null" />。
+    /// </summary>
+    /// <remarks>
+    /// 读不出来时一切安装与"信任发布者"都会被拒 —— 后者要写进的正是这个读不出来的库。
+    /// 界面据此在安装之前先把问题摆出来,而不是让用户点完"信任并安装"再收一个看不懂的错。
+    /// </remarks>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public async Task<string?> GetTrustStoreErrorAsync(CancellationToken cancellationToken = default)
+    {
+        await EnsureTrustInitializedAsync(cancellationToken).ConfigureAwait(false);
+        return _trustLoadError;
+    }
+
+    /// <summary>
+    /// 放弃读不出来的信任库,重建一份空的(见 <see cref="PluginTrustRepository.ResetAsync" />)。
+    /// **只在用户明确确认之后调用。**
+    /// </summary>
+    /// <remarks>
+    /// 代价:已信任的发布者要重新信任;已安装插件的收据丢失,下次启动按旁装目录收养成 TOFU 基线。
+    /// 这一次进程里已经因信任库不可用被拒的插件不在这里就地复活 —— 它们的页签与命令已经撤下,
+    /// 重启一次宿主就会重新走完整的发现与校验。
+    /// </remarks>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>旧文档的备份 id;原本就没有文档时为 <see langword="null" />。</returns>
+    public async Task<string?> ResetTrustStoreAsync(CancellationToken cancellationToken = default)
+    {
+        if (options.TrustRepository is not { } repository)
+        {
+            return null;
+        }
+        await _trustStateGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            string? backupId = await repository.ResetAsync(cancellationToken).ConfigureAwait(false);
+            _trustState = new PluginTrustState();
+            _trustLoadError = null;
+            _trustInitialized = true;
+            lock (_trustedPackageKeysGate)
+            {
+                _trustedPackageKeys.Clear();
+                foreach (string configuredKey in options.TrustedPackageKeys ?? [])
+                {
+                    _trustedPackageKeys.Add(configuredKey);
+                }
+            }
+            Log(backupId is null
+                ? "Plugin trust store reset by the user."
+                : $"Plugin trust store reset by the user; the unreadable document was kept as '{backupId}'.");
+            return backupId;
+        }
+        finally
+        {
+            _trustStateGate.Release();
+        }
+    }
+
     /// <summary>读取包签名及可供用户通过独立渠道核对的 SHA-256 公钥指纹。</summary>
     public PluginPackageTrustInfo InspectPackageTrust(string packagePath)
     {

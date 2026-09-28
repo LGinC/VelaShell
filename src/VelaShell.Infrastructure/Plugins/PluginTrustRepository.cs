@@ -106,6 +106,31 @@ public sealed class PluginTrustRepository(
         return state;
     }
 
+    /// <summary>
+    /// 放弃读不出来的信任状态,重新落一份空的。**只能由用户明确确认后调用** ——
+    /// 读不出来可能是密钥换了,也可能是有人改写了密文;自动重建等于让任何能写数据库的程序
+    /// 一键抹掉已信任发布者、把管理页装的插件的防篡改收据降级成 TOFU 基线。
+    /// </summary>
+    /// <remarks>
+    /// 原文档不删,另存为 <c>plugin_trust_v1.unreadable-时间戳</c>:密钥找回来时还有得恢复。
+    /// </remarks>
+    /// <returns>备份文档的 id;原本就没有文档时为 <see langword="null" />。</returns>
+    public async Task<string?> ResetAsync(CancellationToken cancellationToken = default)
+    {
+        string backupId = $"{DocumentId}.unreadable-{DateTime.UtcNow:yyyyMMddHHmmss}";
+        bool backedUp = await engine.WithCollectionAsync(SonnetDbEngine.ConfigCollection, collection =>
+        {
+            if (collection.Get(DocumentId)?.Json is not { } stored)
+            {
+                return false;
+            }
+            collection.Upsert(backupId, stored);
+            return true;
+        }, cancellationToken).ConfigureAwait(false);
+        await SaveAsync(new PluginTrustState(), cancellationToken).ConfigureAwait(false);
+        return backedUp ? backupId : null;
+    }
+
     /// <summary>认证加密并原子更新 SonnetDB 中的信任状态文档。</summary>
     public Task SaveAsync(PluginTrustState state, CancellationToken cancellationToken = default)
     {

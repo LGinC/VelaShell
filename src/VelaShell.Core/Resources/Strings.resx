@@ -4373,6 +4373,17 @@ Overwrite it?</value>
 Trusting it will also trust future packages signed by the same key. Plugins can execute code with your account permissions.</value></data>
   <data name="PluginManager_InstallAnyway" xml:space="preserve"><value>Install anyway</value></data>
   <data name="PluginManager_TrustAndInstall" xml:space="preserve"><value>Trust publisher and install</value></data>
+  <data name="PluginManager_TrustStoreBrokenTitle" xml:space="preserve"><value>Plugin trust store is unreadable</value></data>
+  <data name="PluginManager_TrustStoreBrokenWarning" xml:space="preserve"><value>The local plugin trust store can't be decrypted, so no plugin can be installed and no publisher can be trusted until it is fixed.
+
+Reason: {0}
+
+This usually means the encryption key (~/.velashell/secret.key) changed, for example after switching Windows accounts, reinstalling the system, or copying the data folder from another machine. If you can restore the original key, close VelaShell and put it back instead.
+
+Resetting creates an empty trust store (the unreadable one is kept as a backup). You will need to trust publishers again, and already installed plugins lose their tamper-detection receipts. Restart VelaShell afterwards so installed plugins are checked again.</value></data>
+  <data name="PluginManager_TrustStoreReset" xml:space="preserve"><value>Reset trust store</value></data>
+  <data name="PluginManager_TrustStoreResetDone" xml:space="preserve"><value>Plugin trust store was reset. Restart VelaShell to reload installed plugins.</value></data>
+  <data name="PluginManager_TrustStoreResetFailed" xml:space="preserve"><value>Could not reset the plugin trust store: {0}</value></data>
   <data name="PluginManager_PublisherChangedTitle" xml:space="preserve"><value>Plugin publisher changed</value></data>
   <data name="PluginManager_PublisherChangedWarning" xml:space="preserve"><value>"{0}" was installed from a package signed by:
 

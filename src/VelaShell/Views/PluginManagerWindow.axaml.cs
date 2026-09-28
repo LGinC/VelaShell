@@ -139,6 +139,10 @@ public partial class PluginManagerWindow : Window
     /// <param name="path">包路径。</param>
     private async Task InstallWithPromptsAsync(PluginManagerViewModel vm, string path)
     {
+        if (!await EnsureTrustStoreUsableAsync(vm))
+        {
+            return;
+        }
         PluginPackageTrustInfo trust;
         try
         {
@@ -201,6 +205,28 @@ public partial class PluginManagerWindow : Window
         }
     }
 
+    /// <summary>
+    /// 信任库读不出来时先问一句要不要重建;可用、或用户同意重建且成功时返回 <see langword="true" />。
+    /// </summary>
+    /// <remarks>
+    /// 放在签名那几问之前:库读不出来时,"信任发布者"要写进的正是这个库,
+    /// 用户点了"信任并安装"只会先装失败、再收一个信任失败的错 —— 看起来就像"我明明信任了还是不行"。
+    /// 重建不自动做:读不出来也可能是有人改写了密文,抹掉已信任发布者与防篡改收据得由用户点头。
+    /// </remarks>
+    private async Task<bool> EnsureTrustStoreUsableAsync(PluginManagerViewModel vm)
+    {
+        if (await vm.GetTrustStoreErrorAsync() is not { } error)
+        {
+            return true;
+        }
+        bool reset = await MessageDialog.ConfirmAsync(this,
+            Strings.Get("PluginManager_TrustStoreBrokenTitle"),
+            Strings.Format("PluginManager_TrustStoreBrokenWarning", error),
+            confirmText: Strings.Get("PluginManager_TrustStoreReset"),
+            danger: true);
+        return reset && await vm.ResetTrustStoreAsync();
+    }
+
     /// <summary>行内「更新到 x.y.z」:先把包下下来,再按发布者变没变决定怎么装。</summary>
     /// <remarks>
     /// 指纹与安装时钉住的那一个对得上,就直接装 —— 用户当初点头认下的就是这把钥匙,
@@ -243,6 +269,10 @@ public partial class PluginManagerWindow : Window
     /// <param name="row">要更新的那一行。</param>
     private async Task UpdateRowAsync(PluginManagerViewModel vm, PluginRowViewModel row)
     {
+        if (!await EnsureTrustStoreUsableAsync(vm))
+        {
+            return;
+        }
         if (await vm.DownloadUpdateAsync(row) is not { } package)
         {
             return;
