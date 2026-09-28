@@ -41,6 +41,10 @@ public sealed class RoutingRemoteFileService(
         Resolve(sessionId).UploadFileAsync(sessionId, localPath, remotePath, progress, resumeOffset, cancellationToken);
 
     /// <inheritdoc />
+    public Task UploadStreamAsync(Guid sessionId, Stream source, string remotePath, long length, DateTime? lastWriteTime = null, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default) =>
+        Resolve(sessionId).UploadStreamAsync(sessionId, source, remotePath, length, lastWriteTime, progress, resumeOffset, cancellationToken);
+
+    /// <inheritdoc />
     public Task DownloadFileAsync(Guid sessionId, string remotePath, string localPath, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default) =>
         Resolve(sessionId).DownloadFileAsync(sessionId, remotePath, localPath, progress, resumeOffset, cancellationToken);
 

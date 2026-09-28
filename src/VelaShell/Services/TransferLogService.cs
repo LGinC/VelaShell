@@ -28,7 +28,13 @@ public static class TransferLogService
             string file = Path.Combine(dir, $"transfer-{DateTime.Now:yyyyMMdd}.log");
             string line = string.Join('\t',
                               DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
-                              type == TransferType.Upload ? "UPLOAD" : "DOWNLOAD",
+                              type switch
+                              {
+                                  TransferType.Upload => "UPLOAD",
+                                  TransferType.Copy => "COPY",
+                                  TransferType.Relay => "RELAY",
+                                  _ => "DOWNLOAD",
+                              },
                               localPath,
                               remotePath,
                               status.ToString().ToUpperInvariant()) +

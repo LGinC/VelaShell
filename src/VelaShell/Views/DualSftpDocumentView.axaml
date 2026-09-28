@@ -1,0 +1,92 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+             xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+             xmlns:vm="using:VelaShell.ViewModels"
+             xmlns:views="using:VelaShell.Views"
+             xmlns:pc="using:VelaShell.Controls.Controls"
+             xmlns:loc="using:VelaShell.Localization"
+             mc:Ignorable="d" d:DesignWidth="1000" d:DesignHeight="600"
+             x:Class="VelaShell.Views.DualSftpDocumentView"
+             x:DataType="vm:DualSftpDocumentViewModel">
+  <UserControl.Styles>
+    <!-- 文档级工具条上的「图标 + 文字」按钮,与 SftpDocumentView 同一规格。 -->
+    <Style Selector="Button.doc-tool">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="Height" Value="24" />
+      <Setter Property="MinHeight" Value="24" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.doc-tool:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+  </UserControl.Styles>
+  <!-- 外层背景与 SftpDocumentView 相同的理由:tint 由内部两栏各自单层承担,这里不再叠一层。 -->
+  <Border Background="{DynamicResource VelaBgDockDocument}">
+    <DockPanel>
+      <!-- 文档级工具条:两栏共用的操作。复制按钮写明方向 —— 两边都是远端,
+           「上传 / 下载」这对词在这里没有意义,只有「从哪栏到哪栏」。 -->
+      <Border DockPanel.Dock="Top" Height="32" Padding="10,0"
+              Background="{DynamicResource VelaBgSftpPanel}">
+        <Grid ColumnDefinitions="Auto,*">
+          <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+            <Button x:Name="CompareDirectoriesButton" Classes="doc-tool"
+                    Command="{Binding CompareDirectoriesCommand}"
+                    ToolTip.Tip="{loc:Localize Sync_CompareDirectoriesTip}"
+                    AutomationProperties.Name="{loc:Localize Sync_CompareDirectories}">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.git-compare}"
+                               Foreground="{DynamicResource VelaAccent}" VerticalAlignment="Center" />
+                <TextBlock Text="{loc:Localize Sync_CompareDirectories}" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="CopyLeftToRightButton" Classes="doc-tool"
+                    Command="{Binding CopyLeftToRightCommand}"
+                    ToolTip.Tip="{loc:Localize DualSftp_CopyToRightTip}"
+                    AutomationProperties.Name="{loc:Localize DualSftp_CopyToRight}">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <TextBlock Text="{loc:Localize DualSftp_CopyToRight}" VerticalAlignment="Center" />
+                <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.chevron-right}"
+                               Foreground="{DynamicResource VelaAccent}" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
+            <Button x:Name="CopyRightToLeftButton" Classes="doc-tool"
+                    Command="{Binding CopyRightToLeftCommand}"
+                    ToolTip.Tip="{loc:Localize DualSftp_CopyToLeftTip}"
+                    AutomationProperties.Name="{loc:Localize DualSftp_CopyToLeft}">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.chevron-left}"
+                               Foreground="{DynamicResource VelaAccent}" VerticalAlignment="Center" />
+                <TextBlock Text="{loc:Localize DualSftp_CopyToLeft}" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
+          </StackPanel>
+          <TextBlock Grid.Column="1" Margin="16,0,0,0"
+                     Text="{Binding CompareSummary}"
+                     IsVisible="{Binding CompareSummary, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                     Foreground="{DynamicResource VelaTextTertiary}"
+                     FontSize="{DynamicResource VelaFontSize11}"
+                     HorizontalAlignment="Right" VerticalAlignment="Center"
+                     TextTrimming="CharacterEllipsis" />
+        </Grid>
+      </Border>
+      <Grid MinWidth="564">
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*" MinWidth="280" />
+          <ColumnDefinition Width="4" />
+          <ColumnDefinition Width="*" MinWidth="280" />
+        </Grid.ColumnDefinitions>
+        <views:FileBrowserView x:Name="LeftPane" Grid.Column="0" DataContext="{Binding LeftFiles}" />
+        <GridSplitter Grid.Column="1" Background="{DynamicResource VelaBorderPrimary}"
+                      ResizeDirection="Columns" ResizeBehavior="PreviousAndNext" />
+        <views:FileBrowserView x:Name="RightPane" Grid.Column="2" DataContext="{Binding RightFiles}" />
+      </Grid>
+    </DockPanel>
+  </Border>
+</UserControl>

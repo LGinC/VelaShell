@@ -30,6 +30,34 @@ public sealed class SessionTreeNodeViewModel(
     /// <summary>该节点是否支持独立的 SFTP 操作。</summary>
     public bool CanOpenSftp => IsSshProfile || IsSftpProfile;
 
+    /// <summary>
+    /// 能否作为「在双栏 SFTP 中打开」的一栏:SSH / SFTP / FTP。插件协议不行 ——
+    /// 跨会话中转要从流上传,而插件的文件系统契约没有这一面。
+    /// </summary>
+    public bool CanOpenInDualSftp =>
+        !IsGroup && ConnectionType is ConnectionType.SSH or ConnectionType.SFTP or ConnectionType.FTP;
+
+    /// <summary>
+    /// 在资源管理器 Ctrl 双选里的次序:0 = 不在双选里,1 = 先选的(左栏),2 = 后选的(右栏)。
+    /// 由 <see cref="SessionTreeViewModel" /> 维护。
+    /// </summary>
+    public int DualSelectionOrder
+    {
+        get;
+        set
+        {
+            if (field == value)
+            {
+                return;
+            }
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(IsDualMarked));
+        }
+    }
+
+    /// <summary>是否处在 Ctrl 双选里(行按选中态高亮)。</summary>
+    public bool IsDualMarked => DualSelectionOrder > 0;
+
     /// <summary>节点显示名称,可在重命名时更新并触发通知。</summary>
     public string Name
     {

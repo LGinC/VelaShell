@@ -58,12 +58,13 @@ public class TransferItemViewModel : ReactiveObject
     /// <summary>失败且有重试动作时,面板显示"重试"按钮。</summary>
     public bool CanRetry => IsFailed && RetryAsync is not null;
 
-    /// <summary>传输方向指示符:上传为 "↑",下载为 "↓",远端复制为 "⧉"。</summary>
+    /// <summary>传输方向指示符:上传为 "↑",下载为 "↓",远端复制为 "⧉",两台远端之间中转为 "⇄"。</summary>
     public string Direction => _task.Type switch
     {
         TransferType.Upload => "↑",
         TransferType.Download => "↓",
         TransferType.Copy => "⧉",
+        TransferType.Relay => "⇄",
         _ => "?"
     };
 
@@ -159,10 +160,20 @@ public class TransferItemViewModel : ReactiveObject
             {
                 return $"{Direction} {Strings.Get("Msg_Waiting")}";
             }
-            string action = _task.Type == TransferType.Upload ? $"↑ {Strings.Get("Msg_Uploading")}" : $"↓ {Strings.Get("Msg_Downloading")}";
+            string action = _task.Type switch
+            {
+                TransferType.Upload => $"↑ {Strings.Get("Msg_Uploading")}",
+                TransferType.Relay => $"⇄ {Strings.Get("Msg_Relaying")}",
+                _ => $"↓ {Strings.Get("Msg_Downloading")}",
+            };
             if (_status == TransferStatus.Completed)
             {
-                action = _task.Type == TransferType.Upload ? $"↑ {Strings.Get("Msg_Uploaded")}" : $"↓ {Strings.Get("Msg_Downloaded")}";
+                action = _task.Type switch
+                {
+                    TransferType.Upload => $"↑ {Strings.Get("Msg_Uploaded")}",
+                    TransferType.Relay => $"⇄ {Strings.Get("Msg_Relayed")}",
+                    _ => $"↓ {Strings.Get("Msg_Downloaded")}",
+                };
             }
             else if (_status == TransferStatus.Failed)
             {

@@ -11,6 +11,27 @@
              x:Class="VelaShell.Views.SessionTreeView"
              x:DataType="vm:SessionTreeViewModel">
 
+  <UserControl.Resources>
+    <!-- Ctrl 双选两条会话后,右键其中任一条弹的是这份菜单,而不是行上原本那份
+         (原菜单一字未动,见 SessionTreeView.axaml.cs 的 UseMenuFor)。
+         DataContext 由代码后台设成树的视图模型:这份菜单是整棵树共用的一个实例。 -->
+    <ContextMenu x:Key="DualSelectionMenu" x:DataType="vm:SessionTreeViewModel">
+      <MenuItem Header="{loc:Localize Tree_OpenDualSftp}"
+                Command="{Binding OpenDualSftpCommand}"
+                Foreground="{DynamicResource VelaTextPrimary}"
+                FontWeight="Medium">
+        <MenuItem.Icon>
+          <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.arrow-right-left}"
+                         Foreground="{DynamicResource VelaAccent}" />
+        </MenuItem.Icon>
+      </MenuItem>
+      <!-- 双选里混进了插件协议(S3 …)时,上面那项是灰的;这一行说清楚为什么。 -->
+      <MenuItem Header="{loc:Localize Tree_OpenDualSftpUnsupported}"
+                IsEnabled="False"
+                IsVisible="{Binding !CanOpenDualSelection}" />
+    </ContextMenu>
+  </UserControl.Resources>
+
   <Panel>
 
   <!-- 一棵<b>摊平</b>的两层树:分组行 + 展开时紧随其后的会话行,由视图模型的
@@ -94,6 +115,10 @@
       <Style Selector="Border.session.selected">
         <Setter Property="Background" Value="{DynamicResource VelaBgActive}" />
       </Style>
+      <!-- Ctrl 双选的两行与选中行同一种高亮:两行都是"被选中的",只是列表控件本身是单选。 -->
+      <Style Selector="Border.session.dualmarked">
+        <Setter Property="Background" Value="{DynamicResource VelaBgActive}" />
+      </Style>
 
       <!-- 状态圆点:默认断开(红),connected 绿 / connecting 黄。 -->
       <Style Selector="Ellipse.dot">
@@ -111,6 +136,10 @@
         <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
       </Style>
       <Style Selector="Border.session.selected TextBlock.sessionName">
+        <Setter Property="Foreground" Value="{DynamicResource VelaAccent}" />
+        <Setter Property="FontWeight" Value="Medium" />
+      </Style>
+      <Style Selector="Border.session.dualmarked TextBlock.sessionName">
         <Setter Property="Foreground" Value="{DynamicResource VelaAccent}" />
         <Setter Property="FontWeight" Value="Medium" />
       </Style>
@@ -212,6 +241,7 @@
           <Border IsVisible="{Binding !IsGroup}"
                   Classes="session"
                   Classes.selected="{Binding IsSelected}"
+                  Classes.dualmarked="{Binding IsDualMarked}"
                   Classes.rootlevel="{Binding ShowsAtRootIndent}"
                   Height="28"
                   Cursor="Hand"

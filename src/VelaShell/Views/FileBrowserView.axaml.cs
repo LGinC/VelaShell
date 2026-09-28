@@ -442,18 +442,49 @@ public partial class FileBrowserView : UserControl
                ?? await StorageDefaults.HomeAsync(top);
     }
 
+    /// <summary>
+    /// 正在进行中的一次远程行拖拽:从哪一栏拖出、拖的是哪些条目。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 拖放载荷(<see cref="DragDropFormats.RemotePaths" /> + 路径)里没有会话 —— 它原本只给「远程 → 本地」用,
+    /// 本地栏只需要路径。双栏远程文档的另一栏要知道这些路径属于哪台机器,才能从那边读。
+    /// 与其改载荷格式(本地栏那边的解析也得跟着改),不如在进程内记下来源:
+    /// <see cref="DragDrop.DoDragDropAsync" /> 会一直等到落下或取消才返回,整个拖放期间这份记录都是有效的。
+    /// </para>
+    /// <para>
+    /// 只有来源恰好是本栏的 <see cref="FileBrowserViewModel.DualPeer" /> 才认 ——
+    /// 跨会话中转只属于双栏远程文档;同一栏里拖来拖去(#474 否决过的拖动移动)一律不接。
+    /// </para>
+    /// </remarks>
+    private static PeerDrag? s_activeRemoteDrag;
+
+    /// <summary>一次远程行拖拽的来源栏与条目。</summary>
+    private sealed record PeerDrag(FileBrowserViewModel Source, IReadOnlyList<RemoteFileInfoViewModel> Entries);
+
+    /// <summary>这次拖放是不是双栏远程文档里另一栏拖过来的行;是则给出那次拖拽。</summary>
+    private static PeerDrag? PeerDragFor(FileBrowserViewModel target, DragEventArgs e) =>
+        s_activeRemoteDrag is { } drag
+        && target.DualPeer is { } peer
+        && ReferenceEquals(drag.Source, peer)
+        && e.DataTransfer.TryGetText() is { } text
+        && text.StartsWith(DragDropFormats.RemotePaths, StringComparison.Ordinal)
+            ? drag
+            : null;
+
     private void OnFileListDragOver(object? sender, DragEventArgs e)
     {
-        if (DataContext is not FileBrowserViewModel)
+        if (DataContext is not FileBrowserViewModel vm)
         {
             e.DragEffects = DragDropEffects.None;
             return;
         }
-        // 接受操作系统文件拖入或跨面板的本地文件拖拽(VFTPL 文本标记)。
+        // 接受操作系统文件拖入、跨面板的本地文件拖拽(VFTPL 文本标记),以及双栏远程文档里另一栏的行。
         IReadOnlyList<string> osPaths = ExtractLocalPaths(e);
         bool isCrossPane = !string.IsNullOrEmpty(e.DataTransfer.TryGetText())
             && e.DataTransfer.TryGetText()!.StartsWith(DragDropFormats.LocalPaths);
-        e.DragEffects = (osPaths.Count > 0 || isCrossPane) ? DragDropEffects.Copy : DragDropEffects.None;
+        bool isPeer = PeerDragFor(vm, e) is not null;
+        e.DragEffects = (osPaths.Count > 0 || isCrossPane || isPeer) ? DragDropEffects.Copy : DragDropEffects.None;
         e.Handled = true;
     }
 
@@ -461,6 +492,12 @@ public partial class FileBrowserView : UserControl
     {
         if (DataContext is not FileBrowserViewModel vm)
         {
+            return;
+        }
+        if (PeerDragFor(vm, e) is { } peerDrag)
+        {
+            e.Handled = true;
+            await vm.ReceiveFromPeerAsync(peerDrag.Entries);
             return;
         }
         IReadOnlyList<string> paths = ExtractLocalPaths(e);
@@ -802,7 +839,16 @@ public partial class FileBrowserView : UserControl
                     && !pointerArgs.KeyModifiers.HasFlag(KeyModifiers.Shift));
             DragSelectionResolver.SynchronizeSelection(vm.SelectedFiles, entries);
             string[] paths = [.. entries.Select(item => item.FullPath)];
-            await StartRemoteDragAsync(paths, pointerArgs);
+            // 登记这次拖拽的来源,供双栏远程文档的另一栏认领(见 s_activeRemoteDrag)。
+            s_activeRemoteDrag = new(vm, entries);
+            try
+            {
+                await StartRemoteDragAsync(paths, pointerArgs);
+            }
+            finally
+            {
+                s_activeRemoteDrag = null;
+            }
             return;
         }
         await StartRemoteDragAsync([source.FullPath], pointerArgs);

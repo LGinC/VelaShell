@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Runtime.CompilerServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -138,17 +139,71 @@ public partial class SessionTreeView : UserControl
         PointerPointProperties properties = e.GetCurrentPoint(null).Properties;
         if (properties.IsRightButtonPressed)
         {
+            // 右键双选里的一行:保持双选,弹双选专用菜单;右键双选之外的行:选中它(双选随之结束),弹原菜单。
             viewModel.SelectedNode = node;
+            if (sender is Control row)
+            {
+                UseMenuFor(row, node, viewModel);
+            }
             return;
         }
         if (!properties.IsLeftButtonPressed)
         {
             return;
         }
+        if (IsToggleModifier(e.KeyModifiers))
+        {
+            // Ctrl + 单击:加入 / 移出双选。自己处理掉,不让列表再按它的单选规则改一遍选中项,
+            // 也不记拖拽起点 —— Ctrl 点下去是在选东西,不是要拖。
+            viewModel.ToggleDualSelection(node);
+            e.Handled = true;
+            return;
+        }
+        // 普通单击 = 重新开始选:双选就此结束(选中项交给列表照常处理)。
+        viewModel.ClearDualSelection();
         _dragNode = node;
         _dragPointerArgs = e;
         _dragOrigin = e.GetPosition(this);
         _isDragging = false;
+    }
+
+    /// <summary>
+    /// 多选的修饰键:Windows / Linux 是 Ctrl,macOS 上习惯的是 ⌘(Meta)—— 两个都认。
+    /// </summary>
+    private static bool IsToggleModifier(KeyModifiers modifiers) =>
+        (modifiers & (KeyModifiers.Control | KeyModifiers.Meta)) != 0;
+
+    /// <summary>各会话行自己的那份右键菜单(第一次换成双选菜单时记下,换回来时用)。</summary>
+    private readonly ConditionalWeakTable<Control, ContextMenu> _rowMenus = new();
+
+    /// <summary>
+    /// 右键按下时,给这一行挂上该弹的菜单:它在 Ctrl 双选里 → 双选专用菜单;否则 → 行上原本那份。
+    /// </summary>
+    /// <remarks>
+    /// 挂在按下而不是 ContextRequested 上:菜单是在松开右键时才弹的,按下时换好,弹出来的就是对的那份;
+    /// 而同一个控件上两个 ContextRequested 处理器谁先谁后,取决于注册顺序,靠不住。
+    /// 行上的原菜单一行没改,双选菜单是另一个实例 —— 两套菜单互不影响。
+    /// </remarks>
+    private void UseMenuFor(Control row, SessionTreeNodeViewModel node, SessionTreeViewModel viewModel)
+    {
+        if (!_rowMenus.TryGetValue(row, out ContextMenu? own))
+        {
+            if (row.ContextMenu is not { } original)
+            {
+                return;
+            }
+            own = original;
+            _rowMenus.Add(row, own);
+        }
+        if (node.IsDualMarked && viewModel.HasDualSelection && Resources["DualSelectionMenu"] is ContextMenu dual)
+        {
+            dual.DataContext = viewModel;
+            row.ContextMenu = dual;
+        }
+        else
+        {
+            row.ContextMenu = own;
+        }
     }
 
     // ── 拖动分组 ────────────────────────────────────────────────

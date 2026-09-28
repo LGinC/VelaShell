@@ -122,21 +122,53 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         {
             SftpFileSystem fs = EnsureConnected();
 
-            await using SftpFileStream remote = resumeOffset > 0
+            SftpFileStream remote = resumeOffset > 0
                 ? await fs.OpenAppendAsync(path, resumeOffset, cancellationToken: ct).ConfigureAwait(false)
                 : await fs.OpenWriteAsync(path, cancellationToken: ct).ConfigureAwait(false);
-
-            if (resumeOffset > 0)
+            try
             {
-                input.Seek(resumeOffset, SeekOrigin.Begin);
+                if (resumeOffset > 0)
+                {
+                    input.Seek(resumeOffset, SeekOrigin.Begin);
+                }
+
+                await CopyAsync(input, remote, resumeOffset, uploadCallback, ct).ConfigureAwait(false);
+
+                // **必须显式冲一次再关。** 流水线写入在 Flush 之前还有在途请求,
+                // 不等它们落地就关,表现是「上传显示完成,远端文件尾部却缺字节」。
+                await remote.FlushAsync(ct).ConfigureAwait(false);
             }
-
-            await CopyAsync(input, remote, resumeOffset, uploadCallback, ct).ConfigureAwait(false);
-
-            // **必须显式冲一次再关。** 流水线写入在 Flush 之前还有在途请求,
-            // 不等它们落地就关,表现是「上传显示完成,远端文件尾部却缺字节」。
-            await remote.FlushAsync(ct).ConfigureAwait(false);
+            catch (Exception) when (ct.IsCancellationRequested)
+            {
+                // 调用方取消了:如实报取消。
+                // 在途的 WRITE 带着同一个令牌,取消后它们被记成写入失败,于是关流(或此前的 Flush)
+                // 会抛「传输中断,已确认 N 字节,从这里续传」。若照 await using 的写法让关流的异常往外冒,
+                // 它会顶掉真正的原因 —— 用户按的是取消,看到的却是一条中断、还说能续传(续不续由上层的设置决定,
+                // 双栏远程之间的中转就根本不续)。关流照做(要发 CLOSE 还句柄),它的异常不再往外报。
+                await CloseQuietlyAsync(remote).ConfigureAwait(false);
+                throw new OperationCanceledException(ct);
+            }
+            catch (Exception)
+            {
+                // 真失败:与原先 await using 的行为一致 —— 关流报出的「中断 + 精确的已确认字节数」若有,就由它往外报。
+                await remote.DisposeAsync().ConfigureAwait(false);
+                throw;
+            }
+            await remote.DisposeAsync().ConfigureAwait(false);
         }, ct);
+    }
+
+    /// <summary>关一个写到一半、已经不打算要了的远端流:CLOSE 照发,关流报的错不再往外抛。</summary>
+    private static async ValueTask CloseQuietlyAsync(SftpFileStream remote)
+    {
+        try
+        {
+            await remote.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 已经在按取消收尾了,关流的失败(在途写入被取消)正是取消本身的回声。
+        }
     }
 
     /// <inheritdoc />

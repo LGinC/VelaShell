@@ -101,7 +101,7 @@
               <DataTemplate x:DataType="docking:TerminalDocument">
                 <local:DockTabItem />
               </DataTemplate>
-              <DataTemplate x:DataType="docking:SftpDocument">
+              <DataTemplate x:DataType="docking:SftpDocumentBase">
                 <local:SftpDockTabItem />
               </DataTemplate>
               <DataTemplate x:DataType="docking:PluginDocument">

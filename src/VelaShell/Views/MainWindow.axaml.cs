@@ -454,6 +454,10 @@ public partial class MainWindow : Window
                 tree.OpenSftpRequested += profile =>
                     Dispatcher.UIThread.Post(() => FireAndForget.Run(() => vm.OpenSftpForProfileAsync(profile)));
 
+                // Ctrl 双选两条连接后的「在双栏 SFTP 中打开」:两台远端并排,先选的在左。
+                tree.OpenDualSftpRequested += (left, right) =>
+                    Dispatcher.UIThread.Post(() => FireAndForget.Run(() => vm.OpenDualSftpDocumentAsync(left, right)));
+
                 // 端口转发:打开隧道管理面板并预选该服务器(全局非模态,见 fuXS7);
                 // 无需先建立终端会话,面板会在创建隧道时后台自动连接。
                 tree.PortForwardRequested += profile =>
@@ -943,7 +947,7 @@ public partial class MainWindow : Window
         DataContext is MainWindowViewModel vm
         && (
             vm.TerminalTabs.Any(t => t.IsConnected)
-            || vm.Layout.AllDocuments().OfType<SftpDocument>().Any()
+            || vm.Layout.AllDocuments().OfType<SftpDocumentBase>().Any()
         );
 
     private async Task ConfirmCloseAsync()

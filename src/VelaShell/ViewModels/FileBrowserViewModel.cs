@@ -2002,6 +2002,93 @@ public class FileBrowserViewModel : ReactiveObject
         }
     }
 
+    /// <summary>
+    /// 双栏远程文档里与本栏并排的另一栏;单栏文档与终端侧边栏为 null。
+    /// 只有它的条目能经 <see cref="ReceiveFromPeerAsync" /> 中转进来 —— 跨会话传输是双栏远程文档的能力,
+    /// 不向别处的面板开放。
+    /// </summary>
+    public FileBrowserViewModel? DualPeer { get; set; }
+
+    /// <summary>
+    /// 把另一栏(<see cref="DualPeer" />)选中的条目搬进本栏当前目录:文件夹递归,冲突策略、并发上限、
+    /// 进度、取消、失败重试、断点续传与普通上传完全共用;字节经本机内存流式中转,不落盘。
+    /// </summary>
+    /// <param name="entries">另一栏里的条目(上级目录行会被忽略)。</param>
+    /// <param name="ct">取消令牌。</param>
+    public async Task ReceiveFromPeerAsync(IReadOnlyList<RemoteFileInfoViewModel> entries, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        if (DualPeer is not { } peer)
+        {
+            return;
+        }
+        RemoteFileInfoViewModel[] targets = [.. entries.Where(static f => !f.IsParentEntry)];
+        if (targets.Length == 0)
+        {
+            return;
+        }
+        var source = new RelaySource(peer._sftpService, peer._sessionId, peer.ServerDisplayName);
+        string destination = CurrentPath;
+        try
+        {
+            ErrorMessage = null;
+            TransferSink?.BeginPreparing();
+            var plan = new List<PlannedFileTransfer>();
+            foreach (RemoteFileInfoViewModel item in targets)
+            {
+                await BuildRelayPlanAsync(source, item.FullPath, item.Name, item.IsDirectory, destination, plan, ct);
+            }
+            await RunTransferBatchAsync(plan, ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // 用户在规划/执行过程中取消了;不算错误。
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+        }
+        finally
+        {
+            TransferSink?.EndPreparing();
+        }
+        await RefreshAsync(ct);
+    }
+
+    /// <summary>
+    /// 遍历另一栏的文件或目录(递归),把每个文件的一条中转计划追加到 <paramref name="plan" />,
+    /// 并在本会话上建好对应的目录。链接口径与下载一致:用户显式选中的那一个照常跟随,
+    /// 目录里嵌套的「指向目录的链接」不进去(可能指回祖先形成无限展开)。
+    /// </summary>
+    private async Task BuildRelayPlanAsync(
+        RelaySource source,
+        string sourcePath,
+        string name,
+        bool isDirectory,
+        string destinationDir,
+        List<PlannedFileTransfer> plan,
+        CancellationToken ct
+    )
+    {
+        string destination = RemotePath.Combine(destinationDir, name);
+        if (!isDirectory)
+        {
+            plan.Add(new(TransferType.Relay, sourcePath, destination, Source: source));
+            TransferSink?.UpdatePreparingCount(plan.Count);
+            return;
+        }
+        await _sftpService.EnsureDirectoryAsync(_sessionId, destination, ct);
+        List<RemoteFileInfo> children = await source.Service.ListDirectoryAsync(source.SessionId, sourcePath, ct);
+        foreach (RemoteFileInfo child in children)
+        {
+            if (child is { IsSymbolicLink: true, IsDirectory: true })
+            {
+                continue;
+            }
+            await BuildRelayPlanAsync(source, child.FullPath, child.Name, child.IsDirectory, destination, plan, ct);
+        }
+    }
+
     private async Task DownloadSelectedAsync(CancellationToken ct = default)
     {
         if (PickFolderForDownload is null)
@@ -2121,7 +2208,7 @@ public class FileBrowserViewModel : ReactiveObject
                     TransferStatus status;
                     using (await AcquireTransferSlotAsync(maxConcurrent, cts.Token))
                     {
-                        status = await RunTransferAsync(item.Type, item.LocalPath, item.RemotePath, item.ResumeOffset, cts.Token, conflictDecision);
+                        status = await RunTransferAsync(item.Type, item.LocalPath, item.RemotePath, item.ResumeOffset, cts.Token, conflictDecision, item.Source);
                     }
                     TransferSink?.NotifyBatchItemSettled(batchId);
                     if (settled is not null)
@@ -2174,7 +2261,8 @@ public class FileBrowserViewModel : ReactiveObject
                                 item.RemotePath,
                                 item.ResumeOffset,
                                 cts.Token,
-                                conflictDecision
+                                conflictDecision,
+                                item.Source
                             );
                         }
                         TransferSink?.NotifyBatchItemSettled(batchId);
@@ -2222,8 +2310,8 @@ public class FileBrowserViewModel : ReactiveObject
         CancellationToken ct
     )
     {
-        // 仅上传/下载支持续传。
-        if (item.Type is not (TransferType.Upload or TransferType.Download))
+        // 上传、下载与两台远端之间的中转支持续传(同会话复制不支持)。
+        if (item.Type is not (TransferType.Upload or TransferType.Download or TransferType.Relay))
         {
             return null;
         }
@@ -2256,14 +2344,17 @@ public class FileBrowserViewModel : ReactiveObject
             }
             else
             {
-                // 上传:检查远端文件是否已存在(部分)。
+                // 上传 / 中转:检查目标文件是否已存在(部分)。
                 long remoteSize = await GetRemoteFileSizeAsync(item.RemotePath, remoteNames, ct);
                 if (remoteSize <= 0)
                 {
                     return null;
                 }
-                var localInfo = new FileInfo(item.LocalPath);
-                if (remoteSize < localInfo.Length)
+                // 源的长度:上传看本地文件,中转看另一栏那台机器上的文件。
+                long sourceSize = item.Source is { } source
+                    ? (await source.Service.GetFileInfoAsync(source.SessionId, item.LocalPath, ct)).Size
+                    : new FileInfo(item.LocalPath).Length;
+                if (remoteSize < sourceSize)
                 {
                     return item with { ResumeOffset = remoteSize };
                 }
@@ -2400,7 +2491,7 @@ public class FileBrowserViewModel : ReactiveObject
             return map;
         }
         foreach (
-            string dir in plan.Where(p => p.Type == TransferType.Upload)
+            string dir in plan.Where(p => WritesRemote(p.Type))
                 .Select(p => RemotePath.Parent(p.RemotePath))
                 .Distinct()
         )
@@ -2447,6 +2538,12 @@ public class FileBrowserViewModel : ReactiveObject
         remotePath[(remotePath.TrimEnd('/').LastIndexOf('/') + 1)..];
 
     /// <summary>
+    /// 这类传输的目标是不是本会话上的一个新文件(上传与中转):远端同名冲突的检查只对它们做。
+    /// 同会话复制(Copy)沿用既有行为,不在这里。
+    /// </summary>
+    private static bool WritesRemote(TransferType type) => type is TransferType.Upload or TransferType.Relay;
+
+    /// <summary>
     /// 按冲突策略处理一个计划中的上传:对照预列举的远端目录名单检查同名文件
     /// (“覆盖”策略下连列举都省去,直接沿用 SFTP 覆盖语义),冲突时返回 null 表示跳过,
     /// 或返回(可能改了远端路径的)计划项。
@@ -2458,7 +2555,7 @@ public class FileBrowserViewModel : ReactiveObject
         CancellationToken ct
     )
     {
-        if (item.Type != TransferType.Upload || TransferOptions.ConflictPolicy == "overwrite")
+        if (!WritesRemote(item.Type) || TransferOptions.ConflictPolicy == "overwrite")
         {
             return item;
         }
@@ -2539,9 +2636,14 @@ public class FileBrowserViewModel : ReactiveObject
         string remotePath,
         long resumeOffset,
         CancellationToken ct,
-        BatchConflictDecision? conflictDecision = null
+        BatchConflictDecision? conflictDecision = null,
+        RelaySource? source = null
     )
     {
+        if (type == TransferType.Relay && source is null)
+        {
+            throw new ArgumentNullException(nameof(source), "A relay transfer needs its source session.");
+        }
         var task = new TransferTask
         {
             Id = Guid.NewGuid(),
@@ -2555,10 +2657,10 @@ public class FileBrowserViewModel : ReactiveObject
         TransferStatus finalStatus = TransferStatus.Failed;
         TransferSink?.AddTransfer(task);
         TransferItemViewModel? item = TransferSink?.FindTransfer(task.Id);
-        if (item is not null && type is TransferType.Upload or TransferType.Download)
+        if (item is not null && type is TransferType.Upload or TransferType.Download or TransferType.Relay)
         {
-            // 失败后可从传输面板重试:闭包捕获本会话与路径,重试时重新探测续传起点。
-            item.RetryAsync = () => RetryTransferAsync(type, localPath, remotePath);
+            // 失败后可从传输面板重试:闭包捕获本会话与路径(中转还有源端),重试时重新探测续传起点。
+            item.RetryAsync = () => RetryTransferAsync(new(type, localPath, remotePath, Source: source));
         }
         var progress = new Progress<TransferProgress>(p =>
         {
@@ -2575,6 +2677,9 @@ public class FileBrowserViewModel : ReactiveObject
         // 目标"同名但内容对不上"时改名重传的落点(仅"重命名"策略):当前这一行按跳过收尾,
         // 改名后的整份重传在本方法收尾之后另起一行,免得一行的标题与它实际写的目标对不上。
         PlannedFileTransfer? renamedRetry = null;
+        // 中转的源端可能在规划之后被删掉/改名:那种失败发生在目标被碰之前,目标若是用户原有的同名文件,
+        // 它完好无损,绝不能按"半截文件"清掉。其余类型维持原先的判断。
+        bool targetTouched = type != TransferType.Relay;
         try
         {
             long offset = resumeOffset;
@@ -2599,6 +2704,7 @@ public class FileBrowserViewModel : ReactiveObject
                         localPath,
                         remotePath,
                         conflictDecision,
+                        source,
                         ct
                     );
                     if (action.Renamed is { } target)
@@ -2622,26 +2728,33 @@ public class FileBrowserViewModel : ReactiveObject
         {
             item?.Status = TransferStatus.Cancelled;
             finalStatus = TransferStatus.Cancelled;
-            await CleanupPartialTargetAsync(type, localPath, remotePath);
+            if (targetTouched)
+            {
+                await CleanupPartialTargetAsync(type, localPath, remotePath);
+            }
             throw;
         }
         catch (Exception ex)
         {
             item?.Status = TransferStatus.Failed;
             ErrorMessage = ex.Message;
-            await CleanupPartialTargetAsync(type, localPath, remotePath);
+            if (targetTouched)
+            {
+                await CleanupPartialTargetAsync(type, localPath, remotePath);
+            }
         }
         finally
         {
             TransferSink?.NotifyTaskSettled();
 
-            // 记录传输日志(设置 → 文件传输 → 日志记录)。
+            // 记录传输日志(设置 → 文件传输 → 日志记录)。中转的"本地"一列写源端,带上它是哪台机器 ——
+            // 光一个远端路径,事后看日志分不出是从哪边搬过来的。
             if (TransferOptions.TransferLogging)
             {
                 TransferLogService.Append(
                     TransferOptions.LogDirectory,
                     type,
-                    localPath,
+                    source is null ? localPath : $"{source.DisplayName}:{localPath}",
                     remotePath,
                     finalStatus
                 );
@@ -2651,7 +2764,7 @@ public class FileBrowserViewModel : ReactiveObject
         // 改名重传另起一行(目标是新名字,不存在同名冲突,不会再撞上续传核实)。
         if (renamedRetry is { } fresh)
         {
-            await RunTransferAsync(fresh.Type, fresh.LocalPath, fresh.RemotePath, 0, ct, conflictDecision);
+            await RunTransferAsync(fresh.Type, fresh.LocalPath, fresh.RemotePath, 0, ct, conflictDecision, fresh.Source);
         }
         return finalStatus;
 
@@ -2662,6 +2775,11 @@ public class FileBrowserViewModel : ReactiveObject
             // Copy:LocalPath = 远端源路径,RemotePath = 远端目标路径。
             TransferType.Copy =>
                 _sftpService.CopyAsync(_sessionId, localPath, remotePath, progress, ct),
+            // Relay:LocalPath = 另一栏会话上的源路径,RemotePath = 本会话上的目标路径。
+            TransferType.Relay =>
+                RemoteRelay.CopyFileAsync(
+                    source!.Service, source.SessionId, localPath, _sftpService, _sessionId, remotePath,
+                    progress, () => targetTouched = true, startAt, ct),
             _ =>
                 _sftpService.DownloadFileAsync(_sessionId, remotePath, localPath, progress, startAt, ct),
         };
@@ -2709,6 +2827,7 @@ public class FileBrowserViewModel : ReactiveObject
         string localPath,
         string remotePath,
         BatchConflictDecision? decision,
+        RelaySource? source,
         CancellationToken ct
     )
     {
@@ -2729,7 +2848,9 @@ public class FileBrowserViewModel : ReactiveObject
                     : new PlannedFileTransfer(
                         type,
                         localPath,
-                        await NextAvailableRemoteNameAsync(remotePath, [], ct)
+                        await NextAvailableRemoteNameAsync(remotePath, [], ct),
+                        // 中转改名重传时源端不变,得带着它 —— 否则那一行不知道从哪台机器读。
+                        Source: source
                     )
             ),
             _ => new(false),
@@ -2748,9 +2869,8 @@ public class FileBrowserViewModel : ReactiveObject
     /// 用 None 意味着「全部取消」按它无可奈何:面板上明明写着已取消,这一条却还在传,
     /// 而且没有任何办法停下来 —— 只能等它自己传完。
     /// </remarks>
-    private async Task RetryTransferAsync(TransferType type, string localPath, string remotePath)
+    private async Task RetryTransferAsync(PlannedFileTransfer planned)
     {
-        var planned = new PlannedFileTransfer(type, localPath, remotePath);
         PlannedFileTransfer resolved = planned;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         Guid batchId = TransferSink?.BeginBatch(1, cts) ?? Guid.Empty;
@@ -2770,7 +2890,7 @@ public class FileBrowserViewModel : ReactiveObject
             using (await AcquireTransferSlotAsync(
                        Math.Clamp(TransferOptions.MaxConcurrentTransfers, 1, 16), cts.Token))
             {
-                await RunTransferAsync(resolved.Type, resolved.LocalPath, resolved.RemotePath, resolved.ResumeOffset, cts.Token);
+                await RunTransferAsync(resolved.Type, resolved.LocalPath, resolved.RemotePath, resolved.ResumeOffset, cts.Token, source: resolved.Source);
             }
             TransferSink?.NotifyBatchItemSettled(batchId);
         }
@@ -2790,6 +2910,7 @@ public class FileBrowserViewModel : ReactiveObject
     /// (此前"下载取消即删本地半截"恰好毁掉素材,已纠正);
     /// 续传关闭且开了"清理半截文件" → 上传删远端半截、下载删本地半截,失败与取消同样对待;
     /// 两者皆关 → 保留,由用户自行处理。Copy 是远端到远端的原子操作,不产生半截目标。
+    /// 中转(Relay)与上传同一口径:目标上的半截同样是下次续传的素材。
     /// </summary>
     private async Task CleanupPartialTargetAsync(TransferType type, string localPath, string remotePath)
     {
@@ -2801,7 +2922,7 @@ public class FileBrowserViewModel : ReactiveObject
         {
             TryDeleteLocalFile(localPath);
         }
-        else if (type == TransferType.Upload)
+        else if (WritesRemote(type))
         {
             try
             {
@@ -3371,14 +3492,19 @@ public class FileBrowserViewModel : ReactiveObject
     /// A single file scheduled for transfer, resolved up front so the whole batch can be
     /// counted and cancelled as one unit.
     /// For Copy: LocalPath = remote source, RemotePath = remote destination.
+    /// For Relay: LocalPath = source path on <see cref="Source" />'s session, RemotePath = destination here.
     /// ResumeOffset > 0 indicates a breakpoint resume from that byte position.
     /// </summary>
     private sealed record PlannedFileTransfer(
         TransferType Type,
         string LocalPath,
         string RemotePath,
-        long ResumeOffset = 0
+        long ResumeOffset = 0,
+        RelaySource? Source = null
     );
+
+    /// <summary>中转传输的源端:另一栏的文件服务、会话与显示名(日志与传输面板用)。</summary>
+    private sealed record RelaySource(ISftpService Service, Guid SessionId, string DisplayName);
 }
 
 /// <summary>目录同步交给传输管道的一项:方向、本地路径、远端路径。</summary>

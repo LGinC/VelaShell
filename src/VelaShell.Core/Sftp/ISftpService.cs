@@ -26,6 +26,28 @@ public interface ISftpService : IAsyncDisposable
     /// <summary>将本地文件上传到给定远端路径,并报告传输进度。</summary>
     Task UploadFileAsync(Guid sessionId, string localPath, string remotePath, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// 把一条<b>顺序读</b>的流写成远端文件(覆盖),并报告传输进度。流由调用方打开、调用方释放。
+    /// <para>
+    /// 双栏远程文档里的跨会话传输靠它:源端 <see cref="OpenReadAsync" /> 读出来的流直接喂给目标端,
+    /// 字节只在内存里过一下,不落本地磁盘。<paramref name="length" /> 是源文件的字节数,
+    /// 只用于进度的分母(流本身可能不可 Seek,问不出长度);给 0 时进度退化成只报已传字节。
+    /// </para>
+    /// <para>
+    /// <paramref name="lastWriteTime" /> 不为 null 时,按「保留时间戳」设置把目标的修改时间对齐源文件
+    /// (与 <see cref="UploadFileAsync" /> 同一口径,尽力而为)。限速按上传方向计。
+    /// 后端没有这种能力(插件协议)时抛 <see cref="NotSupportedException" />。
+    /// </para>
+    /// <para>
+    /// <paramref name="resumeOffset" /> &gt; 0 表示断点续传,语义与 <see cref="UploadFileAsync" /> 相同:
+    /// 那个数只决定「要不要试着续」,真正的起点由实现按目标此刻的状态重新核实(可能回退、可能整份重传),
+    /// 核实不通过抛 <c>VelaSftpResumeMismatchException</c>。续传要能在源里来回定位,
+    /// 所以此时 <paramref name="source" /> <b>必须可 Seek</b>,否则抛 <see cref="ArgumentException" />;
+    /// 实现返回时源的位置不做保证。
+    /// </para>
+    /// </summary>
+    Task UploadStreamAsync(Guid sessionId, Stream source, string remotePath, long length, DateTime? lastWriteTime = null, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default);
+
     /// <summary>将远端文件下载到给定本地路径,并报告传输进度。</summary>
     Task DownloadFileAsync(Guid sessionId, string remotePath, string localPath, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default);
 
@@ -50,7 +72,7 @@ public interface ISftpService : IAsyncDisposable
     Task RenameAsync(Guid sessionId, string oldPath, string newPath, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// 将远端文件或目录树复制到同一服务器的另一路径。单个文件采用先下载到内存再上传的方式;
+    /// 将远端文件或目录树复制到同一服务器的另一路径。单个文件采用先下载到本地临时文件再上传的方式;
     /// 目录则逐文件递归复制。按文件回报传输进度。
     /// </summary>
     Task CopyAsync(Guid sessionId, string sourcePath, string destPath, IProgress<TransferProgress>? progress = null, CancellationToken cancellationToken = default);

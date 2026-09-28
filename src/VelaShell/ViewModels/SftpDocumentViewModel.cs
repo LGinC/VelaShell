@@ -10,7 +10,7 @@ using VelaShell.Presentation.Services;
 namespace VelaShell.ViewModels;
 
 /// <summary>持有一个独立 SFTP 文档的全部状态与生命周期资源。</summary>
-public sealed class SftpDocumentViewModel : ReactiveObject, IAsyncDisposable
+public sealed class SftpDocumentViewModel : ReactiveObject, ISftpDocumentContent, IAsyncDisposable
 {
     private readonly Func<Guid, CancellationToken, Task> _disconnectAsync;
     private readonly SerializedSftpService _serializedSftp;
@@ -304,6 +304,9 @@ public sealed class SftpDocumentViewModel : ReactiveObject, IAsyncDisposable
     public SessionStatus Status => Session?.Status ?? SessionStatus.Connected;
     /// <summary>SSH 会话的唯一标识。</summary>
     public Guid SessionId { get; }
+
+    /// <inheritdoc />
+    public IReadOnlyList<Guid> SessionIds => [SessionId];
     /// <summary>SFTP 文档标签页的显示标题。</summary>
     public string Title { get; }
     /// <summary>本地文件浏览器面板。</summary>

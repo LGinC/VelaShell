@@ -186,6 +186,18 @@ public sealed class PluginProtocolFileService(PluginProtocolRegistry registry)
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// SDK 的 <see cref="IProtocolFileSystem" /> 只有「上传本地文件」这一面,没有从流上传,如实报不支持。
+    /// 跨会话中转(双栏远程文档)因此不接插件协议。
+    /// </remarks>
+    public Task UploadStreamAsync(Guid sessionId, Stream source, string remotePath, long length,
+        DateTime? lastWriteTime = null, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default)
+    {
+        Session session = Require(sessionId);
+        return Task.FromException(new NotSupportedException($"Protocol '{session.Descriptor.Id}' does not support streamed uploads."));
+    }
+
+    /// <inheritdoc />
     public Task DownloadFileAsync(Guid sessionId, string remotePath, string localPath,
         IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default)
     {
