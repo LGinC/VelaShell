@@ -2,7 +2,9 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using VelaShell.Core.Models;
 using VelaShell.Core.Protocols;
+using VelaShell.Core.Resources;
 using VelaShell.Core.Sftp;
+using VelaShell.Core.Ssh;
 using VelaShell.PluginSdk;
 using VelaShell.PluginSdk.Protocols;
 using VelaShell.PluginSdk.RemoteFs;
@@ -187,14 +189,33 @@ public sealed class PluginProtocolFileService(PluginProtocolRegistry registry)
 
     /// <inheritdoc />
     /// <remarks>
-    /// SDK 的 <see cref="IProtocolFileSystem" /> 只有「上传本地文件」这一面,没有从流上传,如实报不支持。
-    /// 跨会话中转(双栏远程文档)因此不接插件协议。
+    /// <para>
+    /// 从流上传是插件的<b>可选</b>能力:协议实现兼实现了 <see cref="IProtocolStreamUpload" /> 就转调它,
+    /// 没实现就如实报不支持(<see cref="IProtocolFileSystem" /> 本身只有「上传本地文件」这一面)。
+    /// 流式下载不需要另开一面,<see cref="IProtocolFileSystem.OpenReadAsync" /> 就是。
+    /// </para>
+    /// <para>
+    /// SDK 的这一面不续传,也就核实不了「目标上那个较短的同名文件是不是上一次的半截」:要求续传时抛
+    /// <see cref="VelaSftpResumeMismatchException" />,调用方把它交回同名冲突策略(与核实了但对不上同一条路)。
+    /// 悄悄整份重传会不经询问覆盖一个可能与此无关的文件。修改时间不设 —— 插件协议本来就设不了
+    /// (见 <see cref="SetLastWriteTimeAsync" />)。
+    /// </para>
     /// </remarks>
     public Task UploadStreamAsync(Guid sessionId, Stream source, string remotePath, long length,
         DateTime? lastWriteTime = null, IProgress<TransferProgress>? progress = null, long resumeOffset = 0, CancellationToken cancellationToken = default)
     {
+        ArgumentNullException.ThrowIfNull(source);
         Session session = Require(sessionId);
-        return Task.FromException(new NotSupportedException($"Protocol '{session.Descriptor.Id}' does not support streamed uploads."));
+        if (session.FileSystem is not IProtocolStreamUpload streaming)
+        {
+            return Task.FromException(new NotSupportedException($"Protocol '{session.Descriptor.Id}' does not support streamed uploads."));
+        }
+        if (resumeOffset > 0)
+        {
+            return Task.FromException(new VelaSftpResumeMismatchException(Strings.Format("SftpSvc_ResumeUnverifiable", remotePath)));
+        }
+        var bridge = ProgressBridge.For(progress, GetFileName(remotePath));
+        return Guard(session, () => streaming.UploadStreamAsync(session.Key, source, remotePath, length, bridge, cancellationToken));
     }
 
     /// <inheritdoc />

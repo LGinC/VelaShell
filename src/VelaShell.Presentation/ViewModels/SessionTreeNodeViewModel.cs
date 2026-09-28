@@ -31,11 +31,15 @@ public sealed class SessionTreeNodeViewModel(
     public bool CanOpenSftp => IsSshProfile || IsSftpProfile;
 
     /// <summary>
-    /// 能否作为「在双栏 SFTP 中打开」的一栏:SSH / SFTP / FTP。插件协议不行 ——
-    /// 跨会话中转要从流上传,而插件的文件系统契约没有这一面。
+    /// 从连接类型看,能否作为「在双栏 SFTP 中打开」的一栏:SSH / SFTP / FTP / 插件协议。
     /// </summary>
+    /// <remarks>
+    /// 插件协议里只有**文件协议**(S3、WebDAV…)能进双栏,工作台(Redis…)与终端协议(Telnet…)不行 ——
+    /// 这要问插件注册表,树节点问不到。工作台由宿主经 <see cref="SessionTreeViewModel.DualSftpFilter" />
+    /// 同步排掉;终端协议要等插件激活才认得出,打开时再如实报错。
+    /// </remarks>
     public bool CanOpenInDualSftp =>
-        !IsGroup && ConnectionType is ConnectionType.SSH or ConnectionType.SFTP or ConnectionType.FTP;
+        !IsGroup && ConnectionType is ConnectionType.SSH or ConnectionType.SFTP or ConnectionType.FTP or ConnectionType.Plugin;
 
     /// <summary>
     /// 在资源管理器 Ctrl 双选里的次序:0 = 不在双选里,1 = 先选的(左栏),2 = 后选的(右栏)。

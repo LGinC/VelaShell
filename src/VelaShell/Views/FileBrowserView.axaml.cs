@@ -465,6 +465,7 @@ public partial class FileBrowserView : UserControl
     /// <summary>这次拖放是不是双栏远程文档里另一栏拖过来的行;是则给出那次拖拽。</summary>
     private static PeerDrag? PeerDragFor(FileBrowserViewModel target, DragEventArgs e) =>
         s_activeRemoteDrag is { } drag
+        && target.AcceptsStreamedUploads
         && target.DualPeer is { } peer
         && ReferenceEquals(drag.Source, peer)
         && e.DataTransfer.TryGetText() is { } text

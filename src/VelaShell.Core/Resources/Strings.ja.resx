@@ -478,6 +478,9 @@
   <data name="Download" xml:space="preserve">
     <value>ダウンロード</value>
   </data>
+  <data name="DualSftp_CannotReceive" xml:space="preserve">
+    <value>{0} は別のサーバーからストリームで送られるファイルを受け取れません(プラグインがストリームアップロードに対応していません)。</value>
+  </data>
   <data name="DualSftp_CompareSummary" xml:space="preserve">
     <value>左 {0} 件が異なる · 右 {1} 件が異なる · {2} 件が同一</value>
   </data>
@@ -492,6 +495,9 @@
   </data>
   <data name="DualSftp_CopyToRightTip" xml:space="preserve">
     <value>左で選択したファイルとフォルダーを、このコンピューター経由のストリームで右の現在のフォルダーへ転送します(ローカルディスクには書き込みません)</value>
+  </data>
+  <data name="DualSftp_NotAFileProtocol" xml:space="preserve">
+    <value>{0} はファイルプロトコルではないため、2 ペインのファイルタブでは開けません。</value>
   </data>
   <data name="Edit" xml:space="preserve">
     <value>編集</value>
@@ -897,6 +903,9 @@
   </data>
   <data name="Msg_Relaying" xml:space="preserve">
     <value>転送中</value>
+  </data>
+  <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
+    <value>{0} の再開位置を確認できないため(転送元を読み戻せないか、転送先が再開に対応していません)、同名の競合として処理します。</value>
   </data>
   <data name="Sftp_NewSymlink" xml:space="preserve">
     <value>シンボリックリンクを作成</value>
@@ -3301,7 +3310,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>2 ペイン SFTP で開く</value>
   </data>
   <data name="Tree_OpenDualSftpUnsupported" xml:space="preserve">
-    <value>並べて開けるのは SSH、SFTP、FTP 接続のみです</value>
+    <value>並べて開けるのは SSH、SFTP、FTP とプラグインのファイルプロトコルのみです</value>
   </data>
   <data name="Tree_OpenInNewTab" xml:space="preserve">
     <value>新しいタブで開く</value>

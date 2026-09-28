@@ -292,8 +292,90 @@ public sealed class PluginProtocolTests
         Assert.AreEqual("s3cr3t", fileSystem.LastRequest.GetString("token"));
     }
 
+    /// <summary>插件兼实现了从流上传:宿主契约上的调用按会话键原样转过去,进度经桥换成宿主的进度。</summary>
+    [TestMethod]
+    public async Task FileService_UploadStream_RoutesToAPluginThatSupportsIt()
+    {
+        var registry = new PluginProtocolRegistry();
+        using var fileSystem = new StreamingProtocolFileSystem();
+        registry.Register(PluginId, Descriptor(), fileSystem);
+        var service = new PluginProtocolFileService(registry);
+        Guid sessionId = await service.OpenSessionAsync(Profile());
+        var reports = new List<TransferProgress>();
+
+        await service.UploadStreamAsync(sessionId, new MemoryStream([1, 2, 3, 4]), "/bucket/a.bin", 4,
+            progress: new SynchronousProgress(reports.Add));
+
+        Assert.AreEqual("/bucket/a.bin", fileSystem.LastPath);
+        Assert.AreEqual(4L, fileSystem.LastLength);
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, fileSystem.Received);
+        Assert.IsNotEmpty(reports, "插件报的进度要经桥交到宿主。");
+    }
+
+    /// <summary>插件没实现这一面:如实报不支持,而不是假装成功。</summary>
+    [TestMethod]
+    public async Task FileService_UploadStream_WithoutPluginSupport_IsNotSupported()
+    {
+        var registry = new PluginProtocolRegistry();
+        using var fileSystem = new FakeProtocolFileSystem();
+        registry.Register(PluginId, Descriptor(), fileSystem);
+        var service = new PluginProtocolFileService(registry);
+        Guid sessionId = await service.OpenSessionAsync(Profile());
+
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(
+            () => service.UploadStreamAsync(sessionId, new MemoryStream([1]), "/bucket/a.bin", 1));
+    }
+
+    /// <summary>
+    /// SDK 的这一面不续传,就核实不了目标上那个较短的同名文件是不是上一次的半截:按「对不上」报,
+    /// 交回同名冲突策略。悄悄整份重传会不经询问覆盖一个可能与此无关的文件。
+    /// </summary>
+    [TestMethod]
+    public async Task FileService_UploadStream_AskedToResume_ReportsItCannotVerify()
+    {
+        var registry = new PluginProtocolRegistry();
+        using var fileSystem = new StreamingProtocolFileSystem();
+        registry.Register(PluginId, Descriptor(), fileSystem);
+        var service = new PluginProtocolFileService(registry);
+        Guid sessionId = await service.OpenSessionAsync(Profile());
+
+        await Assert.ThrowsExactlyAsync<Core.Ssh.VelaSftpResumeMismatchException>(
+            () => service.UploadStreamAsync(sessionId, new MemoryStream(new byte[10]), "/bucket/a.bin", 10, resumeOffset: 4));
+        Assert.IsNull(fileSystem.LastPath, "核实不了就一个字节都不写。");
+    }
+
+    /// <summary>同步回调的进度接收器(<see cref="Progress{T}" /> 会把回调投递到别的线程)。</summary>
+    private sealed class SynchronousProgress(Action<TransferProgress> report) : IProgress<TransferProgress>
+    {
+        public void Report(TransferProgress value) => report(value);
+    }
+
+    /// <summary>兼实现了从流上传的协议替身:读完流并报一次进度。</summary>
+    private sealed class StreamingProtocolFileSystem : FakeProtocolFileSystemBase, IProtocolStreamUpload
+    {
+        public string? LastPath { get; private set; }
+
+        public long LastLength { get; private set; }
+
+        public byte[] Received { get; private set; } = [];
+
+        public async Task UploadStreamAsync(string sessionId, Stream source, string path, long length,
+            IProgress<RemoteTransferProgress>? progress = null, CancellationToken cancellationToken = default)
+        {
+            using var copy = new MemoryStream();
+            await source.CopyToAsync(copy, cancellationToken);
+            Received = copy.ToArray();
+            LastPath = path;
+            LastLength = length;
+            progress?.Report(new(Received.Length, length));
+        }
+    }
+
     /// <summary>只记录调用的协议实现替身。</summary>
-    private sealed class FakeProtocolFileSystem : IProtocolFileSystem, IDisposable
+    private sealed class FakeProtocolFileSystem : FakeProtocolFileSystemBase;
+
+    /// <summary>只记录调用的协议实现替身的共同部分。</summary>
+    private abstract class FakeProtocolFileSystemBase : IProtocolFileSystem, IDisposable
     {
         public ProtocolConnectRequest? LastRequest { get; private set; }
 

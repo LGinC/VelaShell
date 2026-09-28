@@ -1,4 +1,6 @@
 using VelaShell.Core.Models;
+using VelaShell.Core.Resources;
+using VelaShell.Core.Ssh;
 
 namespace VelaShell.Core.Sftp;
 
@@ -12,11 +14,12 @@ namespace VelaShell.Core.Sftp;
 /// 两段是同时进行的,耗时约等于较慢那一段,而不是两段之和。
 /// </para>
 /// <para>
-/// 源与目标可以是不同的协议(SFTP ↔ FTP),两端都只经 <see cref="ISftpService" />。
+/// 源与目标可以是不同的协议(SFTP、FTP、插件的文件协议两两组合),两端都只经 <see cref="ISftpService" />。
 /// </para>
 /// <para>
 /// 支持断点续传,口径与上传相同:目标上前一次留下的半截,核实尾部与源一致后从那里接着写。
-/// 核实要在源里来回定位,所以只有源可 Seek(SFTP)时才续;FTP 的源流是一条顺序的数据连接,整份重传。
+/// 核实要在源里来回定位,所以只有源可 Seek(SFTP)时才续;源回不了头时核实不了,按「对不上」交回同名冲突策略,
+/// 而不是悄悄整份重传(那会不经询问覆盖一个可能与此无关的同名文件)。
 /// </para>
 /// </remarks>
 public static class RemoteRelay
@@ -35,7 +38,8 @@ public static class RemoteRelay
     /// </param>
     /// <param name="resumeOffset">
     /// &gt; 0 表示目标已有前一次留下的半截,试着从那里接着传(真正的起点由目标端按此刻的状态核实,
-    /// 见 <see cref="ISftpService.UploadStreamAsync" />)。源流不可 Seek(FTP 的数据流)时续不了,整份重传。
+    /// 见 <see cref="ISftpService.UploadStreamAsync" />)。源流不可 Seek(FTP 的数据流、多数插件协议)时核实不了,
+/// 抛 <see cref="VelaSftpResumeMismatchException" />,目标未被碰过。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
     public static async Task CopyFileAsync(
@@ -56,6 +60,14 @@ public static class RemoteRelay
         // 挡在打开流之前,报出来的是那条路径找不到,而不是一条读到一半断掉的流。
         RemoteFileInfo info = await source.GetFileInfoAsync(sourceSessionId, sourcePath, cancellationToken).ConfigureAwait(false);
         await using Stream stream = await source.OpenReadAsync(sourceSessionId, sourcePath, cancellationToken).ConfigureAwait(false);
+        if (resumeOffset > 0 && !stream.CanSeek)
+        {
+            // 续传点是按「目标比源短」探出来的,那个短文件是不是上一次的半截,得回到源里比对尾部才知道 ——
+            // 源回不了头(FTP 的数据连接、多数插件协议)就核实不了。悄悄整份重传等于不经询问覆盖一个
+            // 可能与此无关的同名文件,所以按「对不上」报:调用方会把它交回同名冲突策略。
+            // 此时目标还没被碰过(writing 没有回调)。
+            throw new VelaSftpResumeMismatchException(Strings.Format("SftpSvc_ResumeUnverifiable", targetPath));
+        }
         writing?.Invoke();
         await target.UploadStreamAsync(
             targetSessionId,
@@ -64,7 +76,7 @@ public static class RemoteRelay
             Math.Max(0, info.Size),
             info.LastModified == default ? null : info.LastModified,
             progress,
-            stream.CanSeek ? resumeOffset : 0,
+            resumeOffset,
             cancellationToken).ConfigureAwait(false);
     }
 }

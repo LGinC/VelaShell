@@ -3650,13 +3650,24 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
 
     /// <summary>
     /// 一次文档型连接连上的那条会话:连它所用的配置(登录弹窗可能改过字段)、会话标识、
-    /// SSH 会话对象(FTP 没有,为 null),以及断开它的回调。
+    /// SSH 会话对象(FTP 与插件协议没有,为 null),以及断开它的回调。
     /// </summary>
+    /// <param name="Profile">连它所用的配置。</param>
+    /// <param name="SessionId">会话标识。</param>
+    /// <param name="Session">SSH 会话对象;FTP 与插件协议为 null。</param>
+    /// <param name="DisconnectAsync">断开它的回调。</param>
+    /// <param name="Descriptor">插件协议的描述(右键动作、标签图标);内建协议为 null。</param>
+    /// <param name="AcceptsStreamedUploads">
+    /// 能否接收流式上传(双栏远程之间的中转要靠它):内建协议恒能;插件协议看它有没有兼实现
+    /// <see cref="IProtocolStreamUpload" />。
+    /// </param>
     private sealed record DocumentSessionConnection(
         SessionProfile Profile,
         Guid SessionId,
         SshSession? Session,
-        Func<Guid, CancellationToken, Task> DisconnectAsync);
+        Func<Guid, CancellationToken, Task> DisconnectAsync,
+        ProtocolDescriptor? Descriptor = null,
+        bool AcceptsStreamedUploads = true);
 
     /// <summary>
     /// 文档型连接没连上的结局。<see cref="Error" /> 为 null = 用户取消了(撤占位,不报错);
@@ -3986,6 +3997,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 {
                     ConnectionType.SSH or ConnectionType.SFTP => await ConnectSshDocumentSessionAsync(profile, ui).ConfigureAwait(true),
                     ConnectionType.FTP => await ConnectFtpDocumentSessionAsync(profile, ui).ConfigureAwait(true),
+                    ConnectionType.Plugin when CanOpenInDualSftp(profile) => await ConnectPluginForDualAsync(profile, ui).ConfigureAwait(true),
                     _ => (null, new(profile, new NotSupportedException(Strings.Get("Tree_OpenDualSftpUnsupported")))),
                 };
                 if (connection is null)
@@ -4020,8 +4032,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             return null;
         }
 
-        static DualSftpEndpoint ToEndpoint(DocumentSessionConnection connection) =>
-            new(connection.Profile, connection.SessionId, connection.Session, connection.DisconnectAsync);
+        DualSftpEndpoint ToEndpoint(DocumentSessionConnection connection) =>
+            new(connection.Profile, connection.SessionId, connection.Session, connection.DisconnectAsync)
+            {
+                Protocol = connection.Descriptor,
+                AcceptsStreamedUploads = connection.AcceptsStreamedUploads,
+                InvokeProtocolAction = connection.Descriptor is { Actions.Count: > 0 }
+                    ? ProtocolActionInvoker(connection.SessionId)
+                    : null,
+            };
     }
 
     /// <summary>回滚用:把已经连上的几条会话全部断开。</summary>
@@ -4093,6 +4112,57 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         {
             ui.Document.TypeLabel = descriptor.DisplayName;
         }
+
+        (DocumentSessionConnection? connection, DocumentConnectFailure failure) =
+            await ConnectPluginDocumentSessionAsync(profile, ui, descriptor).ConfigureAwait(true);
+        if (connection is null)
+        {
+            FinishFailedDocumentConnect(ui, failure);
+            return null;
+        }
+        AppSettings settings = _latestSettings ?? await LoadSettingsSnapshotAsync().ConfigureAwait(true);
+        var viewModel = new SftpDocumentViewModel(
+            connection.Profile,
+            connection.SessionId,
+            connection.DisconnectAsync,
+            _sftpService,
+            settings.Transfer,
+            FileTransfer,
+            QueryDefaultEditorPathAsync);
+        // 协议专属的右键菜单项:声明式,按下右键那一帧就能画出来。
+        if (descriptor is { Actions.Count: > 0 })
+        {
+            // 传协议声明本身:菜单在每次右键时按命中行重建(见 FileBrowserViewModel.ContextTarget)。
+            viewModel.RemoteFiles.SetProtocolActions(descriptor.DisplayName, descriptor.Actions);
+            viewModel.RemoteFiles.InvokeProtocolAction = ProtocolActionInvoker(connection.SessionId);
+        }
+        // 插件文件协议(S3 …)的标签图标由插件自报;没给就退回通用插头。
+        var document = new SftpDocument(viewModel) { PluginTabIcon = descriptor?.Icon };
+        ui.HandOver(document);
+        TrackDocumentSession(connection.SessionId, profile.Id, SessionStatus.Connected);
+        return document;
+    }
+
+    /// <summary>插件协议右键动作的执行入口:转给插件,带上这条会话。</summary>
+    private Func<string, string, Task> ProtocolActionInvoker(Guid sessionId) =>
+        (actionId, path) => _pluginProtocols!.InvokeActionAsync(sessionId, actionId, path, CancellationToken.None);
+
+    /// <summary>
+    /// 为文件标签连上一条插件协议会话:缺凭据先弹框(声明了匿名访问的协议不弹)、认证失败原地重试三次、
+    /// 证书未信任时提示后重连。只负责连上,不建文档 —— 单栏与双栏文档共用它。
+    /// </summary>
+    /// <param name="profile">会话配置。</param>
+    /// <param name="ui">这次连接的界面表示。</param>
+    /// <param name="descriptor">协议描述(判断是否允许匿名);插件还没解析出来时为 null。</param>
+    private async Task<(DocumentSessionConnection? Connection, DocumentConnectFailure Failure)> ConnectPluginDocumentSessionAsync(
+        SessionProfile profile,
+        DocumentConnectUi ui,
+        ProtocolDescriptor? descriptor)
+    {
+        if (_pluginProtocols is not { } plugins)
+        {
+            return (null, new(profile, null));
+        }
         bool allowsAnonymous = descriptor?.Features.HasFlag(ProtocolFeatures.AnonymousAccess) == true;
 
         SessionProfile current = profile;
@@ -4108,8 +4178,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             {
                 if (InteractiveAuthenticator is not { } prompt)
                 {
-                    ui.Abandon();
-                    return null;
+                    return (null, new(current, null));
                 }
                 ui.EndAttempt();
                 SessionProfile? prompted = await prompt(current).ConfigureAwait(true);
@@ -4117,8 +4186,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 {
                     // 用户取消:这是"不连了",不是失败,不弹提示,占位标签一并撤走。
                     LastConnectionError = null;
-                    ui.Abandon();
-                    return null;
+                    return (null, new(current, null));
                 }
                 current = prompted;
             }
@@ -4126,34 +4194,12 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             try
             {
                 ui.BeginAttempt();
-                Guid sessionId = await _pluginProtocols.OpenSessionAsync(current, ui.Token).ConfigureAwait(true);
-                AppSettings settings = _latestSettings ?? await LoadSettingsSnapshotAsync().ConfigureAwait(true);
-                var viewModel = new SftpDocumentViewModel(
-                    current,
-                    sessionId,
-                    _pluginProtocols.CloseSessionAsync,
-                    _sftpService,
-                    settings.Transfer,
-                    FileTransfer,
-                    QueryDefaultEditorPathAsync);
-                // 协议专属的右键菜单项:声明式,按下右键那一帧就能画出来。
-                if (descriptor is { Actions.Count: > 0 })
-                {
-                    // 传协议声明本身:菜单在每次右键时按命中行重建(见 FileBrowserViewModel.ContextTarget)。
-                    viewModel.RemoteFiles.SetProtocolActions(descriptor.DisplayName, descriptor.Actions);
-                    viewModel.RemoteFiles.InvokeProtocolAction = (actionId, path) =>
-                        _pluginProtocols.InvokeActionAsync(sessionId, actionId, path, CancellationToken.None);
-                }
-                // 插件文件协议(S3 …)的标签图标由插件自报;没给就退回通用插头。
-                var document = new SftpDocument(viewModel) { PluginTabIcon = descriptor?.Icon };
-                ui.HandOver(document);
-                TrackDocumentSession(sessionId, profile.Id, SessionStatus.Connected);
-                return document;
+                Guid sessionId = await plugins.OpenSessionAsync(current, ui.Token).ConfigureAwait(true);
+                return (new(current, sessionId, null, plugins.CloseSessionAsync), default);
             }
             catch (OperationCanceledException)
             {
-                ui.Abandon();
-                return null;
+                return (null, new(current, null));
             }
             catch (PluginProtocolCertificateException certificate)
             {
@@ -4174,27 +4220,64 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     continue;
                 }
                 // 用户自己点了"不信任",原因他清楚 —— 再弹一扇框只是复述他刚做的决定。
-                LastConnectionError = certificate.Message;
-                Toasts.Error(LastConnectionError);
-                ui.Fail(certificate.Message);
-                return null;
+                return (null, new(current, certificate, certificate.Message));
             }
             catch (PluginProtocolAuthenticationException auth)
             {
                 lastAuthFailure = auth;
-                continue;
             }
             catch (Exception ex)
             {
-                ReportDocumentConnectFailure(ui, current, ex);
-                return null;
+                return (null, new(current, ex));
             }
         }
-        if (lastAuthFailure is not null)
+        return (null, new(current, lastAuthFailure));
+    }
+
+    /// <summary>
+    /// 双栏远程文档里的一栏连插件协议:先解析协议(可能触发惰性激活),只接文件协议,
+    /// 再走共用的连接循环,并记下这一栏能不能接收流式上传与协议的右键动作。
+    /// </summary>
+    private async Task<(DocumentSessionConnection? Connection, DocumentConnectFailure Failure)> ConnectPluginForDualAsync(
+        SessionProfile profile,
+        DocumentConnectUi ui)
+    {
+        PluginProtocolRegistration? registration = _protocolRegistry is { } registry
+            ? await registry.ResolveAsync(profile.PluginProtocolId).ConfigureAwait(true)
+            : null;
+        // 解析不到(插件没装 / 被禁用)不在这里拦:下面打开会话时会抛「协议不可用」,那条提示更准确。
+        // 解析到了却没有文件系统的,是终端协议(Telnet…),进不了文件标签。
+        if (registration is { FileSystem: null })
         {
-            ReportDocumentConnectFailure(ui, current, lastAuthFailure);
+            string name = registration.Descriptor.DisplayName is { Length: > 0 } display ? display : ProfileDisplayName(profile);
+            return (null, new(profile, new NotSupportedException(Strings.Format("DualSftp_NotAFileProtocol", name))));
         }
-        return null;
+        (DocumentSessionConnection? connection, DocumentConnectFailure failure) =
+            await ConnectPluginDocumentSessionAsync(profile, ui, registration?.Descriptor).ConfigureAwait(true);
+        return connection is null
+            ? (null, failure)
+            : (connection with
+            {
+                Descriptor = registration?.Descriptor,
+                AcceptsStreamedUploads = registration?.FileSystem is IProtocolStreamUpload,
+            }, default);
+    }
+
+    /// <summary>
+    /// 资源管理器问:这条配置能不能进双栏。SSH / SFTP / FTP 可以;插件协议里排掉工作台(Redis…),
+    /// 这一问是同步的、不装载插件。终端协议(Telnet…)要激活后才认得出,打开时再报。
+    /// </summary>
+    /// <param name="profile">连接配置。</param>
+    /// <returns>能进双栏为 true。</returns>
+    public bool CanOpenInDualSftp(SessionProfile profile)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        return profile.ConnectionType switch
+        {
+            ConnectionType.SSH or ConnectionType.SFTP or ConnectionType.FTP => true,
+            ConnectionType.Plugin => _protocolRegistry?.KindOf(profile.PluginProtocolId) is not PluginConnectionKind.Workspace,
+            _ => false,
+        };
     }
 
     /// <summary>

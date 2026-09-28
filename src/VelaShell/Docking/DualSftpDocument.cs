@@ -29,8 +29,11 @@ public sealed class DualSftpDocument : SftpDocumentBase
     /// <summary>标签页色条取左栏那台机器的标识色(左栏是资源管理器里先选中的那条)。</summary>
     public override IBrush ConnectionAccentBrush => ConnectionAccent.BrushForProfile(ViewModel.LeftProfile);
 
-    /// <summary>协议图标同样取左栏:两栏都是文件浏览器,图标答的只是「这是一个文件标签」。</summary>
-    public override TabIcon? TabIcon => ConnectionIcon.ForSession(ViewModel.LeftProfile, null);
+    /// <summary>
+    /// 协议图标同样取左栏:两栏都是文件浏览器,图标答的只是「这是一个文件标签」。
+    /// 左栏是插件协议(S3…)时用插件自报的图标,与单栏文档同一口径。
+    /// </summary>
+    public override TabIcon? TabIcon => ConnectionIcon.ForSession(ViewModel.LeftProfile, ViewModel.LeftPluginIcon);
 
     /// <inheritdoc />
     public override string ConnectionTooltip =>

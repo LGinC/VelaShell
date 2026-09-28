@@ -160,8 +160,21 @@ public class SessionTreeDualSelectionTests
     }
 
     [TestMethod]
-    public async Task APluginProtocolInThePair_CannotBeOpenedSideBySide()
+    public async Task APluginFileProtocolInThePair_CanBeOpenedSideBySide()
     {
+        // S3 这类插件文件协议可以进双栏(与 SFTP / FTP 互相搬文件)。
+        _vm.SelectedNode = Node(_alpha);
+        _vm.ToggleDualSelection(Node(_bucket));
+
+        Assert.IsTrue(_vm.CanOpenDualSelection);
+        Assert.IsTrue(await _vm.OpenDualSftpCommand.CanExecute.FirstAsync());
+    }
+
+    [TestMethod]
+    public async Task TheHostFilter_CanRuleAPairOut()
+    {
+        // 工作台类插件(Redis…)由宿主判断排掉 —— 树只认得连接类型,问不到插件注册表。
+        _vm.DualSftpFilter = profile => profile.ConnectionType != ConnectionType.Plugin;
         _vm.SelectedNode = Node(_alpha);
         _vm.ToggleDualSelection(Node(_bucket));
 
