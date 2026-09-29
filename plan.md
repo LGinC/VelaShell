@@ -1354,3 +1354,34 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - `DESIGN.md` §4.2 标题栏一行补上这两处,并写明「原先是实心强调色按钮的号召性动作,变成图标后在该做的时候转强调色」。
 
 **二、验证**:`RemoteFileEditorDirtyStateTests` 加一条(保存在标题栏、用共享主题;刚打开是灰色,改一个字转强调色,存上之后变回来);新增 `ConnectionDiagnosticsViewUiTests` 1 条(两个动作在标题栏、顺序与读屏名称、用共享主题、没报告时导出禁用、关闭键 27×27、目标行里只剩那一行字)。两扇窗口各截一帧人眼看过(编辑器干净 / 有改动两帧)。
+
+## ✅ 138. 2026-09-29 导入会话、新建连接两个对话框的标题栏按 28 高重排;X11「受信任」对齐(用户需求)
+
+**一、问题**:标题栏统一成 28 高(§118)之后,这两个对话框还是 48 高头部那一套 —— 16px 的 Material 实心图标、14px 标题、24×24 圆角 ×,硬塞进 28 显得又挤又大,× 也不贴角,与别的窗口不是一套。新建连接的高级选项里勾上 X11 转发后,「受信任(-Y)」勾选框靠「贴底 + 底边距 8」去凑本机 X 显示输入框的中线,凑出来高了一截。导入会话的自定义模式下,没找到来源(路径为空)的卡片底部多出一截空行。
+
+**二、做法**:
+- **标题栏**:两个对话框改成与连接诊断(§137)同一规格 —— 15px Lucide 线条图标(导入 `Icon.folder-input`、新建连接 `Icon.plug`,强调色)、13px 标题(放不下时截断)、27×27 关闭键贴住右上角(对话框不挂 `window-caption`,macOS 上照常显示 ×)。内容区、页签、页脚一律没动。
+- **X11 行**:改成两行网格 —— 标签单占一行,输入框与「受信任」同在第二行、各自垂直居中,不再靠边距凑。
+- **导入会话的空行**:来源路径那一行只在「自定义模式 **且** 路径非空」时显示(`MultiBinding` + `BoolConverters.And`)。空文字的 `TextBlock` 照样占一行高,再加上外层 StackPanel 的 6px 间距,就是那截空行。
+- 改之前改之后各截了四帧(导入的自动 / 自定义模式、新建连接的默认 / 高级展开并勾上 X11)人眼对照过。
+
+**三、验证**:新增 `DialogTitleBarAssert`(标题栏 28 高、没有实心 `PathIcon`、标题 13px、关闭键 27×27 且贴住右上角),导入会话与新建连接各一条用它;`ConnectionProfileViewUiTests.X11Trusted_SharesTheDisplayBoxCentreLine`(勾选框与输入框中线差不超过 0.5px);`SessionImportViewUiTests.ASourceWithoutAPath_TakesNoExtraLine`。三处各做了一次变异(勾选框改回贴底 + 边距、标题改回 14px、路径行改回只看模式),对应用例都变红。⚠️ **踩了一次 `AGENTS.md` 写着的坑**:路径那条第一版写成 `Dispatch(async () => …)`,会话没有 `Func<Task>` 重载,拿到的是没人等的 `Task<Task>`,第一个 await 之后的断言全被吞掉 —— 变异跑下去它照样绿,才发现是假绿。改成同步 body(窗口打开即扫描,假服务同步完成)后,变异下它按预期变红。整套跑下来卡死,由此引出 §139。
+
+## ✅ 139. 2026-09-29 headless UI 测试:await 写法把整套卡死;13 处假绿转真(§138 收尾时发现)
+
+**一、问题**:§138 收尾跑整套 `VelaShell.Tests`,卡在 `AuditLogViewUiTests` 上不动。二分下来与那个类测什么无关:**只要「`async Task` 用例里 `await _session.Dispatch(…)`」排在「`Dispatch(…).GetAwaiter().GetResult()` 写法」的前面就必卡**(XServer 宿主那组后面接 `DialogButtonStyleTests` 一样卡)。挂起转储里 MSTest 执行器的整条栈跑在 headless UI 线程上 —— 会话在 UI 线程上 `TrySetResult`,await 的续体就地跑在那条线程,MSTest 顺势在 UI 线程上开跑下一条;下一条在 UI 线程上阻塞等 UI 线程,死锁。此前整套跑得完(§136 时 1595 通过),应是执行顺序恰好没让两种写法相邻,这几轮加了用例、顺序一变就撞上了。
+顺藤摸瓜又查出同一处的老坑 —— `AGENTS.md` 写过,但没拦住:无返回值的 async lambda 绑到 `Dispatch<Task>`,第一个 await 之后的断言全丢。7 个文件里有 13 处这样写(`PluginPanelUiTests` 5、`PluginThemeTokensTests` 1、`StandaloneSftpDocumentBehaviorTests` 4、`LocalFilePaneViewUiTests` 2、`GlobalTransferConcurrencyTests` 的 `OnUi`)。临时探针(await 之后 `Assert.Fail`)实测照样「通过」。
+
+**二、做法**:
+- 新增 `tests/VelaShell.Tests/TestSupport/HeadlessUi.cs` 的 `RunOnUiAsync`(`Func<Task>` / `Action` 两个重载):内部走带返回值的重载,真正等完用例体,再经 `ContinueWith(…, TaskScheduler.Default)` 在线程池上转一手,await 它的续体就不会落在 UI 线程上。⚠️ `ConfigureAwait(ConfigureAwaitOptions.ForceYielding)` 治不了这个:它只管「任务已经完成」的情形。第一版就是这么写的,探针照样卡死。
+- 7 个文件 21 处 `await _session.Dispatch(…)` 改用它;阻塞写法里 6 处无返回值的 async lambda 补上 `return true;`。`AGENTS.md` 那条 headless 约束补上第二个坑。
+- **转真之后暴露出两条从 7 月 20 日起就没真跑过的用例**:b9d73914 把 `CloseSftpDocumentAsync` 改名为 `CloseSftpDocumentCoreAsync`,而 `StandaloneSftpDocumentBehaviorTests` 里两条「关闭在工作线程上完成」的用例还靠反射取旧名字。拿到 null 之后,它们卡在 `closeStarted` 上,假绿把这件事盖住了。改法:
+  - 方法名改对;取不到时当场抛 `MissingMethodException`,`closeStarted` 加 10 秒上限。
+  - 「会话树回到 UI 线程更新」那条原本是按 §39 之前的设计写的(直接往树上写 Connected)。现在树上的状态由会话账本合并而来,所以改为先像打开文档时那样 `TrackDocumentSession` 登记。
+  - 同一条用例里,把 `RxSchedulers.MainThreadScheduler` 临时换成 `AvaloniaScheduler(Dispatcher.UIThread)`,用完还原。本程序集的 ModuleInit 设的是就地执行,那样验不出「回到 UI 线程」。
+
+**三、验证**:
+- 探针确认了三点:`RunOnUiAsync` 下 await 之后的 `Assert.Fail` 会变红;续体落在线程池上;紧接着的阻塞写法不再卡住。
+- 原先卡住的组合复跑通过:XServer 宿主之后接对话框按钮 / 审计日志。
+- 变异:把产品里 `ScheduleSessionStatusRefresh` 改成就地调用,改写后的那条用例变红;还原后全过。
+- 整套 `VelaShell.Tests` **1601 通过 / 16 跳过**(Docker、发布、zsh / fish、符号链接等按环境早退的),1 分 12 秒跑完。因为用户的 VelaShell 开着、锁住了 `bin/Debug`,编译与测试都输出到 `artifacts/qa-testout`。
