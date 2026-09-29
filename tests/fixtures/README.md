@@ -54,3 +54,13 @@ docker compose -f docker-compose.test.yml up -d ssh-shells   # 端口 2223,口�
 ```bash
 docker compose -f docker-compose.test.yml up -d --build ssh-2fa   # 端口 2224,口令一律 velapass
 ```
+
+## ssh-legacy —— 「老设备」SSH 靶子(不是插件夹具)
+
+[ssh-legacy](ssh-legacy/Dockerfile) 把一台现代 OpenSSH 收窄成老交换机 / CentOS 6 那样:密钥交换只有
+`diffie-hellman-group14-sha1`、主机密钥只有 SHA-1 的 `ssh-rsa`、MAC 只有 `hmac-sha1`。默认清单一个都谈不成,
+放开老算法、或在自定义清单里把这三个加上,才连得上。服务的是 `VelaShell.Core.Tests` 的 `LegacyAlgorithmsIntegrationTests`。
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build ssh-legacy   # 端口 2225,账号 vela-legacy / velapass
+```

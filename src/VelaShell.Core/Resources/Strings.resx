@@ -4352,6 +4352,24 @@ Overwrite it?</value>
   <data name="Ssh_AlgoMismatchTitle" xml:space="preserve">
     <value>The peer ({0}) and this client have no algorithm in common.</value>
   </data>
+  <data name="Ssh_AlgoMismatchUnsupported" xml:space="preserve">
+    <value>  none of the peer's algorithms in this category is implemented in this version (typically an old device that only has CBC ciphers); allowing legacy algorithms will not help.</value>
+  </data>
+  <data name="Ssh_AlgoSpecEmpty" xml:space="preserve">
+    <value>There is a prefix but no algorithm names.</value>
+  </data>
+  <data name="Ssh_AlgoSpecInvalid" xml:space="preserve">
+    <value>Algorithm list ({0}) is invalid: {1}</value>
+  </data>
+  <data name="Ssh_AlgoSpecNothingLeft" xml:space="preserve">
+    <value>Nothing is left after the removal, so no server could be negotiated with.</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnimplemented" xml:space="preserve">
+    <value>{0} is not implemented in this version.</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnknown" xml:space="preserve">
+    <value>Unknown algorithm: {0}.</value>
+  </data>
   <data name="Ssh_AlgoMismatchPeer" xml:space="preserve">
     <value>  peer offers: {0}</value>
   </data>
@@ -4369,6 +4387,9 @@ Overwrite it?</value>
   </data>
   <data name="Ssh_AlgoKindMac" xml:space="preserve">
     <value>Integrity (MAC)</value>
+  </data>
+  <data name="Ssh_AlgoMismatchEnable" xml:space="preserve">
+    <value>  the peer's {0} can be enabled in the connection's SSH options ("Allow legacy algorithms" or a custom algorithm list).</value>
   </data>
   <data name="Plugin_ProtocolUnavailable" xml:space="preserve">
     <value>The plugin providing this protocol is unavailable. Install or enable it in the plugin manager.</value>
@@ -5031,11 +5052,23 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="Profile_SshFeatures" xml:space="preserve">
     <value>SSH options</value>
   </data>
+  <data name="Profile_SshLegacyAlgorithms" xml:space="preserve">
+    <value>Allow legacy algorithms (for old devices)</value>
+  </data>
+  <data name="Profile_SshLegacyAlgorithmsHint" xml:space="preserve">
+    <value>Appends diffie-hellman-group14-sha1, ssh-rsa (SHA-1) and hmac-sha1 after the defaults; they are only used when the server supports nothing newer. These are no longer considered secure — turn this on only for old switches and systems you cannot reach otherwise.</value>
+  </data>
   <data name="Profile_SshCompression" xml:space="preserve">
     <value>Enable compression (for high-latency or low-bandwidth links)</value>
   </data>
   <data name="Profile_SshCompressionHint" xml:space="preserve">
     <value>Turn it on when latency is high (cross-border or intercontinental links, round trips above ~100 ms) or bandwidth is scarce: terminal output and text files shrink a lot. Leave it off on a LAN or when you mostly move already-compressed data (images, archives) — it would only cost CPU. Falls back to no compression if the server does not support it.</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithms" xml:space="preserve">
+    <value>Custom algorithm lists</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithmsHint" xml:space="preserve">
+    <value>OpenSSH syntax: + appends to the defaults, - removes from them (* and ? wildcards allowed), ^ moves to the front; without a prefix the list is replaced. Leave empty for the default; hover a box to see the default and the other available algorithms.</value>
   </data>
   <data name="Profile_SshAgentForwarding" xml:space="preserve">
     <value>Forward ssh-agent (-A)</value>
@@ -5150,6 +5183,15 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="Profile_SshAgentKeySourceSaved" xml:space="preserve">
     <value>saved in this connection</value>
+  </data>
+  <data name="Profile_SshAlgoDefault" xml:space="preserve">
+    <value>Default</value>
+  </data>
+  <data name="Profile_SshAlgoTipDefaults" xml:space="preserve">
+    <value>Default: {0}</value>
+  </data>
+  <data name="Profile_SshAlgoTipMore" xml:space="preserve">
+    <value>Also available: {0}</value>
   </data>
   <data name="Profile_SshAgentKeySourceAgent" xml:space="preserve">
     <value>in agent</value>

@@ -181,17 +181,15 @@ internal static class SshConnectionAssembler
     }
 
     /// <summary>
-    /// 这一跳的算法集:开了压缩就把 <c>zlib@openssh.com</c> 排在 <c>none</c> 前面。
+    /// 这一跳的算法集:老算法开关与四个自定义清单(见 <see cref="SshAlgorithmPreferences" />),
+    /// 开了压缩就把 <c>zlib@openssh.com</c> 排在 <c>none</c> 前面。跳板链上每一跳各带各的。
     /// </summary>
     /// <remarks>
     /// 压缩是**协商**出来的:服务端没开(<c>Compression no</c>)时自动落回不压缩,
     /// 不会因此连不上。用的是 <c>zlib@openssh.com</c>(认证之后才开始压缩)而不是
     /// 老式的 <c>zlib</c> —— 后者在认证之前就压缩,是历史上 CRIME 一类攻击的入口。
     /// </remarks>
-    internal static SshAlgorithmSet Algorithms(VelaConnectionInfo info) =>
-        info.Ssh is { Compression: true }
-            ? SshAlgorithmSet.Default.WithCompression()
-            : SshAlgorithmSet.Default;
+    internal static SshAlgorithmSet Algorithms(VelaConnectionInfo info) => SshAlgorithmPreferences.Build(info.Ssh);
 
     /// <summary>
     /// 本机 agent 的端点:Windows 上默认是 OpenSSH Authentication Agent 服务的命名管道。

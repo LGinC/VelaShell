@@ -162,6 +162,37 @@ public sealed class SshInteropTests
         Assert.Contains("OpenSSH_7.4", translated.Message, "对端版本串是判断「这台设备太老」的依据");
     }
 
+    /// <summary>对端提供的算法里有本版实现了、只是没放开的:点名,并指到连接配置里去。</summary>
+    [TestMethod]
+    public void Translate_Negotiation_NamesWhatCanBeEnabled()
+    {
+        SshNegotiationException original = new(
+            SshNegotiationCategory.MacClientToServer,
+            ["hmac-md5", "hmac-sha1"],
+            ["hmac-sha2-256-etm@openssh.com", "hmac-sha2-256"],
+            "SSH-2.0-Cisco-1.25");
+
+        string message = SshInterop.Translate(original)!.Message;
+
+        StringAssert.Contains(message, Strings.Format("Ssh_AlgoMismatchEnable", "hmac-sha1"),
+            "hmac-md5 本版没实现,不该出现在「可以放开」里");
+    }
+
+    /// <summary>对端这一类只剩本版没实现的(典型是只有 CBC 的老设备):如实说放开也没用。</summary>
+    [TestMethod]
+    public void Translate_Negotiation_SaysWhenNothingCanBeEnabled()
+    {
+        SshNegotiationException original = new(
+            SshNegotiationCategory.EncryptionClientToServer,
+            ["aes128-cbc", "3des-cbc"],
+            ["aes256-gcm@openssh.com"],
+            "SSH-2.0-OpenSSH_5.3");
+
+        string message = SshInterop.Translate(original)!.Message;
+
+        StringAssert.Contains(message, Strings.Get("Ssh_AlgoMismatchUnsupported"));
+    }
+
     // ------------------------------------------------------------ SFTP 的分流
 
     /// <summary>

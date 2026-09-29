@@ -674,6 +674,57 @@
             <TextBlock Text="{loc:Localize Profile_SshCompressionHint}" Margin="0,0,0,4"
                        Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
 
+            <!-- 连老设备:一个开关管住最常见的情形(对端只剩 SHA-1 的那几个),
+                 自定义清单给要精确控制的人(照 ~/.ssh/config 里的写法抄过来)。 -->
+            <CheckBox IsChecked="{Binding SshLegacyAlgorithms}"
+                      Padding="0" MinHeight="0" VerticalAlignment="Center">
+              <TextBlock Text="{loc:Localize Profile_SshLegacyAlgorithms}"
+                         Margin="6,0,0,0"
+                         Foreground="{DynamicResource VelaTextSecondary}"
+                         FontSize="{DynamicResource VelaFontSize11}" FontWeight="Medium" />
+            </CheckBox>
+            <TextBlock Text="{loc:Localize Profile_SshLegacyAlgorithmsHint}" Margin="0,0,0,4"
+                       Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
+
+            <CheckBox IsChecked="{Binding SshCustomAlgorithms}"
+                      Padding="0" MinHeight="0" VerticalAlignment="Center">
+              <TextBlock Text="{loc:Localize Profile_SshCustomAlgorithms}"
+                         Margin="6,0,0,0"
+                         Foreground="{DynamicResource VelaTextSecondary}"
+                         FontSize="{DynamicResource VelaFontSize11}" FontWeight="Medium" />
+            </CheckBox>
+            <TextBlock Text="{loc:Localize Profile_SshCustomAlgorithmsHint}" Margin="0,0,0,4"
+                       Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
+            <Grid IsVisible="{Binding SshCustomAlgorithms}" Margin="20,0,0,4"
+                  ColumnDefinitions="Auto,8,*" RowDefinitions="Auto,4,Auto,4,Auto,4,Auto">
+              <TextBlock Grid.Row="0" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindKex}" />
+              <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding SshKexAlgorithms}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshKexAlgorithmsTip}" />
+              <TextBlock Grid.Row="2" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindHostKey}" />
+              <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding SshHostKeyAlgorithms}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshHostKeyAlgorithmsTip}" />
+              <TextBlock Grid.Row="4" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindEncryption}" />
+              <TextBox Grid.Row="4" Grid.Column="2" Text="{Binding SshCiphers}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshCiphersTip}" />
+              <TextBlock Grid.Row="6" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindMac}" />
+              <TextBox Grid.Row="6" Grid.Column="2" Text="{Binding SshMacs}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshMacsTip}" />
+            </Grid>
+            <TextBlock Classes="field-error" Text="{Binding SshAlgorithmsError}"
+                       IsVisible="{Binding SshAlgorithmsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
             <StackPanel IsVisible="{Binding SupportsPostAuthCommand}" Spacing="4">
               <CheckBox IsChecked="{Binding SshAgentForwarding}"
                         Padding="0" MinHeight="0" VerticalAlignment="Center">

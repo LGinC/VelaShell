@@ -1,11 +1,11 @@
 namespace VelaShell.Core.Models;
 
 /// <summary>
-/// 一条 SSH 连接配置在协议层的可选能力:压缩、agent 转发、X11 转发。
+/// 一条 SSH 连接配置在协议层的可选能力:压缩、agent 转发、X11 转发、算法清单。
 /// </summary>
 /// <remarks>
 /// <para>
-/// 三项默认全关,与 OpenSSH 的出厂行为一致。它们都是「按机器开」的东西:
+/// 默认全关 / 全用默认,与 OpenSSH 的出厂行为一致。它们都是「按机器开」的东西:
 /// 压缩只在慢链路上划算,两个转发都等于把本机的一部分能力借给远端 ——
 /// 没有理由对所有机器一刀切地打开。
 /// </para>
@@ -81,8 +81,38 @@ public sealed class SshSessionOptions
     /// <summary>没有 <c>DISPLAY</c> 时退回的显示:Windows 上的 X 服务器默认监听 TCP 6000。</summary>
     public const string DefaultX11Display = "localhost:0.0";
 
-    /// <summary>三项都没开(X11 的两个附属字段在没开 X11 时不算数)。</summary>
-    public bool IsEmpty => !Compression && !AgentForwarding && !X11Forwarding;
+    /// <summary>
+    /// 放开老算法:<c>diffie-hellman-group14-sha1</c>、SHA-1 的 <c>ssh-rsa</c> 主机密钥、<c>hmac-sha1</c>。
+    /// </summary>
+    /// <remarks>
+    /// 追加在默认清单<b>之后</b>:只有对端一个现代算法都不支持时才会落到它们上(老交换机、CentOS 6 一类)。
+    /// 不含 CBC —— 本版没有实现,报给对端只会在只剩 CBC 的设备上「谈成」再在派生密钥时失败。
+    /// </remarks>
+    public bool LegacyAlgorithms { get; set; }
+
+    /// <summary>密钥交换算法的自定义清单(OpenSSH 的 <c>KexAlgorithms</c> 写法);<see langword="null" /> = 默认。</summary>
+    /// <remarks>
+    /// 四个清单同一套写法:<c>+a,b</c> 追加到默认之后、<c>-a,b</c> 从默认里删掉(可带 <c>*</c> / <c>?</c> 通配)、
+    /// <c>^a,b</c> 提到最前,不带前缀则整个替换。「默认」指放开老算法之后的那一份。
+    /// </remarks>
+    public string? KexAlgorithms { get; set; }
+
+    /// <summary>主机密钥算法的自定义清单(<c>HostKeyAlgorithms</c> 写法);<see langword="null" /> = 默认。</summary>
+    public string? HostKeyAlgorithms { get; set; }
+
+    /// <summary>加密算法的自定义清单(<c>Ciphers</c> 写法),两个方向共用;<see langword="null" /> = 默认。</summary>
+    public string? Ciphers { get; set; }
+
+    /// <summary>MAC 算法的自定义清单(<c>MACs</c> 写法),两个方向共用;<see langword="null" /> = 默认。</summary>
+    public string? Macs { get; set; }
+
+    /// <summary>四个自定义清单是否至少写了一个。</summary>
+    public bool HasCustomAlgorithms =>
+        !string.IsNullOrWhiteSpace(KexAlgorithms) || !string.IsNullOrWhiteSpace(HostKeyAlgorithms)
+        || !string.IsNullOrWhiteSpace(Ciphers) || !string.IsNullOrWhiteSpace(Macs);
+
+    /// <summary>一项都没开(X11 的两个附属字段在没开 X11 时不算数)。</summary>
+    public bool IsEmpty => !Compression && !AgentForwarding && !X11Forwarding && !LegacyAlgorithms && !HasCustomAlgorithms;
 
     /// <summary>返回本对象的副本。</summary>
     /// <returns>与本实例等值的新实例。</returns>
@@ -95,6 +125,11 @@ public sealed class SshSessionOptions
             AgentForwardConfirm = AgentForwardConfirm,
             X11Forwarding = X11Forwarding,
             X11Display = X11Display,
-            X11Trusted = X11Trusted
+            X11Trusted = X11Trusted,
+            LegacyAlgorithms = LegacyAlgorithms,
+            KexAlgorithms = KexAlgorithms,
+            HostKeyAlgorithms = HostKeyAlgorithms,
+            Ciphers = Ciphers,
+            Macs = Macs
         };
 }

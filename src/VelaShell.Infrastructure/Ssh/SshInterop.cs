@@ -193,11 +193,48 @@ internal static class SshInterop
     {
         string ours = string.Join(", ", ex.OfferedByUs.Where(IsWorthShowing));
 
-        return string.Join(Environment.NewLine,
+        List<string> lines =
+        [
             Strings.Format("Ssh_AlgoMismatchTitle", ex.PeerVersion),
             DescribeCategory(ex.Category),
             Strings.Format("Ssh_AlgoMismatchPeer", string.Join(", ", ex.OfferedByPeer)),
-            Strings.Format("Ssh_AlgoMismatchOurs", ours));
+            Strings.Format("Ssh_AlgoMismatchOurs", ours),
+        ];
+        if (DescribeRemedy(ex) is { } remedy)
+        {
+            lines.Add(remedy);
+        }
+        return string.Join(Environment.NewLine, lines);
+    }
+
+    /// <summary>
+    /// 下一步能做什么:对端提供的算法里有本版实现了、只是没在清单里的 → 指路去连接配置里放开;
+    /// 一个都没有 → 如实说放开也没用(常见的是只剩 CBC 的老设备)。
+    /// </summary>
+    private static string? DescribeRemedy(SshNegotiationException ex)
+    {
+        SshAlgorithmKind? kind = ex.Category switch
+        {
+            SshNegotiationCategory.KeyExchange => SshAlgorithmKind.KeyExchange,
+            SshNegotiationCategory.HostKey => SshAlgorithmKind.HostKey,
+            SshNegotiationCategory.EncryptionClientToServer or SshNegotiationCategory.EncryptionServerToClient =>
+                SshAlgorithmKind.Cipher,
+            SshNegotiationCategory.MacClientToServer or SshNegotiationCategory.MacServerToClient => SshAlgorithmKind.Mac,
+            _ => null,
+        };
+        if (kind is not { } k)
+        {
+            return null;
+        }
+        IReadOnlyList<string> available = SshAlgorithmPreferences.Available(k);
+        string[] enableable =
+        [
+            .. ex.OfferedByPeer.Where(a => available.Contains(a, StringComparer.Ordinal)
+                                          && !ex.OfferedByUs.Contains(a, StringComparer.Ordinal))
+        ];
+        return enableable.Length > 0
+            ? Strings.Format("Ssh_AlgoMismatchEnable", string.Join(", ", enableable))
+            : Strings.Get("Ssh_AlgoMismatchUnsupported");
     }
 
     /// <summary>

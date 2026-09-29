@@ -59,5 +59,22 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # 「老设备」靶子:只剩 diffie-hellman-group14-sha1 / ssh-rsa / hmac-sha1,
+  # 默认清单谈不成,要放开老算法才连得上。见 tests/fixtures/ssh-legacy/Dockerfile。
+  ssh-legacy:
+    build: ./tests/fixtures/ssh-legacy
+    image: velashell-test-legacy:latest
+    container_name: velashell-test-legacy
+    hostname: velashell-test-legacy
+    ports:
+      - "2225:2222"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2222 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
 volumes:
   ssh-test-config:

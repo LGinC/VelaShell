@@ -4567,6 +4567,24 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Ssh_AlgoMismatchTitle" xml:space="preserve">
     <value>對端({0})與本用戶端沒有共同的演算法。</value>
   </data>
+  <data name="Ssh_AlgoMismatchUnsupported" xml:space="preserve">
+    <value>  對端這一類演算法本版一個都沒有實作(常見的是只剩 CBC 模式的舊設備),放開舊演算法也連不上。</value>
+  </data>
+  <data name="Ssh_AlgoSpecEmpty" xml:space="preserve">
+    <value>寫了前綴卻沒有演算法名稱。</value>
+  </data>
+  <data name="Ssh_AlgoSpecInvalid" xml:space="preserve">
+    <value>{0}演算法清單不成立:{1}</value>
+  </data>
+  <data name="Ssh_AlgoSpecNothingLeft" xml:space="preserve">
+    <value>刪完之後一個演算法都不剩,與任何伺服器都談不成。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnimplemented" xml:space="preserve">
+    <value>本版沒有實作 {0}。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnknown" xml:space="preserve">
+    <value>不認得的演算法名稱:{0}。</value>
+  </data>
   <data name="Ssh_AlgoMismatchPeer" xml:space="preserve">
     <value>  對端提供:{0}</value>
   </data>
@@ -4584,6 +4602,9 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="Ssh_AlgoKindMac" xml:space="preserve">
     <value>完整性(MAC)</value>
+  </data>
+  <data name="Ssh_AlgoMismatchEnable" xml:space="preserve">
+    <value>  對端提供的 {0} 可以在連線設定的 SSH 連線選項裡放開(勾「允許舊演算法」,或寫進自訂演算法清單)。</value>
   </data>
   <data name="Plugin_ProtocolUnavailable" xml:space="preserve">
     <value>提供該協定的外掛程式目前無法使用。請在外掛程式管理頁安裝或啟用它。</value>
@@ -5487,11 +5508,23 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Profile_SshFeatures" xml:space="preserve">
     <value>SSH 連線選項</value>
   </data>
+  <data name="Profile_SshLegacyAlgorithms" xml:space="preserve">
+    <value>允許舊演算法(連舊設備用)</value>
+  </data>
+  <data name="Profile_SshLegacyAlgorithmsHint" xml:space="preserve">
+    <value>在預設清單之後追加 diffie-hellman-group14-sha1、ssh-rsa(SHA-1)與 hmac-sha1,只有對端一個現代演算法都不支援時才會用上。這些演算法已經不安全,只對連不上的舊交換器、舊系統開啟。</value>
+  </data>
   <data name="Profile_SshCompression" xml:space="preserve">
     <value>啟用壓縮(適合高延遲 / 低頻寬連線)</value>
   </data>
   <data name="Profile_SshCompressionHint" xml:space="preserve">
     <value>延遲較高(跨境、跨洋,往返 100 ms 以上)或頻寬吃緊時建議開啟:終端輸出與文字檔能省下大量流量。區域網路、或主要傳輸圖片 / 壓縮檔這類已壓縮資料時不建議開啟 —— 只會白白多佔 CPU。伺服器不支援時自動退回不壓縮。</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithms" xml:space="preserve">
+    <value>自訂演算法清單</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithmsHint" xml:space="preserve">
+    <value>OpenSSH 寫法:+ 追加到預設之後、- 從預設裡刪掉(可用 * 與 ? 萬用字元)、^ 提到最前,不帶前綴則整個替換。留空用預設;滑鼠停在輸入框上可看預設清單與另可加的演算法。</value>
   </data>
   <data name="Profile_SshAgentForwarding" xml:space="preserve">
     <value>轉送 ssh-agent(-A)</value>
@@ -5606,6 +5639,15 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="Profile_SshAgentKeySourceSaved" xml:space="preserve">
     <value>已存於此連線</value>
+  </data>
+  <data name="Profile_SshAlgoDefault" xml:space="preserve">
+    <value>預設</value>
+  </data>
+  <data name="Profile_SshAlgoTipDefaults" xml:space="preserve">
+    <value>預設:{0}</value>
+  </data>
+  <data name="Profile_SshAlgoTipMore" xml:space="preserve">
+    <value>另可加:{0}</value>
   </data>
   <data name="Profile_SshAgentKeySourceAgent" xml:space="preserve">
     <value>agent 中</value>
