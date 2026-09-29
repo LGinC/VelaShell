@@ -1,6 +1,7 @@
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.VisualTree;
 
 namespace VelaShell.Views;
 
@@ -25,7 +26,15 @@ public partial class AuditLogView : Window
         }
     }
 
-    private void Header_DoubleTapped(object? sender, TappedEventArgs e) => ToggleMaximize();
+    /// <summary>双击标题栏空白处切换最大化;落在按钮上的双击不算(理由同回放中心)。</summary>
+    private void Header_DoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (e.Source is Avalonia.Visual source && source.FindAncestorOfType<Button>(includeSelf: true) is not null)
+        {
+            return;
+        }
+        ToggleMaximize();
+    }
 
     private void Maximize_Click(object? sender, RoutedEventArgs e) => ToggleMaximize();
 

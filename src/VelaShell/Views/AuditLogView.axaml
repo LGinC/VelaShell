@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:VelaShell.ViewModels"
         xmlns:loc="using:VelaShell.Localization"
+        xmlns:pc="using:VelaShell.Controls.Controls"
         x:Class="VelaShell.Views.AuditLogView"
         x:DataType="vm:AuditLogViewModel"
         Title="{loc:Localize AuditLog_Title}"
@@ -14,6 +15,23 @@
        外框、标题栏与右下角缩放手柄照录制回放中心(RecordingPlayerView)的做法。 -->
 
   <Window.Styles>
+    <!-- 窗口控制键:27×27、无圆角,规格同主窗口(与回放中心、资源监视同一套本地样式)。 -->
+    <Style Selector="Button.caption">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
+    </Style>
     <Style Selector="Button.dlg-outline">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
@@ -72,8 +90,8 @@
           ClipToBounds="True">
     <Grid RowDefinitions="Auto,Auto,*">
 
-      <!-- 标题栏(28,可拖动,双击最大化 / 还原)。 -->
-      <Border Grid.Row="0" Padding="20,0,12,0"
+      <!-- 标题栏(28,可拖动,双击空白处最大化 / 还原)。窗口键 27×27 贴住右上角,与主窗口同规格。 -->
+      <Border Grid.Row="0" Padding="20,0,0,0"
               Classes="window-titlebar"
               Background="Transparent"
               PointerPressed="Header_PointerPressed"
@@ -87,18 +105,15 @@
                        FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                        TextTrimming="CharacterEllipsis" />
           </DockPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-            <Button Classes="window-caption" Width="26" Height="26" Background="Transparent" Padding="0"
-                    CornerRadius="3" Cursor="Hand" Click="Maximize_Click"
-                    VerticalAlignment="Center" ToolTip.Tip="{loc:Localize Recorder_MaximizeTip}">
-              <TextBlock Text="▢" FontSize="{DynamicResource VelaFontSize12}" HorizontalAlignment="Center"
-                         Foreground="{DynamicResource VelaTextTertiary}" />
+          <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+            <Button Classes="caption window-caption" Click="Maximize_Click"
+                    ToolTip.Tip="{loc:Localize Recorder_MaximizeTip}">
+              <pc:LucideIcon Width="10" Height="10" Data="{StaticResource Icon.square}"
+                             Foreground="{DynamicResource VelaTextSecondary}" />
             </Button>
-            <Button Classes="window-caption" Width="26" Height="26" Background="Transparent" Padding="0"
-                    CornerRadius="3" Cursor="Hand" Click="Close_Click"
-                    VerticalAlignment="Center">
-              <TextBlock Text="✕" FontSize="{DynamicResource VelaFontSize13}" HorizontalAlignment="Center"
-                         Foreground="{DynamicResource VelaTextTertiary}" />
+            <Button Classes="caption caption-close window-caption" Click="Close_Click">
+              <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.x}"
+                             Foreground="{DynamicResource VelaTextSecondary}" />
             </Button>
           </StackPanel>
         </Grid>

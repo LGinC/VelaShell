@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
+using Avalonia.VisualTree;
 using VelaShell.Core.Recording;
 using VelaShell.Core.Resources;
 using VelaShell.Terminal.Rendering;
@@ -64,7 +65,18 @@ public partial class RecordingPlayerView : Window
         }
     }
 
-    private void Header_DoubleTapped(object? sender, TappedEventArgs e) => ToggleMaximize();
+    /// <summary>
+    /// 双击标题栏空白处切换最大化。双击落在标题栏的按钮上(连点两下刷新、最大化键)时不算 ——
+    /// 双击手势不管按钮有没有处理按下事件都会冒泡上来。
+    /// </summary>
+    private void Header_DoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (e.Source is Avalonia.Visual source && source.FindAncestorOfType<Button>(includeSelf: true) is not null)
+        {
+            return;
+        }
+        ToggleMaximize();
+    }
 
     private void Maximize_Click(object? sender, RoutedEventArgs e) => ToggleMaximize();
 
