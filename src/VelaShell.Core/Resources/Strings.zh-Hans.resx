@@ -2647,6 +2647,9 @@
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>脚本/片段库管理</value>
   </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// 可用 {{名字}} 或 {{名字=默认值}} 作占位,发送前逐个询问</value>
+  </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>操作</value>
   </data>
@@ -3645,6 +3648,15 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>运行时长与平均负载</value>
+  </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>将发送:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>发送</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>填写参数 · {0}</value>
   </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>内存使用情况</value>

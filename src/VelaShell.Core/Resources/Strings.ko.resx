@@ -2391,6 +2391,9 @@
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>스크립트/스니펫 관리</value>
   </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// {{이름}} 또는 {{이름=기본값}}으로 자리 표시자를 쓸 수 있으며, 보내기 전에 값을 묻습니다</value>
+  </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>작업</value>
   </data>
@@ -3471,6 +3474,15 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   </data>
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>가동 시간 및 평균 부하</value>
+  </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>보낼 내용:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>보내기</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>매개변수 입력 · {0}</value>
   </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>메모리 사용량</value>

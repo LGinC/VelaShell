@@ -74,7 +74,7 @@ public sealed class QuickCommandRunnerViewModel : ReactiveObject
         {
             return;
         }
-        ExecutionRequested?.Invoke(this, new(command.CommandText, targetIds));
+        ExecutionRequested?.Invoke(this, new(command.CommandText, targetIds, command.Name));
     }
 
     private void OnTargetSelectorPropertyChanged(object? sender, PropertyChangedEventArgs e)

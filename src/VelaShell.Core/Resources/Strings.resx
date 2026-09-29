@@ -2538,6 +2538,9 @@ Paste anyway?</value>
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>Scripts &amp; Snippets</value>
   </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// Use {{name}} or {{name=default}} as a placeholder; you'll be asked for each value before the command is sent</value>
+  </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>Actions</value>
   </data>
@@ -3510,6 +3513,15 @@ Overwrite it?</value>
   </data>
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>Uptime and load average</value>
+  </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>Will send:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>Send</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>Fill in · {0}</value>
   </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>Memory usage</value>

@@ -2391,6 +2391,9 @@
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>スクリプト/スニペット管理</value>
   </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// {{名前}} または {{名前=既定値}} でプレースホルダーを書けます。送信前に値を尋ねます</value>
+  </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>操作</value>
   </data>
@@ -3471,6 +3474,15 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>稼働時間と平均負荷</value>
+  </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>送信内容:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>送信</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>パラメーターを入力 · {0}</value>
   </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>メモリ使用状況</value>

@@ -588,6 +588,12 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// <summary>窗口注入的多行粘贴确认弹窗(设置 → 终端 → 粘贴时确认多行内容)。</summary>
     public Func<string, Task<bool>>? MultilinePasteConfirmer { get; set; }
 
+    /// <summary>
+    /// 窗口注入的快捷命令变量询问框:参数是命令名与解析好的模板,确认时返回「变量名 → 值」,
+    /// 取消返回 null(整条不发)。未挂时(headless)含占位的命令原样发送。
+    /// </summary>
+    public Func<string?, QuickCommandTemplate, Task<IReadOnlyDictionary<string, string>?>>? QuickCommandVariablePrompt { get; set; }
+
     /// <summary>左侧边栏视图模型:资源管理器会话树与最近连接。</summary>
     public SidebarViewModel Sidebar
     {
@@ -2096,12 +2102,33 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         QuickCommandExecutionRequest request
     )
     {
-        var targetIds = request.TargetIds.ToHashSet();
-        TerminalTabViewModel[] targets = [.. TerminalTabs.Where(tab => tab.IsConnected && targetIds.Contains(tab.Id))];
+        QuickCommandTemplate template = QuickCommandTemplate.Parse(request.CommandText);
+        if (!template.HasVariables || QuickCommandVariablePrompt is not { } prompt)
+        {
+            // 没有占位(或没有窗口可以问,如 headless 测试)时原样发送,与引入占位之前一致。
+            SendQuickCommandText(request.TargetIds, request.CommandText);
+            return;
+        }
+        FireAndForget.Run(async () =>
+        {
+            IReadOnlyDictionary<string, string>? values = await prompt(request.CommandName, template);
+            if (values is null)
+            {
+                return;
+            }
+            // 弹框期间目标可能已经断开:发送时再按当下的标签挑一遍,只发给仍连着的。
+            SendQuickCommandText(request.TargetIds, template.Render(values));
+        });
+    }
+
+    private void SendQuickCommandText(IReadOnlyList<Guid> targetIds, string commandText)
+    {
+        var ids = targetIds.ToHashSet();
+        TerminalTabViewModel[] targets = [.. TerminalTabs.Where(tab => tab.IsConnected && ids.Contains(tab.Id))];
         bool sent = false;
         foreach (TerminalTabViewModel target in targets)
         {
-            sent |= target.TrySendCommandText(request.CommandText);
+            sent |= target.TrySendCommandText(commandText);
         }
         if (sent)
         {

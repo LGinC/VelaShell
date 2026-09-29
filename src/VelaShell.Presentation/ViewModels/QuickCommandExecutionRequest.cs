@@ -1,12 +1,15 @@
 namespace VelaShell.Presentation.ViewModels;
 
 /// <summary>一次快捷命令执行请求;目标标识已在触发时完成快照。</summary>
-public sealed class QuickCommandExecutionRequest(string commandText, IReadOnlyList<Guid> targetIds)
+public sealed class QuickCommandExecutionRequest(string commandText, IReadOnlyList<Guid> targetIds, string? commandName = null)
     : EventArgs
 {
-    /// <summary>需要发送到终端的命令正文。</summary>
+    /// <summary>需要发送到终端的命令正文(可能含 <c>{{变量}}</c> 占位,由宿主在发送前询问并替换)。</summary>
     public string CommandText { get; } = commandText;
 
     /// <summary>触发运行时确定的终端标签标识快照。</summary>
     public IReadOnlyList<Guid> TargetIds { get; } = targetIds;
+
+    /// <summary>快捷命令的显示名称;询问变量时作弹窗标题。</summary>
+    public string? CommandName { get; } = commandName;
 }
