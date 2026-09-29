@@ -255,13 +255,9 @@ public sealed class MainWindowSshFeatureTests
 
         // 比对本地化资源而非中文字面量:该文案随 UI 语言变化,写死会让测试只在中文环境通过。
         // 提示后面还会换行附上底层库给出的具体原因(DescribeConnectionError 有意为之,便于用户诊断)。
-        // 中间那一句是两步验证说明:服务器只放行 keyboard-interactive(2FA / OTP)时,
-        // "用户名、密码或密钥不正确"是**错的** —— 凭据没问题,是本版根本不会那套认证。
-        // 少了这句,用户会照着错文案反复改密码,永远改不对(F-11)。
+        // 原先中间还有一句「本版不会两步验证」(F-11);动态码框接上之后那句不再成立,已撤掉。
         Assert.AreEqual(
-            $"{Strings.Format("Msg_AuthFailed", "root@prod.example.com:22")}"
-            + $"\n{Strings.Get("Msg_AuthFailedTwoFactorHint")}"
-            + "\nPermission denied (password).",
+            $"{Strings.Format("Msg_AuthFailed", "root@prod.example.com:22")}\nPermission denied (password).",
             vm.LastConnectionError);
     }
 

@@ -1353,6 +1353,15 @@
   <data name="HostKey_TrustPermanentlyTip" xml:space="preserve">
     <value>记录该指纹,之后连接不再询问;可在 设置 → 安全审计 → 已信任主机 中删除</value>
   </data>
+  <data name="KbdAuth_Response" xml:space="preserve">
+    <value>应答</value>
+  </data>
+  <data name="KbdAuth_Submit" xml:space="preserve">
+    <value>继续</value>
+  </data>
+  <data name="KbdAuth_Title" xml:space="preserve">
+    <value>两步验证</value>
+  </data>
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户确认永久信任新指纹:{1}</value>
   </data>
@@ -1434,9 +1443,6 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>认证失败：{0} 的用户名、密码或密钥不正确。</value>
-  </data>
-  <data name="Msg_AuthFailedTwoFactorHint" xml:space="preserve">
-    <value>若该主机要求两步验证(keyboard-interactive / OTP),本版无法连接：底层 SSH 库未实现该认证方式。</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>立即重连</value>
@@ -5441,6 +5447,9 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="SshErr_HostKeyChanged" xml:space="preserve">
     <value>服务器的主机密钥与已记录的不一致。</value>
+  </data>
+  <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
+    <value>已取消两步验证。</value>
   </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>连接超时。</value>

@@ -137,11 +137,12 @@ public static class InfrastructureServiceCollectionExtensions
             ISettingsService settings = sp.GetRequiredService<ISettingsService>();
             IHostKeyPrompt? prompt = sp.GetService<IHostKeyPrompt>();
             IAgentSignPrompt? agentPrompt = sp.GetService<IAgentSignPrompt>();
+            IKeyboardInteractivePrompt? keyboardPrompt = sp.GetService<IKeyboardInteractivePrompt>();
             ISecurityAlertService? alerts = sp.GetService<ISecurityAlertService>();
             IProxyResolver proxyResolver = sp.GetRequiredService<IProxyResolver>();
             ILocalXServer? xServer = sp.GetService<ILocalXServer>();
             return new SshConnectionService(ci =>
-                CreateSshClientWrapper(ci, hostKey, settings, prompt, alerts, proxyResolver, xServer, agentPrompt));
+                CreateSshClientWrapper(ci, hostKey, settings, prompt, alerts, proxyResolver, xServer, agentPrompt, keyboardPrompt));
         });
 
         // SFTP service
@@ -259,10 +260,11 @@ public static class InfrastructureServiceCollectionExtensions
     private static VelaSshClientWrapper CreateSshClientWrapper(
         VelaConnectionInfo ci, IHostKeyService? hostKey, ISettingsService? settings,
         IHostKeyPrompt? prompt, ISecurityAlertService? alerts, IProxyResolver? proxyResolver = null,
-        ILocalXServer? xServer = null, IAgentSignPrompt? agentPrompt = null)
+        ILocalXServer? xServer = null, IAgentSignPrompt? agentPrompt = null,
+        IKeyboardInteractivePrompt? keyboardPrompt = null)
     {
         SshConnectionAssembler.Assembled assembled =
-            SshConnectionAssembler.Create(ci, hostKey, settings, prompt, alerts, proxyResolver);
+            SshConnectionAssembler.Create(ci, hostKey, settings, prompt, alerts, proxyResolver, keyboardPrompt);
 
         return new VelaSshClientWrapper(
             assembled.Connect, assembled.ConnectTimeout, ci.Ssh,

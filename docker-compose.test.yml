@@ -42,5 +42,22 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # 两步验证靶子:只开 keyboard-interactive,经 PAM 先问口令再问 TOTP 动态码;
+  # 另有一个「钥 + 动态码」的账号。见 tests/fixtures/ssh-2fa/Dockerfile。
+  ssh-2fa:
+    build: ./tests/fixtures/ssh-2fa
+    image: velashell-test-2fa:latest
+    container_name: velashell-test-2fa
+    hostname: velashell-test-2fa
+    ports:
+      - "2224:2222"
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z localhost 2222 || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
 volumes:
   ssh-test-config:

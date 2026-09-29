@@ -17,9 +17,8 @@ namespace VelaShell.Infrastructure.Tests.Ssh;
 /// <b>现在盯的是「别把它丢了」</b> —— 哪天凭据类型里没有它,这里会红。
 /// </para>
 /// <para>
-/// ⚠️ <b>支持 ≠ 已经接好。</b>库这一层有了,但宿主还没有「弹个框让用户输动态码」
-/// 的界面流程,所以 <c>Msg_AuthFailedTwoFactorHint</c> 那句说明**暂时保留**。
-/// 把它撤掉的前提是接上真正的交互流程 —— 记在 feature-plan.md。
+/// 宿主的动态码界面已经接上(<c>KeyboardInteractiveResponder</c> + 界面层的弹框,plan.md §133),
+/// 失败文案里那句「本版不会两步验证」随之撤掉。应答逻辑的用例在 <c>KeyboardInteractiveResponderTests</c>。
 /// </para>
 /// </remarks>
 [TestClass]

@@ -40,3 +40,17 @@
 ```bash
 docker compose -f docker-compose.test.yml up -d ssh-shells   # 端口 2223,口令一律 velapass
 ```
+
+## ssh-2fa —— 两步验证 SSH 靶子(不是插件夹具)
+
+[ssh-2fa](ssh-2fa/Dockerfile) 是一台只开 keyboard-interactive 的 sshd,经 PAM 先问口令(`pam_unix`)、
+再问 TOTP 动态码(`pam_google_authenticator`,种子写死,测试按 RFC 6238 现算)。三个账号:
+`vela-otp`(口令 + 动态码)、`vela-strict`(同上,但 `MaxAuthTries 1`,多浪费一次尝试就被断开)、
+`vela-keyotp`(`AuthenticationMethods publickey,keyboard-interactive`,钥是同目录的 `id_ed25519`,**仅供测试**)。
+
+它服务的是 `VelaShell.Core.Tests` 的 `KeyboardInteractiveIntegrationTests` —— 「口令自动代答、只有动态码才问人」
+要在真实 PAM 的提问顺序下才验得出来:PAM 每轮只问一条、两轮都不回显,恰恰是会让密码被填进验证码那一轮的形状。
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build ssh-2fa   # 端口 2224,口令一律 velapass
+```

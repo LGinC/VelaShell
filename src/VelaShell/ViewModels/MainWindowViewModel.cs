@@ -2556,6 +2556,12 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             }
             tab.MarkDisconnected();
         }
+        catch (VelaSshAuthenticationCancelledException)
+        {
+            // 在动态码框上点了取消:按用户主动断开处理 —— 否则自动重连过几秒又来弹同一个框。
+            LastConnectionError = null;
+            tab.MarkDisconnectedByUser();
+        }
         catch (Exception ex)
         {
             // 重连失败:保留标签,标签页内覆盖层显示“连接失败 + 原因”(设计 yxjmg),不弹全局框。
@@ -3460,6 +3466,16 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 }
                 return null;
             }
+            catch (VelaSshAuthenticationCancelledException)
+            {
+                // 在动态码框上点了取消:与在凭据框上取消同一句话 —— 不连了,不报错,撤掉标签。
+                LastConnectionError = null;
+                if (document is not null)
+                {
+                    await RemoveTerminalTabAsync(tab, document).ConfigureAwait(true);
+                }
+                return null;
+            }
             catch (Exception ex)
             {
                 LastConnectionError = DescribeConnectionError(ex, current);
@@ -3763,8 +3779,9 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     ? (null, new(current, null))
                     : (new(current, session.SessionId, session, workflow.DisconnectAsync), default);
             }
-            catch (OperationCanceledException)
+            catch (Exception ex) when (ex is OperationCanceledException or VelaSshAuthenticationCancelledException)
             {
+                // 后者是在动态码框上点了取消 —— 同样是「不连了」,撤占位、不报错。
                 await DisconnectQuietlyAsync(session?.SessionId).ConfigureAwait(true);
                 return (null, new(current, null));
             }
@@ -4983,16 +5000,9 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         // 所有连接错误都掉进兜底文案。派生类型必须排在基类型前面。
         return ex switch
         {
-            // 认证失败时补一句两步验证的说明。原文案直接断言"用户名、密码或密钥不正确",
-            // 而服务器只放行 keyboard-interactive(2FA / OTP)时这句是**错的** ——
-            // 用户按错文案去反复改密码,永远改不对。
-            //
-            // ⚠️ 换到 VelaShell.Ssh 之后,库本身已经支持 keyboard-interactive,
-            // 密码那一路也默认应答它(于是「关了 PasswordAuthentication 但走 PAM」的服务器
-            // 现在直接就能登上)。**还缺的是真正的动态码交互界面** —— 弹个框让用户输 OTP。
-            // 那个流程接上之前这句说明先留着;接上之后把它撤掉。见 feature-plan.md。
-            VelaSshAuthenticationException =>
-                $"{Strings.Format("Msg_AuthFailed", target)}\n{Strings.Get("Msg_AuthFailedTwoFactorHint")}\n{detail}",
+            // 以前这里还补一句「若要求两步验证本版无法连接」:那时宿主没有输动态码的界面。
+            // 现在服务端要动态码会弹框问(KeyboardInteractivePromptDialogService),那句话已经不成立。
+            VelaSshAuthenticationException => $"{Strings.Format("Msg_AuthFailed", target)}\n{detail}",
             // TimeoutException 来自 SshConnectionService:底层库内部超时(调用方并未取消)时它对外
             // 统一抛这个类型。不列进来的话真超时会掉进兜底文案,显示一句英文原始消息。
             VelaSshOperationTimeoutException or TimeoutException => Strings.Format("Msg_ConnectTimeout", target),

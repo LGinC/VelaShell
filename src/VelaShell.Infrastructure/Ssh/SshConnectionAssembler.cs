@@ -43,13 +43,24 @@ internal static class SshConnectionAssembler
         TimeSpan ConnectTimeout);
 
     /// <summary>按连接信息装配。</summary>
+    /// <param name="info">连接信息(含跳板链)。</param>
+    /// <param name="hostKey">主机指纹信任库;<see langword="null" /> 时不校验(测试用)。</param>
+    /// <param name="settings">设置。</param>
+    /// <param name="prompt">主机指纹的人工确认。</param>
+    /// <param name="alerts">安全告警。</param>
+    /// <param name="proxyResolver">出站代理。</param>
+    /// <param name="keyboardPrompt">
+    /// keyboard-interactive(2FA / OTP)的弹框;<see langword="null" /> 时不应答动态码,
+    /// 只保留库的「密码兼答 keyboard-interactive」。
+    /// </param>
     public static Assembled Create(
         VelaConnectionInfo info,
         IHostKeyService? hostKey,
         ISettingsService? settings,
         IHostKeyPrompt? prompt,
         ISecurityAlertService? alerts,
-        IProxyResolver? proxyResolver)
+        IProxyResolver? proxyResolver,
+        IKeyboardInteractivePrompt? keyboardPrompt = null)
     {
         ArgumentNullException.ThrowIfNull(info);
 
@@ -69,12 +80,12 @@ internal static class SshConnectionAssembler
             ISshTransportDialer inner = dialer;
             dialer = DialerChain.Jump(
                 new SshEndPoint(hop.Host, hop.Port),
-                ct => ConnectAsync(hop, policy, settings, inner, connectTimeout, ct));
+                ct => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, ct));
         }
 
         ISshTransportDialer finalDialer = dialer;
         return new Assembled(
-            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, ct),
+            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, ct),
             connectTimeout);
     }
 
@@ -102,11 +113,15 @@ internal static class SshConnectionAssembler
         ISettingsService? settings,
         ISshTransportDialer dialer,
         TimeSpan connectTimeout,
+        IKeyboardInteractivePrompt? keyboardPrompt,
         CancellationToken cancellationToken)
     {
         // agent 这一路的签名要回到 agent 去做,所以 agent 客户端得一直活到认证结束 ——
         // 连接建好之后就不再需要它(重协商不会重新认证),在这里释放。
         SshAgentClient? agent = null;
+        // 每次尝试一个新的应答器:「口令只代答一次」与「用户点了取消」都是这一次认证的状态。
+        KeyboardInteractiveResponder? keyboard =
+            keyboardPrompt is null ? null : KeyboardInteractiveResponder.For(info, keyboardPrompt);
         try
         {
             IReadOnlyList<SshCredential> credentials;
@@ -114,10 +129,14 @@ internal static class SshConnectionAssembler
             {
                 agent = await ConnectAgentAsync(cancellationToken).ConfigureAwait(false);
                 credentials = await AgentCredentialsAsync(agent, cancellationToken).ConfigureAwait(false);
+                if (keyboard is not null)
+                {
+                    credentials = [.. credentials, keyboard.ToCredential()];
+                }
             }
             else
             {
-                credentials = await BuildCredentialsAsync(info, cancellationToken).ConfigureAwait(false);
+                credentials = await BuildCredentialsAsync(info, cancellationToken, keyboard).ConfigureAwait(false);
             }
 
             SshConnectionOptions options = new(info.Username, info.Host, info.Port)
@@ -130,7 +149,17 @@ internal static class SshConnectionAssembler
                 Algorithms = Algorithms(info),
             };
 
-            SshConnection connection = await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            SshConnection connection;
+            try
+            {
+                connection = await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (keyboard is { Cancelled: true } && !cancellationToken.IsCancellationRequested)
+            {
+                // 库以「方法试完了」收场(应答回调抛的异常按它的契约记成「凭据取不到材料」):
+                // 在这里认回来 —— 用户在动态码框上点了取消,是「不连了」而不是认证失败。
+                throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"), ex);
+            }
 
             // 「自动加载密钥到 Agent」:认证成功之后才加(配错的钥不该进 agent),而且丢到后台 ——
             // agent 没在跑时要等满三秒才知道,那段等待不该落在连接路径上。
@@ -251,17 +280,32 @@ internal static class SshConnectionAssembler
     /// <para>
     /// <b>密码那一路同时应答 <c>keyboard-interactive</c>。</b>很多服务端
     /// (尤其关了 <c>PasswordAuthentication</c> 却开着 PAM 的)只接受后者,
-    /// 而用户填的就是同一个密码 —— 这是 <see cref="PasswordCredential" />
-    /// 的默认行为,这里不去关它。
+    /// 而用户填的就是同一个密码。没有界面可问时(<paramref name="keyboard" /> 为空)
+    /// 由 <see cref="PasswordCredential" /> 的默认行为兼答;有界面时换成
+    /// <see cref="KeyboardInteractiveResponder" />:口令提示照样用这个密码答,
+    /// 验证码之类的弹框问用户 —— 库的兼答只看形状,会把密码也填进验证码那一轮,所以要关掉。
+    /// </para>
+    /// <para>
+    /// <b>有界面时每种认证方式后面都跟一条 keyboard-interactive</b>,好接住
+    /// <c>AuthenticationMethods publickey,keyboard-interactive</c>(钥 + 动态码)的第二步。
+    /// 它不会变成口令回退:非密码认证的那一条遇到单纯的口令提示只答空串。
     /// </para>
     /// </remarks>
     internal static async ValueTask<IReadOnlyList<SshCredential>> BuildCredentialsAsync(
-        VelaConnectionInfo info, CancellationToken cancellationToken)
+        VelaConnectionInfo info, CancellationToken cancellationToken, KeyboardInteractiveResponder? keyboard = null)
+    {
+        IReadOnlyList<SshCredential> primary = await PrimaryCredentialsAsync(info, keyboard is not null, cancellationToken)
+            .ConfigureAwait(false);
+        return keyboard is null ? primary : [.. primary, keyboard.ToCredential()];
+    }
+
+    private static async ValueTask<IReadOnlyList<SshCredential>> PrimaryCredentialsAsync(
+        VelaConnectionInfo info, bool keyboardInteractive, CancellationToken cancellationToken)
     {
         switch (info.AuthMethod)
         {
             case AuthMethod.Password:
-                return [new PasswordCredential(info.Password ?? "")];
+                return [new PasswordCredential(info.Password ?? "") { AlsoAnswerKeyboardInteractive = !keyboardInteractive }];
 
             case AuthMethod.PrivateKey:
                 {

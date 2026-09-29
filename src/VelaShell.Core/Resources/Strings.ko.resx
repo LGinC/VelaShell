@@ -949,6 +949,15 @@
   <data name="HostKey_TrustPermanentlyTip" xml:space="preserve">
     <value>이 지문을 기록하여 이후 연결 시 다시 묻지 않습니다. 설정 → 보안 감사 → 신뢰할 수 있는 호스트에서 삭제할 수 있습니다</value>
   </data>
+  <data name="KbdAuth_Response" xml:space="preserve">
+    <value>응답</value>
+  </data>
+  <data name="KbdAuth_Submit" xml:space="preserve">
+    <value>계속</value>
+  </data>
+  <data name="KbdAuth_Title" xml:space="preserve">
+    <value>2단계 인증</value>
+  </data>
   <data name="HostKeyChanged" xml:space="preserve">
     <value>경고: 호스트 키가 변경되었습니다!</value>
   </data>
@@ -1093,9 +1102,6 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>인증 실패: {0}의 사용자 이름, 비밀번호 또는 키가 올바르지 않습니다.</value>
-  </data>
-  <data name="Msg_AuthFailedTwoFactorHint" xml:space="preserve">
-    <value>이 호스트가 2단계 인증(keyboard-interactive / OTP)을 요구하는 경우 이 버전으로는 연결할 수 없습니다: 기반 SSH 라이브러리가 해당 방식을 구현하지 않습니다.</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>지금 다시 연결</value>
@@ -4982,6 +4988,9 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   </data>
   <data name="SshErr_HostKeyChanged" xml:space="preserve">
     <value>서버의 호스트 키가 기록된 키와 일치하지 않습니다.</value>
+  </data>
+  <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
+    <value>2단계 인증을 취소했습니다.</value>
   </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>연결 시간이 초과되었습니다.</value>

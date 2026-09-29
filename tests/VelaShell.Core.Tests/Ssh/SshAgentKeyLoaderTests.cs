@@ -174,6 +174,13 @@ public sealed class SshAgentKeyLoaderTests
         Assert.AreSame(key, offered);
         Assert.AreEqual("C:/keys/id_ed25519", comment, "注释写私钥文件路径,与 ssh-add 一致");
 
+        // 钥后面跟着一条 keyboard-interactive(钥 + 动态码的第二步)时照样认得出那把钥 ——
+        // 曾经按「恰好一条凭据」匹配,接上动态码之后「自动加钥」会静默失效。
+        KeyboardInteractiveCredential secondFactor = new((_, _) => ValueTask.FromResult<IReadOnlyList<string>>([]));
+        Assert.IsTrue(SshAgentKeyLoader.TryGetKeyToAdd(
+            privateKey, [new PublicKeyCredential(key, "C:/keys/id_ed25519"), secondFactor], out offered, out _));
+        Assert.AreSame(key, offered);
+
         // 证书:签名器包着证书,库暂不支持「证书 + 私钥」的加钥格式。
         ConnectionInfo certificate = new() { Host = "h", Username = "u", AuthMethod = AuthMethod.Certificate };
         Assert.IsFalse(SshAgentKeyLoader.TryGetKeyToAdd(

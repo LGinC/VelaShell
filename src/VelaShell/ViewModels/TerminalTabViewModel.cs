@@ -910,6 +910,15 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     }
 
     /// <summary>
+    /// 用户在认证交互(动态码框)里点了取消:与点断开按钮是同一句话,自动重连不再介入。
+    /// </summary>
+    public void MarkDisconnectedByUser()
+    {
+        UserRequestedDisconnect = true;
+        MarkDisconnected();
+    }
+
+    /// <summary>
     /// 将标签切换到断开状态并通知监听者(幂等)。
     /// <paramref name="reason" /> 非空时(如重连失败)覆盖层显示为“连接失败 + 具体原因”,
     /// 否则为普通掉线的“连接已断开”。

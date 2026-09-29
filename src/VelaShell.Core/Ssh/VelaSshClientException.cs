@@ -19,6 +19,16 @@ public class VelaSshConnectionException(string message, Exception? innerExceptio
 /// <summary>身份认证失败(用户名/密码/密钥错误)。</summary>
 public class VelaSshAuthenticationException(string message, Exception? innerException = null) : VelaSshClientException(message, innerException);
 
+/// <summary>
+/// 用户在认证交互(keyboard-interactive 的动态码框)里点了取消。
+/// </summary>
+/// <remarks>
+/// 这是「不连了」,不是认证失败:上层要像取消一样安静地收场,而不是报错、再弹一遍凭据框。
+/// <b>刻意不派生自 <see cref="OperationCanceledException" /></b> —— 调用方没取消却收到的取消,
+/// 库与 <c>SshConnectionService</c> 一律当成内部计时器到点,会把它改判成「连接超时」。
+/// </remarks>
+public class VelaSshAuthenticationCancelledException(string message, Exception? innerException = null) : VelaSshClientException(message, innerException);
+
 /// <summary>操作在配置的超时时间内未完成。</summary>
 public class VelaSshOperationTimeoutException(string message, Exception? innerException = null) : VelaSshClientException(message, innerException);
 

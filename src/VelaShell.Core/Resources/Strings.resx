@@ -1244,6 +1244,15 @@ If this keeps happening, close any other VelaShell windows and try again.</value
   <data name="HostKey_TrustPermanentlyTip" xml:space="preserve">
     <value>Record this fingerprint and stop asking on future connections; remove it in Settings → Security Audit → Trusted Hosts</value>
   </data>
+  <data name="KbdAuth_Response" xml:space="preserve">
+    <value>Response</value>
+  </data>
+  <data name="KbdAuth_Submit" xml:space="preserve">
+    <value>Continue</value>
+  </data>
+  <data name="KbdAuth_Title" xml:space="preserve">
+    <value>Two-step verification</value>
+  </data>
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>Host fingerprint of {0} changed; the user confirmed permanent trust of the new fingerprint: {1}</value>
   </data>
@@ -1325,9 +1334,6 @@ Paste anyway?</value>
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>Authentication failed: incorrect username, password or key for {0}.</value>
-  </data>
-  <data name="Msg_AuthFailedTwoFactorHint" xml:space="preserve">
-    <value>If this host requires two-factor authentication (keyboard-interactive / OTP), this version cannot connect to it: the underlying SSH library does not implement that method.</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>Reconnect now</value>
@@ -4985,6 +4991,9 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="SshErr_HostKeyChanged" xml:space="preserve">
     <value>The server&apos;s host key does not match the recorded one.</value>
+  </data>
+  <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
+    <value>Two-step verification was cancelled.</value>
   </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>The connection timed out.</value>

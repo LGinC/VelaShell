@@ -42,12 +42,13 @@ internal static class SshAgentKeyLoader
     /// <remarks>
     /// 只认「私钥」认证:证书认证的签名器包着证书,库暂不支持「证书 + 私钥」的加钥格式;
     /// 「SSH Agent」认证的钥本来就在 agent 里;密码认证没有钥。
+    /// 钥是凭据列表的第一条,后面可能还跟着一条 keyboard-interactive(钥 + 动态码的第二步)。
     /// </remarks>
     internal static bool TryGetKeyToAdd(
         VelaConnectionInfo info, IReadOnlyList<SshCredential> credentials, out InMemorySshSigner key, out string comment)
     {
         if (info.AuthMethod == AuthMethod.PrivateKey
-            && credentials is [PublicKeyCredential { Signer: InMemorySshSigner signer }])
+            && credentials is [PublicKeyCredential { Signer: InMemorySshSigner signer }, ..])
         {
             key = signer;
             comment = info.PrivateKeyPath ?? "";
