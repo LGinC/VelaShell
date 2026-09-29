@@ -12,8 +12,8 @@ using VelaShell.Views;
 namespace VelaShell.Tests.Views;
 
 /// <summary>
-/// 对话框标题栏的规格(DESIGN.md §4.2):与回放中心等独立窗口同一个样子 —— 标题靠左、13px、不带图标,
-/// 27×27 关闭键贴住右上角,悬停的红底被卡片的圆角裁掉。
+/// 对话框标题栏的规格(DESIGN.md §4.2):与回放中心等独立窗口同一个样子 —— 标题靠左、13px,
+/// 标题前一个 15px 线条图标,27×27 关闭键贴住右上角,悬停的红底被卡片的圆角裁掉。
 /// </summary>
 internal static class DialogTitleBarAssert
 {
@@ -24,8 +24,9 @@ internal static class DialogTitleBarAssert
 
         Button close = bar.GetVisualDescendants().OfType<Button>().Single(b => b.Classes.Contains("caption-close"));
         Assert.IsFalse(bar.GetVisualDescendants().OfType<PathIcon>().Any(), "标题栏不用实心的 PathIcon");
-        Assert.IsTrue(bar.GetVisualDescendants().OfType<LucideIcon>().All(icon => close.IsVisualAncestorOf(icon)),
-            "标题前不放图标(与回放中心一样),标题栏里的图标只有关闭键的 ×");
+        LucideIcon[] leading = [.. bar.GetVisualDescendants().OfType<LucideIcon>().Where(icon => !close.IsVisualAncestorOf(icon))];
+        Assert.HasCount(1, leading, "标题前有一个线条图标(关闭键的 × 不算)");
+        Assert.AreEqual(15, leading[0].Bounds.Width, 0.01, "标题前的图标 15px");
 
         TextBlock title = bar.GetVisualDescendants().OfType<TextBlock>().First(t => !string.IsNullOrEmpty(t.Text));
         Assert.IsTrue(window.TryFindResource("VelaFontSize13", out object? size));
