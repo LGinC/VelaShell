@@ -1304,3 +1304,18 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **测试靶机**:`docker-compose.test.yml` 新增 `ssh-2fa`(端口 2224,`tests/fixtures/ssh-2fa`):只开 keyboard-interactive 的 sshd,PAM 先问口令再问 TOTP(种子写死);`vela-otp` 口令 + 动态码、`vela-strict` 同上但 `MaxAuthTries 1`、`vela-keyotp` 钥 + 动态码(钥是同目录**仅供测试**的 `id_ed25519`)。
 
 **三、验证**:新增 `KeyboardInteractiveIntegrationTests` 5 条(真实 OpenSSH + PAM:口令代答、只问动态码且一次尝试就过;错码是认证失败;取消报成取消;钥 + 动态码;没有界面时密码过不了第二因素)—— 把密码凭据的兼答重新打开,`vela-strict` 那条当场变红(宽松的服务器上它会先失败一次再由应答器连上,看不出来;这一条是写完之后按变异结果补的)。`KeyboardInteractiveResponderTests` 13 个方法 25 例(PAM 两轮、第二次问口令交给用户、空密码弹框、三种「口令 + 验证码」提示不代答、非密码认证拒答口令但问验证码、回显与多提示、纯展示轮不弹且说明带到下一框、用户取消 / 令牌触发的区分、条数不符、对端文字清洗、11 种提示文字的判定、包成凭据);`KeyboardInteractiveCancelFlowTests` 3 条(首连取消撤标签且不再弹凭据框、重连取消记为用户断开、重连失败照旧报错);`KeyboardInteractivePromptDialogUiTests` 3 条 headless 真控件(目标与说明可见、按 echo 遮罩、第一个输入框聚焦、按提示顺序交回;取消返回 null;令牌触发时窗口当场收起);`SshCredentialSetupTests` / `SshAgentKeyLoaderTests` 各加一条;两条断言旧文案的用例改掉那句提示。全量:`Core.Tests` 554 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1579 / 16,`Presentation.Tests` 69。没在真实的 Duo / RSA SecurID 服务器上试过。
+
+## ✅ 134. 2026-09-29 算法协商可配:老算法开关 + 自定义算法清单(`feature-plan.md` 🟡 P2 项)
+
+**一、问题**:连老网络设备、老系统(只剩 `diffie-hellman-group14-sha1`、SHA-1 的 `ssh-rsa`、`hmac-sha1`)时谈不成,而宿主没有任何地方能放开 —— 库早就有 `SshAlgorithmSet.WithLegacyInterop()`,协商失败的诊断也能说出「两边各有什么」,只是说完之后用户无处可改。反过来要精确控制的(关掉 chacha20-poly1305 / EtM 缓解 Terrapin、把某个加密提到最前)也没有入口。
+
+**二、做法**:
+- **模型**:`SshSessionOptions` 新增 `LegacyAlgorithms` 与四个自定义清单 `KexAlgorithms` / `HostKeyAlgorithms` / `Ciphers` / `Macs`(字符串,空 = 默认),`IsEmpty` / `Clone` 跟上。配置经 `Clone()` 流到 `ConnectionInfo.Ssh`,跳板链上每一跳各带各的。
+- **清单的写法沿用 OpenSSH `ssh_config`**:`+a,b` 追加到默认之后、`-a,b` 从默认里删掉(可带 `*` / `?` 通配)、`^a,b` 提到最前,不带前缀则整个替换;「默认」指放开老算法之后的那一份。照 `~/.ssh/config` 里那一行抄过来就能用。
+- **`Infrastructure/Ssh/SshAlgorithmPreferences`**:「能写哪些名字」以库实际实现了的为准 —— `SshAlgorithmSet.Default.WithLegacyInterop()` 的四类清单,不在宿主里另抄一份。不认识的名字报「不认识」;OpenSSH 认得、本版没实现的常见名字(CBC、3des、group1、group-exchange、ssh-dss、hmac-md5、umac…)报「本版没有实现」—— 抄过来的配置里最常见的就是 CBC,用户要知道的是「放开也没用」而不是「拼错了」。不带通配的删除项也要是认得的名字(拼错了的删除项什么都删不掉,用户却以为已经关了);删完不剩、只写了前缀都当场报。`SshConnectionAssembler.Algorithms` 改由它出清单;手改过配置文件的坏写法在连接时报成一句 `VelaSshConnectionException`(带类别与原因),而不是库在拨号前抛的 `ArgumentException`。
+- **协商失败的诊断多一行下一步**:对端提供的算法里有本版实现了、只是没放开的,点名并指到连接配置(「允许老算法」或自定义清单);一个都没有时如实说放开也没用(典型是只剩 CBC 的老设备)。
+- **连接对话框**「SSH 连接选项」(SSH 与 SFTP 都有,与压缩同一个显示条件):「允许老算法(连老设备用)」开关 + 说明放开的是哪三个、追加在后;「自定义算法清单」展开四个输入框(等宽字体、占位「默认」、悬停提示此刻的默认清单与另可加的算法,随老算法开关刷新),下方一行写法说明;写错时字段下方报错、保存 / 连接 / 测试三个按钮灰掉(`canExecute` 加一路,连接类型切换时一并重算)。清单收起时不存,与 X11 关着时不存显示地址同一个理由。新增本地化键 14 个(`Profile_SshLegacyAlgorithms*`、`Profile_SshCustomAlgorithms*`、`Profile_SshAlgo*`、`Ssh_AlgoSpec*`、`Ssh_AlgoMismatchEnable` / `Unsupported`),五份 resx 齐;类别名复用协商诊断里的 `Ssh_AlgoKind*`。README 两份的「连接」一栏补上。
+- **测试靶机**:`docker-compose.test.yml` 新增 `ssh-legacy`(端口 2225,`tests/fixtures/ssh-legacy`):把 OpenSSH 收窄成只剩 group14-sha1 / ssh-rsa / hmac-sha1 的「老设备」。
+- **没做的**:`~/.ssh/config` 导入(§58)不映射 `KexAlgorithms` / `Ciphers` 等(它现在连 `Compression`、`ForwardAgent` 都不映射,要一起做);CBC 本库没实现,只剩 CBC 的设备仍连不上。
+
+**三、验证**:新增 `LegacyAlgorithmsIntegrationTests` 3 条(真实「老设备」:默认清单谈不成且诊断点名 group14-sha1 并指到设置;放开老算法后连上且谈成的正是 group14-sha1 / ssh-rsa / hmac-sha1;照 OpenSSH 写法的 `+` 清单连上);`SshAlgorithmPreferencesTests` 20 例(无配置即库默认、老算法追加在后且不含 CBC、`+` 只追加没有的、`-` 删名字与通配、`^` 提前、替换并去重、前缀作用在放开后的默认上、没实现的报没实现、拼错的报不认识(含删除项)、不匹配的通配无妨、删光 / 只写前缀报错、四类清单与压缩一起落进算法集且两个方向一致、坏写法报成可读的连接错误、装配器用它、只设算法的选项不算空且能克隆);`SshInteropTests` 2 条(可放开的点名且不含没实现的、全是没实现的说放开也没用);`ConnectionProfileAlgorithmsTests` 6 条(读回与保存、只开老算法也存、写错时按钮灰掉并说清是哪一类哪个名字、收起时不存也不挡保存、切到 FTP 按钮放开、悬停提示随老算法开关变)。把「连接类型切换时重算错误」那一行去掉,切到 FTP 那条变红。全量:`Core.Tests` 577 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1585 / 16。没在真实的 Cisco / 华为设备上试过。
