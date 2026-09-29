@@ -1263,3 +1263,14 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 设置项说明 `SetAppear_WindowStateDesc` 五语言改为「应用启动时的窗口大小与位置」。
 
 **三、验证**:新增 `MainWindowPlacementTests` 14 条:可达性判定 7 条(屏幕内、副屏拔掉、顶边出界、贴着底边、侧边只露一截、负坐标的副屏、门槛随缩放)、摆放 2 条(headless 屏幕内改为手动摆放、屏幕外保持居中)、回写 5 条(普通态关闭、挪过之后最大化、最小化关闭、整次都没处于普通态、不跟踪的平台)。把快照改成同步读、去掉「最小化之前的状态」,各有一条变红。本机双屏(2560×1440 两块并排)用 `--data-root` 指向临时目录实跑五轮,全部符合预期:挪到副屏关闭 → 下次开在副屏原处;副屏上挪过再最大化关闭 → 下次在副屏最大化,还原回挪过去的位置;最大化后最小化再关闭 → 下次仍最大化;挪到屏幕外关闭 → 下次居中(另用文件监视确认实跑没碰默认数据根)。macOS / Linux 没有实机跑过。全量:`VelaShell.Tests` 1567 通过 / 16 跳过,`Infrastructure.Tests` 542 / 4,`Core.Tests` 533 / 12;`dotnet build VelaShell.slnx -c Debug -warnaserror` 0 警告。文档:velashell-docs 里只有设置审计提到这一项的名字,没有与行为对不上的描述,不改。
+
+## ✅ 131. 2026-09-29 出厂强调色改为跟随主题(`feature-plan.md` 🟡 P2 项)
+
+**一、问题**:`AppSettings.AccentColor` 出厂是 `#E91E63`,而强调色覆盖的优先级高于主题令牌(`App.ApplyAccent` 遮蔽 `VelaAccent` 三件套)。全新安装下十二套主题各自的强调色(One Dark 的蓝、Nord 的冰青、Gruvbox 的琥珀)都被同一个粉色盖住(§27 记过)。设置页也没有回到主题强调色的入口,只能靠把输入框清空。
+
+**二、做法**:
+- 出厂值改成空串(空 = 不覆盖)。`ThemeService.NormalizeHex` 与 `App.ApplyAccent` 本来就把空值当成「回到当前主题自己的强调色」,运行时一行不用动。
+- **存量配置不迁移**:已经落盘的 `#E91E63` 分不清是用户选的还是旧出厂值,照旧生效。
+- 设置 → 外观 → 主题色:色板前加「跟随主题」按钮(`SetAccentCommand` 传空串);输入框的占位文字也改成「跟随主题」,清空后一眼看得出现在是什么状态。新增本地化键 `SetAppear_AccentFollowTheme`,五份 resx 齐。
+
+**三、验证**:新增 `AccentDefaultsTests` 2 条(新配置跟随主题且落成「无覆盖」、存量色值原样保留)。`VelaShell.Core.Tests` 535 通过 / 12 跳过;`VelaShell.Tests` 里本地化、设置、主题相关的 161 条全过。
