@@ -13,8 +13,14 @@ public class AppSettings
     /// <summary>界面主题标识(如 dark / light)。</summary>
     public string Theme { get; set; } = "dark";
 
-    /// <summary>强调色覆盖(十六进制字符串,如 "#00D4AA");空 = 使用主题默认值。</summary>
-    public string AccentColor { get; set; } = "#E91E63";
+    /// <summary>
+    /// 强调色覆盖(十六进制字符串,如 "#00D4AA");空 = 使用主题默认值。
+    /// <para>
+    /// 出厂为空:覆盖的优先级高于主题令牌,出厂给一个具体色值会把十二套主题各自的强调色
+    /// 一并盖掉。存量配置里已经写着的色值照旧生效 —— 分不清那是用户选的还是旧出厂值,不做迁移。
+    /// </para>
+    /// </summary>
+    public string AccentColor { get; set; } = "";
 
     /// <summary>
     /// 终端渲染使用的等宽字体族名。默认内置的 Cascadia Mono(随程序分发,Linux/macOS
@@ -174,6 +180,8 @@ public class AppSettings
         General.ReconnectIntervalSeconds = Math.Clamp(General.ReconnectIntervalSeconds, 1, 300);
         General.StatusMetricsIntervalSeconds = Math.Clamp(General.StatusMetricsIntervalSeconds, 1, 60);
         Transfer.MaxConcurrentTransfers = Math.Clamp(Transfer.MaxConcurrentTransfers, 1, 16);
+        Security.AuditLogRetentionDays = Math.Clamp(
+            Security.AuditLogRetentionDays, 1, SecurityOptions.MaxAuditLogRetentionDays);
         XServer.DisplayNumber = Math.Clamp(
             XServer.DisplayNumber, XServerOptions.AutoDisplayNumber, XServerOptions.MaxDisplayNumber);
     }
@@ -1105,6 +1113,26 @@ public class SecurityOptions : ObservableOptions
 
     /// <summary>规划中(输入脱敏,依赖会话录制):仅持久化,不出现在设置界面(设置审计 R-12)。</summary>
     public bool MaskSensitiveInput { get; set; } = true;
+
+    /// <summary>审计日志与连接历史的默认保留天数。</summary>
+    public const int DefaultAuditLogRetentionDays = 180;
+
+    /// <summary>审计日志与连接历史的保留上限(十年)。</summary>
+    public const int MaxAuditLogRetentionDays = 3650;
+
+    /// <summary>
+    /// 审计日志(<c>audit_log</c>)与连接历史(<c>conn_history</c>)保留多少天;启动时删掉更早的记录
+    /// (见 <see cref="Data.AuditRetention" />)。
+    /// </summary>
+    /// <remarks>
+    /// 默认半年:审计要能回头查「上个季度谁连过哪台」,又不该像原先那样只增不减。
+    /// 区间 1–3650,与设置页 <c>NumericUpDown</c> 同一口径(<see cref="AppSettings.Normalize" /> 钳位)。
+    /// </remarks>
+    public int AuditLogRetentionDays
+    {
+        get;
+        set => Set(ref field, value);
+    } = DefaultAuditLogRetentionDays;
 
     /// <summary>首次连接主机时是否需确认其指纹。</summary>
     public bool ConfirmFirstFingerprint

@@ -1,4 +1,5 @@
 using System.Globalization;
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Threading;
@@ -41,7 +42,10 @@ public sealed class RecordingPlayerCleanupUiTests
             Assert.IsTrue(cleanup.IsVisible, "清理按钮必须真的画出来。");
             Assert.IsTrue(cleanup.IsEnabled, "没有录制时也要能进清理:孤儿数据正是元数据已删的那部分。");
             Assert.IsGreaterThan(0, cleanup.Bounds.Width, "按钮被挤成零宽等于没有。");
-            Assert.AreEqual("清理", cleanup.Content as string);
+            // 收进标题栏之后是纯图标:名字从读屏名称与悬停提示里给出。
+            Assert.AreEqual("清理", AutomationProperties.GetName(cleanup));
+            Assert.IsTrue(cleanup.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")),
+                "清理入口在标题栏里,与主窗口的全局功能图标同一处。");
             return Task.CompletedTask;
         });
     }

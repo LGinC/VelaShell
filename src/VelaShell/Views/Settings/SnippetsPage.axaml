@@ -182,6 +182,7 @@
       </Grid>
       <TextBox Text="{Binding Snippets.NewCommandText}"
                PlaceholderText="{loc:Localize SetSnippets_CommandPlaceholder}" />
+      <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_VariablesHint}" />
       <TextBox Text="{Binding Snippets.NewDescription}"
                PlaceholderText="{loc:Localize Description}" />
       <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
@@ -203,6 +204,7 @@
     </Grid>
     <TextBox Text="{Binding Snippets.NewCommandText}"
              PlaceholderText="{loc:Localize SetSnippets_CommandPlaceholder}" />
+    <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_VariablesHint}" />
     <TextBox Text="{Binding Snippets.NewDescription}"
              PlaceholderText="{loc:Localize Description}" />
     <Button Classes="dlg-primary" HorizontalAlignment="Right"

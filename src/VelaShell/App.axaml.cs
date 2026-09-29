@@ -136,6 +136,8 @@ public class App : Application
             .AddSingleton<IHostKeyPrompt, HostKeyPromptDialogService>()
             // agent 转发「逐次确认」的弹窗:连接配置里勾了才会被调到,没勾的会话永远碰不到它。
             .AddSingleton<IAgentSignPrompt, AgentSignPromptDialogService>()
+            // keyboard-interactive(2FA / OTP):服务端要动态码时弹框问。
+            .AddSingleton<IKeyboardInteractivePrompt, KeyboardInteractivePromptDialogService>()
             // 内置 X 服务端的顶层窗口画成原生窗口(设置 → X Server 的「内置」引擎)。
             .AddSingleton<Infrastructure.XServer.IEmbeddedXServerHost, Services.XServer.AvaloniaXServerHost>()
             .AddSingleton<ILocalizationService, LocalizationService>()
@@ -269,6 +271,17 @@ public class App : Application
             {
                 int retentionDays = _startupSettings?.General.LogRetentionDays ?? 30;
                 _ = Task.Run(() => recordingStore.CleanupExpiredAsync(retentionDays));
+            }
+
+            // 审计日志与连接历史的保留(设置 → 安全审计 → 保留天数):两张只增不减的时序表,删掉更早的记录。
+            if (_serviceProvider is { } retentionServices)
+            {
+                int auditRetentionDays = _startupSettings?.Security.AuditLogRetentionDays
+                                         ?? SecurityOptions.DefaultAuditLogRetentionDays;
+                FireAndForget.Run(() => AuditRetention.PruneAsync(
+                    retentionServices.GetService<IAuditLogService>(),
+                    retentionServices.GetService<IRecentConnectionService>(),
+                    auditRetentionDays));
             }
 
             // 托盘图标(关闭时最小化到托盘);设置保存后热更新挂载状态。

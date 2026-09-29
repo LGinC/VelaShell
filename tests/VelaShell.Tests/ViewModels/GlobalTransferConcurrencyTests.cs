@@ -2,6 +2,7 @@ using Avalonia.Headless;
 using NSubstitute;
 using VelaShell.Core.Models;
 using VelaShell.Core.Sftp;
+using VelaShell.Tests.TestSupport;
 using VelaShell.ViewModels;
 
 namespace VelaShell.Tests.ViewModels;
@@ -86,8 +87,7 @@ public sealed class GlobalTransferConcurrencyTests
     /// 换句话说,裸跑是在验一个产品并不支持的线程配置。
     /// </para>
     /// </remarks>
-    private static async Task OnUi(Func<Task> body) =>
-        await _session.Dispatch(body, CancellationToken.None);
+    private static Task OnUi(Func<Task> body) => _session.RunOnUiAsync(body);
 
     private static FileBrowserViewModel CreatePanel(
         FileTransferViewModel sink, ConcurrencyProbe probe, int limit, string remoteDir = "/upload")

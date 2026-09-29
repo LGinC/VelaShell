@@ -82,6 +82,10 @@ Docker 与 `docker-compose.test.yml`,`CrossPlatformPublishTests` 需 `VELASHELL_
 - **headless UI 测试要用带返回值的重载**:`Dispatch(async () => { …; return true; })`。
 `HeadlessUnitTestSession` 没有 `Func<Task>` 重载,写成无返回值会拿到一个从未被等待的
 `Task<Task>`,测试跑到第一个 `await` 就"通过",断言失败全部丢失。
+**`async Task` 的测试方法别直接 `await _session.Dispatch(…)`**,用 `TestSupport/HeadlessUi.cs` 的
+`RunOnUiAsync`:会话在 UI 线程上完成任务,`await` 的续体就地跑在 UI 线程上,MSTest 接着在那条线程上
+跑下一条用例 —— 下一条若是 `Dispatch(…).GetAwaiter().GetResult()` 写法,就在 UI 线程上等 UI 线程,
+整套卡死(只在两种写法按这个顺序相邻时出现)。
 - **改 `src/VelaShell.Ssh/` 之前先读 [`src/VelaShell.Ssh/AGENTS.md`](src/VelaShell.Ssh/AGENTS.md)**。
 那是宿主的 SSH 库(2026-09-23 从 velashell-ssh 仓库并入,不单独发 NuGet),有一条宿主其余部分没有的
 **净室规程**:写实现时不许打开任何其它 SSH 实现的源码,实现依据只能是 RFC 与 velashell-docs 的

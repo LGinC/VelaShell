@@ -5,6 +5,7 @@ using Avalonia.Media;
 using Avalonia.Styling;
 using VelaShell.Core.Models;
 using VelaShell.Services;
+using VelaShell.Tests.TestSupport;
 
 namespace VelaShell.Tests.Views;
 
@@ -29,7 +30,7 @@ public sealed class ThemeTokenShadowingUiTests
 
     [TestMethod]
     public async Task AppliedTokens_ShadowTheCompiledThemeDictionaries() =>
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             Application app = Application.Current!;
             // 贴之前:解析到的是 axaml 里 Dark 变体的值(headless 宿主与 App.axaml 同一套资源栈)。
@@ -76,7 +77,7 @@ public sealed class ThemeTokenShadowingUiTests
                 Resolve(app, "VelaBgPage"),
                 "还原那一格后必须落回 axaml 的缺省 —— 说明刚才确实是遮蔽,不是把缺省改掉了。");
             return Task.FromResult(true);
-        }, CancellationToken.None);
+        });
 
     /// <summary>
     /// 贴一套主题惊动可视树的次数必须与令牌数无关。
@@ -89,7 +90,7 @@ public sealed class ThemeTokenShadowingUiTests
     /// </summary>
     [TestMethod]
     public async Task ApplyingATheme_NotifiesTheTreeAConstantNumberOfTimes() =>
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             Application app = Application.Current!;
             app.Resources.ThemeDictionaries.TryGetValue(ThemeVariant.Dark, out IThemeVariantProvider? savedDark);
@@ -113,7 +114,7 @@ public sealed class ThemeTokenShadowingUiTests
                 $"贴一套主题发了 {notifications} 次资源变更通知 —— 多半是又改回了逐个令牌写 "
                 + "Application.Resources。每一次通知都要把整棵树上的 DynamicResource 重解析一遍。");
             return Task.FromResult(true);
-        }, CancellationToken.None);
+        });
 
     private static void Restore(Application app, ThemeVariant variant, IThemeVariantProvider? saved)
     {

@@ -4,6 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:VelaShell.Presentation.ViewModels"
         xmlns:loc="using:VelaShell.Localization"
+        xmlns:pc="using:VelaShell.Controls.Controls"
         mc:Ignorable="d" d:DesignWidth="560" d:DesignHeight="560"
         x:Class="VelaShell.Views.SessionImportView"
         x:DataType="vm:SessionImportViewModel"
@@ -13,6 +14,23 @@
         CanResize="False"
         WindowStartupLocation="CenterOwner">
   <Window.Styles>
+    <!-- 关闭键:27×27、无圆角,规格同主窗口的窗口键。这是对话框,不挂 window-caption,macOS 上照常显示 ×。 -->
+    <Style Selector="Button.caption">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
+    </Style>
     <Style Selector="Button.dlg-outline">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
@@ -50,30 +68,29 @@
 
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,52">
 
-      <!-- Header -->
-      <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0"
+      <!-- 标题栏(28,与全部窗口一致;可拖动):标题 | 关闭。与回放中心等独立窗口同一个样子 ——
+           标题靠左、不带图标,27×27 关闭键贴住右上角,悬停的红底由卡片的 ClipToBounds 按圆角裁掉。
+           原先是 48 高头部那一套(16px 实心图标、14px 标题、24×24 圆角 ×),压进 28 之后又挤又大。
+           这是对话框:固定尺寸,不放最大化;关闭键不挂 window-caption,macOS 上照常显示 ×。 -->
+      <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0,0,0"
               PointerPressed="Header_PointerPressed"
               Background="Transparent"
               BorderThickness="0,0,0,1"
               BorderBrush="{DynamicResource VelaBorderPrimary}">
-        <Grid ColumnDefinitions="Auto,8,*,Auto">
-          <PathIcon Grid.Column="0" Width="16" Height="16"
-                    Data="M20 6h-8l-2-2H4c-1.1 0-1.99.9-1.99 2L2 18c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2z"
-                    Foreground="{DynamicResource VelaAccent}"
-                    VerticalAlignment="Center" />
-          <TextBlock Grid.Column="2" Text="{Binding Title}"
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="{Binding Title}"
                      Foreground="{DynamicResource VelaTextPrimary}"
-                     FontSize="{DynamicResource VelaFontSize14}" FontWeight="SemiBold"
-                     VerticalAlignment="Center" />
-          <Button Grid.Column="3" Width="24" Height="24"
-                  Background="Transparent" Padding="0" CornerRadius="3"
-                  Cursor="Hand" Click="Cancel_Click">
-            <PathIcon Width="14" Height="14"
-                      Data="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-                      Foreground="{DynamicResource VelaTextTertiary}" />
+                     FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
+                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+          <Button Grid.Column="1" Classes="caption caption-close" VerticalAlignment="Top"
+                  Click="Cancel_Click">
+            <pc:LucideIcon Width="12" Height="12"
+                           Data="{StaticResource Icon.x}"
+                           Foreground="{DynamicResource VelaTextSecondary}" />
           </Button>
         </Grid>
       </Border>
@@ -162,12 +179,20 @@
                     </StackPanel>
                   </Grid>
 
+                  <!-- 来源路径只在自定义模式下露出来;没找到来源(路径为空)时整行隐去 ——
+                       空文字的 TextBlock 照样占一行高,再加上 StackPanel 的间距,卡片底部平白多出一截。 -->
                   <TextBlock Text="{Binding SourceText}"
-                             IsVisible="{Binding IsExpanded}"
                              Foreground="{DynamicResource VelaTextMuted}"
                              FontSize="{DynamicResource VelaFontSize10}"
                              FontFamily="{DynamicResource VelaUiMonoFont}"
-                             TextTrimming="CharacterEllipsis" />
+                             TextTrimming="CharacterEllipsis">
+                    <TextBlock.IsVisible>
+                      <MultiBinding Converter="{x:Static BoolConverters.And}">
+                        <Binding Path="IsExpanded" />
+                        <Binding Path="SourceText" Converter="{x:Static StringConverters.IsNotNullOrEmpty}" />
+                      </MultiBinding>
+                    </TextBlock.IsVisible>
+                  </TextBlock>
 
                   <ItemsControl ItemsSource="{Binding Items}"
                                 IsVisible="{Binding ShowItems}">

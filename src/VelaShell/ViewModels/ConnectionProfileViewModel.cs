@@ -11,6 +11,7 @@ using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Plugins.Protocols;
+using VelaShell.Infrastructure.Ssh;
 using VelaShell.PluginSdk.Protocols;
 using VelaShell.Presentation.Services;
 using VelaShell.Security;
@@ -91,6 +92,12 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     private bool _sshX11Forwarding;
     private string? _sshX11Display;
     private bool _sshX11Trusted = new SshSessionOptions().X11Trusted;
+    private bool _sshLegacyAlgorithms;
+    private bool _sshCustomAlgorithms;
+    private string? _sshKexAlgorithms;
+    private string? _sshHostKeyAlgorithms;
+    private string? _sshCiphers;
+    private string? _sshMacs;
 
     // ---- 插件协议 ----
     private readonly PluginProtocolRegistry? _protocolRegistry;
@@ -198,6 +205,12 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
                 _sshX11Forwarding = ssh.X11Forwarding;
                 _sshX11Display = ssh.X11Display;
                 _sshX11Trusted = ssh.X11Trusted;
+                _sshLegacyAlgorithms = ssh.LegacyAlgorithms;
+                _sshCustomAlgorithms = ssh.HasCustomAlgorithms;
+                _sshKexAlgorithms = ssh.KexAlgorithms;
+                _sshHostKeyAlgorithms = ssh.HostKeyAlgorithms;
+                _sshCiphers = ssh.Ciphers;
+                _sshMacs = ssh.Macs;
             }
         }
         else
@@ -246,8 +259,11 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             x => x.ConnectionType,
             x => x.AllowsAnonymous,
             x => x.PluginUnavailable,
-            (host, username, port, isBusy, anonymous, type, pluginAnonymous, pluginUnavailable) =>
+            x => x.SshAlgorithmsError,
+            (host, username, port, isBusy, anonymous, type, pluginAnonymous, pluginUnavailable, algorithmsError) =>
                 !isBusy &&
+                // 算法清单写错了连不上,存下来也只是把错误推迟到连接那一刻。
+                algorithmsError is null &&
                 !string.IsNullOrWhiteSpace(host) &&
                 (!string.IsNullOrWhiteSpace(username) ||
                  (type == ConnectionType.FTP && anonymous) ||
@@ -322,6 +338,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             this.RaisePropertyChanged(nameof(IsFtpSelected));
             this.RaisePropertyChanged(nameof(IsPluginSelected));
             this.RaisePropertyChanged(nameof(RequiresSshAuth));
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
             this.RaisePropertyChanged(nameof(SupportsPostAuthCommand));
             this.RaisePropertyChanged(nameof(ShowFtpPlaintextWarning));
 
@@ -919,6 +936,138 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         get => _sshCompression;
         set => this.RaiseAndSetIfChanged(ref _sshCompression, value);
     }
+
+    // ---- 算法清单(连老设备)----
+    //
+    // 与压缩同一个显示条件(SSH 与 SFTP 都有):两者走同一条 SSH 连接。
+    // 「默认」取决于有没有放开老算法,所以老算法开关一变,四个提示与校验都要跟着重算。
+
+    /// <summary>放开老算法(<c>diffie-hellman-group14-sha1</c>、<c>ssh-rsa</c>、<c>hmac-sha1</c>),追加在默认之后。</summary>
+    public bool SshLegacyAlgorithms
+    {
+        get => _sshLegacyAlgorithms;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshLegacyAlgorithms, value);
+            RaiseAlgorithmsChanged();
+        }
+    }
+
+    /// <summary>展开四个自定义清单;关着时不存(与 X11 关着时不存显示地址同一个理由)。</summary>
+    public bool SshCustomAlgorithms
+    {
+        get => _sshCustomAlgorithms;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshCustomAlgorithms, value);
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+        }
+    }
+
+    /// <summary>密钥交换算法清单(OpenSSH 写法);空 = 默认。</summary>
+    public string? SshKexAlgorithms
+    {
+        get => _sshKexAlgorithms;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshKexAlgorithms, value);
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+        }
+    }
+
+    /// <summary>主机密钥算法清单(OpenSSH 写法);空 = 默认。</summary>
+    public string? SshHostKeyAlgorithms
+    {
+        get => _sshHostKeyAlgorithms;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshHostKeyAlgorithms, value);
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+        }
+    }
+
+    /// <summary>加密算法清单(OpenSSH 写法);空 = 默认。</summary>
+    public string? SshCiphers
+    {
+        get => _sshCiphers;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshCiphers, value);
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+        }
+    }
+
+    /// <summary>MAC 算法清单(OpenSSH 写法);空 = 默认。</summary>
+    public string? SshMacs
+    {
+        get => _sshMacs;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref _sshMacs, value);
+            this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+        }
+    }
+
+    /// <summary>密钥交换输入框的悬停提示:此刻的默认清单与另可加的算法。</summary>
+    public string SshKexAlgorithmsTip => AlgorithmTip(SshAlgorithmKind.KeyExchange);
+
+    /// <summary>主机密钥输入框的悬停提示。</summary>
+    public string SshHostKeyAlgorithmsTip => AlgorithmTip(SshAlgorithmKind.HostKey);
+
+    /// <summary>加密输入框的悬停提示。</summary>
+    public string SshCiphersTip => AlgorithmTip(SshAlgorithmKind.Cipher);
+
+    /// <summary>MAC 输入框的悬停提示。</summary>
+    public string SshMacsTip => AlgorithmTip(SshAlgorithmKind.Mac);
+
+    /// <summary>
+    /// 四个清单里第一处写错的地方(带类别);都成立、或清单没展开时为 null。不为 null 时保存 / 连接 / 测试都灰着。
+    /// </summary>
+    public string? SshAlgorithmsError
+    {
+        get
+        {
+            if (!_sshCustomAlgorithms || !RequiresSshAuth)
+            {
+                return null;
+            }
+            foreach ((SshAlgorithmKind kind, string? spec) in AlgorithmSpecs())
+            {
+                if (SshAlgorithmPreferences.Validate(kind, spec, _sshLegacyAlgorithms) is { } error)
+                {
+                    return Strings.Format("Ssh_AlgoSpecInvalid", SshAlgorithmPreferences.Label(kind), error);
+                }
+            }
+            return null;
+        }
+    }
+
+    private (SshAlgorithmKind Kind, string? Spec)[] AlgorithmSpecs() =>
+    [
+        (SshAlgorithmKind.KeyExchange, _sshKexAlgorithms),
+        (SshAlgorithmKind.HostKey, _sshHostKeyAlgorithms),
+        (SshAlgorithmKind.Cipher, _sshCiphers),
+        (SshAlgorithmKind.Mac, _sshMacs),
+    ];
+
+    private string AlgorithmTip(SshAlgorithmKind kind)
+    {
+        IReadOnlyList<string> defaults = SshAlgorithmPreferences.Defaults(kind, _sshLegacyAlgorithms);
+        string[] more = [.. SshAlgorithmPreferences.Available(kind).Where(a => !defaults.Contains(a, StringComparer.Ordinal))];
+        string tip = Strings.Format("Profile_SshAlgoTipDefaults", string.Join(", ", defaults));
+        return more.Length == 0 ? tip : $"{tip}\n{Strings.Format("Profile_SshAlgoTipMore", string.Join(", ", more))}";
+    }
+
+    private void RaiseAlgorithmsChanged()
+    {
+        this.RaisePropertyChanged(nameof(SshKexAlgorithmsTip));
+        this.RaisePropertyChanged(nameof(SshHostKeyAlgorithmsTip));
+        this.RaisePropertyChanged(nameof(SshCiphersTip));
+        this.RaisePropertyChanged(nameof(SshMacsTip));
+        this.RaisePropertyChanged(nameof(SshAlgorithmsError));
+    }
+
+    private static string? TrimToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /// <summary>把本机 ssh-agent 转发给远端。</summary>
     public bool SshAgentForwarding
@@ -1541,7 +1690,13 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             X11Display = shell && _sshX11Forwarding && !string.IsNullOrWhiteSpace(_sshX11Display)
                 ? _sshX11Display.Trim()
                 : null,
-            X11Trusted = _sshX11Trusted
+            X11Trusted = _sshX11Trusted,
+            LegacyAlgorithms = _sshLegacyAlgorithms,
+            // 清单收起时不存:看不见的旧写法不该在下次展开前悄悄生效。
+            KexAlgorithms = _sshCustomAlgorithms ? TrimToNull(_sshKexAlgorithms) : null,
+            HostKeyAlgorithms = _sshCustomAlgorithms ? TrimToNull(_sshHostKeyAlgorithms) : null,
+            Ciphers = _sshCustomAlgorithms ? TrimToNull(_sshCiphers) : null,
+            Macs = _sshCustomAlgorithms ? TrimToNull(_sshMacs) : null
         };
         return options.IsEmpty ? null : options;
     }

@@ -33,6 +33,28 @@
 
     <Border Classes="sep" />
 
+    <!-- 审计日志:连接成败、指纹裁决与外部拉起一直在写 audit_log,这里是看它的地方与它的保留期。
+         保留天数同时管连接历史(conn_history),两张表只在启动时按它清理。 -->
+    <TextBlock Classes="section-title" Text="{loc:Localize SetSecurity_SectionAuditLog}" />
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="row-label" Text="{loc:Localize SetSecurity_AuditLogViewer}" />
+        <TextBlock Classes="row-desc" Text="{loc:Localize SetSecurity_AuditLogViewerDesc}" />
+      </StackPanel>
+      <Button Grid.Column="1" Classes="dlg-outline" Content="{loc:Localize SetSecurity_OpenAuditLog}"
+              Click="OpenAuditLog_Click" VerticalAlignment="Center" />
+    </Grid>
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
+        <TextBlock Classes="row-label" Text="{loc:Localize SetSecurity_AuditLogRetention}" />
+        <TextBlock Classes="row-desc" Text="{loc:Localize SetSecurity_AuditLogRetentionDesc}" />
+      </StackPanel>
+      <NumericUpDown Grid.Column="1" Width="90" Value="{Binding Security.AuditLogRetentionDays}"
+                     Minimum="1" Maximum="3650" Increment="30" FormatString="0" VerticalAlignment="Center" />
+    </Grid>
+
+    <Border Classes="sep" />
+
     <!-- 主机信任策略 -->
     <TextBlock Classes="section-title" Text="{loc:Localize SetSecurity_SectionTrust}" />
     <Grid ColumnDefinitions="*,Auto">

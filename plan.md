@@ -1263,3 +1263,136 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 设置项说明 `SetAppear_WindowStateDesc` 五语言改为「应用启动时的窗口大小与位置」。
 
 **三、验证**:新增 `MainWindowPlacementTests` 14 条:可达性判定 7 条(屏幕内、副屏拔掉、顶边出界、贴着底边、侧边只露一截、负坐标的副屏、门槛随缩放)、摆放 2 条(headless 屏幕内改为手动摆放、屏幕外保持居中)、回写 5 条(普通态关闭、挪过之后最大化、最小化关闭、整次都没处于普通态、不跟踪的平台)。把快照改成同步读、去掉「最小化之前的状态」,各有一条变红。本机双屏(2560×1440 两块并排)用 `--data-root` 指向临时目录实跑五轮,全部符合预期:挪到副屏关闭 → 下次开在副屏原处;副屏上挪过再最大化关闭 → 下次在副屏最大化,还原回挪过去的位置;最大化后最小化再关闭 → 下次仍最大化;挪到屏幕外关闭 → 下次居中(另用文件监视确认实跑没碰默认数据根)。macOS / Linux 没有实机跑过。全量:`VelaShell.Tests` 1567 通过 / 16 跳过,`Infrastructure.Tests` 542 / 4,`Core.Tests` 533 / 12;`dotnet build VelaShell.slnx -c Debug -warnaserror` 0 警告。文档:velashell-docs 里只有设置审计提到这一项的名字,没有与行为对不上的描述,不改。
+
+## ✅ 131. 2026-09-29 出厂强调色改为跟随主题(`feature-plan.md` 🟡 P2 项)
+
+**一、问题**:`AppSettings.AccentColor` 出厂是 `#E91E63`,而强调色覆盖的优先级高于主题令牌(`App.ApplyAccent` 遮蔽 `VelaAccent` 三件套)。全新安装下十二套主题各自的强调色(One Dark 的蓝、Nord 的冰青、Gruvbox 的琥珀)都被同一个粉色盖住(§27 记过)。设置页也没有回到主题强调色的入口,只能靠把输入框清空。
+
+**二、做法**:
+- 出厂值改成空串(空 = 不覆盖)。`ThemeService.NormalizeHex` 与 `App.ApplyAccent` 本来就把空值当成「回到当前主题自己的强调色」,运行时一行不用动。
+- **存量配置不迁移**:已经落盘的 `#E91E63` 分不清是用户选的还是旧出厂值,照旧生效。
+- 设置 → 外观 → 主题色:色板前加「跟随主题」按钮(`SetAccentCommand` 传空串);输入框的占位文字也改成「跟随主题」,清空后一眼看得出现在是什么状态。新增本地化键 `SetAppear_AccentFollowTheme`,五份 resx 齐。
+
+**三、验证**:新增 `AccentDefaultsTests` 2 条(新配置跟随主题且落成「无覆盖」、存量色值原样保留)。`VelaShell.Core.Tests` 535 通过 / 12 跳过;`VelaShell.Tests` 里本地化、设置、主题相关的 161 条全过。
+
+## ✅ 132. 2026-09-29 快捷命令支持变量占位(用户需求)
+
+**一、问题**:快捷命令只有一段固定的 `CommandText`。`kubectl logs -f <pod>`、`journalctl -u <服务> -n 200` 这类每次只差一两个参数的命令,要么存成缺参数的半截、发出去再在终端里补,要么每个参数各存一条。
+
+**二、做法**:
+- **写法**:`{{名字}}` 或 `{{名字=默认值}}`,写在命令正文里 —— `QuickCommand` 的结构不动,Gist 同步与导入导出照旧。解析与替换在 `Core/Models/QuickCommandTemplate`。
+- **别误伤现有的双花括号**:运维命令里本来就有大量 `{{…}}`(`docker inspect -f '{{.State.Status}}'`、kubectl 的 go-template、Ansible 的 `{{ inventory_hostname }}`),所以占位收得很窄:名字只能是字母 / 下划线开头的字母数字下划线连字符,**花括号里不许有空白**;Go 模板的无参动作 `end` / `else` / `break` / `continue` 不算;默认值里不许有花括号与换行。不是占位的一律原样发出。
+- 同名写多处只问一次、用第一个非空的默认值;没填的变量取默认值(没默认值就是空串)。**值里的换行换成空格** —— 快捷命令只发正文不带回车,值里夹一个换行就等于替用户按了回车。
+- **流程**:`QuickCommandExecutionRequest` 多带命令名;`MainWindowViewModel` 收到请求时先解析,没有占位就照旧同步发送;有占位就经窗口注入的 `QuickCommandVariablePrompt` 询问(与 `MultilinePasteConfirmer` 同一种手法,未挂时原样发送),取消则一个字节都不发。弹框期间目标可能断开,发送时再按当下的标签挑一遍。
+- **询问框** `Views/QuickCommandVariablesPrompt`:外壳复用 `MessageDialog.ShowCustomAsync`,每个变量一行(名字 + 预填默认值的输入框,读屏器按变量名念),下方「将发送:」实时预览替换后的整条命令;打开即聚焦第一个输入框,Enter 发送、Esc 取消。
+- 设置 → 快捷命令的新建 / 编辑区,命令输入框下加一行写法说明。新增本地化键 `QuickCmd_VariablesTitle` / `QuickCmd_VariablesPreview` / `QuickCmd_VariablesSend` / `SetSnippets_VariablesHint`,五份 resx 齐。
+- **没覆盖到的**:终端里的命令补全(`CommandSuggestionProvider`)把快捷命令当候选时插入的仍是含占位的原文 —— 补全是按前缀续写正文的,换成替换后的文本会与已键入的前缀对不上。
+
+**三、验证**:新增 `QuickCommandTemplateTests` 13 条(按首次出现排序、同名只问一次且取第一个非空默认值、七种模板语言写法原样不动、非 ASCII 与连字符名字、给值 / 缺值取默认 / Go 动作留在原处、值里的换行压成空格、无占位原样返回);`QuickCommandVariablesFlowTests` 4 条(询问后发替换结果、取消不发也不抢焦点、Go 模板不弹框直接发、弹框期间目标断开就不发);`QuickCommandVariablesPromptUiTests` 2 条 headless 真控件(默认值预填、第一个输入框拿到焦点、预览随输入变、确认返回所填的值;取消返回 null)。把「聚焦第一个输入框」去掉、把发送改回原文,各有一条变红。
+
+## ✅ 133. 2026-09-29 keyboard-interactive 动态码弹框(`feature-plan.md` 🟠 P1 项)
+
+**一、问题**:库早就支持 keyboard-interactive,密码那一路也默认兼答它,但宿主没有「弹框输动态码」的流程。只放行 keyboard-interactive 的 2FA 服务器(PAM + Google Authenticator、Duo、堡垒机 MFA)上完全登不上,失败文案还附着一句已经不成立的「底层 SSH 库未实现该认证方式」,把用户引去反复改密码。库自带的兼答只看形状(一条不回显提示)不看内容,PAM 的 `Verification code:` 也是这个形状 —— 于是密码会被填进验证码那一轮。
+
+**二、做法**:
+- **契约**:Core 新增 `IKeyboardInteractivePrompt`(`KeyboardInteractiveRequest`:连接目标、服务端标题与说明、若干 `KeyboardInteractiveField`(提示 + 是否回显)),与 `IHostKeyPrompt` 同一模式:基础设施在后台线程等,界面层弹框。
+- **应答**:`Infrastructure/Ssh/KeyboardInteractiveResponder`,每次连接尝试一个。单条不回显、看起来是口令的提示(英中日韩的「密码」字样,且不带验证码 / OTP / token 之类字样 —— 那要的往往是「口令 + 动态码」拼起来的串)用已有的密码**代答一次**,再问一遍口令(改密码流程、或刚才那个不对)就交给用户;其余一律弹框。**私钥 / 证书 / agent 那几路不回退到口令**:单纯的口令提示答空串让服务端拒掉,只有验证码之类才弹框 —— 这是 `AuthenticationMethods publickey,keyboard-interactive`(钥 + 动态码)的第二步;钥被拒之后冒出一个密码框,与「只用用户选的那一种认证方式」相悖。纯展示的一轮(没有提示)不弹框(规格 04 §6.4),说明攒进下一个框里。对端文字先去掉控制字符与双向文本控制符、统一换行、限长(标题 128 / 说明 2048 / 提示 256)再上界面。
+- **装配**:`SshConnectionAssembler.Create` 多一个可选的 `keyboardPrompt`(DI 里取界面层注册的实现)。有界面时每种认证方式的凭据后面都跟一条 keyboard-interactive,密码凭据的 `AlsoAnswerKeyboardInteractive` 关掉;没有界面(headless、测试)时与原先完全一样。`SshAgentKeyLoader.TryGetKeyToAdd` 原先按「凭据恰好一条」匹配,多了这一条之后「自动加钥到 agent」会静默失效,改为只看第一条。
+- **取消**:用户在框上点取消 = 「不连了」。库的契约是应答回调抛的异常记成「凭据取不到材料」、接着以「方法试完了」收场,而调用方没取消的取消会被它当成计时器到点报「认证超时」—— 两条路都说不出「用户不连了」,所以不改库:应答器记下 `Cancelled`,`SshConnectionAssembler.ConnectAsync` 在库报任何失败之后据此改抛新增的 `VelaSshAuthenticationCancelledException`(刻意不派生自 `OperationCanceledException`,否则 `SshConnectionService` 同样会把它改判成超时)。宿主三条路径各认一次:首连撤掉标签、不报错、不再弹凭据框;重连按用户主动断开处理(不然自动重连过几秒又来弹同一个框,新增 `TerminalTabViewModel.MarkDisconnectedByUser`);SFTP 文档连接撤占位。令牌触发(关了正在连的标签、认证两分钟超时)时框当场收起,仍按原来的取消 / 超时口径走。
+- **界面**:`Views/KeyboardInteractivePromptDialog`(外壳复用 `MessageDialog.ShowCustomAsync`):标题取服务端给的名字,没有就是「两步验证」;第一行是连接目标(几条会话同时要码时分得清哪台),下面是说明与每条提示一个输入框,`echo = false` 的遮住,打开即聚焦第一个。`Services/KeyboardInteractivePromptDialogService` 一次只弹一个(与 agent 签名确认同一口径),没有主窗口或弹窗出错按取消处理。
+- 撤掉失败文案里的 `Msg_AuthFailedTwoFactorHint` 及其两处注释;新增 `KbdAuth_Title` / `KbdAuth_Submit` / `KbdAuth_Response` / `SshErr_KbdAuthCancelled`,五份 resx 齐。README 两份的「认证与密钥」一栏补上两步验证。
+- **测试靶机**:`docker-compose.test.yml` 新增 `ssh-2fa`(端口 2224,`tests/fixtures/ssh-2fa`):只开 keyboard-interactive 的 sshd,PAM 先问口令再问 TOTP(种子写死);`vela-otp` 口令 + 动态码、`vela-strict` 同上但 `MaxAuthTries 1`、`vela-keyotp` 钥 + 动态码(钥是同目录**仅供测试**的 `id_ed25519`)。
+
+**三、验证**:新增 `KeyboardInteractiveIntegrationTests` 5 条(真实 OpenSSH + PAM:口令代答、只问动态码且一次尝试就过;错码是认证失败;取消报成取消;钥 + 动态码;没有界面时密码过不了第二因素)—— 把密码凭据的兼答重新打开,`vela-strict` 那条当场变红(宽松的服务器上它会先失败一次再由应答器连上,看不出来;这一条是写完之后按变异结果补的)。`KeyboardInteractiveResponderTests` 13 个方法 25 例(PAM 两轮、第二次问口令交给用户、空密码弹框、三种「口令 + 验证码」提示不代答、非密码认证拒答口令但问验证码、回显与多提示、纯展示轮不弹且说明带到下一框、用户取消 / 令牌触发的区分、条数不符、对端文字清洗、11 种提示文字的判定、包成凭据);`KeyboardInteractiveCancelFlowTests` 3 条(首连取消撤标签且不再弹凭据框、重连取消记为用户断开、重连失败照旧报错);`KeyboardInteractivePromptDialogUiTests` 3 条 headless 真控件(目标与说明可见、按 echo 遮罩、第一个输入框聚焦、按提示顺序交回;取消返回 null;令牌触发时窗口当场收起);`SshCredentialSetupTests` / `SshAgentKeyLoaderTests` 各加一条;两条断言旧文案的用例改掉那句提示。全量:`Core.Tests` 554 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1579 / 16,`Presentation.Tests` 69。没在真实的 Duo / RSA SecurID 服务器上试过。
+
+## ✅ 134. 2026-09-29 算法协商可配:老算法开关 + 自定义算法清单(`feature-plan.md` 🟡 P2 项)
+
+**一、问题**:连老网络设备、老系统(只剩 `diffie-hellman-group14-sha1`、SHA-1 的 `ssh-rsa`、`hmac-sha1`)时谈不成,而宿主没有任何地方能放开 —— 库早就有 `SshAlgorithmSet.WithLegacyInterop()`,协商失败的诊断也能说出「两边各有什么」,只是说完之后用户无处可改。反过来要精确控制的(关掉 chacha20-poly1305 / EtM 缓解 Terrapin、把某个加密提到最前)也没有入口。
+
+**二、做法**:
+- **模型**:`SshSessionOptions` 新增 `LegacyAlgorithms` 与四个自定义清单 `KexAlgorithms` / `HostKeyAlgorithms` / `Ciphers` / `Macs`(字符串,空 = 默认),`IsEmpty` / `Clone` 跟上。配置经 `Clone()` 流到 `ConnectionInfo.Ssh`,跳板链上每一跳各带各的。
+- **清单的写法沿用 OpenSSH `ssh_config`**:`+a,b` 追加到默认之后、`-a,b` 从默认里删掉(可带 `*` / `?` 通配)、`^a,b` 提到最前,不带前缀则整个替换;「默认」指放开老算法之后的那一份。照 `~/.ssh/config` 里那一行抄过来就能用。
+- **`Infrastructure/Ssh/SshAlgorithmPreferences`**:「能写哪些名字」以库实际实现了的为准 —— `SshAlgorithmSet.Default.WithLegacyInterop()` 的四类清单,不在宿主里另抄一份。不认识的名字报「不认识」;OpenSSH 认得、本版没实现的常见名字(CBC、3des、group1、group-exchange、ssh-dss、hmac-md5、umac…)报「本版没有实现」—— 抄过来的配置里最常见的就是 CBC,用户要知道的是「放开也没用」而不是「拼错了」。不带通配的删除项也要是认得的名字(拼错了的删除项什么都删不掉,用户却以为已经关了);删完不剩、只写了前缀都当场报。`SshConnectionAssembler.Algorithms` 改由它出清单;手改过配置文件的坏写法在连接时报成一句 `VelaSshConnectionException`(带类别与原因),而不是库在拨号前抛的 `ArgumentException`。
+- **协商失败的诊断多一行下一步**:对端提供的算法里有本版实现了、只是没放开的,点名并指到连接配置(「允许老算法」或自定义清单);一个都没有时如实说放开也没用(典型是只剩 CBC 的老设备)。
+- **连接对话框**「SSH 连接选项」(SSH 与 SFTP 都有,与压缩同一个显示条件):「允许老算法(连老设备用)」开关 + 说明放开的是哪三个、追加在后;「自定义算法清单」展开四个输入框(等宽字体、占位「默认」、悬停提示此刻的默认清单与另可加的算法,随老算法开关刷新),下方一行写法说明;写错时字段下方报错、保存 / 连接 / 测试三个按钮灰掉(`canExecute` 加一路,连接类型切换时一并重算)。清单收起时不存,与 X11 关着时不存显示地址同一个理由。新增本地化键 14 个(`Profile_SshLegacyAlgorithms*`、`Profile_SshCustomAlgorithms*`、`Profile_SshAlgo*`、`Ssh_AlgoSpec*`、`Ssh_AlgoMismatchEnable` / `Unsupported`),五份 resx 齐;类别名复用协商诊断里的 `Ssh_AlgoKind*`。README 两份的「连接」一栏补上。
+- **测试靶机**:`docker-compose.test.yml` 新增 `ssh-legacy`(端口 2225,`tests/fixtures/ssh-legacy`):把 OpenSSH 收窄成只剩 group14-sha1 / ssh-rsa / hmac-sha1 的「老设备」。
+- **没做的**:`~/.ssh/config` 导入(§58)不映射 `KexAlgorithms` / `Ciphers` 等(它现在连 `Compression`、`ForwardAgent` 都不映射,要一起做);CBC 本库没实现,只剩 CBC 的设备仍连不上。
+
+**三、验证**:新增 `LegacyAlgorithmsIntegrationTests` 3 条(真实「老设备」:默认清单谈不成且诊断点名 group14-sha1 并指到设置;放开老算法后连上且谈成的正是 group14-sha1 / ssh-rsa / hmac-sha1;照 OpenSSH 写法的 `+` 清单连上);`SshAlgorithmPreferencesTests` 16 个方法 18 例(无配置即库默认、老算法追加在后且不含 CBC、`+` 只追加没有的、`-` 删名字与通配、`^` 提前、替换并去重、前缀作用在放开后的默认上、没实现的报没实现、拼错的报不认识(含删除项)、不匹配的通配无妨、删光 / 只写前缀报错、四类清单与压缩一起落进算法集且两个方向一致、坏写法报成可读的连接错误、装配器用它、只设算法的选项不算空且能克隆);`SshInteropTests` 2 条(可放开的点名且不含没实现的、全是没实现的说放开也没用);`ConnectionProfileAlgorithmsTests` 6 条(读回与保存、只开老算法也存、写错时按钮灰掉并说清是哪一类哪个名字、收起时不存也不挡保存、切到 FTP 按钮放开、悬停提示随老算法开关变)。把「连接类型切换时重算错误」那一行去掉,切到 FTP 那条变红。全量:`Core.Tests` 577 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1585 / 16。没在真实的 Cisco / 华为设备上试过。
+
+## ✅ 135. 2026-09-29 审计日志查看界面与保留策略(`feature-plan.md` 🟠 P1 两项)
+
+**一、问题**:`audit_log` 一直在写(连接成败、主机指纹的裁决、外部拉起),但 `IAuditLogService.QueryAsync` 在界面层零调用 —— 写了没人看得见;它和 `conn_history` 两张时序表又没有任何保留策略,只增不减。
+
+**二、做法**:
+- **查看**:设置 → 安全审计新增「审计日志」一节,「查看」打开 `Views/AuditLogView`(非模态,外框、标题栏与缩放手柄照录制回放中心)。`ViewModels/AuditLogViewModel` 一次取最近 2000 条(`MaxRows`),筛选在本地做 —— 类别(全部 / 连接 / 安全)、「只看异常」、关键字(事件、类别、会话名、详情,不区分大小写)三者叠加。记录里只有配置 Id,会话名在载入时从会话库对一次,没有 Id 或配置已删的显示 —(详情里的 `用户@主机:端口` 照样看得出是哪台)。动作翻成人话(连接成功 / 连接失败 / 拒绝了主机指纹 / 仅本次信任 / 接受了变更的指纹 / 外部拉起登录),认不出的原样显示;连接失败、拒绝与接受了变更的指纹算「异常」,事件名标红。摘要写共几条、筛出几条,载满 2000 条时注明只载入了最近的;读库失败把原因写在摘要里,不抛。Esc 先清关键字、再关窗口。
+- **保留**:`SecurityOptions.AuditLogRetentionDays`(默认 180 天,1–3650,`Normalize` 钳位,设置页 `NumericUpDown` 同一区间),审计日志与连接历史共用 —— 连接历史就是「最近连接」的底账,比审计留得久没有意义,留得短又会让审计里的会话在侧栏对不上。启动时 `AuditRetention.PruneAsync` 按它删掉更早的记录,与会话日志、录制的过期清理同一时机。两个接口各加 `DeleteOlderThanAsync`。
+- **没有照搬录制那套「暂存 → drop 重建 → 回灌」**:先实测了 SonnetDB 的 `DELETE … WHERE time < @cutoff` —— 按时间删成立,同一条序列里新旧混着的也分得开。审计是逐条的短文本,墓碑占的地方不值得搬一遍数据;而重建那一套在进程死在中途时会丢掉还在保留期内的记录,审计最不该冒这个险。方言不支持时记一笔、原样保留。
+- 新增本地化键 28 个(`SetSecurity_SectionAuditLog` / `AuditLogViewer*` / `OpenAuditLog` / `AuditLogRetention*`、`AuditLog_*`),五份 resx 齐;最大化与缩放手柄的提示复用录制回放中心的 `Recorder_MaximizeTip` / `Recorder_ResizeTip`。README 两份的「数据」一栏补上。
+- **没做的**:导出(CSV)与按时间段筛;审计只记这三类事件,配置增删改、设置变更还没有写进来。
+
+**三、验证**:`SonnetDbPersistenceTests` 加 2 条(真引擎:审计日志按截止时刻删、同一序列里新旧混着的只删旧的;连接历史同理且「最近连接」照常取得到新的);新增 `AuditRetentionTests` 5 例(两张表同一截止时刻、天数小于 1 按 1 天、缺一边跳过一边、默认 180 且钳位到 1–3650);`AuditLogViewModelTests` 5 条(翻译与会话名对照、三种筛选叠加与摘要、载满时注明只载入了最近的、读库失败写进摘要、刷新重读);`AuditLogViewUiTests` 1 条 headless 真控件(行渲染、只有异常那一行挂上 `problem`、筛到没有时列表隐去空状态出现)—— 去掉 `Classes.problem` 绑定它变红。全量:`Core.Tests` 582 通过 / 12 跳过,`Infrastructure.Tests` 569 / 4,`VelaShell.Tests` 1591 / 16,`Plugin.Ai.Tests` 587,`Ssh.Tests` 763 / 22,`Terminal.Tests` 515,`XServer.Tests` 214 / 2,`Presentation.Tests` 69,`Controls.Tests` 13,`RenderTests` 5;`ShellIntegration.Tests` 32 条因 ssh-shells 靶机没起全部跳过(与本改动无关)。
+
+## ✅ 136. 2026-09-29 回放中心与资源监视的动作收进标题栏(用户需求)
+
+**一、问题**:主窗口的全局功能图标排在标题栏里、窗口按钮左边;回放中心(导出 / 刷新 / 清理 / 自动录制)与资源监视(主机标识、暂停)却各在标题栏下面另起一行放文字按钮 —— 标题栏图标按钮的主题 `VelaTitleActionButton` 定义在 `TitleBarView` 内部,别的窗口取不到(任务管理器的注释里写着「跨窗口取不到,这里本地重定义」),§4.2 的规范于是也写成了「放不下的操作按钮放到下一行」。用户要求两扇窗口改成和主窗口一样。
+
+**二、做法**:
+- 主题挪进 `Themes/ButtonThemes.axaml`,改名 `VelaTitleActionButtonTheme`(与另两个共享按钮主题同一命名),主窗口标题栏改用它,外观不变。
+- **回放中心**:标题栏右侧是动作图标组 + 最大化 / 关闭。四个动作改成纯图标(`Icon.download` / `refresh-cw` / `trash-2` / 新增的 Lucide `circle-dot`),悬停提示两行(动作名 + 原来的说明),读屏名称同动作名;自动录制是开关,开着时图标转强调色(与主窗口资源管理器、X Server 同一套写法),提示第一行是当前状态。窗口按钮从「▢ ✕」文字换成与资源监视、任务管理器同规格的 27×27 图标方块,贴住右上角。副标题行只剩说明。
+- **资源监视**:主机标识(连通绿点 / 断开灰点 + 主机名,限宽 260、截断后悬停看全名)与暂停 / 继续(纯图标,暂停中换成强调色的「继续」)收进标题栏,排在最小化前面;副标题行只剩采样说明。原先只给暂停按钮用的 `Button.tool` 样式随之删掉。
+- **双击标题栏最大化不再误伤按钮**:回放中心整条标题栏挂着 `DoubleTapped`,双击手势不管按钮有没有处理按下事件都会冒泡上来 —— 标题栏里多了四个按钮之后,连点两下刷新就会把窗口最大化。处理函数改为落在按钮上的双击不算。今天新加的审计日志窗口同一种写法,一并改了,窗口按钮也换成 27×27 图标方块。
+- `DESIGN.md` §4.2 标题栏一行改为「窗口级动作放标题栏的动作图标组,状态标识可以排在它前面,只有副标题放下一行」,§5.1 补上标题栏图标按钮这个第三种角色。
+
+**三、验证**:新增 `RecordingPlayerTitleBarUiTests` 3 条 headless 真控件(四个动作都在标题栏的动作组里、顺序不变、用共享主题、有悬停提示与读屏名称;自动录制开着时图标是强调色;真指针双击刷新键不最大化、双击标题栏空白处照常最大化 —— 去掉判断那条变红)与 `ResourceMonitorUiTests.TitleBar_CarriesTheHostBadgeAndThePauseToggle`(主机标识与暂停键在标题栏里、用共享主题、主机标识不撑高标题栏、点一下换成强调色的继续);`RecordingPlayerCleanupUiTests` 原先断言清理按钮的文字,改为断言读屏名称与它在标题栏里。用 `VELASHELL_VISUAL_QA_DIR` 各截一帧人眼看过。`VelaShell.Tests` 1595 通过 / 16 跳过,`Controls.Tests` 13。没在 macOS 上看过红绿灯旁的样子。
+
+## ✅ 137. 2026-09-29 远程编辑与连接诊断的动作也收进标题栏(用户需求,§136 后续)
+
+**一、做法**:
+- **远程编辑**:保存从路径行右边挪进标题栏的动作图标组(`Icon.save`,悬停提示「保存 / Ctrl+S」,读屏名称「保存」),路径行只剩远端路径。原先它是一颗常亮的强调色实心按钮,变成标题栏里的灰色图标之后「该存了」没人提醒 —— 所以**有未保存的改动时图标转强调色**:代码后置在修订号每次变动(键入、装载完成、上传确认)后按 `IsDirty` 挂 / 摘 `dirty` 类,两种颜色都由样式给。⚠️ 图标上不能写本地 `Foreground`:本地值压过样式,`dirty` 那条就再也亮不起来(用例专门钉了这一点,把本地值加回去它变红)。窗口键从 24×24 圆角换成 27×27 方块贴住右上角;双击标题栏里的按钮不再最大化(同 §136)。原先只给保存用的 `Button.dlg-primary`、给窗口键用的 `Button.chrome` 样式删掉。
+- **连接诊断**:导出报告(没报告时禁用)与重新检测(检测中命令不可用,按钮变淡)收进标题栏,目标行只剩诊断目标。关闭键从 24×24 圆角换成 27×27 方块 —— 这是对话框,不挂 `window-caption`,macOS 上照常显示 ×。原先的 `dlg-outline` / `dlg-primary` 样式没人用了,删掉。
+- `DESIGN.md` §4.2 标题栏一行补上这两处,并写明「原先是实心强调色按钮的号召性动作,变成图标后在该做的时候转强调色」。
+
+**二、验证**:`RemoteFileEditorDirtyStateTests` 加一条(保存在标题栏、用共享主题;刚打开是灰色,改一个字转强调色,存上之后变回来);新增 `ConnectionDiagnosticsViewUiTests` 1 条(两个动作在标题栏、顺序与读屏名称、用共享主题、没报告时导出禁用、关闭键 27×27、目标行里只剩那一行字)。两扇窗口各截一帧人眼看过(编辑器干净 / 有改动两帧)。
+
+## ✅ 138. 2026-09-29 导入会话、新建连接两个对话框的标题栏按 28 高重排;X11「受信任」对齐(用户需求)
+
+**一、问题**:标题栏统一成 28 高(§118)之后,这两个对话框还是 48 高头部那一套 —— 16px 的 Material 实心图标、14px 标题、24×24 圆角 ×,硬塞进 28 显得又挤又大,× 也不贴角,与别的窗口不是一套。新建连接的高级选项里勾上 X11 转发后,「受信任(-Y)」勾选框靠「贴底 + 底边距 8」去凑本机 X 显示输入框的中线,凑出来高了一截。导入会话的自定义模式下,没找到来源(路径为空)的卡片底部多出一截空行。
+
+**二、做法**:
+- **标题栏**:两个对话框改成与连接诊断(§137)同一规格 —— 15px Lucide 线条图标(导入 `Icon.folder-input`、新建连接 `Icon.plug`,强调色)、13px 标题(放不下时截断)、27×27 关闭键贴住右上角(对话框不挂 `window-caption`,macOS 上照常显示 ×)。内容区、页签、页脚一律没动。
+- **X11 行**:改成两行网格 —— 标签单占一行,输入框与「受信任」同在第二行、各自垂直居中,不再靠边距凑。
+- **导入会话的空行**:来源路径那一行只在「自定义模式 **且** 路径非空」时显示(`MultiBinding` + `BoolConverters.And`)。空文字的 `TextBlock` 照样占一行高,再加上外层 StackPanel 的 6px 间距,就是那截空行。
+- 改之前改之后各截了四帧(导入的自动 / 自定义模式、新建连接的默认 / 高级展开并勾上 X11)人眼对照过。
+
+**三、验证**:新增 `DialogTitleBarAssert`(标题栏 28 高、没有实心 `PathIcon`、标题 13px、关闭键 27×27 且贴住右上角),导入会话与新建连接各一条用它;`ConnectionProfileViewUiTests.X11Trusted_SharesTheDisplayBoxCentreLine`(勾选框与输入框中线差不超过 0.5px);`SessionImportViewUiTests.ASourceWithoutAPath_TakesNoExtraLine`。三处各做了一次变异(勾选框改回贴底 + 边距、标题改回 14px、路径行改回只看模式),对应用例都变红。⚠️ **踩了一次 `AGENTS.md` 写着的坑**:路径那条第一版写成 `Dispatch(async () => …)`,会话没有 `Func<Task>` 重载,拿到的是没人等的 `Task<Task>`,第一个 await 之后的断言全被吞掉 —— 变异跑下去它照样绿,才发现是假绿。改成同步 body(窗口打开即扫描,假服务同步完成)后,变异下它按预期变红。整套跑下来卡死,由此引出 §139。
+
+## ✅ 139. 2026-09-29 headless UI 测试:await 写法把整套卡死;13 处假绿转真(§138 收尾时发现)
+
+**一、问题**:§138 收尾跑整套 `VelaShell.Tests`,卡在 `AuditLogViewUiTests` 上不动。二分下来与那个类测什么无关:**只要「`async Task` 用例里 `await _session.Dispatch(…)`」排在「`Dispatch(…).GetAwaiter().GetResult()` 写法」的前面就必卡**(XServer 宿主那组后面接 `DialogButtonStyleTests` 一样卡)。挂起转储里 MSTest 执行器的整条栈跑在 headless UI 线程上 —— 会话在 UI 线程上 `TrySetResult`,await 的续体就地跑在那条线程,MSTest 顺势在 UI 线程上开跑下一条;下一条在 UI 线程上阻塞等 UI 线程,死锁。此前整套跑得完(§136 时 1595 通过),应是执行顺序恰好没让两种写法相邻,这几轮加了用例、顺序一变就撞上了。
+顺藤摸瓜又查出同一处的老坑 —— `AGENTS.md` 写过,但没拦住:无返回值的 async lambda 绑到 `Dispatch<Task>`,第一个 await 之后的断言全丢。7 个文件里有 13 处这样写(`PluginPanelUiTests` 5、`PluginThemeTokensTests` 1、`StandaloneSftpDocumentBehaviorTests` 4、`LocalFilePaneViewUiTests` 2、`GlobalTransferConcurrencyTests` 的 `OnUi`)。临时探针(await 之后 `Assert.Fail`)实测照样「通过」。
+
+**二、做法**:
+- 新增 `tests/VelaShell.Tests/TestSupport/HeadlessUi.cs` 的 `RunOnUiAsync`(`Func<Task>` / `Action` 两个重载):内部走带返回值的重载,真正等完用例体,再经 `ContinueWith(…, TaskScheduler.Default)` 在线程池上转一手,await 它的续体就不会落在 UI 线程上。⚠️ `ConfigureAwait(ConfigureAwaitOptions.ForceYielding)` 治不了这个:它只管「任务已经完成」的情形。第一版就是这么写的,探针照样卡死。
+- 7 个文件 21 处 `await _session.Dispatch(…)` 改用它;阻塞写法里 6 处无返回值的 async lambda 补上 `return true;`。`AGENTS.md` 那条 headless 约束补上第二个坑。
+- **转真之后暴露出两条从 7 月 20 日起就没真跑过的用例**:b9d73914 把 `CloseSftpDocumentAsync` 改名为 `CloseSftpDocumentCoreAsync`,而 `StandaloneSftpDocumentBehaviorTests` 里两条「关闭在工作线程上完成」的用例还靠反射取旧名字。拿到 null 之后,它们卡在 `closeStarted` 上,假绿把这件事盖住了。改法:
+  - 方法名改对;取不到时当场抛 `MissingMethodException`,`closeStarted` 加 10 秒上限。
+  - 「会话树回到 UI 线程更新」那条原本是按 §39 之前的设计写的(直接往树上写 Connected)。现在树上的状态由会话账本合并而来,所以改为先像打开文档时那样 `TrackDocumentSession` 登记。
+  - 同一条用例里,把 `RxSchedulers.MainThreadScheduler` 临时换成 `AvaloniaScheduler(Dispatcher.UIThread)`,用完还原。本程序集的 ModuleInit 设的是就地执行,那样验不出「回到 UI 线程」。
+
+**三、验证**:
+- 探针确认了三点:`RunOnUiAsync` 下 await 之后的 `Assert.Fail` 会变红;续体落在线程池上;紧接着的阻塞写法不再卡住。
+- 原先卡住的组合复跑通过:XServer 宿主之后接对话框按钮 / 审计日志。
+- 变异:把产品里 `ScheduleSessionStatusRefresh` 改成就地调用,改写后的那条用例变红;还原后全过。
+- 整套 `VelaShell.Tests` **1601 通过 / 16 跳过**(Docker、发布、zsh / fish、符号链接等按环境早退的),1 分 12 秒跑完。因为用户的 VelaShell 开着、锁住了 `bin/Debug`,编译与测试都输出到 `artifacts/qa-testout`。
+
+## ✅ 140. 2026-09-29 新建连接、导入会话改成与回放中心一样的窗口;关闭键悬停的红底不再伸出圆角(用户反馈)
+
+**一、问题**:§137 / §138 把连接诊断、新建连接、导入会话的关闭键换成 27×27 贴角的方块之后,悬停的红底是方的,而卡片是圆角 8 —— 方块的右上角伸出圆角外一截,悬在透明的窗口上。原先的 × 是 24×24 圆角、离角有边距,碰不到圆角,这三张卡片也就一直没写 `ClipToBounds`;其余带窗口键的窗口(回放中心、远程编辑、审计日志……)都写了。用户同时要求这两个对话框改成与回放中心一样的窗口,而不是另起一套「对话框标题栏」。
+
+**二、做法**:
+- 三个对话框的卡片补上 `ClipToBounds="True"`,悬停的红底跟着圆角裁掉。
+- 新建连接、导入会话的标题栏照回放中心:标题靠左、不带图标(§138 加的 15px 线条图标去掉)。仍是模态、固定尺寸 —— 问过用户,只要外观一致:不加最大化、不能拉伸,外框仍是 `Dialog`(macOS 上不换红绿灯,照常显示 ×)。连接诊断标题前的图标是原设计就有的,没动。
+- `DESIGN.md` §4.2 标题栏一行改写对话框那半句,并写明「窗口键贴角的窗口,卡片要 `ClipToBounds`」。
+
+**三、验证**:`DialogTitleBarAssert` 新增 `CloseHoverStaysInsideTheRoundedCorner`:按 Windows 的浮起卡片装外框、悬停关闭键、截一帧 —— 方块里离图标远的一点是红的(悬停确实生效),卡片描边内侧右上角的第一个像素(落在方块里、却在圆角外)不能是红的。三个对话框各一条,改之前三条都红。`FollowsSpec` 改为「标题栏里的图标只有关闭键的 ×」,改之前两条都红。`WindowChromeCoverageTests` 的扫描加一条:XAML 里有 `caption-close` 的窗口,卡片必须写 `ClipToBounds="True"`,改之前点出的正是这三个。把右上角放大 8 倍截图人眼看过。整套 `VelaShell.Tests` 1604 通过 / 16 跳过。

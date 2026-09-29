@@ -6,6 +6,7 @@
         xmlns:behaviors="using:VelaShell.Behaviors"
         xmlns:models="clr-namespace:VelaShell.Core.Models;assembly=VelaShell.Core"
         xmlns:loc="using:VelaShell.Localization"
+        xmlns:pc="using:VelaShell.Controls.Controls"
         mc:Ignorable="d" d:DesignWidth="500"
         x:Class="VelaShell.Views.ConnectionProfileView"
         x:DataType="vm:ConnectionProfileViewModel"
@@ -17,6 +18,23 @@
   <Window.Styles>
     <Style Selector="AdornerLayer">
       <Setter Property="DefaultFocusAdorner" Value="{x:Null}" />
+    </Style>
+    <!-- 关闭键:27×27、无圆角,规格同主窗口的窗口键。这是对话框,不挂 window-caption,macOS 上照常显示 ×。 -->
+    <Style Selector="Button.caption">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
     </Style>
     <!-- 表单标签 -->
     <Style Selector="TextBlock.field-label">
@@ -164,7 +182,8 @@
   <!-- 自绘对话框卡片(设计:圆角 8、外描边、投影) -->
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <!-- 头部/页签/页脚定高,中间的表单是唯一会伸缩的一行:窗口 SizeToContent="Height"
          仍按内容收缩,但被代码后置钉在屏幕工作区内(见 ApplyScreenBounds),
          超出的部分由表单区自己滚动 —— 插件协议(S3 有十来个字段)不会再把
@@ -172,27 +191,24 @@
     <!-- 头部/页签/反馈/页脚定高,中间的表单是唯一会伸缩的一行。 -->
     <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 
-      <!-- Header: plug 图标 + 标题 + 关闭 -->
-      <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0"
+      <!-- 标题栏(28,与全部窗口一致;可拖动):标题 | 关闭。与回放中心等独立窗口同一个样子 ——
+           标题靠左、不带图标,27×27 关闭键贴住右上角,悬停的红底由卡片的 ClipToBounds 按圆角裁掉。
+           这是对话框:固定尺寸,不放最大化;关闭键不挂 window-caption,macOS 上照常显示 ×。 -->
+      <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0,0,0"
               PointerPressed="Header_PointerPressed"
               Background="Transparent"
               BorderThickness="0,0,0,1"
               BorderBrush="{DynamicResource VelaBorderPrimary}">
-        <Grid ColumnDefinitions="Auto,8,*,Auto">
-          <PathIcon Grid.Column="0" Width="16" Height="16"
-                    Data="M16 7V3h-2v4h-4V3H8v4c-1.1 0-2 .9-2 2v5.5L9.5 18v3h5v-3L18 14.5V9c0-1.1-.9-2-2-2z"
-                    Foreground="{DynamicResource VelaAccent}"
-                    VerticalAlignment="Center" />
-          <TextBlock Grid.Column="2" Text="{loc:Localize Profile_Title}"
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="{loc:Localize Profile_Title}"
                      Foreground="{DynamicResource VelaTextPrimary}"
-                     FontSize="{DynamicResource VelaFontSize14}" FontWeight="SemiBold"
-                     VerticalAlignment="Center" />
-          <Button Grid.Column="3" Width="24" Height="24"
-                  Background="Transparent" Padding="0" CornerRadius="3"
-                  Cursor="Hand" Command="{Binding CancelCommand}">
-            <PathIcon Width="14" Height="14"
-                      Data="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"
-                      Foreground="{DynamicResource VelaTextTertiary}" />
+                     FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
+                     VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
+          <Button Grid.Column="1" Classes="caption caption-close" VerticalAlignment="Top"
+                  Command="{Binding CancelCommand}">
+            <pc:LucideIcon Width="12" Height="12"
+                           Data="{StaticResource Icon.x}"
+                           Foreground="{DynamicResource VelaTextSecondary}" />
           </Button>
         </Grid>
       </Border>
@@ -674,6 +690,57 @@
             <TextBlock Text="{loc:Localize Profile_SshCompressionHint}" Margin="0,0,0,4"
                        Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
 
+            <!-- 连老设备:一个开关管住最常见的情形(对端只剩 SHA-1 的那几个),
+                 自定义清单给要精确控制的人(照 ~/.ssh/config 里的写法抄过来)。 -->
+            <CheckBox IsChecked="{Binding SshLegacyAlgorithms}"
+                      Padding="0" MinHeight="0" VerticalAlignment="Center">
+              <TextBlock Text="{loc:Localize Profile_SshLegacyAlgorithms}"
+                         Margin="6,0,0,0"
+                         Foreground="{DynamicResource VelaTextSecondary}"
+                         FontSize="{DynamicResource VelaFontSize11}" FontWeight="Medium" />
+            </CheckBox>
+            <TextBlock Text="{loc:Localize Profile_SshLegacyAlgorithmsHint}" Margin="0,0,0,4"
+                       Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
+
+            <CheckBox IsChecked="{Binding SshCustomAlgorithms}"
+                      Padding="0" MinHeight="0" VerticalAlignment="Center">
+              <TextBlock Text="{loc:Localize Profile_SshCustomAlgorithms}"
+                         Margin="6,0,0,0"
+                         Foreground="{DynamicResource VelaTextSecondary}"
+                         FontSize="{DynamicResource VelaFontSize11}" FontWeight="Medium" />
+            </CheckBox>
+            <TextBlock Text="{loc:Localize Profile_SshCustomAlgorithmsHint}" Margin="0,0,0,4"
+                       Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
+            <Grid IsVisible="{Binding SshCustomAlgorithms}" Margin="20,0,0,4"
+                  ColumnDefinitions="Auto,8,*" RowDefinitions="Auto,4,Auto,4,Auto,4,Auto">
+              <TextBlock Grid.Row="0" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindKex}" />
+              <TextBox Grid.Row="0" Grid.Column="2" Text="{Binding SshKexAlgorithms}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshKexAlgorithmsTip}" />
+              <TextBlock Grid.Row="2" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindHostKey}" />
+              <TextBox Grid.Row="2" Grid.Column="2" Text="{Binding SshHostKeyAlgorithms}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshHostKeyAlgorithmsTip}" />
+              <TextBlock Grid.Row="4" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindEncryption}" />
+              <TextBox Grid.Row="4" Grid.Column="2" Text="{Binding SshCiphers}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshCiphersTip}" />
+              <TextBlock Grid.Row="6" Classes="field-label" VerticalAlignment="Center"
+                         Text="{loc:Localize Ssh_AlgoKindMac}" />
+              <TextBox Grid.Row="6" Grid.Column="2" Text="{Binding SshMacs}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       PlaceholderText="{loc:Localize Profile_SshAlgoDefault}"
+                       ToolTip.Tip="{Binding SshMacsTip}" />
+            </Grid>
+            <TextBlock Classes="field-error" Text="{Binding SshAlgorithmsError}"
+                       IsVisible="{Binding SshAlgorithmsError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+
             <StackPanel IsVisible="{Binding SupportsPostAuthCommand}" Spacing="4">
               <CheckBox IsChecked="{Binding SshAgentForwarding}"
                         Padding="0" MinHeight="0" VerticalAlignment="Center">
@@ -744,15 +811,16 @@
               </CheckBox>
               <TextBlock Text="{loc:Localize Profile_SshX11ForwardingHint}"
                          Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
-              <!-- 显示地址与受信任只在开了 X11 时才有意义,关着就收起。 -->
-              <Grid ColumnDefinitions="*,12,Auto" IsVisible="{Binding SshX11Forwarding}" Margin="0,4,0,0">
-                <StackPanel Grid.Column="0">
-                  <TextBlock Classes="field-label" Text="{loc:Localize Profile_SshX11Display}" />
-                  <TextBox Text="{Binding SshX11Display}"
-                           PlaceholderText="{Binding SshX11DisplayPlaceholder}" />
-                </StackPanel>
-                <CheckBox Grid.Column="2" IsChecked="{Binding SshX11Trusted}"
-                          Padding="0" MinHeight="0" VerticalAlignment="Bottom" Margin="0,0,0,8"
+              <!-- 显示地址与受信任只在开了 X11 时才有意义,关着就收起。
+                   标签单占一行,输入框与「受信任」同在第二行、各自垂直居中 —— 原先勾选框靠
+                   「贴底 + 底边距 8」去凑输入框的中线,框高一变(字号、主题、平台)就对不齐。 -->
+              <Grid ColumnDefinitions="*,12,Auto" RowDefinitions="Auto,Auto"
+                    IsVisible="{Binding SshX11Forwarding}" Margin="0,4,0,0">
+                <TextBlock Grid.Row="0" Grid.Column="0" Classes="field-label" Text="{loc:Localize Profile_SshX11Display}" />
+                <TextBox Grid.Row="1" Grid.Column="0" Text="{Binding SshX11Display}"
+                         PlaceholderText="{Binding SshX11DisplayPlaceholder}" />
+                <CheckBox x:Name="X11TrustedCheck" Grid.Row="1" Grid.Column="2" IsChecked="{Binding SshX11Trusted}"
+                          Padding="0" MinHeight="0" VerticalAlignment="Center"
                           ToolTip.Tip="{loc:Localize Profile_SshX11TrustedHint}">
                   <TextBlock Text="{loc:Localize Profile_SshX11Trusted}"
                              Margin="6,0,0,0"

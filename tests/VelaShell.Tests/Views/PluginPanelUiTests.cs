@@ -61,6 +61,7 @@ public sealed class PluginPanelUiTests
                 await Task.Delay(10);
             }
             Assert.IsTrue(closedRaised);
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -80,6 +81,7 @@ public sealed class PluginPanelUiTests
             Assert.IsFalse(panel.IsOpen);
             Assert.IsEmpty(workspace.AllDocuments());
             Assert.IsFalse(userClosed, "程序性关闭必须走 RemoveDocument(静默),不得触发用户语义的 DocumentClosed");
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -213,6 +215,7 @@ public sealed class PluginPanelUiTests
             await panel.CloseAsync();
             Dispatcher.UIThread.RunJobs();
             Assert.IsEmpty(viewModel.Layout.AllDocuments());
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -233,6 +236,7 @@ public sealed class PluginPanelUiTests
             await panel.CloseAsync();
             Dispatcher.UIThread.RunJobs();
             Assert.IsFalse(panel.IsOpen);
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -278,6 +282,7 @@ public sealed class PluginPanelUiTests
                 await panel.CloseAsync();
                 Dispatcher.UIThread.RunJobs();
             }
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 

@@ -4,11 +4,12 @@ using Avalonia.Interactivity;
 using Microsoft.Extensions.DependencyInjection;
 using VelaShell.Core.Data;
 using VelaShell.Core.Recording;
+using VelaShell.Services;
 using VelaShell.ViewModels;
 
 namespace VelaShell.Views.Settings;
 
-/// <summary>安全审计设置页:提供会话录制回放等安全审计相关入口。</summary>
+/// <summary>安全审计设置页:提供会话录制回放、审计日志等安全审计相关入口。</summary>
 public partial class SecurityAuditPage : UserControl
 {
     /// <summary>初始化安全审计设置页并加载 XAML 组件。</summary>
@@ -36,5 +37,26 @@ public partial class SecurityAuditPage : UserControl
             window.Show();
         }
         _ = viewModel.InitializeAsync();
+    }
+
+    /// <summary>打开审计日志窗口,非模态(与回放中心同样的开法)。</summary>
+    private void OpenAuditLog_Click(object? sender, RoutedEventArgs e)
+    {
+        if (Application.Current is not App { Services: { } services }
+            || services.GetService<IAuditLogService>() is not { } auditLog)
+        {
+            return;
+        }
+        var viewModel = new AuditLogViewModel(auditLog, services.GetService<ISessionRepository>());
+        var window = new AuditLogView { DataContext = viewModel };
+        if (TopLevel.GetTopLevel(this) is Window owner)
+        {
+            window.Show(owner);
+        }
+        else
+        {
+            window.Show();
+        }
+        FireAndForget.Run(() => viewModel.LoadAsync());
     }
 }

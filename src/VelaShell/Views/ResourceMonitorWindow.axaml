@@ -38,19 +38,6 @@
       <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
     </Style>
 
-    <Style Selector="Button.tool">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Height" Value="26" />
-      <Setter Property="MinHeight" Value="26" />
-      <Setter Property="Padding" Value="10,0" />
-      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="VerticalContentAlignment" Value="Center" />
-    </Style>
 
     <!-- 左导航项:3px 强调竖条 + 46×30 迷你趋势 + 名称/读数 -->
     <Style Selector="Button.nav">
@@ -270,12 +257,13 @@
             BorderBrush="{DynamicResource VelaBorderSecondary}">
       <Grid RowDefinitions="Auto,Auto,*">
 
-        <!-- ── 标题栏(28,与全部窗口一致):标题 + 窗口按钮。副标题与主机标识、暂停在下面一行。 ── -->
+        <!-- ── 标题栏(28,与全部窗口一致):标题 | 主机标识 + 暂停 | 窗口按钮。
+             主机标识与暂停原先在副标题行右边,现在与主窗口的全局功能图标组一样收进标题栏。 ── -->
         <Border x:Name="TitleBarStrip" Grid.Row="0"
                 Background="{DynamicResource VelaBgSurface}"
                 Classes="window-card-top window-titlebar"
                 PointerPressed="Header_PointerPressed">
-          <Grid ColumnDefinitions="*,Auto" Margin="20,0,0,0">
+          <Grid ColumnDefinitions="*,Auto,Auto" Margin="20,0,0,0">
             <!-- 让位块只在 macOS 上显出来,给系统红绿灯让位(Themes/WindowChrome.axaml)。 -->
             <DockPanel Grid.Column="0">
               <Panel Classes="traffic-light-spacer" DockPanel.Dock="Left" />
@@ -286,7 +274,46 @@
                          FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                          TextTrimming="CharacterEllipsis" />
             </DockPanel>
-            <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Top">
+            <StackPanel x:Name="TitleActions" Grid.Column="1" Orientation="Horizontal" Spacing="6"
+                        VerticalAlignment="Center" Margin="12,0,10,0">
+              <!-- 主机标识:连通时绿点,断开时灰点;名字长了截断,悬停看全名。 -->
+              <Border x:Name="HostBadge"
+                      Background="{DynamicResource VelaBgInput}"
+                      BorderBrush="{DynamicResource VelaBorderSecondary}" BorderThickness="1"
+                      CornerRadius="4" Padding="7,2" VerticalAlignment="Center" MaxWidth="260"
+                      ToolTip.Tip="{Binding HostName}">
+                <StackPanel Orientation="Horizontal" Spacing="6">
+                  <Ellipse Width="6" Height="6" VerticalAlignment="Center"
+                           Fill="{DynamicResource VelaStatusConnected}"
+                           IsVisible="{Binding IsAvailable}" />
+                  <Ellipse Width="6" Height="6" VerticalAlignment="Center"
+                           Fill="{DynamicResource VelaStatusDisconnected}"
+                           IsVisible="{Binding !IsAvailable}" />
+                  <TextBlock Text="{Binding HostName}" Classes="legend" TextTrimming="CharacterEllipsis" />
+                </StackPanel>
+              </Border>
+              <!-- 暂停 / 继续:纯图标开关,暂停中换成强调色的「继续」。 -->
+              <Button x:Name="PauseButton" Theme="{StaticResource VelaTitleActionButtonTheme}"
+                      Command="{Binding TogglePauseCommand}">
+                <ToolTip.Tip>
+                  <Panel>
+                    <TextBlock Text="{loc:Localize Monitor_Pause}" IsVisible="{Binding !IsPaused}" />
+                    <TextBlock Text="{loc:Localize Monitor_Resume}" IsVisible="{Binding IsPaused}" />
+                  </Panel>
+                </ToolTip.Tip>
+                <Panel>
+                  <pc:LucideIcon Width="12" Height="12"
+                                 Data="{StaticResource Icon.pause}"
+                                 Foreground="{DynamicResource VelaTextMuted}"
+                                 IsVisible="{Binding !IsPaused}" />
+                  <pc:LucideIcon Width="12" Height="12"
+                                 Data="{StaticResource Icon.play}"
+                                 Foreground="{DynamicResource VelaAccent}"
+                                 IsVisible="{Binding IsPaused}" />
+                </Panel>
+              </Button>
+            </StackPanel>
+            <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
               <Button Classes="caption window-caption" Click="Minimize_Click">
                 <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.minus}"
                                Foreground="{DynamicResource VelaTextSecondary}" />
@@ -303,52 +330,18 @@
           </Grid>
         </Border>
 
-        <!-- ── 副标题行:采样说明 + 主机标识 + 暂停。同样可拖动,与标题栏同底色,读作一块头部。 ── -->
+        <!-- ── 副标题行:只剩采样说明。同样可拖动,与标题栏同底色,读作一块头部。 ── -->
         <Border Grid.Row="1" Padding="20,6,14,6"
                 Background="{DynamicResource VelaBgSurface}"
                 BorderBrush="{DynamicResource VelaBorderPrimary}"
                 BorderThickness="0,0,0,1"
                 PointerPressed="Header_PointerPressed">
-          <Grid ColumnDefinitions="*,Auto">
-            <TextBlock Text="{Binding HeaderSubtitle}"
-                       VerticalAlignment="Center"
-                       Foreground="{DynamicResource VelaTextMuted}"
-                       FontFamily="{DynamicResource VelaUiMonoFont}"
-                       FontSize="{DynamicResource VelaFontSize10}"
-                       TextTrimming="CharacterEllipsis" />
-            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-              <!-- 主机标识:连通时绿点 -->
-              <Border Background="{DynamicResource VelaBgInput}"
-                      BorderBrush="{DynamicResource VelaBorderSecondary}" BorderThickness="1"
-                      CornerRadius="4" Padding="8,5" VerticalAlignment="Center">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <Ellipse Width="6" Height="6" VerticalAlignment="Center"
-                           Fill="{DynamicResource VelaStatusConnected}"
-                           IsVisible="{Binding IsAvailable}" />
-                  <Ellipse Width="6" Height="6" VerticalAlignment="Center"
-                           Fill="{DynamicResource VelaStatusDisconnected}"
-                           IsVisible="{Binding !IsAvailable}" />
-                  <TextBlock Text="{Binding HostName}" Classes="legend" />
-                </StackPanel>
-              </Border>
-              <Button Classes="tool" Command="{Binding TogglePauseCommand}">
-                <StackPanel Orientation="Horizontal" Spacing="6">
-                  <pc:LucideIcon Width="12" Height="12" VerticalAlignment="Center"
-                                 Data="{StaticResource Icon.pause}"
-                                 Foreground="{DynamicResource VelaTextSecondary}"
-                                 IsVisible="{Binding !IsPaused}" />
-                  <pc:LucideIcon Width="12" Height="12" VerticalAlignment="Center"
-                                 Data="{StaticResource Icon.play}"
-                                 Foreground="{DynamicResource VelaAccent}"
-                                 IsVisible="{Binding IsPaused}" />
-                  <TextBlock Text="{loc:Localize Monitor_Pause}" VerticalAlignment="Center"
-                             IsVisible="{Binding !IsPaused}" />
-                  <TextBlock Text="{loc:Localize Monitor_Resume}" VerticalAlignment="Center"
-                             IsVisible="{Binding IsPaused}" />
-                </StackPanel>
-              </Button>
-            </StackPanel>
-          </Grid>
+          <TextBlock Text="{Binding HeaderSubtitle}"
+                     VerticalAlignment="Center"
+                     Foreground="{DynamicResource VelaTextMuted}"
+                     FontFamily="{DynamicResource VelaUiMonoFont}"
+                     FontSize="{DynamicResource VelaFontSize10}"
+                     TextTrimming="CharacterEllipsis" />
         </Border>
 
         <!-- ── 主体:左导航 + 内容 ── -->

@@ -13,31 +13,27 @@
         CanResize="False"
         WindowStartupLocation="CenterOwner">
 
-  <!-- 连接诊断中心,布局对齐设计帧 RGXg1:头部(标题 + 导出/重新检测),
+  <!-- 连接诊断中心,布局对齐设计帧 RGXg1:标题栏(标题 + 导出 / 重新检测 + 关闭)、目标行,
        左侧诊断步骤面板,右侧发现问题 + 修复建议。 -->
 
   <Window.Styles>
-    <Style Selector="Button.dlg-outline">
+    <!-- 关闭键:27×27、无圆角,规格同主窗口的窗口键(与回放中心、资源监视同一套本地样式)。
+         这是对话框,不挂 window-caption —— macOS 上没有红绿灯替它,× 要照常显示。 -->
+    <Style Selector="Button.caption">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderPrimary}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Height" Value="28" />
-      <Setter Property="Padding" Value="12,0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
-      <Setter Property="FontWeight" Value="Medium" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
-    <Style Selector="Button.dlg-primary">
-      <Setter Property="Background" Value="{DynamicResource VelaAccent}" />
-      <Setter Property="Foreground" Value="{DynamicResource VelaAccentForeground}" />
-      <Setter Property="Height" Value="28" />
-      <Setter Property="Padding" Value="14,0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
-      <Setter Property="FontWeight" Value="Medium" />
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
     </Style>
     <!-- 步骤行状态配色 -->
     <Style Selector="TextBlock.step-status">
@@ -48,16 +44,17 @@
 
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <DockPanel>
 
-      <!-- Header (design diagHeader):标题栏(28,与全部窗口一致;可拖动)= 图标 + 标题 + 关闭;
-           下面一行是诊断目标 + 导出/重新检测。 -->
-      <Border DockPanel.Dock="Top" Padding="20,0"
+      <!-- Header (design diagHeader):标题栏(28,与全部窗口一致;可拖动)= 图标 + 标题 | 导出报告、重新检测 | 关闭。
+           两个动作与主窗口的全局功能图标同一个主题(VelaTitleActionButtonTheme),原先在目标行右边。 -->
+      <Border DockPanel.Dock="Top" Padding="20,0,0,0"
               Classes="window-titlebar"
               Background="Transparent"
               PointerPressed="Header_PointerPressed">
-        <Grid ColumnDefinitions="*,Auto">
+        <Grid ColumnDefinitions="*,Auto,Auto">
           <StackPanel Grid.Column="0" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
             <pc:LucideIcon Width="15" Height="15"
                            Data="{StaticResource Icon.stethoscope}"
@@ -66,49 +63,49 @@
                        Foreground="{DynamicResource VelaTextPrimary}"
                        FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold" VerticalAlignment="Center" />
           </StackPanel>
-          <Button Grid.Column="1" Width="24" Height="24" Padding="0" CornerRadius="3"
-                  Background="Transparent" Cursor="Hand" Click="Close_Click"
-                  VerticalAlignment="Center"
+          <StackPanel x:Name="TitleActions" Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                      VerticalAlignment="Center" Margin="12,0,10,0">
+            <Button Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Click="ExportReport_Click"
+                    IsEnabled="{Binding CanExport}"
+                    AutomationProperties.Name="{loc:Localize Diag_ExportReport}"
+                    ToolTip.Tip="{loc:Localize Diag_ExportReport}">
+              <pc:LucideIcon Width="12" Height="12"
+                             Data="{StaticResource Icon.download}"
+                             Foreground="{DynamicResource VelaTextMuted}" />
+            </Button>
+            <!-- 检测进行中命令不可用,按钮随之变淡,免得连点叠出两轮。 -->
+            <Button Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Command="{Binding RunCommand}"
+                    AutomationProperties.Name="{loc:Localize Diag_Rerun}"
+                    ToolTip.Tip="{loc:Localize Diag_Rerun}">
+              <pc:LucideIcon Width="12" Height="12"
+                             Data="{StaticResource Icon.refresh-cw}"
+                             Foreground="{DynamicResource VelaTextMuted}" />
+            </Button>
+          </StackPanel>
+          <!-- 关闭:27×27 方形命中区贴住右上角,与主窗口的窗口键同规格。 -->
+          <Button Grid.Column="2" Classes="caption caption-close" VerticalAlignment="Top"
+                  Click="Close_Click"
                   ToolTip.Tip="{loc:Localize Diag_CloseTip}">
-            <pc:LucideIcon Width="13" Height="13"
+            <pc:LucideIcon Width="12" Height="12"
                            Data="{StaticResource Icon.x}"
-                           Foreground="{DynamicResource VelaTextTertiary}" />
+                           Foreground="{DynamicResource VelaTextSecondary}" />
           </Button>
         </Grid>
       </Border>
 
-      <!-- 目标行:诊断目标 + 导出/重新检测。同样可拖动。 -->
+      <!-- 目标行:只剩诊断目标。同样可拖动。 -->
       <Border DockPanel.Dock="Top" Padding="20,6"
               BorderThickness="0,0,0,1"
               BorderBrush="{DynamicResource VelaBorderPrimary}"
               Background="Transparent"
               PointerPressed="Header_PointerPressed">
-        <Grid ColumnDefinitions="*,Auto">
-          <TextBlock Text="{Binding TargetSummary}"
-                     VerticalAlignment="Center"
-                     Foreground="{DynamicResource VelaTextMuted}"
-                     FontFamily="{DynamicResource VelaUiMonoFont}"
-                     FontSize="{DynamicResource VelaFontSize10}" TextTrimming="CharacterEllipsis" />
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Classes="dlg-outline" Click="ExportReport_Click"
-                    IsEnabled="{Binding CanExport}">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <pc:LucideIcon Width="11" Height="11"
-                               Data="{StaticResource Icon.download}"
-                               Foreground="{DynamicResource VelaTextSecondary}" VerticalAlignment="Center" />
-                <TextBlock Text="{loc:Localize Diag_ExportReport}" VerticalAlignment="Center" />
-              </StackPanel>
-            </Button>
-            <Button Classes="dlg-primary" Command="{Binding RunCommand}">
-              <StackPanel Orientation="Horizontal" Spacing="6">
-                <pc:LucideIcon Width="11" Height="11"
-                               Data="{StaticResource Icon.refresh-cw}"
-                               Foreground="{DynamicResource VelaAccentForeground}" VerticalAlignment="Center" />
-                <TextBlock Text="{loc:Localize Diag_Rerun}" VerticalAlignment="Center" />
-              </StackPanel>
-            </Button>
-          </StackPanel>
-        </Grid>
+        <TextBlock Text="{Binding TargetSummary}"
+                   VerticalAlignment="Center"
+                   Foreground="{DynamicResource VelaTextMuted}"
+                   FontFamily="{DynamicResource VelaUiMonoFont}"
+                   FontSize="{DynamicResource VelaFontSize10}" TextTrimming="CharacterEllipsis" />
       </Border>
 
       <!-- Body (design diagBody): 左步骤面板 + 右问题面板 -->

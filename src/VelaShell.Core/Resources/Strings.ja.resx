@@ -28,6 +28,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>接続成功</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>接続失敗</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>外部からの起動でログイン</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>変更されたホスト指紋を受け入れ</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>ホスト指紋を拒否</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>今回だけホスト指紋を信頼</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>すべての種類</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>接続</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>セキュリティ</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>イベント</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>種類</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>詳細</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>セッション</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>時刻</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>{0} 件</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{1} 件中 {0} 件</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>条件に合う記録はありません。</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>監査ログを読み込めませんでした: {0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>問題のみ</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>ホスト・セッション・詳細を検索</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>監査ログ</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>直近 {0} 件のみ読み込み</value>
+  </data>
   <data name="Auth_AesBadge" xml:space="preserve">
     <value>AES-256 暗号化保存</value>
   </data>
@@ -949,6 +1015,15 @@
   <data name="HostKey_TrustPermanentlyTip" xml:space="preserve">
     <value>このフィンガープリントを記録し、以後の接続では確認しません。設定 → セキュリティ監査 → 信頼済みホスト から削除できます</value>
   </data>
+  <data name="KbdAuth_Response" xml:space="preserve">
+    <value>応答</value>
+  </data>
+  <data name="KbdAuth_Submit" xml:space="preserve">
+    <value>続行</value>
+  </data>
+  <data name="KbdAuth_Title" xml:space="preserve">
+    <value>2 段階認証</value>
+  </data>
   <data name="HostKeyChanged" xml:space="preserve">
     <value>警告: ホストキーが変更されています!</value>
   </data>
@@ -1093,9 +1168,6 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>認証に失敗しました: {0} のユーザー名、パスワードまたは鍵が正しくありません。</value>
-  </data>
-  <data name="Msg_AuthFailedTwoFactorHint" xml:space="preserve">
-    <value>このホストが二要素認証(keyboard-interactive / OTP)を要求する場合、このバージョンでは接続できません: 基盤の SSH ライブラリがその方式を実装していません。</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>今すぐ再接続</value>
@@ -1875,6 +1947,9 @@
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// アプリケーションのアクセントカラー(空欄でテーマの既定値)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>テーマに従う</value>
+  </data>
   <data name="SetAppear_Ansi16" xml:space="preserve">
     <value>ターミナル ANSI 16 色</value>
   </data>
@@ -2322,6 +2397,9 @@
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>信頼済みホストはまだありません</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>表示</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>再生センターを開く</value>
   </data>
@@ -2333,6 +2411,9 @@
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>アラートチャネル:アプリ内通知 + サウンド + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>監査ログ</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>信頼済みホスト</value>
@@ -2387,6 +2468,9 @@
   </data>
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>スクリプト/スニペット管理</value>
+  </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// {{名前}} または {{名前=既定値}} でプレースホルダーを書けます。送信前に値を尋ねます</value>
   </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>操作</value>
@@ -3469,6 +3553,15 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>稼働時間と平均負荷</value>
   </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>送信内容:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>送信</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>パラメーターを入力 · {0}</value>
+  </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>メモリ使用状況</value>
   </data>
@@ -4328,6 +4421,24 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Ssh_AlgoMismatchTitle" xml:space="preserve">
     <value>接続先 ({0}) とこのクライアントに共通のアルゴリズムがありません。</value>
   </data>
+  <data name="Ssh_AlgoMismatchUnsupported" xml:space="preserve">
+    <value>  接続先のこの種類のアルゴリズムは、このバージョンでは一つも実装されていません(CBC しか持たない古い機器によくあります)。レガシーアルゴリズムを許可しても接続できません。</value>
+  </data>
+  <data name="Ssh_AlgoSpecEmpty" xml:space="preserve">
+    <value>接頭辞だけでアルゴリズム名がありません。</value>
+  </data>
+  <data name="Ssh_AlgoSpecInvalid" xml:space="preserve">
+    <value>アルゴリズム一覧({0})が正しくありません: {1}</value>
+  </data>
+  <data name="Ssh_AlgoSpecNothingLeft" xml:space="preserve">
+    <value>削除した結果アルゴリズムが一つも残らず、どのサーバーとも合意できません。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnimplemented" xml:space="preserve">
+    <value>このバージョンは {0} を実装していません。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnknown" xml:space="preserve">
+    <value>不明なアルゴリズムです: {0}。</value>
+  </data>
   <data name="Ssh_AlgoMismatchPeer" xml:space="preserve">
     <value>  接続先の提供: {0}</value>
   </data>
@@ -4345,6 +4456,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Ssh_AlgoKindMac" xml:space="preserve">
     <value>完全性 (MAC)</value>
+  </data>
+  <data name="Ssh_AlgoMismatchEnable" xml:space="preserve">
+    <value>  接続先の {0} は、接続設定の SSH オプションで有効にできます(「レガシーアルゴリズムを許可」またはアルゴリズム一覧のカスタマイズ)。</value>
   </data>
   <data name="Plugin_ProtocolUnavailable" xml:space="preserve">
     <value>このプロトコルを提供するプラグインが利用できません。プラグイン管理画面でインストールまたは有効化してください。</value>
@@ -4569,6 +4683,18 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>SSO / 踏み台ツールが Xshell と同じ流儀で「VelaShell.exe -url ssh://...」からセッションを開けるようにします。無効にすると、この種の要求はすべて無視されます。</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>保存期間(日)</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// 監査ログと接続履歴を何日保存するか。起動時にそれより古い記録を削除します</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>監査ログを表示</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// 接続の成否、ホスト指紋の判断、外部からの起動によるログイン(新しい順、このマシンにのみ保存)</value>
   </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>接続前に確認する</value>
@@ -4968,6 +5094,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="SshErr_HostKeyChanged" xml:space="preserve">
     <value>サーバーのホスト キーが記録済みのものと一致しません。</value>
   </data>
+  <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
+    <value>2 段階認証をキャンセルしました。</value>
+  </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>接続がタイムアウトしました。</value>
   </data>
@@ -5004,11 +5133,23 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Profile_SshFeatures" xml:space="preserve">
     <value>SSH オプション</value>
   </data>
+  <data name="Profile_SshLegacyAlgorithms" xml:space="preserve">
+    <value>レガシーアルゴリズムを許可(古い機器向け)</value>
+  </data>
+  <data name="Profile_SshLegacyAlgorithmsHint" xml:space="preserve">
+    <value>既定の一覧の後ろに diffie-hellman-group14-sha1、ssh-rsa(SHA-1)、hmac-sha1 を追加します。接続先が新しいアルゴリズムを一つも持たない場合にだけ使われます。これらはもう安全ではないため、ほかに接続手段のない古いスイッチやシステムに限って有効にしてください。</value>
+  </data>
   <data name="Profile_SshCompression" xml:space="preserve">
     <value>圧縮を有効にする(高遅延・低帯域の回線向け)</value>
   </data>
   <data name="Profile_SshCompressionHint" xml:space="preserve">
     <value>遅延が大きい(国境・大陸をまたぐ回線、往復 100 ms 以上)か帯域が限られている場合に有効にしてください。端末出力やテキストファイルの転送量を大きく減らせます。LAN 内や、画像・アーカイブなど圧縮済みデータが中心の場合は CPU を消費するだけなのでおすすめしません。サーバーが対応していない場合は自動的に無圧縮に戻ります。</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithms" xml:space="preserve">
+    <value>アルゴリズム一覧をカスタマイズ</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithmsHint" xml:space="preserve">
+    <value>OpenSSH の書式: + は既定の後ろに追加、- は既定から削除(* と ? のワイルドカード可)、^ は先頭へ移動、接頭辞なしは一覧ごと置き換え。空欄なら既定。入力欄にマウスを重ねると既定の一覧と追加できるアルゴリズムが表示されます。</value>
   </data>
   <data name="Profile_SshAgentForwarding" xml:space="preserve">
     <value>ssh-agent を転送する(-A)</value>
@@ -5123,6 +5264,15 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Profile_SshAgentKeySourceSaved" xml:space="preserve">
     <value>この接続に保存済み</value>
+  </data>
+  <data name="Profile_SshAlgoDefault" xml:space="preserve">
+    <value>既定</value>
+  </data>
+  <data name="Profile_SshAlgoTipDefaults" xml:space="preserve">
+    <value>既定: {0}</value>
+  </data>
+  <data name="Profile_SshAlgoTipMore" xml:space="preserve">
+    <value>追加できるもの: {0}</value>
   </data>
   <data name="Profile_SshAgentKeySourceAgent" xml:space="preserve">
     <value>agent 内</value>

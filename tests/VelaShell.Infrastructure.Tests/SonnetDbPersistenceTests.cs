@@ -434,6 +434,41 @@ public sealed class SonnetDbPersistenceTests : IDisposable
         Assert.AreEqual(ConnectionType.SSH, entry.ConnectionType);
     }
 
+    /// <summary>
+    /// 保留策略:早于截止时刻的审计记录删掉,之后的原样留着 —— 同一类别、同一动作(同一条序列)
+    /// 里新旧混着的也要分得开,不能整条序列一起删。
+    /// </summary>
+    [TestMethod]
+    public async Task AuditLog_DeleteOlderThan_KeepsWhatIsInsideTheWindow()
+    {
+        var service = new SonnetDbAuditLogService(_engine);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await service.WriteAsync(new() { Timestamp = now.AddDays(-400), Category = "connection", Action = "connect", Detail = "old" });
+        await service.WriteAsync(new() { Timestamp = now.AddDays(-10), Category = "connection", Action = "connect", Detail = "recent" });
+        await service.WriteAsync(new() { Timestamp = now.AddDays(-300), Category = "security", Action = "hostkey-rejected", Detail = "old-security" });
+        await service.WriteAsync(new() { Timestamp = now.AddMinutes(-1), Category = "security", Action = "hostkey-rejected", Detail = "new-security" });
+
+        await service.DeleteOlderThanAsync(now.AddDays(-180));
+
+        List<AuditEntry> left = await service.QueryAsync(10);
+        CollectionAssert.AreEquivalent(new[] { "recent", "new-security" }, left.Select(e => e.Detail).ToArray());
+    }
+
+    /// <summary>连接历史与审计日志同一口径:删旧的,「最近连接」照常取得到新的。</summary>
+    [TestMethod]
+    public async Task RecentConnections_DeleteOlderThan_KeepsRecentOnes()
+    {
+        var service = new SonnetDbRecentConnectionService(_engine);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        await service.RecordAsync(new() { Name = "ancient", Host = "a", Username = "u", ConnectedAt = now.AddDays(-365), Success = true });
+        await service.RecordAsync(new() { Name = "fresh", Host = "b", Username = "u", ConnectedAt = now.AddDays(-1), Success = true });
+
+        await service.DeleteOlderThanAsync(now.AddDays(-180));
+
+        List<RecentConnectionEntry> recent = await service.GetRecentAsync(10);
+        Assert.AreEqual("fresh", recent.Single().Name);
+    }
+
     [TestMethod]
     public async Task AuditLog_WriteAndQuery_FiltersByCategory()
     {

@@ -15,4 +15,7 @@ public interface IRecentConnectionService
 
     /// <summary>清空连接历史。</summary>
     Task ClearAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>删掉早于 <paramref name="cutoff" /> 的连接记录(保留策略,见 <see cref="AuditRetention" />)。</summary>
+    Task DeleteOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default);
 }

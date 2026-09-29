@@ -8,7 +8,9 @@ using Avalonia.Logging;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using NSubstitute;
+using ReactiveUI;
 using ReactiveUI.Primitives;
+using ReactiveUI.Primitives.Concurrency;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Sftp;
@@ -18,6 +20,7 @@ using VelaShell.Docking.Controls;
 using VelaShell.Presentation.Services;
 using VelaShell.Presentation.ViewModels;
 using VelaShell.Terminal;
+using VelaShell.Tests.TestSupport;
 using VelaShell.ViewModels;
 using VelaShell.Views;
 
@@ -245,7 +248,6 @@ public sealed class StandaloneSftpDocumentBehaviorTests
             sftpService: sftp);
         await vm.Sidebar.SessionTree!.LoadCommand.Execute().FirstAsync();
         SessionTreeNodeViewModel node = vm.Sidebar.SessionTree.Nodes.Single();
-        vm.Sidebar.SessionTree.SetSessionStatus(profile.Id, SessionStatus.Connected);
         List<int> notificationThreads = [];
         void OnPropertyChanged(object? _, PropertyChangedEventArgs args)
         {
@@ -254,7 +256,6 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 notificationThreads.Add(Environment.CurrentManagedThreadId);
             }
         }
-        node.PropertyChanged += OnPropertyChanged;
 
         var document = new SftpDocument(
             new SftpDocumentViewModel(
@@ -263,28 +264,46 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 workflow,
                 sftp,
                 new TransferOptions()));
+        // 取不到就当场失败:这里曾经一直是改名前的旧名字,反射拿到 null,用例卡在下面的 closeStarted 上。
         MethodInfo closeMethod = typeof(MainWindowViewModel).GetMethod(
-            "CloseSftpDocumentAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
+            "CloseSftpDocumentCoreAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(MainWindowViewModel), "CloseSftpDocumentCoreAsync");
+        // 树上的圆点由会话账本合并而来:关闭是把这条会话从账本上摘掉再重算,所以先像打开文档时那样登记它。
+        MethodInfo trackMethod = typeof(MainWindowViewModel).GetMethod(
+            "TrackDocumentSession",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(MainWindowViewModel), "TrackDocumentSession");
 
+        // 重算经 RxSchedulers.MainThreadScheduler 排队 —— 产品里那是 Avalonia 的调度器,本程序集的
+        // ModuleInit 却设成了就地执行,那样验不出「回到 UI 线程」。这条用例里换成真的,用完还原。
+        var previousScheduler = RxSchedulers.MainThreadScheduler;
         try
         {
-            await _session.Dispatch(async () =>
+            await _session.RunOnUiAsync(async () =>
             {
+                RxSchedulers.MainThreadScheduler = new AvaloniaScheduler(Dispatcher.UIThread);
                 int uiThread = Environment.CurrentManagedThreadId;
+                trackMethod.Invoke(vm, [session.SessionId, profile.Id, SessionStatus.Connected]);
+                Dispatcher.UIThread.RunJobs();
+                Assert.AreEqual(SessionStatus.Connected, node.Status, "前置:登记之后节点亮起");
+                node.PropertyChanged += OnPropertyChanged;
+
                 var invocation = Task.Run(() => (Task)closeMethod.Invoke(vm, [document])!);
-                await closeStarted.Task;
+                await closeStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
                 await Task.Run(releaseClose.SetResult);
                 await invocation;
+                Dispatcher.UIThread.RunJobs();
 
                 Assert.AreEqual(SessionStatus.Disconnected, node.Status);
                 Assert.AreNotEqual(uiThread, closeContinuationThread);
                 Assert.IsNotEmpty(notificationThreads);
                 Assert.IsTrue(notificationThreads.All(thread => thread == uiThread));
-            }, CancellationToken.None);
+            });
         }
         finally
         {
+            RxSchedulers.MainThreadScheduler = previousScheduler;
             node.PropertyChanged -= OnPropertyChanged;
         }
     }
@@ -326,15 +345,17 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 workflow,
                 sftp,
                 new TransferOptions()));
+        // 取不到就当场失败:这里曾经一直是改名前的旧名字,反射拿到 null,用例卡在下面的 closeStarted 上。
         MethodInfo closeMethod = typeof(MainWindowViewModel).GetMethod(
-            "CloseSftpDocumentAsync",
-            BindingFlags.Instance | BindingFlags.NonPublic)!;
+            "CloseSftpDocumentCoreAsync",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new MissingMethodException(nameof(MainWindowViewModel), "CloseSftpDocumentCoreAsync");
 
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             int uiThread = Environment.CurrentManagedThreadId;
             var invocation = Task.Run(() => (Task)closeMethod.Invoke(vm, [document])!);
-            await closeStarted.Task;
+            await closeStarted.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await Task.Run(releaseClose.SetResult);
             await invocation;
 
@@ -342,7 +363,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
             Assert.AreNotEqual(uiThread, closeContinuationThread);
             Assert.IsNotEmpty(notificationThreads);
             Assert.IsTrue(notificationThreads.All(thread => thread == uiThread));
-        }, CancellationToken.None);
+        });
     }
 
     [TestMethod]
@@ -363,7 +384,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 await releaseClose.Task;
             });
 
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             var vm = new MainWindowViewModel(workflow, sftpService: sftp);
             var document = new SftpDocument(
@@ -390,7 +411,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
             await finalClose.Task;
             await sftp.Received(1).CloseSessionAsync(session.SessionId, Arg.Any<CancellationToken>());
             await workflow.Received(1).DisconnectAsync(session.SessionId);
-        }, CancellationToken.None);
+        });
     }
 
     [TestMethod]
@@ -403,7 +424,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
         SshSession session = CreateSession(profile.Id);
         ConfigureInitialLoad(sftp, session.SessionId);
 
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             var vm = new MainWindowViewModel(workflow, sftpService: sftp);
             vm.Layout.AddDocument(new SftpDocument(
@@ -420,7 +441,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
 
             Assert.IsTrue((bool)hasConnected.Invoke(window, null)!);
             return Task.CompletedTask;
-        }, CancellationToken.None);
+        });
     }
 
     [TestMethod]
@@ -437,7 +458,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
         var settings = new AppSettings();
         settings.General.RestoreSessionsOnStartup = true;
 
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             var vm = new MainWindowViewModel(workflow, sftpService: sftp);
             vm.Layout.AddDocument(new TerminalDocument(new TerminalTabViewModel(FakeTerminal.Emulator())
@@ -466,7 +487,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 [terminalProfile.Id, sftpProfile.Id], settings.General.LastOpenProfileIds, SequenceOrder.InAnyOrder);
             settingsService.Received(1).SaveSettingsAsync(settings);
             return Task.CompletedTask;
-        }, CancellationToken.None);
+        });
     }
 
     [TestMethod]
@@ -546,7 +567,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
     [TestCategory("Sftp")]
     public async Task DownloadSelectedAsync_RefreshNotificationsStayOnUiSynchronizationContext()
     {
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             (MainWindowViewModel vm, SessionProfile profile, _, ISftpService sftpService) = CreateConnectedSshViewModel();
             await vm.OpenSftpForProfileAsync(profile);
@@ -597,7 +618,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
                 // 其续体绑在 UI 线程上,永远不会被执行 —— 实测那样改会让本用例 60s 超时。
                 await document.ViewModel.CloseAsync();
             }
-        }, CancellationToken.None);
+        });
     }
 
     /// <summary>装配一个「SSH 会话已连上、SFTP 可列目录」的主窗口视图模型(含一个 readme.txt)。</summary>
@@ -673,7 +694,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
         var sessionId = Guid.NewGuid();
         ConfigureInitialLoad(sftp, sessionId);
 
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             var sink = new BindingErrorSink();
             ILogSink? previous = Logger.Sink;
@@ -721,7 +742,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
 
             Assert.IsEmpty(sink.Errors, $"出现了 {sink.Errors.Count} 条绑定错误,例如:{sink.Errors.FirstOrDefault()}");
             return Task.CompletedTask;
-        }, CancellationToken.None);
+        });
     }
 
     /// <summary>只收集绑定相关的告警/错误,供上面的回归测试断言。</summary>

@@ -120,6 +120,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>連線成功</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>連線失敗</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>外部喚起登入</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>接受了變更的主機指紋</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>拒絕了主機指紋</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>僅本次信任主機指紋</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>全部類別</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>連線</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>安全</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>事件</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>類別</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>詳情</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>工作階段</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>時間</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>共 {0} 筆</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{0} / {1} 筆</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>沒有符合條件的紀錄。</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>讀取稽核日誌失敗:{0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>只看異常</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>搜尋主機、工作階段或詳情</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>稽核日誌</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>只載入了最近 {0} 筆</value>
+  </data>
   <data name="DualSftp_CannotReceive" xml:space="preserve">
     <value>{0} 不能接收從另一台伺服器串流傳來的檔案(它的外掛不支援從串流上傳)。</value>
   </data>
@@ -1353,6 +1419,15 @@
   <data name="HostKey_TrustPermanentlyTip" xml:space="preserve">
     <value>記錄該指紋,之後連線不再詢問;可在 設定 → 安全稽核 → 已信任主機 中刪除</value>
   </data>
+  <data name="KbdAuth_Response" xml:space="preserve">
+    <value>回應</value>
+  </data>
+  <data name="KbdAuth_Submit" xml:space="preserve">
+    <value>繼續</value>
+  </data>
+  <data name="KbdAuth_Title" xml:space="preserve">
+    <value>兩步驗證</value>
+  </data>
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} 的主機指紋已變更,使用者確認永久信任新指紋:{1}</value>
   </data>
@@ -1434,9 +1509,6 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>驗證失敗：{0} 的使用者名稱、密碼或金鑰不正確。</value>
-  </data>
-  <data name="Msg_AuthFailedTwoFactorHint" xml:space="preserve">
-    <value>若該主機要求兩步驗證(keyboard-interactive / OTP),本版無法連線：底層 SSH 程式庫未實作該驗證方式。</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>立即重新連線</value>
@@ -2107,6 +2179,9 @@
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// 應用程式的強調色(留空使用主題預設)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>跟隨主題</value>
+  </data>
   <data name="SetAppear_BackgroundImage" xml:space="preserve">
     <value>背景圖片</value>
   </data>
@@ -2578,6 +2653,9 @@
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>尚無已信任的主機</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>檢視</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>開啟回放中心</value>
   </data>
@@ -2589,6 +2667,9 @@
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>告警通道:應用程式內通知 + 提示音 + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>稽核日誌</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>已信任主機</value>
@@ -2643,6 +2724,9 @@
   </data>
   <data name="SetSnippets_Title" xml:space="preserve">
     <value>指令碼/片段庫管理</value>
+  </data>
+  <data name="SetSnippets_VariablesHint" xml:space="preserve">
+    <value>// 可用 {{名字}} 或 {{名字=預設值}} 作佔位,傳送前逐一詢問</value>
   </data>
   <data name="SetSync_Actions" xml:space="preserve">
     <value>操作</value>
@@ -3643,6 +3727,15 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="QuickCmd_Uptime" xml:space="preserve">
     <value>執行時長與平均負載</value>
   </data>
+  <data name="QuickCmd_VariablesPreview" xml:space="preserve">
+    <value>將傳送:</value>
+  </data>
+  <data name="QuickCmd_VariablesSend" xml:space="preserve">
+    <value>傳送</value>
+  </data>
+  <data name="QuickCmd_VariablesTitle" xml:space="preserve">
+    <value>填寫參數 · {0}</value>
+  </data>
   <data name="QuickCmd_MemoryUsage" xml:space="preserve">
     <value>記憶體使用情況</value>
   </data>
@@ -4546,6 +4639,24 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Ssh_AlgoMismatchTitle" xml:space="preserve">
     <value>對端({0})與本用戶端沒有共同的演算法。</value>
   </data>
+  <data name="Ssh_AlgoMismatchUnsupported" xml:space="preserve">
+    <value>  對端這一類演算法本版一個都沒有實作(常見的是只剩 CBC 模式的舊設備),放開舊演算法也連不上。</value>
+  </data>
+  <data name="Ssh_AlgoSpecEmpty" xml:space="preserve">
+    <value>寫了前綴卻沒有演算法名稱。</value>
+  </data>
+  <data name="Ssh_AlgoSpecInvalid" xml:space="preserve">
+    <value>{0}演算法清單不成立:{1}</value>
+  </data>
+  <data name="Ssh_AlgoSpecNothingLeft" xml:space="preserve">
+    <value>刪完之後一個演算法都不剩,與任何伺服器都談不成。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnimplemented" xml:space="preserve">
+    <value>本版沒有實作 {0}。</value>
+  </data>
+  <data name="Ssh_AlgoSpecUnknown" xml:space="preserve">
+    <value>不認得的演算法名稱:{0}。</value>
+  </data>
   <data name="Ssh_AlgoMismatchPeer" xml:space="preserve">
     <value>  對端提供:{0}</value>
   </data>
@@ -4563,6 +4674,9 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="Ssh_AlgoKindMac" xml:space="preserve">
     <value>完整性(MAC)</value>
+  </data>
+  <data name="Ssh_AlgoMismatchEnable" xml:space="preserve">
+    <value>  對端提供的 {0} 可以在連線設定的 SSH 連線選項裡放開(勾「允許舊演算法」,或寫進自訂演算法清單)。</value>
   </data>
   <data name="Plugin_ProtocolUnavailable" xml:space="preserve">
     <value>提供該協定的外掛程式目前無法使用。請在外掛程式管理頁安裝或啟用它。</value>
@@ -5029,6 +5143,18 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>允許 SSO、堡壘機等工具以「VelaShell.exe -url ssh://...」喚起工作階段(與它們驅動 Xshell 的方式相同)。關閉後這類請求一律忽略。</value>
   </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>保留天數</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// 稽核日誌與連線歷史保留多少天,啟動時刪除更早的紀錄</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>檢視稽核日誌</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// 連線成敗、主機指紋的裁決與外部喚起的登入,依時間倒序;只存在本機</value>
+  </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>連線前先確認</value>
   </data>
@@ -5427,6 +5553,9 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="SshErr_HostKeyChanged" xml:space="preserve">
     <value>伺服器的主機金鑰與已記錄的不一致。</value>
   </data>
+  <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
+    <value>已取消兩步驗證。</value>
+  </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>連線逾時。</value>
   </data>
@@ -5463,11 +5592,23 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Profile_SshFeatures" xml:space="preserve">
     <value>SSH 連線選項</value>
   </data>
+  <data name="Profile_SshLegacyAlgorithms" xml:space="preserve">
+    <value>允許舊演算法(連舊設備用)</value>
+  </data>
+  <data name="Profile_SshLegacyAlgorithmsHint" xml:space="preserve">
+    <value>在預設清單之後追加 diffie-hellman-group14-sha1、ssh-rsa(SHA-1)與 hmac-sha1,只有對端一個現代演算法都不支援時才會用上。這些演算法已經不安全,只對連不上的舊交換器、舊系統開啟。</value>
+  </data>
   <data name="Profile_SshCompression" xml:space="preserve">
     <value>啟用壓縮(適合高延遲 / 低頻寬連線)</value>
   </data>
   <data name="Profile_SshCompressionHint" xml:space="preserve">
     <value>延遲較高(跨境、跨洋,往返 100 ms 以上)或頻寬吃緊時建議開啟:終端輸出與文字檔能省下大量流量。區域網路、或主要傳輸圖片 / 壓縮檔這類已壓縮資料時不建議開啟 —— 只會白白多佔 CPU。伺服器不支援時自動退回不壓縮。</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithms" xml:space="preserve">
+    <value>自訂演算法清單</value>
+  </data>
+  <data name="Profile_SshCustomAlgorithmsHint" xml:space="preserve">
+    <value>OpenSSH 寫法:+ 追加到預設之後、- 從預設裡刪掉(可用 * 與 ? 萬用字元)、^ 提到最前,不帶前綴則整個替換。留空用預設;滑鼠停在輸入框上可看預設清單與另可加的演算法。</value>
   </data>
   <data name="Profile_SshAgentForwarding" xml:space="preserve">
     <value>轉送 ssh-agent(-A)</value>
@@ -5582,6 +5723,15 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="Profile_SshAgentKeySourceSaved" xml:space="preserve">
     <value>已存於此連線</value>
+  </data>
+  <data name="Profile_SshAlgoDefault" xml:space="preserve">
+    <value>預設</value>
+  </data>
+  <data name="Profile_SshAlgoTipDefaults" xml:space="preserve">
+    <value>預設:{0}</value>
+  </data>
+  <data name="Profile_SshAlgoTipMore" xml:space="preserve">
+    <value>另可加:{0}</value>
   </data>
   <data name="Profile_SshAgentKeySourceAgent" xml:space="preserve">
     <value>agent 中</value>

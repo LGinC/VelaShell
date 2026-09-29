@@ -358,7 +358,7 @@ internal static partial class Program
     private static AppBuilder BuildAvaloniaApp() =>
         AppBuilder.Configure<App>()
                   .UsePlatformDetect()
-                  .UseWaylandWithFallback()
+                  //.UseWaylandWithFallback()
                   .With(new Win32PlatformOptions { RenderingMode = ResolveRenderingMode() })
                   // Linux 先连原生 Wayland,连不上(缺库、合成器太旧 —— WSLg 即是)就回退 X11
                   // (在 Wayland 会话下由 XWayland 承载)。走 X11 时 WM_CLASS 与 VelaShell.desktop 的

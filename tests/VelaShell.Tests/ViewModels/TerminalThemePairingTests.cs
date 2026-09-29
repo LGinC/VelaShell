@@ -3,6 +3,7 @@ using VelaShell.Core.Models;
 using VelaShell.Core.Services;
 using VelaShell.Terminal.Emulation;
 using VelaShell.Terminal.Rendering;
+using VelaShell.Tests.TestSupport;
 using VelaShell.ViewModels;
 
 namespace VelaShell.Tests.ViewModels;
@@ -27,7 +28,7 @@ public sealed class TerminalThemePairingTests
 
     [TestMethod]
     public async Task ActiveTheme_PushesItsPairedTerminalScheme() =>
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             foreach (UiTheme theme in UiThemeCatalog.All)
             {
@@ -52,7 +53,7 @@ public sealed class TerminalThemePairingTests
                     $"{theme.Name}:高亮八色没有下发到 8–15 槽位。");
             }
             return Task.FromResult(true);
-        }, CancellationToken.None);
+        });
 
     /// <summary>
     /// 没改过任何颜色时用户覆盖必须为空 —— 覆盖非空会把终端钉死在出厂色上,
@@ -60,7 +61,7 @@ public sealed class TerminalThemePairingTests
     /// </summary>
     [TestMethod]
     public async Task UntouchedAppearance_ProducesNoUserOverrides() =>
-        await _session.Dispatch(() =>
+        await _session.RunOnUiAsync(() =>
         {
             var control = new VelaTerminalControl();
             var vm = new MainWindowViewModel(themeService: new ThemeService("nord"));
@@ -75,7 +76,7 @@ public sealed class TerminalThemePairingTests
                 control.ThemePalette?.Background,
                 "跟随态下终端背景就是主题配套方案的背景。");
             return Task.FromResult(true);
-        }, CancellationToken.None);
+        });
 
     private static Rgba ParseHex(string hex)
     {

@@ -2,6 +2,7 @@ using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
+using ReactiveUI.Primitives;
 using VelaShell.Core.Import;
 using VelaShell.Presentation.ViewModels;
 using VelaShell.Views;
@@ -70,6 +71,95 @@ public sealed class SessionImportViewUiTests
             Assert.Contains("1", (string)PrimaryButton(window).Content!);
 
             window.Close();
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 标题栏与回放中心同一个样子:标题靠左、13px、不带图标,27×27 关闭键贴住右上角 ——
+    /// 原先是 48 高头部那一套(14px 标题、24×24 圆角 ×)硬塞进 28,又挤又大。
+    /// </summary>
+    [TestMethod]
+    public void TitleBar_FollowsTheDialogTitleBarSpec()
+    {
+        _session.Dispatch(() =>
+        {
+            var window = new SessionImportView { DataContext = CreateViewModel(out _) };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.FollowsSpec(window);
+            }
+            finally
+            {
+                window.Close();
+            }
+            return Task.CompletedTask;
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>悬停关闭键的红底被卡片的圆角裁掉,不伸出窗口外。</summary>
+    [TestMethod]
+    public void CloseHover_StaysInsideTheRoundedCorner()
+    {
+        _session.Dispatch(() =>
+        {
+            var window = new SessionImportView { DataContext = CreateViewModel(out _) };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.CloseHoverStaysInsideTheRoundedCorner(window);
+            }
+            finally
+            {
+                window.Close();
+            }
+            return Task.CompletedTask;
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>没找到来源(路径为空)的卡片在自定义模式下不能多出一截空行。</summary>
+    /// <remarks>
+    /// 同步 body:窗口打开即扫描,假服务同步完成。别写成 async lambda —— 会话没有 <c>Func&lt;Task&gt;</c> 重载,
+    /// 那样拿到的是没人等的 <c>Task&lt;Task&gt;</c>,第一个 await 之后的断言全被吞掉(这条用例第一版就这么假绿过)。
+    /// </remarks>
+    [TestMethod]
+    public void ASourceWithoutAPath_TakesNoExtraLine()
+    {
+        _session.Dispatch(() =>
+        {
+            ISessionImportService missing = NSubstitute.Substitute.For<ISessionImportService>();
+            NSubstitute.SubstituteExtensions.Returns(missing.SourceKey, "WinSCP");
+            NSubstitute.SubstituteExtensions.Returns(missing.DetectDefaultSource(), (string?)null);
+            NSubstitute.SubstituteExtensions.Returns(
+                missing.ScanAsync(NSubstitute.Arg.Any<string?>(), NSubstitute.Arg.Any<CancellationToken>()),
+                Task.FromResult(new SessionImportScan { Source = string.Empty, Items = [] }));
+            var vm = new SessionImportViewModel([new FakeImportService("Xshell", Session("web", "10.0.0.1")), missing]);
+            var window = new SessionImportView { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            vm.ToggleAdvancedCommand.Execute().Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                Assert.IsTrue(vm.Sources.All(s => s.IsExpanded), "前置:自定义模式下每张卡片都展开");
+                string[] visiblePaths =
+                [
+                    .. window.GetVisualDescendants().OfType<TextBlock>()
+                        .Where(t => t.IsEffectivelyVisible && t.Classes.Count == 0
+                                    && t.FontFamily.ToString().Contains("Mono", StringComparison.OrdinalIgnoreCase)
+                                    && vm.Sources.Any(s => ReferenceEquals(t.DataContext, s)))
+                        .Select(t => t.Text ?? string.Empty)
+                ];
+                Assert.Contains(@"C:\Xshell\config.ini", visiblePaths, "有路径的来源照常显示");
+                Assert.DoesNotContain(string.Empty, visiblePaths, "空的来源路径不该占一行");
+            }
+            finally
+            {
+                window.Close();
+            }
+            return Task.CompletedTask;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 

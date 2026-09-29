@@ -126,4 +126,35 @@
     </Style>
   </ControlTheme>
 
+  <!-- 标题栏图标按钮(设计 GQQwj):24×22、圆角 3、悬停 bg-hover,排在窗口控制键左边。
+       主窗口的全局功能图标组最先用它;回放中心、资源监视等工具窗口把原先放在副标题行的
+       动作也收进标题栏,用的是同一个主题 —— 原先它定义在 TitleBarView 内部,别的窗口取不到,
+       于是各自在副标题行另起一排文字按钮。图标的颜色由内容自己给(常态 VelaTextMuted,
+       开着的状态 VelaAccent),按钮是纯图标,一律配悬停提示与读屏名称。详见 DESIGN.md §4.2。 -->
+  <ControlTheme x:Key="VelaTitleActionButtonTheme" TargetType="Button">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="Width" Value="24" />
+    <Setter Property="Height" Value="22" />
+    <Setter Property="CornerRadius" Value="3" />
+    <Setter Property="Padding" Value="0" />
+    <Setter Property="HorizontalContentAlignment" Value="Center" />
+    <Setter Property="VerticalContentAlignment" Value="Center" />
+    <Setter Property="Template">
+      <ControlTemplate>
+        <ContentPresenter Name="PART_ContentPresenter"
+                          Background="{TemplateBinding Background}"
+                          CornerRadius="{TemplateBinding CornerRadius}"
+                          Content="{TemplateBinding Content}"
+                          HorizontalContentAlignment="Center"
+                          VerticalContentAlignment="Center" />
+      </ControlTemplate>
+    </Setter>
+    <Style Selector="^:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="^:disabled">
+      <Setter Property="Opacity" Value="0.5" />
+    </Style>
+  </ControlTheme>
+
 </ResourceDictionary>

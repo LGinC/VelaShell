@@ -2,6 +2,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:vm="using:VelaShell.ViewModels"
         xmlns:loc="using:VelaShell.Localization"
+        xmlns:pc="using:VelaShell.Controls.Controls"
         x:Class="VelaShell.Views.RecordingPlayerView"
         x:DataType="vm:RecordingPlayerViewModel"
         Title="{loc:Localize Recorder_Title}"
@@ -13,6 +14,23 @@
   <!-- 会话录制与回放(设计 NceE6):左栏最近录制列表,右栏终端回放 + 时间轴。 -->
 
   <Window.Styles>
+    <!-- 窗口控制键:27×27、无圆角,规格同主窗口(与资源监视、任务管理器同一套本地样式)。 -->
+    <Style Selector="Button.caption">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+    </Style>
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
+    </Style>
     <Style Selector="Button.dlg-outline">
       <Setter Property="Background" Value="Transparent" />
       <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
@@ -81,14 +99,15 @@
           ClipToBounds="True">
     <Grid RowDefinitions="Auto,Auto,*">
 
-      <!-- 标题栏(28,与全部窗口一致;可拖动,双击最大化/还原):标题 + 最大化/关闭。
-           副标题与导出/刷新/清理/自动录制在下面一行。 -->
-      <Border Grid.Row="0" Padding="20,0,12,0"
+      <!-- 标题栏(28,与全部窗口一致;可拖动,双击最大化/还原):标题 | 动作图标组 | 最大化/关闭。
+           动作图标组与主窗口的全局功能图标组同一个主题(VelaTitleActionButtonTheme):
+           导出 / 刷新 / 清理 / 自动录制,原先是副标题行右边的一排文字按钮。 -->
+      <Border Grid.Row="0" Padding="20,0,0,0"
               Classes="window-titlebar"
               Background="Transparent"
               PointerPressed="Header_PointerPressed"
               DoubleTapped="Header_DoubleTapped">
-        <Grid ColumnDefinitions="*,Auto">
+        <Grid ColumnDefinitions="*,Auto,Auto">
           <!-- 让位块只在 macOS 上显出来,给系统红绿灯让位(Themes/WindowChrome.axaml)。 -->
           <DockPanel>
             <Panel Classes="traffic-light-spacer" DockPanel.Dock="Left" />
@@ -98,52 +117,89 @@
                        FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                        TextTrimming="CharacterEllipsis" />
           </DockPanel>
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
-            <Button Classes="window-caption" Width="26" Height="26" Background="Transparent" Padding="0"
-                    CornerRadius="3" Cursor="Hand" Click="Maximize_Click"
-                    VerticalAlignment="Center" ToolTip.Tip="{loc:Localize Recorder_MaximizeTip}">
-              <TextBlock Text="▢" FontSize="{DynamicResource VelaFontSize12}" HorizontalAlignment="Center"
-                         Foreground="{DynamicResource VelaTextTertiary}" />
+          <StackPanel x:Name="TitleActions" Grid.Column="1" Orientation="Horizontal" Spacing="4"
+                      VerticalAlignment="Center" Margin="0,0,10,0">
+            <Button Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    IsEnabled="{Binding HasSelection}"
+                    Click="ExportRecording_Click"
+                    AutomationProperties.Name="{loc:Localize Recorder_Export}">
+              <ToolTip.Tip>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{loc:Localize Recorder_Export}" FontWeight="Medium" />
+                  <TextBlock Text="{loc:Localize Recorder_ExportTip}" />
+                </StackPanel>
+              </ToolTip.Tip>
+              <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.download}"
+                             Foreground="{DynamicResource VelaTextMuted}" />
             </Button>
-            <Button Classes="window-caption" Width="26" Height="26" Background="Transparent" Padding="0"
-                    CornerRadius="3" Cursor="Hand" Click="Close_Click"
-                    VerticalAlignment="Center">
-              <TextBlock Text="✕" FontSize="{DynamicResource VelaFontSize13}" HorizontalAlignment="Center"
-                         Foreground="{DynamicResource VelaTextTertiary}" />
+            <Button Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Command="{Binding RefreshCommand}"
+                    AutomationProperties.Name="{loc:Localize Refresh}"
+                    ToolTip.Tip="{loc:Localize Refresh}">
+              <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.refresh-cw}"
+                             Foreground="{DynamicResource VelaTextMuted}" />
+            </Button>
+            <!-- 清理:删除只写墓碑不腾空间,真正回收磁盘要靠这里的重建(见 ISessionRecordingStore.ReclaimSpaceAsync)。 -->
+            <Button x:Name="CleanupButton" Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Click="Cleanup_Click"
+                    AutomationProperties.Name="{loc:Localize Recorder_Cleanup}">
+              <ToolTip.Tip>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{loc:Localize Recorder_Cleanup}" FontWeight="Medium" />
+                  <TextBlock Text="{loc:Localize Recorder_CleanupTip}" />
+                </StackPanel>
+              </ToolTip.Tip>
+              <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.trash-2}"
+                             Foreground="{DynamicResource VelaTextMuted}" />
+            </Button>
+            <!-- 自动录制是个开关:开着时图标转强调色(与主窗口资源管理器、X Server 同一套写法),
+                 悬停提示第一行写当前状态。 -->
+            <Button x:Name="AutoRecordButton" Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Command="{Binding ToggleAutoRecordCommand}"
+                    AutomationProperties.Name="{Binding AutoRecordText}">
+              <ToolTip.Tip>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{Binding AutoRecordText}" FontWeight="Medium" />
+                  <TextBlock Text="{loc:Localize Recorder_AutoRecordTip}" />
+                </StackPanel>
+              </ToolTip.Tip>
+              <Panel>
+                <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.circle-dot}"
+                               Foreground="{DynamicResource VelaTextMuted}"
+                               IsVisible="{Binding !AutoRecordEnabled}" />
+                <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.circle-dot}"
+                               Foreground="{DynamicResource VelaAccent}"
+                               IsVisible="{Binding AutoRecordEnabled}" />
+              </Panel>
+            </Button>
+          </StackPanel>
+          <!-- 窗口控制:27×27 方形命中区贴住右上角,与主窗口、资源监视同规格;macOS 上用系统红绿灯。 -->
+          <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Top">
+            <Button Classes="caption window-caption" Click="Maximize_Click"
+                    ToolTip.Tip="{loc:Localize Recorder_MaximizeTip}">
+              <pc:LucideIcon Width="10" Height="10" Data="{StaticResource Icon.square}"
+                             Foreground="{DynamicResource VelaTextSecondary}" />
+            </Button>
+            <Button Classes="caption caption-close window-caption" Click="Close_Click">
+              <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.x}"
+                             Foreground="{DynamicResource VelaTextSecondary}" />
             </Button>
           </StackPanel>
         </Grid>
       </Border>
 
-      <!-- 副标题行:说明 + 导出/刷新/清理/自动录制。同样可拖动。 -->
+      <!-- 副标题行:只剩说明。同样可拖动。 -->
       <Border Grid.Row="1" Padding="20,6"
               Background="Transparent"
               PointerPressed="Header_PointerPressed"
               BorderBrush="{DynamicResource VelaBorderPrimary}"
               BorderThickness="0,0,0,1">
-        <Grid ColumnDefinitions="*,Auto">
-          <TextBlock Text="{loc:Localize Recorder_Subtitle}"
-                     VerticalAlignment="Center"
-                     Foreground="{DynamicResource VelaTextMuted}"
-                     FontFamily="{DynamicResource VelaUiMonoFont}"
-                     FontSize="{DynamicResource VelaFontSize10}"
-                     TextTrimming="CharacterEllipsis" />
-          <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Classes="dlg-outline" Content="{loc:Localize Recorder_Export}"
-                    IsEnabled="{Binding HasSelection}"
-                    Click="ExportRecording_Click"
-                    ToolTip.Tip="{loc:Localize Recorder_ExportTip}" />
-            <Button Classes="dlg-outline" Content="{loc:Localize Refresh}" Command="{Binding RefreshCommand}" />
-            <!-- 清理:删除只写墓碑不腾空间,真正回收磁盘要靠这里的重建(见 ISessionRecordingStore.ReclaimSpaceAsync)。 -->
-            <Button x:Name="CleanupButton" Classes="dlg-outline" Content="{loc:Localize Recorder_Cleanup}"
-                    Click="Cleanup_Click"
-                    ToolTip.Placement="Top"
-                    ToolTip.Tip="{loc:Localize Recorder_CleanupTip}" />
-            <Button Classes="dlg-accent" Content="{Binding AutoRecordText}"
-                    Command="{Binding ToggleAutoRecordCommand}"
-                    ToolTip.Tip="{loc:Localize Recorder_AutoRecordTip}" />
-          </StackPanel>
-        </Grid>
+        <TextBlock Text="{loc:Localize Recorder_Subtitle}"
+                   VerticalAlignment="Center"
+                   Foreground="{DynamicResource VelaTextMuted}"
+                   FontFamily="{DynamicResource VelaUiMonoFont}"
+                   FontSize="{DynamicResource VelaFontSize10}"
+                   TextTrimming="CharacterEllipsis" />
       </Border>
 
       <!-- 主体:左列表 + 右回放 -->
