@@ -651,6 +651,11 @@ public class App : Application
                     window.Width = a.LastWindowWidth;
                     window.Height = a.LastWindowHeight;
                 }
+                // 位置先于最大化摆好:最大化到哪块屏幕看的就是它,还原时也回到这里(#529)。
+                if (a is { LastWindowX: int x, LastWindowY: int y })
+                {
+                    _ = MainWindowPlacement.TryRestorePosition(window, new PixelPoint(x, y));
+                }
                 if (a.LastWindowMaximized)
                 {
                     window.WindowState = WindowState.Maximized;
