@@ -1332,3 +1332,16 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **没做的**:导出(CSV)与按时间段筛;审计只记这三类事件,配置增删改、设置变更还没有写进来。
 
 **三、验证**:`SonnetDbPersistenceTests` 加 2 条(真引擎:审计日志按截止时刻删、同一序列里新旧混着的只删旧的;连接历史同理且「最近连接」照常取得到新的);新增 `AuditRetentionTests` 5 例(两张表同一截止时刻、天数小于 1 按 1 天、缺一边跳过一边、默认 180 且钳位到 1–3650);`AuditLogViewModelTests` 5 条(翻译与会话名对照、三种筛选叠加与摘要、载满时注明只载入了最近的、读库失败写进摘要、刷新重读);`AuditLogViewUiTests` 1 条 headless 真控件(行渲染、只有异常那一行挂上 `problem`、筛到没有时列表隐去空状态出现)—— 去掉 `Classes.problem` 绑定它变红。全量:`Core.Tests` 582 通过 / 12 跳过,`Infrastructure.Tests` 569 / 4,`VelaShell.Tests` 1591 / 16,`Plugin.Ai.Tests` 587,`Ssh.Tests` 763 / 22,`Terminal.Tests` 515,`XServer.Tests` 214 / 2,`Presentation.Tests` 69,`Controls.Tests` 13,`RenderTests` 5;`ShellIntegration.Tests` 32 条因 ssh-shells 靶机没起全部跳过(与本改动无关)。
+
+## ✅ 136. 2026-09-29 回放中心与资源监视的动作收进标题栏(用户需求)
+
+**一、问题**:主窗口的全局功能图标排在标题栏里、窗口按钮左边;回放中心(导出 / 刷新 / 清理 / 自动录制)与资源监视(主机标识、暂停)却各在标题栏下面另起一行放文字按钮 —— 标题栏图标按钮的主题 `VelaTitleActionButton` 定义在 `TitleBarView` 内部,别的窗口取不到(任务管理器的注释里写着「跨窗口取不到,这里本地重定义」),§4.2 的规范于是也写成了「放不下的操作按钮放到下一行」。用户要求两扇窗口改成和主窗口一样。
+
+**二、做法**:
+- 主题挪进 `Themes/ButtonThemes.axaml`,改名 `VelaTitleActionButtonTheme`(与另两个共享按钮主题同一命名),主窗口标题栏改用它,外观不变。
+- **回放中心**:标题栏右侧是动作图标组 + 最大化 / 关闭。四个动作改成纯图标(`Icon.download` / `refresh-cw` / `trash-2` / 新增的 Lucide `circle-dot`),悬停提示两行(动作名 + 原来的说明),读屏名称同动作名;自动录制是开关,开着时图标转强调色(与主窗口资源管理器、X Server 同一套写法),提示第一行是当前状态。窗口按钮从「▢ ✕」文字换成与资源监视、任务管理器同规格的 27×27 图标方块,贴住右上角。副标题行只剩说明。
+- **资源监视**:主机标识(连通绿点 / 断开灰点 + 主机名,限宽 260、截断后悬停看全名)与暂停 / 继续(纯图标,暂停中换成强调色的「继续」)收进标题栏,排在最小化前面;副标题行只剩采样说明。原先只给暂停按钮用的 `Button.tool` 样式随之删掉。
+- **双击标题栏最大化不再误伤按钮**:回放中心整条标题栏挂着 `DoubleTapped`,双击手势不管按钮有没有处理按下事件都会冒泡上来 —— 标题栏里多了四个按钮之后,连点两下刷新就会把窗口最大化。处理函数改为落在按钮上的双击不算。今天新加的审计日志窗口同一种写法,一并改了,窗口按钮也换成 27×27 图标方块。
+- `DESIGN.md` §4.2 标题栏一行改为「窗口级动作放标题栏的动作图标组,状态标识可以排在它前面,只有副标题放下一行」,§5.1 补上标题栏图标按钮这个第三种角色。
+
+**三、验证**:新增 `RecordingPlayerTitleBarUiTests` 3 条 headless 真控件(四个动作都在标题栏的动作组里、顺序不变、用共享主题、有悬停提示与读屏名称;自动录制开着时图标是强调色;真指针双击刷新键不最大化、双击标题栏空白处照常最大化 —— 去掉判断那条变红)与 `ResourceMonitorUiTests.TitleBar_CarriesTheHostBadgeAndThePauseToggle`(主机标识与暂停键在标题栏里、用共享主题、主机标识不撑高标题栏、点一下换成强调色的继续);`RecordingPlayerCleanupUiTests` 原先断言清理按钮的文字,改为断言读屏名称与它在标题栏里。用 `VELASHELL_VISUAL_QA_DIR` 各截一帧人眼看过。`VelaShell.Tests` 1595 通过 / 16 跳过,`Controls.Tests` 13。没在 macOS 上看过红绿灯旁的样子。
