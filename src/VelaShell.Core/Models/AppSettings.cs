@@ -13,8 +13,14 @@ public class AppSettings
     /// <summary>界面主题标识(如 dark / light)。</summary>
     public string Theme { get; set; } = "dark";
 
-    /// <summary>强调色覆盖(十六进制字符串,如 "#00D4AA");空 = 使用主题默认值。</summary>
-    public string AccentColor { get; set; } = "#E91E63";
+    /// <summary>
+    /// 强调色覆盖(十六进制字符串,如 "#00D4AA");空 = 使用主题默认值。
+    /// <para>
+    /// 出厂为空:覆盖的优先级高于主题令牌,出厂给一个具体色值会把十二套主题各自的强调色
+    /// 一并盖掉。存量配置里已经写着的色值照旧生效 —— 分不清那是用户选的还是旧出厂值,不做迁移。
+    /// </para>
+    /// </summary>
+    public string AccentColor { get; set; } = "";
 
     /// <summary>
     /// 终端渲染使用的等宽字体族名。默认内置的 Cascadia Mono(随程序分发,Linux/macOS

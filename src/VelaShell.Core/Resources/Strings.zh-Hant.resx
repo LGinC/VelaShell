@@ -2107,6 +2107,9 @@
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// 應用程式的強調色(留空使用主題預設)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>跟隨主題</value>
+  </data>
   <data name="SetAppear_BackgroundImage" xml:space="preserve">
     <value>背景圖片</value>
   </data>

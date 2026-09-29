@@ -31,6 +31,9 @@
         <TextBlock Classes="row-desc" Text="{loc:Localize SetAppear_AccentColorDesc}" />
       </StackPanel>
       <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+        <!-- 清空覆盖 = 回到当前主题自己的强调色。只靠「把输入框清空」没人找得到这条路。 -->
+        <Button Classes="dlg-outline" Content="{loc:Localize SetAppear_AccentFollowTheme}"
+                Command="{Binding SetAccentCommand}" CommandParameter="" />
         <ItemsControl ItemsSource="{Binding AccentSwatches}">
           <ItemsControl.ItemsPanel>
             <ItemsPanelTemplate>
@@ -49,7 +52,8 @@
             </DataTemplate>
           </ItemsControl.ItemTemplate>
         </ItemsControl>
-        <TextBox Width="86" Text="{Binding AccentColor}" PlaceholderText="#00D4AA" />
+        <TextBox Width="86" Text="{Binding AccentColor}"
+                 PlaceholderText="{loc:Localize SetAppear_AccentFollowTheme}" />
       </StackPanel>
     </Grid>
 

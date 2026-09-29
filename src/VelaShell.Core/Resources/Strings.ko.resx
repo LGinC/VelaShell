@@ -1875,6 +1875,9 @@
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// 애플리케이션 강조 색(비워 두면 테마 기본값)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>테마 따르기</value>
+  </data>
   <data name="SetAppear_Ansi16" xml:space="preserve">
     <value>터미널 ANSI 16색</value>
   </data>

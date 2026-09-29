@@ -1998,6 +1998,9 @@ Paste anyway?</value>
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// Application accent color (leave empty for theme default)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>Follow theme</value>
+  </data>
   <data name="SetAppear_BackgroundImage" xml:space="preserve">
     <value>Background image</value>
   </data>

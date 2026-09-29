@@ -1875,6 +1875,9 @@
   <data name="SetAppear_AccentColorDesc" xml:space="preserve">
     <value>// アプリケーションのアクセントカラー(空欄でテーマの既定値)</value>
   </data>
+  <data name="SetAppear_AccentFollowTheme" xml:space="preserve">
+    <value>テーマに従う</value>
+  </data>
   <data name="SetAppear_Ansi16" xml:space="preserve">
     <value>ターミナル ANSI 16 色</value>
   </data>
