@@ -295,7 +295,7 @@ public sealed class ConnectionProfileViewUiTests
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
-    /// <summary>标题栏按 28 高对话框的规格画(同导入会话、连接诊断)。</summary>
+    /// <summary>标题栏与回放中心同一个样子(同导入会话)。</summary>
     [TestMethod]
     public void TitleBar_FollowsTheDialogTitleBarSpec()
     {
@@ -307,6 +307,26 @@ public sealed class ConnectionProfileViewUiTests
             try
             {
                 DialogTitleBarAssert.FollowsSpec(window);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>悬停关闭键的红底被卡片的圆角裁掉,不伸出窗口外。</summary>
+    [TestMethod]
+    public void CloseHover_StaysInsideTheRoundedCorner()
+    {
+        _session.Dispatch(() =>
+        {
+            var window = new ConnectionProfileView { DataContext = new ConnectionProfileViewModel() };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.CloseHoverStaysInsideTheRoundedCorner(window);
             }
             finally
             {

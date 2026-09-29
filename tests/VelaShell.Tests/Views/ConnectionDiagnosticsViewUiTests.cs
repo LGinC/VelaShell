@@ -76,6 +76,29 @@ public sealed class ConnectionDiagnosticsViewUiTests
         });
     }
 
+    /// <summary>悬停关闭键的红底被卡片的圆角裁掉,不伸出窗口外。</summary>
+    [TestMethod]
+    public void CloseHover_StaysInsideTheRoundedCorner()
+    {
+        OnUi(() =>
+        {
+            var view = new ConnectionDiagnosticsView();
+            view.Show();
+            view.DataContext = new ConnectionDiagnosticsViewModel(
+                new SessionProfile { Name = "web", Host = "10.0.0.1", Username = "root" },
+                Substitute.For<IConnectionDiagnosticsService>());
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.CloseHoverStaysInsideTheRoundedCorner(view);
+            }
+            finally
+            {
+                view.Close();
+            }
+        });
+    }
+
     private static void OnUi(Action body) =>
         _session.Dispatch(
             () =>

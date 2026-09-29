@@ -75,7 +75,7 @@ public sealed class SessionImportViewUiTests
     }
 
     /// <summary>
-    /// 标题栏按 28 高对话框的规格画:13px 标题、27×27 关闭键贴住右上角 ——
+    /// 标题栏与回放中心同一个样子:标题靠左、13px、不带图标,27×27 关闭键贴住右上角 ——
     /// 原先是 48 高头部那一套(14px 标题、24×24 圆角 ×)硬塞进 28,又挤又大。
     /// </summary>
     [TestMethod]
@@ -89,6 +89,27 @@ public sealed class SessionImportViewUiTests
             try
             {
                 DialogTitleBarAssert.FollowsSpec(window);
+            }
+            finally
+            {
+                window.Close();
+            }
+            return Task.CompletedTask;
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>悬停关闭键的红底被卡片的圆角裁掉,不伸出窗口外。</summary>
+    [TestMethod]
+    public void CloseHover_StaysInsideTheRoundedCorner()
+    {
+        _session.Dispatch(() =>
+        {
+            var window = new SessionImportView { DataContext = CreateViewModel(out _) };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.CloseHoverStaysInsideTheRoundedCorner(window);
             }
             finally
             {

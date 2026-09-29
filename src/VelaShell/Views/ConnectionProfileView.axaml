@@ -182,7 +182,8 @@
   <!-- 自绘对话框卡片(设计:圆角 8、外描边、投影) -->
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <!-- 头部/页签/页脚定高,中间的表单是唯一会伸缩的一行:窗口 SizeToContent="Height"
          仍按内容收缩,但被代码后置钉在屏幕工作区内(见 ApplyScreenBounds),
          超出的部分由表单区自己滚动 —— 插件协议(S3 有十来个字段)不会再把
@@ -190,24 +191,20 @@
     <!-- 头部/页签/反馈/页脚定高,中间的表单是唯一会伸缩的一行。 -->
     <Grid RowDefinitions="Auto,Auto,*,Auto,Auto">
 
-      <!-- 标题栏(28,与全部窗口一致;可拖动):线条图标 + 标题 | 关闭。
-           与导入会话、连接诊断同规格:15px Lucide 图标、13px 标题、27×27 关闭键贴住右上角
-           (原先是 48 高头部那一套,压进 28 之后又挤又大)。 -->
+      <!-- 标题栏(28,与全部窗口一致;可拖动):标题 | 关闭。与回放中心等独立窗口同一个样子 ——
+           标题靠左、不带图标,27×27 关闭键贴住右上角,悬停的红底由卡片的 ClipToBounds 按圆角裁掉。
+           这是对话框:固定尺寸,不放最大化;关闭键不挂 window-caption,macOS 上照常显示 ×。 -->
       <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0,0,0"
               PointerPressed="Header_PointerPressed"
               Background="Transparent"
               BorderThickness="0,0,0,1"
               BorderBrush="{DynamicResource VelaBorderPrimary}">
-        <Grid ColumnDefinitions="Auto,*,Auto">
-          <pc:LucideIcon Grid.Column="0" Width="15" Height="15"
-                         Data="{StaticResource Icon.plug}"
-                         Foreground="{DynamicResource VelaAccent}"
-                         VerticalAlignment="Center" Margin="0,0,10,0" />
-          <TextBlock Grid.Column="1" Text="{loc:Localize Profile_Title}"
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="{loc:Localize Profile_Title}"
                      Foreground="{DynamicResource VelaTextPrimary}"
                      FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                      VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-          <Button Grid.Column="2" Classes="caption caption-close" VerticalAlignment="Top"
+          <Button Grid.Column="1" Classes="caption caption-close" VerticalAlignment="Top"
                   Command="{Binding CancelCommand}">
             <pc:LucideIcon Width="12" Height="12"
                            Data="{StaticResource Icon.x}"

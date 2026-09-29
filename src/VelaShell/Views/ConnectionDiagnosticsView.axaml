@@ -44,7 +44,8 @@
 
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <DockPanel>
 
       <!-- Header (design diagHeader):标题栏(28,与全部窗口一致;可拖动)= 图标 + 标题 | 导出报告、重新检测 | 关闭。

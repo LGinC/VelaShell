@@ -68,27 +68,25 @@
 
   <Border Classes="window-card"
           Background="{DynamicResource VelaBgSurface}"
-          BorderBrush="{DynamicResource VelaBorderSecondary}">
+          BorderBrush="{DynamicResource VelaBorderSecondary}"
+          ClipToBounds="True">
     <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,52">
 
-      <!-- 标题栏(28,与全部窗口一致;可拖动):线条图标 + 标题 | 关闭。
-           原先是 48 高头部那一套(16px 实心图标、14px 标题、24×24 圆角 ×),压进 28 之后又挤又大;
-           现在与连接诊断等对话框同规格:15px Lucide 图标、13px 标题、27×27 关闭键贴住右上角。 -->
+      <!-- 标题栏(28,与全部窗口一致;可拖动):标题 | 关闭。与回放中心等独立窗口同一个样子 ——
+           标题靠左、不带图标,27×27 关闭键贴住右上角,悬停的红底由卡片的 ClipToBounds 按圆角裁掉。
+           原先是 48 高头部那一套(16px 实心图标、14px 标题、24×24 圆角 ×),压进 28 之后又挤又大。
+           这是对话框:固定尺寸,不放最大化;关闭键不挂 window-caption,macOS 上照常显示 ×。 -->
       <Border Grid.Row="0" Classes="window-titlebar" Padding="20,0,0,0"
               PointerPressed="Header_PointerPressed"
               Background="Transparent"
               BorderThickness="0,0,0,1"
               BorderBrush="{DynamicResource VelaBorderPrimary}">
-        <Grid ColumnDefinitions="Auto,*,Auto">
-          <pc:LucideIcon Grid.Column="0" Width="15" Height="15"
-                         Data="{StaticResource Icon.folder-input}"
-                         Foreground="{DynamicResource VelaAccent}"
-                         VerticalAlignment="Center" Margin="0,0,10,0" />
-          <TextBlock Grid.Column="1" Text="{Binding Title}"
+        <Grid ColumnDefinitions="*,Auto">
+          <TextBlock Text="{Binding Title}"
                      Foreground="{DynamicResource VelaTextPrimary}"
                      FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                      VerticalAlignment="Center" TextTrimming="CharacterEllipsis" />
-          <Button Grid.Column="2" Classes="caption caption-close" VerticalAlignment="Top"
+          <Button Grid.Column="1" Classes="caption caption-close" VerticalAlignment="Top"
                   Click="Cancel_Click">
             <pc:LucideIcon Width="12" Height="12"
                            Data="{StaticResource Icon.x}"

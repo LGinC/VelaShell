@@ -70,6 +70,12 @@ public sealed partial class WindowChromeCoverageTests
                             offenders.Add($"{name}: 卡片上写死了 {attribute}(交给 Themes/WindowChrome.axaml)");
                         }
                     }
+                    // 27×27 的窗口键贴住右上角:悬停的底色是方的,卡片不裁剪就伸出圆角外一截。
+                    if (xaml.Contains("caption-close", StringComparison.Ordinal)
+                        && !card.Contains("ClipToBounds=\"True\"", StringComparison.Ordinal))
+                    {
+                        offenders.Add($"{name}: 关闭键贴着卡片右上角,卡片要写 ClipToBounds=\"True\"");
+                    }
                 }
                 // 内半径 7 的四角写法只会出现在贴着卡片四角的子元素上,它们要挂 window-card-* 类,
                 // 卡片变直角时才跟着变直角。
