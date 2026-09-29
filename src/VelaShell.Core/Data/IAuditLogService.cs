@@ -10,4 +10,7 @@ public interface IAuditLogService
 
     /// <summary>按时间倒序查询;<paramref name="category" /> 为空时返回全部类别。</summary>
     Task<List<AuditEntry>> QueryAsync(int limit, string? category = null, CancellationToken cancellationToken = default);
+
+    /// <summary>删掉早于 <paramref name="cutoff" /> 的记录(保留策略,见 <see cref="AuditRetention" />)。</summary>
+    Task DeleteOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default);
 }

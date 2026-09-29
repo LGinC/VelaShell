@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using SonnetDB.Model;
+using SonnetDB.Sql;
 using SonnetDB.Sql.Execution;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
@@ -40,6 +42,31 @@ public sealed class SonnetDbAuditLogService(SonnetDbEngine engine) : IAuditLogSe
             ["detail"] = FieldValue.FromString(entry.Detail)
         };
         return _engine.WritePointAsync(SonnetDbEngine.AuditLogMeasurement, entry.Timestamp, tags, fields, cancellationToken);
+    }
+
+    /// <summary>删掉早于 <paramref name="cutoff" /> 的审计记录。</summary>
+    /// <remarks>
+    /// 按时间条件的 DELETE:只写墓碑,段文件在合并时才真正变小 —— 审计是逐条的短文本,
+    /// 不值得像录制那样「暂存 → 重建 → 回灌」(那一套在进程死在中途时会丢掉存活数据)。
+    /// 方言不支持时记一笔、原样保留,绝不因为清理失败而丢掉还在保留期内的记录。
+    /// </remarks>
+    public async Task DeleteOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default)
+    {
+        int affected = await DeleteOlderThanAsync(_engine, SonnetDbEngine.AuditLogMeasurement, cutoff, cancellationToken)
+            .ConfigureAwait(false);
+        if (affected < 0)
+        {
+            Trace.WriteLine($"[VelaShell] audit_log retention: DELETE by time is not supported, nothing was pruned (cutoff {cutoff:O}).");
+        }
+    }
+
+    /// <summary>按时间删掉某个 measurement 里早于 <paramref name="cutoff" /> 的点;返回受影响的序列数,不支持时 -1。</summary>
+    internal static Task<int> DeleteOlderThanAsync(SonnetDbEngine engine, string measurement, DateTimeOffset cutoff,
+        CancellationToken cancellationToken)
+    {
+        var parameters = new SqlParameters();
+        parameters.AddNamed("cutoff", cutoff.ToUnixTimeMilliseconds());
+        return engine.TryDeleteAsync($"DELETE FROM {measurement} WHERE time < @cutoff", parameters, cancellationToken);
     }
 
     /// <summary>按时间倒序查询审计记录,可按分类过滤。</summary>

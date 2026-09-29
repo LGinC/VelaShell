@@ -91,6 +91,19 @@ public sealed class SonnetDbRecentConnectionService(SonnetDbEngine engine) : IRe
     /// </summary>
     public Task ClearAsync(CancellationToken cancellationToken = default) => _engine.ResetMeasurementAsync(SonnetDbEngine.ConnHistoryMeasurement, cancellationToken);
 
+    /// <summary>删掉早于 <paramref name="cutoff" /> 的连接记录(与审计日志同一口径,见 <see cref="SonnetDbAuditLogService.DeleteOlderThanAsync(DateTimeOffset, CancellationToken)" />)。</summary>
+    public async Task DeleteOlderThanAsync(DateTimeOffset cutoff, CancellationToken cancellationToken = default)
+    {
+        int affected = await SonnetDbAuditLogService
+            .DeleteOlderThanAsync(_engine, SonnetDbEngine.ConnHistoryMeasurement, cutoff, cancellationToken)
+            .ConfigureAwait(false);
+        if (affected < 0)
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"[VelaShell] conn_history retention: DELETE by time is not supported, nothing was pruned (cutoff {cutoff:O}).");
+        }
+    }
+
     private static RecentConnectionEntry? MapRow(IReadOnlyList<string> columns, IReadOnlyList<object?> row)
     {
         var values = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);

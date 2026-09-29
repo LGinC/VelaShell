@@ -273,6 +273,17 @@ public class App : Application
                 _ = Task.Run(() => recordingStore.CleanupExpiredAsync(retentionDays));
             }
 
+            // 审计日志与连接历史的保留(设置 → 安全审计 → 保留天数):两张只增不减的时序表,删掉更早的记录。
+            if (_serviceProvider is { } retentionServices)
+            {
+                int auditRetentionDays = _startupSettings?.Security.AuditLogRetentionDays
+                                         ?? SecurityOptions.DefaultAuditLogRetentionDays;
+                FireAndForget.Run(() => AuditRetention.PruneAsync(
+                    retentionServices.GetService<IAuditLogService>(),
+                    retentionServices.GetService<IRecentConnectionService>(),
+                    auditRetentionDays));
+            }
+
             // 托盘图标(关闭时最小化到托盘);设置保存后热更新挂载状态。
             _trayIconService = new(this);
             _trayIconService.ShowRequested += () =>

@@ -16,6 +16,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>Connected</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>Connection failed</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>External login</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>Changed host fingerprint accepted</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>Host fingerprint rejected</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>Host fingerprint trusted once</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>All categories</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>Connection</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>Security</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>Event</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>Category</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>Detail</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>Session</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>Time</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>{0} records</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{0} of {1} records</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>No matching records.</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>Could not read the audit log: {0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>Problems only</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>Search host, session or detail</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>Audit log</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>only the latest {0} loaded</value>
+  </data>
   <data name="DualSftp_CannotReceive" xml:space="preserve">
     <value>{0} cannot take files streamed from another server (its plugin does not support streamed uploads).</value>
   </data>
@@ -2478,6 +2544,9 @@ Paste anyway?</value>
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>No trusted hosts yet</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>Open</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>Open Replay Center</value>
   </data>
@@ -2489,6 +2558,9 @@ Paste anyway?</value>
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>Alert channels: in-app notification + sound + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>Audit log</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>Trusted hosts</value>
@@ -4614,6 +4686,18 @@ A routine key rotation and a hijacked publishing identity look exactly the same 
   </data>
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>Let SSO / jump-server tools open a session with &quot;VelaShell.exe -url ssh://...&quot;, the way they drive Xshell. Off means such requests are ignored.</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>Keep for (days)</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// How long the audit log and the connection history are kept; older records are removed at startup</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>View the audit log</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// Connections that succeeded or failed, host-fingerprint decisions and external logins, newest first; stored only on this machine</value>
   </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>Confirm before connecting</value>

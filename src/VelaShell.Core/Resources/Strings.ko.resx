@@ -28,6 +28,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>연결 성공</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>연결 실패</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>외부 실행 로그인</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>변경된 호스트 지문 수락</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>호스트 지문 거부</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>이번만 호스트 지문 신뢰</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>모든 분류</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>연결</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>보안</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>이벤트</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>분류</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>상세</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>세션</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>시간</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>{0}건</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{1}건 중 {0}건</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>조건에 맞는 기록이 없습니다.</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>감사 로그를 읽지 못했습니다: {0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>문제만 보기</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>호스트, 세션 또는 상세 내용 검색</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>감사 로그</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>최근 {0}건만 불러옴</value>
+  </data>
   <data name="Auth_AesBadge" xml:space="preserve">
     <value>AES-256 암호화 저장</value>
   </data>
@@ -2331,6 +2397,9 @@
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>신뢰된 호스트가 없습니다</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>보기</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>재생 센터 열기</value>
   </data>
@@ -2342,6 +2411,9 @@
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>경고 채널: 앱 내 알림 + 알림음 + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>감사 로그</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>신뢰된 호스트</value>
@@ -4611,6 +4683,18 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   </data>
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>SSO / 점프 서버 도구가 Xshell을 다루듯 &quot;VelaShell.exe -url ssh://...&quot;로 세션을 열 수 있게 합니다. 끄면 이런 요청은 모두 무시됩니다.</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>보관 기간(일)</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// 감사 로그와 연결 기록을 며칠 동안 보관할지 정합니다. 시작할 때 더 오래된 기록을 삭제합니다</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>감사 로그 보기</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// 연결 성공·실패, 호스트 지문에 대한 결정, 외부 실행 로그인(최신순, 이 컴퓨터에만 저장)</value>
   </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>연결 전 확인</value>

@@ -120,6 +120,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>连接成功</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>连接失败</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>外部拉起登录</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>接受了变更的主机指纹</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>拒绝了主机指纹</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>仅本次信任主机指纹</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>全部类别</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>连接</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>安全</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>事件</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>类别</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>详情</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>会话</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>时间</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>共 {0} 条</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{0} / {1} 条</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>没有符合条件的记录。</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>读取审计日志失败:{0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>只看异常</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>搜索主机、会话或详情</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>审计日志</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>只载入了最近 {0} 条</value>
+  </data>
   <data name="DualSftp_CannotReceive" xml:space="preserve">
     <value>{0} 不能接收从另一台服务器流式传来的文件(它的插件不支持从流上传)。</value>
   </data>
@@ -2587,6 +2653,9 @@
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>暂无已信任的主机</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>查看</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>打开回放中心</value>
   </data>
@@ -2598,6 +2667,9 @@
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>告警通道:应用内通知 + 提示音 + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>审计日志</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>已信任主机</value>
@@ -5070,6 +5142,18 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>允许 SSO、堡垒机等工具用「VelaShell.exe -url ssh://...」拉起会话(与它们驱动 Xshell 的方式相同)。关闭后这类请求一律忽略。</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>保留天数</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// 审计日志与连接历史保留多少天,启动时删掉更早的记录</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>查看审计日志</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// 连接成败、主机指纹的裁决与外部拉起的登录,按时间倒序;只存在本机</value>
   </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>连接前先确认</value>

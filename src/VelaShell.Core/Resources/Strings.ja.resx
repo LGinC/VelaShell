@@ -28,6 +28,72 @@
   <data name="AppName" xml:space="preserve">
     <value>VelaShell</value>
   </data>
+  <data name="AuditLog_ActionConnect" xml:space="preserve">
+    <value>接続成功</value>
+  </data>
+  <data name="AuditLog_ActionConnectFailed" xml:space="preserve">
+    <value>接続失敗</value>
+  </data>
+  <data name="AuditLog_ActionExternalLaunch" xml:space="preserve">
+    <value>外部からの起動でログイン</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
+    <value>変更されたホスト指紋を受け入れ</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
+    <value>ホスト指紋を拒否</value>
+  </data>
+  <data name="AuditLog_ActionHostKeyTrustedOnce" xml:space="preserve">
+    <value>今回だけホスト指紋を信頼</value>
+  </data>
+  <data name="AuditLog_CategoryAll" xml:space="preserve">
+    <value>すべての種類</value>
+  </data>
+  <data name="AuditLog_CategoryConnection" xml:space="preserve">
+    <value>接続</value>
+  </data>
+  <data name="AuditLog_CategorySecurity" xml:space="preserve">
+    <value>セキュリティ</value>
+  </data>
+  <data name="AuditLog_ColAction" xml:space="preserve">
+    <value>イベント</value>
+  </data>
+  <data name="AuditLog_ColCategory" xml:space="preserve">
+    <value>種類</value>
+  </data>
+  <data name="AuditLog_ColDetail" xml:space="preserve">
+    <value>詳細</value>
+  </data>
+  <data name="AuditLog_ColSession" xml:space="preserve">
+    <value>セッション</value>
+  </data>
+  <data name="AuditLog_ColTime" xml:space="preserve">
+    <value>時刻</value>
+  </data>
+  <data name="AuditLog_Count" xml:space="preserve">
+    <value>{0} 件</value>
+  </data>
+  <data name="AuditLog_CountFiltered" xml:space="preserve">
+    <value>{1} 件中 {0} 件</value>
+  </data>
+  <data name="AuditLog_Empty" xml:space="preserve">
+    <value>条件に合う記録はありません。</value>
+  </data>
+  <data name="AuditLog_LoadFailed" xml:space="preserve">
+    <value>監査ログを読み込めませんでした: {0}</value>
+  </data>
+  <data name="AuditLog_OnlyProblems" xml:space="preserve">
+    <value>問題のみ</value>
+  </data>
+  <data name="AuditLog_SearchPlaceholder" xml:space="preserve">
+    <value>ホスト・セッション・詳細を検索</value>
+  </data>
+  <data name="AuditLog_Title" xml:space="preserve">
+    <value>監査ログ</value>
+  </data>
+  <data name="AuditLog_Truncated" xml:space="preserve">
+    <value>直近 {0} 件のみ読み込み</value>
+  </data>
   <data name="Auth_AesBadge" xml:space="preserve">
     <value>AES-256 暗号化保存</value>
   </data>
@@ -2331,6 +2397,9 @@
   <data name="SetSecurity_NoKnownHosts" xml:space="preserve">
     <value>信頼済みホストはまだありません</value>
   </data>
+  <data name="SetSecurity_OpenAuditLog" xml:space="preserve">
+    <value>表示</value>
+  </data>
   <data name="SetSecurity_OpenPlayer" xml:space="preserve">
     <value>再生センターを開く</value>
   </data>
@@ -2342,6 +2411,9 @@
   </data>
   <data name="SetSecurity_SectionAlerts" xml:space="preserve">
     <value>アラートチャネル:アプリ内通知 + サウンド + Webhook</value>
+  </data>
+  <data name="SetSecurity_SectionAuditLog" xml:space="preserve">
+    <value>監査ログ</value>
   </data>
   <data name="SetSecurity_SectionKnownHosts" xml:space="preserve">
     <value>信頼済みホスト</value>
@@ -4611,6 +4683,18 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SetSecurity_AllowExternalLaunchDesc" xml:space="preserve">
     <value>SSO / 踏み台ツールが Xshell と同じ流儀で「VelaShell.exe -url ssh://...」からセッションを開けるようにします。無効にすると、この種の要求はすべて無視されます。</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetention" xml:space="preserve">
+    <value>保存期間(日)</value>
+  </data>
+  <data name="SetSecurity_AuditLogRetentionDesc" xml:space="preserve">
+    <value>// 監査ログと接続履歴を何日保存するか。起動時にそれより古い記録を削除します</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewer" xml:space="preserve">
+    <value>監査ログを表示</value>
+  </data>
+  <data name="SetSecurity_AuditLogViewerDesc" xml:space="preserve">
+    <value>// 接続の成否、ホスト指紋の判断、外部からの起動によるログイン(新しい順、このマシンにのみ保存)</value>
   </data>
   <data name="SetSecurity_ConfirmExternalLaunch" xml:space="preserve">
     <value>接続前に確認する</value>
