@@ -1274,3 +1274,18 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 设置 → 外观 → 主题色:色板前加「跟随主题」按钮(`SetAccentCommand` 传空串);输入框的占位文字也改成「跟随主题」,清空后一眼看得出现在是什么状态。新增本地化键 `SetAppear_AccentFollowTheme`,五份 resx 齐。
 
 **三、验证**:新增 `AccentDefaultsTests` 2 条(新配置跟随主题且落成「无覆盖」、存量色值原样保留)。`VelaShell.Core.Tests` 535 通过 / 12 跳过;`VelaShell.Tests` 里本地化、设置、主题相关的 161 条全过。
+
+## ✅ 132. 2026-09-29 快捷命令支持变量占位(用户需求)
+
+**一、问题**:快捷命令只有一段固定的 `CommandText`。`kubectl logs -f <pod>`、`journalctl -u <服务> -n 200` 这类每次只差一两个参数的命令,要么存成缺参数的半截、发出去再在终端里补,要么每个参数各存一条。
+
+**二、做法**:
+- **写法**:`{{名字}}` 或 `{{名字=默认值}}`,写在命令正文里 —— `QuickCommand` 的结构不动,Gist 同步与导入导出照旧。解析与替换在 `Core/Models/QuickCommandTemplate`。
+- **别误伤现有的双花括号**:运维命令里本来就有大量 `{{…}}`(`docker inspect -f '{{.State.Status}}'`、kubectl 的 go-template、Ansible 的 `{{ inventory_hostname }}`),所以占位收得很窄:名字只能是字母 / 下划线开头的字母数字下划线连字符,**花括号里不许有空白**;Go 模板的无参动作 `end` / `else` / `break` / `continue` 不算;默认值里不许有花括号与换行。不是占位的一律原样发出。
+- 同名写多处只问一次、用第一个非空的默认值;没填的变量取默认值(没默认值就是空串)。**值里的换行换成空格** —— 快捷命令只发正文不带回车,值里夹一个换行就等于替用户按了回车。
+- **流程**:`QuickCommandExecutionRequest` 多带命令名;`MainWindowViewModel` 收到请求时先解析,没有占位就照旧同步发送;有占位就经窗口注入的 `QuickCommandVariablePrompt` 询问(与 `MultilinePasteConfirmer` 同一种手法,未挂时原样发送),取消则一个字节都不发。弹框期间目标可能断开,发送时再按当下的标签挑一遍。
+- **询问框** `Views/QuickCommandVariablesPrompt`:外壳复用 `MessageDialog.ShowCustomAsync`,每个变量一行(名字 + 预填默认值的输入框,读屏器按变量名念),下方「将发送:」实时预览替换后的整条命令;打开即聚焦第一个输入框,Enter 发送、Esc 取消。
+- 设置 → 快捷命令的新建 / 编辑区,命令输入框下加一行写法说明。新增本地化键 `QuickCmd_VariablesTitle` / `QuickCmd_VariablesPreview` / `QuickCmd_VariablesSend` / `SetSnippets_VariablesHint`,五份 resx 齐。
+- **没覆盖到的**:终端里的命令补全(`CommandSuggestionProvider`)把快捷命令当候选时插入的仍是含占位的原文 —— 补全是按前缀续写正文的,换成替换后的文本会与已键入的前缀对不上。
+
+**三、验证**:新增 `QuickCommandTemplateTests` 13 条(按首次出现排序、同名只问一次且取第一个非空默认值、七种模板语言写法原样不动、非 ASCII 与连字符名字、给值 / 缺值取默认 / Go 动作留在原处、值里的换行压成空格、无占位原样返回);`QuickCommandVariablesFlowTests` 4 条(询问后发替换结果、取消不发也不抢焦点、Go 模板不弹框直接发、弹框期间目标断开就不发);`QuickCommandVariablesPromptUiTests` 2 条 headless 真控件(默认值预填、第一个输入框拿到焦点、预览随输入变、确认返回所填的值;取消返回 null)。把「聚焦第一个输入框」去掉、把发送改回原文,各有一条变红。
