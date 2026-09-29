@@ -295,6 +295,58 @@ public sealed class ConnectionProfileViewUiTests
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
+    /// <summary>标题栏按 28 高对话框的规格画(同导入会话、连接诊断)。</summary>
+    [TestMethod]
+    public void TitleBar_FollowsTheDialogTitleBarSpec()
+    {
+        _session.Dispatch(() =>
+        {
+            var window = new ConnectionProfileView { DataContext = new ConnectionProfileViewModel() };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                DialogTitleBarAssert.FollowsSpec(window);
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 勾上 X11 转发后,「受信任」勾选框与本机 X 显示的输入框在同一条中线上。
+    /// </summary>
+    /// <remarks>
+    /// 原先勾选框靠「贴底 + 底边距 8」去凑输入框的中线,凑出来高了一截;框高一变(字号、主题)还会再歪。
+    /// </remarks>
+    [TestMethod]
+    public void X11Trusted_SharesTheDisplayBoxCentreLine()
+    {
+        _session.Dispatch(() =>
+        {
+            var vm = new ConnectionProfileViewModel { IsAdvancedVisible = true, SshX11Forwarding = true };
+            var window = new ConnectionProfileView { DataContext = vm, Height = 900 };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                CheckBox trusted = window.GetVisualDescendants().OfType<CheckBox>().Single(c => c.Name == "X11TrustedCheck");
+                Grid row = trusted.GetVisualAncestors().OfType<Grid>().First();
+                TextBox display = row.Children.OfType<TextBox>().Single();
+                Assert.IsTrue(trusted.IsEffectivelyVisible);
+
+                double CentreY(Control c) => c.TranslatePoint(new Point(0, c.Bounds.Height / 2), row)!.Value.Y;
+                Assert.AreEqual(CentreY(display), CentreY(trusted), 0.5, "受信任勾选框应与输入框同一条中线");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
     private static void AssertIndicatorAligned(Border indicator, Button tab)
     {
         // 读基值(过渡目标)而非属性现值:现值在 180ms 滑动期间是动画中间值。
