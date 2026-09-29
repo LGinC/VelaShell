@@ -686,6 +686,8 @@ public sealed class GistSyncService(
         settings.Appearance.LastWindowWidth = defaults.Appearance.LastWindowWidth;
         settings.Appearance.LastWindowHeight = defaults.Appearance.LastWindowHeight;
         settings.Appearance.LastWindowMaximized = defaults.Appearance.LastWindowMaximized;
+        settings.Appearance.LastWindowX = defaults.Appearance.LastWindowX;
+        settings.Appearance.LastWindowY = defaults.Appearance.LastWindowY;
         // 硬件加速取决于这台机器的显卡与内存,跨设备同步只会把弱机的将就设置推给强机(反之亦然)。
         settings.Appearance.HardwareAcceleration = defaults.Appearance.HardwareAcceleration;
         settings.Transfer.LocalDownloadDirectory = defaults.Transfer.LocalDownloadDirectory;
@@ -703,6 +705,8 @@ public sealed class GistSyncService(
         incoming.Appearance.LastWindowWidth = local.Appearance.LastWindowWidth;
         incoming.Appearance.LastWindowHeight = local.Appearance.LastWindowHeight;
         incoming.Appearance.LastWindowMaximized = local.Appearance.LastWindowMaximized;
+        incoming.Appearance.LastWindowX = local.Appearance.LastWindowX;
+        incoming.Appearance.LastWindowY = local.Appearance.LastWindowY;
         incoming.Appearance.HardwareAcceleration = local.Appearance.HardwareAcceleration;
         incoming.Transfer.LocalDownloadDirectory = local.Transfer.LocalDownloadDirectory;
         incoming.Transfer.DefaultEditorPath = local.Transfer.DefaultEditorPath;

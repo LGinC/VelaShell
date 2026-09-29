@@ -2240,7 +2240,7 @@
     <value>預設大小</value>
   </data>
   <data name="SetAppear_WindowStateDesc" xml:space="preserve">
-    <value>// 應用程式啟動時的視窗大小行為</value>
+    <value>// 應用程式啟動時的視窗大小與位置</value>
   </data>
   <data name="SetAppear_WindowStateMaximized" xml:space="preserve">
     <value>最大化</value>

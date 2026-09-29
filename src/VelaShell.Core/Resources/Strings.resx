@@ -2131,7 +2131,7 @@ Paste anyway?</value>
     <value>Default size</value>
   </data>
   <data name="SetAppear_WindowStateDesc" xml:space="preserve">
-    <value>// Window size behavior when the app starts</value>
+    <value>// Window size and position when the app starts</value>
   </data>
   <data name="SetAppear_WindowStateMaximized" xml:space="preserve">
     <value>Maximized</value>

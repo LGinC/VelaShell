@@ -140,6 +140,9 @@ public partial class MainWindow : Window
     private AppSettings? _settings;
 
     private ISettingsService? _settingsService;
+
+    /// <summary>「记住上次」的位置、尺寸与最大化,关闭时回写(#529)。</summary>
+    private readonly MainWindowPlacement _placement;
     private bool _sidebarOnRight;
 
     // 注意:窗口的 DataContext 必须在构造之后(在 App 的对象初始化器中)再赋值:
@@ -152,6 +155,8 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        // 要赶在 App 套用启动时窗口状态之前挂上,才看得到那一次最大化。
+        _placement = new MainWindowPlacement(this);
         // macOS 换成系统外框(红绿灯、圆角与阴影);其余平台保持自绘无边框,外观不变。
         // 抓取区交给它:最大化 / 全屏时让位,macOS 上由系统提供边缘缩放。
         WindowChrome.Apply(this, WindowChromeKind.Main, this.FindControl<Panel>("ResizeGrips"));
@@ -973,7 +978,7 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// 退出时的状态记忆:窗口尺寸/最大化(启动时窗口状态 = 记住上次)与
+    /// 退出时的状态记忆:窗口位置/尺寸/最大化(启动时窗口状态 = 记住上次)与
     /// 已连接会话的配置 id(恢复会话)。同步等待,本地写入很快。
     /// </summary>
     private void PersistWindowBounds(AppSettings? settings)
@@ -1003,12 +1008,7 @@ public partial class MainWindow : Window
         {
             if (rememberWindow)
             {
-                settings.Appearance.LastWindowMaximized = WindowState == WindowState.Maximized;
-                if (WindowState == WindowState.Normal)
-                {
-                    settings.Appearance.LastWindowWidth = Width;
-                    settings.Appearance.LastWindowHeight = Height;
-                }
+                _placement.SaveTo(settings.Appearance);
             }
             if (rememberSessions && DataContext is MainWindowViewModel vm)
             {

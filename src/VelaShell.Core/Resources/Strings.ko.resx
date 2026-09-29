@@ -1984,7 +1984,7 @@
     <value>기본 크기</value>
   </data>
   <data name="SetAppear_WindowStateDesc" xml:space="preserve">
-    <value>// 앱 시작 시 창 크기 동작</value>
+    <value>// 앱 시작 시 창 크기와 위치</value>
   </data>
   <data name="SetAppear_WindowStateMaximized" xml:space="preserve">
     <value>최대화</value>

@@ -1250,3 +1250,16 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **修一个 §128 留下的静默覆盖**:续传探测看到「目标比源短」就跳过同名冲突询问;源回不了头(FTP 的数据连接)时 `RemoteRelay` 原先悄悄退回整份重传 —— 若那个短文件其实是用户自己的另一个同名文件,就被不经询问地覆盖了。改为源不可 Seek 时抛 `VelaSftpResumeMismatchException`(新文案 `SftpSvc_ResumeUnverifiable`),交回同名冲突策略,与「核实了但对不上」同一条路;插件目标被要求续传时(SDK 的流式上传不续传)同样处理。目标在抛出之前没被碰过,不会被当成半截文件清掉。
 
 **三、验证**:新增 `PluginProtocolTests` 3 条(转调兼实现了该接口的插件并桥接进度、没实现时报不支持、被要求续传时报核实不了且一个字节不写);`DualSftpOpenFlowTests` 4 条(真注册表 + 真会话服务:能接收的插件栏、只能作源的插件栏及两个方向按钮的可用性、终端协议被拒且 SSH 那条被断开、判断函数放行 SSH 与插件文件协议);`DualSftpDocumentViewModelTests` 2 条(不能接收的一栏按钮置灰且拒绝搬入、插件栏带右键动作);`SessionTreeDualSelectionTests` 改 1 加 1(插件文件协议能进双选、宿主判断能排掉);`RemoteRelayTests` 改 1 加 1(源不可 Seek 被要求续传时报核实不了且不碰目标、不续传时照常流式)。文档:velashell-docs `{zh,en}/host/` 交互与界面规格 §3 / §6.2、SFTP 双栏与 WinSCP 差距分析 8.2,`{zh,en}/sdk/sdk-reference.md` 把 TBD 换成 2.0.6([velashell-docs#75](https://github.com/VelaShellLabs/velashell-docs/pull/75),两个 PR 互引、一起合)。
+
+## ✅ 130. 2026-09-29 启动时窗口状态「记住上次」也记住窗口位置(#529)
+
+**一、问题**:Windows 上每次打开,主窗口都在屏幕正中。「记住上次」只记宽高与是否最大化,位置一直交给 XAML 里的 `WindowStartupLocation="CenterScreen"`;`AppState.WindowPosition` 是没人读写的旧模型,没有接上。
+
+**二、做法**:
+- `AppearanceOptions` 新增 `LastWindowX` / `LastWindowY`(`int?`,屏幕物理像素;`null` = 还没记过,0 是合法坐标)。与宽高一样是设备本地字段:Gist 同步推送前清空、拉取时保留本机值。
+- 新增 `Services/MainWindowPlacement`,宽高与最大化的回写也从 `MainWindow.PersistWindowBounds` 挪进来。启动时 `TryRestorePosition` 先核实记下的位置还在某块屏幕的工作区里:标题栏顶边在工作区内、下面留得出 32、横向与工作区至少重叠 120(逻辑像素,按那块屏的缩放换算)。核实不了就照旧居中 —— 拔掉副屏、换了分辨率之后,窗口不会开在屏幕外拖不回来。位置先于最大化摆好,于是最大化到上次那块屏幕,还原时回到上次的普通态位置。
+- 关闭那一刻常常不在普通态:最大化时 `Position` 是最大化后的左上角,最小化时 Win32 报 (-32000, -32000)。Windows 上平时记普通态的位置与尺寸:`PositionChanged`、`ClientSize`、`WindowState` 一变就投递一次快照,回调里仍是普通态才记 —— 最大化那次的移动事件到达时状态可能还没改过来,同步读会把最大化后的左上角当成普通态。于是「挪到副屏 → 最大化 → 关闭」下次最大化到副屏。X11 的窗口状态经属性变更事件另行通知、macOS 进出全屏带过渡,保证不了这个顺序,那两处只在普通态下关闭时读当下的值,最大化 / 最小化时关闭沿用上次记下的(与原先对尺寸的处理一致)。
+- 顺手修:从最小化关闭(任务栏右键「关闭窗口」)原先把「最大化」记成 false,下次以普通态打开;现在按最小化之前的状态记。
+- 设置项说明 `SetAppear_WindowStateDesc` 五语言改为「应用启动时的窗口大小与位置」。
+
+**三、验证**:新增 `MainWindowPlacementTests` 14 条:可达性判定 7 条(屏幕内、副屏拔掉、顶边出界、贴着底边、侧边只露一截、负坐标的副屏、门槛随缩放)、摆放 2 条(headless 屏幕内改为手动摆放、屏幕外保持居中)、回写 5 条(普通态关闭、挪过之后最大化、最小化关闭、整次都没处于普通态、不跟踪的平台)。把快照改成同步读、去掉「最小化之前的状态」,各有一条变红。本机双屏(2560×1440 两块并排)用 `--data-root` 指向临时目录实跑五轮,全部符合预期:挪到副屏关闭 → 下次开在副屏原处;副屏上挪过再最大化关闭 → 下次在副屏最大化,还原回挪过去的位置;最大化后最小化再关闭 → 下次仍最大化;挪到屏幕外关闭 → 下次居中(另用文件监视确认实跑没碰默认数据根)。macOS / Linux 没有实机跑过。全量:`VelaShell.Tests` 1567 通过 / 16 跳过,`Infrastructure.Tests` 542 / 4,`Core.Tests` 533 / 12;`dotnet build VelaShell.slnx -c Debug -warnaserror` 0 警告。文档:velashell-docs 里只有设置审计提到这一项的名字,没有与行为对不上的描述,不改。

@@ -1984,7 +1984,7 @@
     <value>既定サイズ</value>
   </data>
   <data name="SetAppear_WindowStateDesc" xml:space="preserve">
-    <value>// アプリ起動時のウィンドウサイズの扱い</value>
+    <value>// アプリ起動時のウィンドウのサイズと位置</value>
   </data>
   <data name="SetAppear_WindowStateMaximized" xml:space="preserve">
     <value>最大化</value>

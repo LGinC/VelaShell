@@ -538,6 +538,23 @@ public class AppearanceOptions : ObservableOptions
     }
 
     /// <summary>
+    /// 「记住上次」窗口左上角横坐标的持久化槽位(屏幕物理像素,由主窗口关闭时回写)。
+    /// <c>null</c> = 还没记过,启动时居中;0 是合法坐标,不能拿它当「没记过」。
+    /// </summary>
+    public int? LastWindowX
+    {
+        get;
+        set => Set(ref field, value);
+    }
+
+    /// <summary>「记住上次」窗口左上角纵坐标的持久化槽位,口径同 <see cref="LastWindowX" />。</summary>
+    public int? LastWindowY
+    {
+        get;
+        set => Set(ref field, value);
+    }
+
+    /// <summary>
     /// 终端配色是否跟随当前界面主题(即用主题配套的那套终端方案)。
     /// <para>
     /// <c>null</c> = 配置里没有这一项(1.4.x 及更早):按老口径推断 —— 那时"跟随"是**隐式**
