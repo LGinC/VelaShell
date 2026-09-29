@@ -7,6 +7,7 @@ using Avalonia.Input;
 using Avalonia.Threading;
 using VelaShell.Services.XServer;
 using VelaShell.Ssh.Transport;
+using VelaShell.Tests.TestSupport;
 using VelaShell.Views.XServer;
 using VelaShell.XServer;
 
@@ -207,7 +208,7 @@ public sealed class AvaloniaXServerHostUiTests
     }
 
     [TestMethod]
-    public async Task MappedWindow_BecomesNativeWindow_AndCloseButtonDisconnectsClient() => await _session.Dispatch(async () =>
+    public async Task MappedWindow_BecomesNativeWindow_AndCloseButtonDisconnectsClient() => await _session.RunOnUiAsync(async () =>
     {
         AvaloniaXServerHost host = new();
         await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
@@ -240,8 +241,7 @@ public sealed class AvaloniaXServerHostUiTests
         await WaitForAsync(() => host.Windows.Count == 0 ? native : null);
         await serve.WaitAsync(TimeSpan.FromSeconds(5));
         host.Detach();
-        return true;   // 带返回值的重载:无返回值的 async lambda 会变成从未被等待的 Task<Task>(AGENTS.md)
-    }, CancellationToken.None);
+    });
 
     /// <summary>
     /// 按钮按着的时候窗口失活(Alt+Tab、别的窗口抢走)或失去捕获:之后的松开不会再送到这个窗口,X 那边要替它松开 ——
@@ -249,7 +249,7 @@ public sealed class AvaloniaXServerHostUiTests
     /// headless 平台不发 Deactivated / PointerCaptureLost,这里直接调那两个处理器都调的 <see cref="XNativeWindow.ReleaseHeldButtons" />。
     /// </summary>
     [TestMethod]
-    public async Task ReleaseHeldButtons_ReleasesInX_AndTheLaterMouseUpIsNotRepeated() => await _session.Dispatch(async () =>
+    public async Task ReleaseHeldButtons_ReleasesInX_AndTheLaterMouseUpIsNotRepeated() => await _session.RunOnUiAsync(async () =>
     {
         AvaloniaXServerHost host = new();
         await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
@@ -279,15 +279,14 @@ public sealed class AvaloniaXServerHostUiTests
         host.Detach();
         client.Dispose();
         await serve.WaitAsync(TimeSpan.FromSeconds(5));
-        return true;
-    }, CancellationToken.None);
+    });
 
     /// <summary>
     /// 原生窗口按 256 × 256 切块、只取损伤矩形:跨块的窗口、后来只改了右下角一小块、客户端改了尺寸(缓冲变大、块数变多)之后,
     /// 各块的像素都对,没改到的地方保持原样。
     /// </summary>
     [TestMethod]
-    public async Task TiledSurface_CopiesOnlyDamage_AndFollowsResize() => await _session.Dispatch(async () =>
+    public async Task TiledSurface_CopiesOnlyDamage_AndFollowsResize() => await _session.RunOnUiAsync(async () =>
     {
         AvaloniaXServerHost host = new();
         await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
@@ -331,8 +330,7 @@ public sealed class AvaloniaXServerHostUiTests
         client.Dispose();
         await serve.WaitAsync(TimeSpan.FromSeconds(5));
         host.Detach();
-        return true;
-    }, CancellationToken.None);
+    });
 
     /// <summary>服务端缓冲里的像素(低 24 位)。</summary>
     private static uint ServerPixel(XNativeWindow window, int x, int y)

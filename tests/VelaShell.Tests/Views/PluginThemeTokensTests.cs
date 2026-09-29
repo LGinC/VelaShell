@@ -40,6 +40,7 @@ public sealed class PluginThemeTokensTests
 
             // 图标几何等非 Vela* 或不可序列化资源不外发。
             Assert.DoesNotContain(k => k.StartsWith("Icon.", StringComparison.Ordinal), byKey.Keys);
+            return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 }

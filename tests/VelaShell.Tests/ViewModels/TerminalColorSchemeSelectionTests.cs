@@ -7,6 +7,7 @@ using VelaShell.Core.Services;
 using VelaShell.Services;
 using VelaShell.Terminal.Emulation;
 using VelaShell.Terminal.Rendering;
+using VelaShell.Tests.TestSupport;
 using VelaShell.ViewModels;
 
 namespace VelaShell.Tests.ViewModels;
@@ -35,7 +36,7 @@ public sealed class TerminalColorSchemeSelectionTests
 
     [TestMethod]
     public async Task PickingDracula_UnderANonDraculaTheme_ActuallyAppliesDracula() =>
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             SettingsViewModel vm = await CreateViewModelAsync("nord");
             Assert.AreEqual(FollowItem, vm.ColorSchemeIndex, "起点应是跟随态。");
@@ -53,13 +54,12 @@ public sealed class TerminalColorSchemeSelectionTests
             Assert.IsNotNull(overrides, "选定的方案必须产生覆盖,否则终端仍是主题自带的那套。");
             Assert.AreEqual(Rgba.FromRgb(0x28, 0x2A, 0x36), overrides.Background);
             Assert.AreEqual(Rgba.FromRgb(0xBD, 0x93, 0xF9), overrides.Ansi[4], "整套下发,不只是背景。");
-            return true;
-        }, CancellationToken.None);
+        });
 
     /// <summary>配套方案本身也要能被「明确选中」—— 选它和跟随是两回事,只是眼下颜色相同。</summary>
     [TestMethod]
     public async Task PickingThePairedScheme_PinsItInsteadOfFollowing() =>
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             SettingsViewModel vm = await CreateViewModelAsync("nord");
 
@@ -68,12 +68,11 @@ public sealed class TerminalColorSchemeSelectionTests
             Assert.IsFalse(TerminalColorScheme.FollowsTheme(vm.Appearance));
             Assert.IsNotNull(TerminalAppearanceMapper.BuildPaletteOverrides(vm.Appearance),
                 "钉住方案后换主题终端不该再跟着变,因此必须有覆盖。");
-            return true;
-        }, CancellationToken.None);
+        });
 
     [TestMethod]
     public async Task PickingFollowTheme_ClearsOverridesAndShowsThePairedColors() =>
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             SettingsViewModel vm = await CreateViewModelAsync("nord");
             vm.ColorSchemeIndex = IndexOf("Monokai");
@@ -86,13 +85,12 @@ public sealed class TerminalColorSchemeSelectionTests
                 "跟随态一个槽位都不覆盖。");
             Assert.AreEqual("#2E3440", vm.Appearance.TerminalBackground,
                 "回到跟随后,色块显示的应是配套方案(Nord)的颜色,而不是上一次选的 Monokai。");
-            return true;
-        }, CancellationToken.None);
+        });
 
     /// <summary>跟随态下手改单色 = 用户要自己定配色:必须就此脱离跟随,否则改了等于没改。</summary>
     [TestMethod]
     public async Task EditingASingleColorWhileFollowing_LeavesTheFollowingState() =>
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             SettingsViewModel vm = await CreateViewModelAsync("nord");
             Assert.IsTrue(TerminalColorScheme.FollowsTheme(vm.Appearance));
@@ -105,8 +103,7 @@ public sealed class TerminalColorSchemeSelectionTests
                 TerminalAppearanceMapper.BuildPaletteOverrides(vm.Appearance);
             Assert.IsNotNull(overrides);
             Assert.AreEqual(Rgba.FromRgb(0x10, 0x10, 0x10), overrides.Background);
-            return true;
-        }, CancellationToken.None);
+        });
 
     /// <summary>老配置(没有跟随标志、颜色恰为出厂 Dracula)必须仍被判为跟随态。</summary>
     [TestMethod]

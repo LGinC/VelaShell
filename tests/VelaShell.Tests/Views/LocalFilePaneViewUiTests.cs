@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using VelaShell.Core.Models;
+using VelaShell.Tests.TestSupport;
 using VelaShell.ViewModels;
 using VelaShell.Views;
 
@@ -22,7 +23,7 @@ public sealed class LocalFilePaneViewUiTests
     [TestMethod]
     public async Task InaccessibleRootSelectionRestoresPreviousSelection()
     {
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             using var first = new TempDirectory();
             var inaccessible = new LocalRootEntry("Unavailable", Path.Combine(first.Path, "missing"), false, Path.Combine(first.Path, "missing"));
@@ -57,13 +58,13 @@ public sealed class LocalFilePaneViewUiTests
             {
                 window.Close();
             }
-        }, CancellationToken.None);
+        });
     }
 
     [TestMethod]
     public async Task DraggingFromRowWhitespace_MarqueesAcrossLocalRows()
     {
-        await _session.Dispatch(async () =>
+        await _session.RunOnUiAsync(async () =>
         {
             using var root = new TempDirectory();
             for (int i = 0; i < 5; i++)
@@ -116,7 +117,7 @@ public sealed class LocalFilePaneViewUiTests
                 window.Close();
                 Dispatcher.UIThread.RunJobs();
             }
-        }, CancellationToken.None);
+        });
     }
 
     private static Point FindWhitespacePoint(Control row)
