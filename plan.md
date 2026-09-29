@@ -1318,4 +1318,17 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **测试靶机**:`docker-compose.test.yml` 新增 `ssh-legacy`(端口 2225,`tests/fixtures/ssh-legacy`):把 OpenSSH 收窄成只剩 group14-sha1 / ssh-rsa / hmac-sha1 的「老设备」。
 - **没做的**:`~/.ssh/config` 导入(§58)不映射 `KexAlgorithms` / `Ciphers` 等(它现在连 `Compression`、`ForwardAgent` 都不映射,要一起做);CBC 本库没实现,只剩 CBC 的设备仍连不上。
 
-**三、验证**:新增 `LegacyAlgorithmsIntegrationTests` 3 条(真实「老设备」:默认清单谈不成且诊断点名 group14-sha1 并指到设置;放开老算法后连上且谈成的正是 group14-sha1 / ssh-rsa / hmac-sha1;照 OpenSSH 写法的 `+` 清单连上);`SshAlgorithmPreferencesTests` 20 例(无配置即库默认、老算法追加在后且不含 CBC、`+` 只追加没有的、`-` 删名字与通配、`^` 提前、替换并去重、前缀作用在放开后的默认上、没实现的报没实现、拼错的报不认识(含删除项)、不匹配的通配无妨、删光 / 只写前缀报错、四类清单与压缩一起落进算法集且两个方向一致、坏写法报成可读的连接错误、装配器用它、只设算法的选项不算空且能克隆);`SshInteropTests` 2 条(可放开的点名且不含没实现的、全是没实现的说放开也没用);`ConnectionProfileAlgorithmsTests` 6 条(读回与保存、只开老算法也存、写错时按钮灰掉并说清是哪一类哪个名字、收起时不存也不挡保存、切到 FTP 按钮放开、悬停提示随老算法开关变)。把「连接类型切换时重算错误」那一行去掉,切到 FTP 那条变红。全量:`Core.Tests` 577 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1585 / 16。没在真实的 Cisco / 华为设备上试过。
+**三、验证**:新增 `LegacyAlgorithmsIntegrationTests` 3 条(真实「老设备」:默认清单谈不成且诊断点名 group14-sha1 并指到设置;放开老算法后连上且谈成的正是 group14-sha1 / ssh-rsa / hmac-sha1;照 OpenSSH 写法的 `+` 清单连上);`SshAlgorithmPreferencesTests` 16 个方法 18 例(无配置即库默认、老算法追加在后且不含 CBC、`+` 只追加没有的、`-` 删名字与通配、`^` 提前、替换并去重、前缀作用在放开后的默认上、没实现的报没实现、拼错的报不认识(含删除项)、不匹配的通配无妨、删光 / 只写前缀报错、四类清单与压缩一起落进算法集且两个方向一致、坏写法报成可读的连接错误、装配器用它、只设算法的选项不算空且能克隆);`SshInteropTests` 2 条(可放开的点名且不含没实现的、全是没实现的说放开也没用);`ConnectionProfileAlgorithmsTests` 6 条(读回与保存、只开老算法也存、写错时按钮灰掉并说清是哪一类哪个名字、收起时不存也不挡保存、切到 FTP 按钮放开、悬停提示随老算法开关变)。把「连接类型切换时重算错误」那一行去掉,切到 FTP 那条变红。全量:`Core.Tests` 577 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1585 / 16。没在真实的 Cisco / 华为设备上试过。
+
+## ✅ 135. 2026-09-29 审计日志查看界面与保留策略(`feature-plan.md` 🟠 P1 两项)
+
+**一、问题**:`audit_log` 一直在写(连接成败、主机指纹的裁决、外部拉起),但 `IAuditLogService.QueryAsync` 在界面层零调用 —— 写了没人看得见;它和 `conn_history` 两张时序表又没有任何保留策略,只增不减。
+
+**二、做法**:
+- **查看**:设置 → 安全审计新增「审计日志」一节,「查看」打开 `Views/AuditLogView`(非模态,外框、标题栏与缩放手柄照录制回放中心)。`ViewModels/AuditLogViewModel` 一次取最近 2000 条(`MaxRows`),筛选在本地做 —— 类别(全部 / 连接 / 安全)、「只看异常」、关键字(事件、类别、会话名、详情,不区分大小写)三者叠加。记录里只有配置 Id,会话名在载入时从会话库对一次,没有 Id 或配置已删的显示 —(详情里的 `用户@主机:端口` 照样看得出是哪台)。动作翻成人话(连接成功 / 连接失败 / 拒绝了主机指纹 / 仅本次信任 / 接受了变更的指纹 / 外部拉起登录),认不出的原样显示;连接失败、拒绝与接受了变更的指纹算「异常」,事件名标红。摘要写共几条、筛出几条,载满 2000 条时注明只载入了最近的;读库失败把原因写在摘要里,不抛。Esc 先清关键字、再关窗口。
+- **保留**:`SecurityOptions.AuditLogRetentionDays`(默认 180 天,1–3650,`Normalize` 钳位,设置页 `NumericUpDown` 同一区间),审计日志与连接历史共用 —— 连接历史就是「最近连接」的底账,比审计留得久没有意义,留得短又会让审计里的会话在侧栏对不上。启动时 `AuditRetention.PruneAsync` 按它删掉更早的记录,与会话日志、录制的过期清理同一时机。两个接口各加 `DeleteOlderThanAsync`。
+- **没有照搬录制那套「暂存 → drop 重建 → 回灌」**:先实测了 SonnetDB 的 `DELETE … WHERE time < @cutoff` —— 按时间删成立,同一条序列里新旧混着的也分得开。审计是逐条的短文本,墓碑占的地方不值得搬一遍数据;而重建那一套在进程死在中途时会丢掉还在保留期内的记录,审计最不该冒这个险。方言不支持时记一笔、原样保留。
+- 新增本地化键 28 个(`SetSecurity_SectionAuditLog` / `AuditLogViewer*` / `OpenAuditLog` / `AuditLogRetention*`、`AuditLog_*`),五份 resx 齐;最大化与缩放手柄的提示复用录制回放中心的 `Recorder_MaximizeTip` / `Recorder_ResizeTip`。README 两份的「数据」一栏补上。
+- **没做的**:导出(CSV)与按时间段筛;审计只记这三类事件,配置增删改、设置变更还没有写进来。
+
+**三、验证**:`SonnetDbPersistenceTests` 加 2 条(真引擎:审计日志按截止时刻删、同一序列里新旧混着的只删旧的;连接历史同理且「最近连接」照常取得到新的);新增 `AuditRetentionTests` 5 例(两张表同一截止时刻、天数小于 1 按 1 天、缺一边跳过一边、默认 180 且钳位到 1–3650);`AuditLogViewModelTests` 5 条(翻译与会话名对照、三种筛选叠加与摘要、载满时注明只载入了最近的、读库失败写进摘要、刷新重读);`AuditLogViewUiTests` 1 条 headless 真控件(行渲染、只有异常那一行挂上 `problem`、筛到没有时列表隐去空状态出现)—— 去掉 `Classes.problem` 绑定它变红。全量:`Core.Tests` 582 通过 / 12 跳过,`Infrastructure.Tests` 569 / 4,`VelaShell.Tests` 1591 / 16,`Plugin.Ai.Tests` 587,`Ssh.Tests` 763 / 22,`Terminal.Tests` 515,`XServer.Tests` 214 / 2,`Presentation.Tests` 69,`Controls.Tests` 13,`RenderTests` 5;`ShellIntegration.Tests` 32 条因 ssh-shells 靶机没起全部跳过(与本改动无关)。
