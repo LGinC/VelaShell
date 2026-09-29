@@ -1289,3 +1289,18 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **没覆盖到的**:终端里的命令补全(`CommandSuggestionProvider`)把快捷命令当候选时插入的仍是含占位的原文 —— 补全是按前缀续写正文的,换成替换后的文本会与已键入的前缀对不上。
 
 **三、验证**:新增 `QuickCommandTemplateTests` 13 条(按首次出现排序、同名只问一次且取第一个非空默认值、七种模板语言写法原样不动、非 ASCII 与连字符名字、给值 / 缺值取默认 / Go 动作留在原处、值里的换行压成空格、无占位原样返回);`QuickCommandVariablesFlowTests` 4 条(询问后发替换结果、取消不发也不抢焦点、Go 模板不弹框直接发、弹框期间目标断开就不发);`QuickCommandVariablesPromptUiTests` 2 条 headless 真控件(默认值预填、第一个输入框拿到焦点、预览随输入变、确认返回所填的值;取消返回 null)。把「聚焦第一个输入框」去掉、把发送改回原文,各有一条变红。
+
+## ✅ 133. 2026-09-29 keyboard-interactive 动态码弹框(`feature-plan.md` 🟠 P1 项)
+
+**一、问题**:库早就支持 keyboard-interactive,密码那一路也默认兼答它,但宿主没有「弹框输动态码」的流程。只放行 keyboard-interactive 的 2FA 服务器(PAM + Google Authenticator、Duo、堡垒机 MFA)上完全登不上,失败文案还附着一句已经不成立的「底层 SSH 库未实现该认证方式」,把用户引去反复改密码。库自带的兼答只看形状(一条不回显提示)不看内容,PAM 的 `Verification code:` 也是这个形状 —— 于是密码会被填进验证码那一轮。
+
+**二、做法**:
+- **契约**:Core 新增 `IKeyboardInteractivePrompt`(`KeyboardInteractiveRequest`:连接目标、服务端标题与说明、若干 `KeyboardInteractiveField`(提示 + 是否回显)),与 `IHostKeyPrompt` 同一模式:基础设施在后台线程等,界面层弹框。
+- **应答**:`Infrastructure/Ssh/KeyboardInteractiveResponder`,每次连接尝试一个。单条不回显、看起来是口令的提示(英中日韩的「密码」字样,且不带验证码 / OTP / token 之类字样 —— 那要的往往是「口令 + 动态码」拼起来的串)用已有的密码**代答一次**,再问一遍口令(改密码流程、或刚才那个不对)就交给用户;其余一律弹框。**私钥 / 证书 / agent 那几路不回退到口令**:单纯的口令提示答空串让服务端拒掉,只有验证码之类才弹框 —— 这是 `AuthenticationMethods publickey,keyboard-interactive`(钥 + 动态码)的第二步;钥被拒之后冒出一个密码框,与「只用用户选的那一种认证方式」相悖。纯展示的一轮(没有提示)不弹框(规格 04 §6.4),说明攒进下一个框里。对端文字先去掉控制字符与双向文本控制符、统一换行、限长(标题 128 / 说明 2048 / 提示 256)再上界面。
+- **装配**:`SshConnectionAssembler.Create` 多一个可选的 `keyboardPrompt`(DI 里取界面层注册的实现)。有界面时每种认证方式的凭据后面都跟一条 keyboard-interactive,密码凭据的 `AlsoAnswerKeyboardInteractive` 关掉;没有界面(headless、测试)时与原先完全一样。`SshAgentKeyLoader.TryGetKeyToAdd` 原先按「凭据恰好一条」匹配,多了这一条之后「自动加钥到 agent」会静默失效,改为只看第一条。
+- **取消**:用户在框上点取消 = 「不连了」。库的契约是应答回调抛的异常记成「凭据取不到材料」、接着以「方法试完了」收场,而调用方没取消的取消会被它当成计时器到点报「认证超时」—— 两条路都说不出「用户不连了」,所以不改库:应答器记下 `Cancelled`,`SshConnectionAssembler.ConnectAsync` 在库报任何失败之后据此改抛新增的 `VelaSshAuthenticationCancelledException`(刻意不派生自 `OperationCanceledException`,否则 `SshConnectionService` 同样会把它改判成超时)。宿主三条路径各认一次:首连撤掉标签、不报错、不再弹凭据框;重连按用户主动断开处理(不然自动重连过几秒又来弹同一个框,新增 `TerminalTabViewModel.MarkDisconnectedByUser`);SFTP 文档连接撤占位。令牌触发(关了正在连的标签、认证两分钟超时)时框当场收起,仍按原来的取消 / 超时口径走。
+- **界面**:`Views/KeyboardInteractivePromptDialog`(外壳复用 `MessageDialog.ShowCustomAsync`):标题取服务端给的名字,没有就是「两步验证」;第一行是连接目标(几条会话同时要码时分得清哪台),下面是说明与每条提示一个输入框,`echo = false` 的遮住,打开即聚焦第一个。`Services/KeyboardInteractivePromptDialogService` 一次只弹一个(与 agent 签名确认同一口径),没有主窗口或弹窗出错按取消处理。
+- 撤掉失败文案里的 `Msg_AuthFailedTwoFactorHint` 及其两处注释;新增 `KbdAuth_Title` / `KbdAuth_Submit` / `KbdAuth_Response` / `SshErr_KbdAuthCancelled`,五份 resx 齐。README 两份的「认证与密钥」一栏补上两步验证。
+- **测试靶机**:`docker-compose.test.yml` 新增 `ssh-2fa`(端口 2224,`tests/fixtures/ssh-2fa`):只开 keyboard-interactive 的 sshd,PAM 先问口令再问 TOTP(种子写死);`vela-otp` 口令 + 动态码、`vela-strict` 同上但 `MaxAuthTries 1`、`vela-keyotp` 钥 + 动态码(钥是同目录**仅供测试**的 `id_ed25519`)。
+
+**三、验证**:新增 `KeyboardInteractiveIntegrationTests` 5 条(真实 OpenSSH + PAM:口令代答、只问动态码且一次尝试就过;错码是认证失败;取消报成取消;钥 + 动态码;没有界面时密码过不了第二因素)—— 把密码凭据的兼答重新打开,`vela-strict` 那条当场变红(宽松的服务器上它会先失败一次再由应答器连上,看不出来;这一条是写完之后按变异结果补的)。`KeyboardInteractiveResponderTests` 13 个方法 25 例(PAM 两轮、第二次问口令交给用户、空密码弹框、三种「口令 + 验证码」提示不代答、非密码认证拒答口令但问验证码、回显与多提示、纯展示轮不弹且说明带到下一框、用户取消 / 令牌触发的区分、条数不符、对端文字清洗、11 种提示文字的判定、包成凭据);`KeyboardInteractiveCancelFlowTests` 3 条(首连取消撤标签且不再弹凭据框、重连取消记为用户断开、重连失败照旧报错);`KeyboardInteractivePromptDialogUiTests` 3 条 headless 真控件(目标与说明可见、按 echo 遮罩、第一个输入框聚焦、按提示顺序交回;取消返回 null;令牌触发时窗口当场收起);`SshCredentialSetupTests` / `SshAgentKeyLoaderTests` 各加一条;两条断言旧文案的用例改掉那句提示。全量:`Core.Tests` 554 通过 / 12 跳过,`Infrastructure.Tests` 567 / 4,`VelaShell.Tests` 1579 / 16,`Presentation.Tests` 69。没在真实的 Duo / RSA SecurID 服务器上试过。
