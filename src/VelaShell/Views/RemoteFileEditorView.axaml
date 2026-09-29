@@ -22,26 +22,30 @@
     <Style Selector="aer|TextView">
       <Setter Property="LinkTextForegroundBrush" Value="{DynamicResource VelaInfo}" />
     </Style>
-    <Style Selector="Button.chrome">
-      <Setter Property="Width" Value="24" />
-      <Setter Property="Height" Value="24" />
-      <Setter Property="Padding" Value="0" />
-      <Setter Property="CornerRadius" Value="3" />
+    <!-- 窗口控制键:27×27、无圆角,规格同主窗口(与回放中心、资源监视同一套本地样式)。 -->
+    <Style Selector="Button.caption">
       <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="BorderThickness" Value="0" />
+      <Setter Property="CornerRadius" Value="0" />
+      <Setter Property="Width" Value="27" />
+      <Setter Property="Height" Value="27" />
+      <Setter Property="Padding" Value="0" />
+      <Setter Property="HorizontalContentAlignment" Value="Center" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
-    <Style Selector="Button.chrome:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+    <Style Selector="Button.caption:pointerover /template/ ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
     </Style>
-    <Style Selector="Button.dlg-primary">
-      <Setter Property="Background" Value="{DynamicResource VelaAccent}" />
-      <Setter Property="Foreground" Value="{DynamicResource VelaAccentForeground}" />
-      <Setter Property="Height" Value="26" />
-      <Setter Property="Padding" Value="12,0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Cursor" Value="Hand" />
-      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
-      <Setter Property="FontWeight" Value="Medium" />
+    <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
+      <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
+    </Style>
+    <!-- 有未保存的改动时保存图标转强调色:原先是一颗常亮的强调色按钮,收进标题栏成了灰色图标之后,
+         「该存了」这件事要靠它自己亮起来说(代码后置按修订号挂 / 摘 dirty 类)。 -->
+    <Style Selector="Button#SaveButton pc|LucideIcon">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextMuted}" />
+    </Style>
+    <Style Selector="Button#SaveButton.dirty pc|LucideIcon">
+      <Setter Property="Foreground" Value="{DynamicResource VelaAccent}" />
     </Style>
   </Window.Styles>
 
@@ -51,14 +55,14 @@
           ClipToBounds="True">
     <Grid RowDefinitions="Auto,Auto,*,32">
 
-      <!-- 标题栏(28,与全部窗口一致;可拖动,双击最大化/还原):文件名 + 最大化/关闭。
-           远端路径与保存按钮在下面一行。 -->
-      <Border Grid.Row="0" Padding="20,0,12,0"
+      <!-- 标题栏(28,与全部窗口一致;可拖动,双击空白处最大化/还原):文件名 | 保存 | 最大化/关闭。
+           保存与主窗口的全局功能图标同一个主题(VelaTitleActionButtonTheme),原先在路径行右边。 -->
+      <Border Grid.Row="0" Padding="20,0,0,0"
               Classes="window-titlebar"
               Background="Transparent"
               PointerPressed="Header_PointerPressed"
               DoubleTapped="Header_DoubleTapped">
-        <Grid ColumnDefinitions="Auto,*,Auto">
+        <Grid ColumnDefinitions="Auto,*,Auto,Auto">
           <!-- 让位块只在 macOS 上显出来,给系统红绿灯让位(Themes/WindowChrome.axaml)。 -->
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
             <Panel Classes="traffic-light-spacer" />
@@ -72,43 +76,50 @@
                      Foreground="{DynamicResource VelaTextPrimary}"
                      FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                      TextTrimming="CharacterEllipsis" />
-          <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-            <Button Classes="chrome window-caption" Click="Maximize_Click" ToolTip.Tip="{loc:Localize Editor_MaximizeTip}">
-              <pc:LucideIcon Width="13" Height="13"
-                             Data="{DynamicResource Icon.maximize}"
-                             Foreground="{DynamicResource VelaTextTertiary}" />
+          <StackPanel x:Name="TitleActions" Grid.Column="2" Orientation="Horizontal" Spacing="4"
+                      VerticalAlignment="Center" Margin="12,0,10,0">
+            <Button x:Name="SaveButton" Theme="{StaticResource VelaTitleActionButtonTheme}"
+                    Click="Save_Click"
+                    AutomationProperties.Name="{loc:Localize Save}">
+              <ToolTip.Tip>
+                <StackPanel Spacing="2">
+                  <TextBlock Text="{loc:Localize Save}" FontWeight="Medium" />
+                  <TextBlock Text="Ctrl+S" />
+                </StackPanel>
+              </ToolTip.Tip>
+              <!-- 不写本地 Foreground:本地值压过样式,dirty 那条就再也亮不起来。 -->
+              <pc:LucideIcon Width="12" Height="12"
+                             Data="{DynamicResource Icon.save}" />
             </Button>
-            <Button Classes="chrome window-caption" Click="Close_Click">
-              <pc:LucideIcon Width="13" Height="13"
+          </StackPanel>
+          <!-- 窗口控制:27×27 方形命中区贴住右上角;macOS 上用系统红绿灯。 -->
+          <StackPanel Grid.Column="3" Orientation="Horizontal" VerticalAlignment="Top">
+            <Button Classes="caption window-caption" Click="Maximize_Click" ToolTip.Tip="{loc:Localize Editor_MaximizeTip}">
+              <pc:LucideIcon Width="10" Height="10"
+                             Data="{DynamicResource Icon.square}"
+                             Foreground="{DynamicResource VelaTextSecondary}" />
+            </Button>
+            <Button Classes="caption caption-close window-caption" Click="Close_Click">
+              <pc:LucideIcon Width="12" Height="12"
                              Data="{DynamicResource Icon.x}"
-                             Foreground="{DynamicResource VelaTextTertiary}" />
+                             Foreground="{DynamicResource VelaTextSecondary}" />
             </Button>
           </StackPanel>
         </Grid>
       </Border>
 
-      <!-- 路径行:远端路径 + 保存。同样可拖动。 -->
+      <!-- 路径行:只剩远端路径。同样可拖动。 -->
       <Border Grid.Row="1" Padding="20,6"
               Background="Transparent"
               PointerPressed="Header_PointerPressed"
               BorderBrush="{DynamicResource VelaBorderPrimary}"
               BorderThickness="0,0,0,1">
-        <Grid ColumnDefinitions="*,Auto">
-          <TextBlock Name="PathText"
-                     VerticalAlignment="Center"
-                     Foreground="{DynamicResource VelaTextMuted}"
-                     FontFamily="{DynamicResource VelaUiMonoFont}"
-                     FontSize="{DynamicResource VelaFontSize10}"
-                     TextTrimming="CharacterEllipsis" />
-          <Button Grid.Column="1" Classes="dlg-primary" Click="Save_Click" ToolTip.Tip="Ctrl+S">
-            <StackPanel Orientation="Horizontal" Spacing="6">
-              <pc:LucideIcon Width="12" Height="12"
-                             Data="{DynamicResource Icon.save}"
-                             Foreground="{DynamicResource VelaAccentForeground}" />
-              <TextBlock Text="{loc:Localize Save}" VerticalAlignment="Center" />
-            </StackPanel>
-          </Button>
-        </Grid>
+        <TextBlock Name="PathText"
+                   VerticalAlignment="Center"
+                   Foreground="{DynamicResource VelaTextMuted}"
+                   FontFamily="{DynamicResource VelaUiMonoFont}"
+                   FontSize="{DynamicResource VelaFontSize10}"
+                   TextTrimming="CharacterEllipsis" />
       </Border>
 
       <!-- 编辑器 -->

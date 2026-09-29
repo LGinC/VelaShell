@@ -5,6 +5,7 @@ using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Styling;
 using Avalonia.Threading;
+using Avalonia.VisualTree;
 using AvaloniaEdit.Search;
 using Microsoft.Extensions.DependencyInjection;
 using VelaShell.Core.Models;
@@ -119,8 +120,12 @@ public partial class RemoteFileEditorView : Window
         {
             _revision++;
             StatusText.Text = Strings.Get("Editor_Unsaved");
+            RefreshSaveIndicator();
         };
     }
+
+    /// <summary>标题栏的保存图标:有未保存的改动时挂 <c>dirty</c> 类转强调色(修订号每次变动后调一次)。</summary>
+    private void RefreshSaveIndicator() => SaveButton.Classes.Set("dirty", IsDirty);
 
     private async Task LoadFileAsync()
     {
@@ -160,6 +165,7 @@ public partial class RemoteFileEditorView : Window
         Editor.Text = EditorEncodingDetector.Decode(bytes, detected);
         // 赋值本身会触发 TextChanged 把修订号推上去,所以基线在赋值之后才能取。
         _savedRevision = _revision;
+        RefreshSaveIndicator();
         Editor.IsReadOnly = false;
         _loaded = true;
         ApplySyntaxHighlighting();
@@ -255,6 +261,7 @@ public partial class RemoteFileEditorView : Window
                     return; // 失败不自动重试:改动还在编辑器里,由用户决定下一步。
                 }
                 _savedRevision = snapshot;
+                RefreshSaveIndicator();
                 StatusText.Text = IsDirty
                     // 存上的是快照那一份,而之后又改过 —— 状态栏必须照实说"还有未保存的"。
                     ? Strings.Get("Editor_Unsaved")
@@ -414,7 +421,15 @@ public partial class RemoteFileEditorView : Window
 
     private void Maximize_Click(object? sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
 
-    private void Header_DoubleTapped(object? sender, TappedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    /// <summary>双击标题栏空白处切换最大化;落在按钮上的双击不算(连点两下保存不该顺手最大化,理由同回放中心)。</summary>
+    private void Header_DoubleTapped(object? sender, TappedEventArgs e)
+    {
+        if (e.Source is Visual source && source.FindAncestorOfType<Button>(includeSelf: true) is not null)
+        {
+            return;
+        }
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
+    }
 
     private void Header_PointerPressed(object? sender, PointerPressedEventArgs e)
     {

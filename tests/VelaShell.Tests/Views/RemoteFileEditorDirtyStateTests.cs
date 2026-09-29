@@ -1,7 +1,10 @@
+using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using AvaloniaEdit;
+using VelaShell.Controls.Controls;
 using VelaShell.Views;
 
 namespace VelaShell.Tests.Views;
@@ -120,6 +123,41 @@ public sealed class RemoteFileEditorDirtyStateTests
             Assert.AreEqual("second", File.ReadAllText(fixture.LocalPath));
             return Task.CompletedTask;
         });
+    }
+
+    /// <summary>
+    /// 保存收进标题栏之后是个灰色图标:有未保存的改动时转强调色,存上之后回到常态。
+    /// </summary>
+    /// <remarks>原先是一颗常亮的强调色按钮,变成图标之后「该存了」只能靠它自己亮起来说。</remarks>
+    [TestMethod]
+    public void TheTitleBarSaveIconLightsUpWhileThereAreUnsavedChanges()
+    {
+        OnUi(() =>
+        {
+            using var fixture = Fixture.Open("original");
+            Button save = fixture.View.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "SaveButton");
+            Assert.IsTrue(save.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")),
+                "保存在标题栏里,与主窗口的全局功能图标同一处");
+            Assert.AreEqual(fixture.View.FindResource("VelaTitleActionButtonTheme"), save.Theme);
+            Assert.IsFalse(save.Classes.Contains("dirty"), "刚打开时是干净的");
+            Color clean = IconColor(save);
+
+            fixture.SetText("edited");
+            Assert.IsTrue(save.Classes.Contains("dirty"));
+            Assert.AreNotEqual(clean, IconColor(save), "有改动时图标要亮起来");
+
+            Task task = fixture.View.SaveForTestAsync();
+            Fixture.PumpUntil(() => fixture.Upload.Started);
+            fixture.Upload.Finish();
+            Fixture.PumpUntil(() => task.IsCompleted);
+
+            Assert.IsFalse(save.Classes.Contains("dirty"));
+            Assert.AreEqual(clean, IconColor(save));
+            return Task.CompletedTask;
+        });
+
+        static Color IconColor(Button button) =>
+            ((ISolidColorBrush)button.GetVisualDescendants().OfType<LucideIcon>().Single().Foreground!).Color;
     }
 
     private static void OnUi(Func<Task> action) =>
