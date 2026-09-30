@@ -5,7 +5,6 @@
              xmlns:vm="using:VelaShell.Presentation.ViewModels"
              xmlns:views="using:VelaShell.Views"
              xmlns:pc="using:VelaShell.Controls.Controls"
-             xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
              xmlns:loc="using:VelaShell.Localization"
              mc:Ignorable="d" d:DesignWidth="260" d:DesignHeight="876"
              x:Class="VelaShell.Views.SidebarView"
@@ -35,7 +34,7 @@
           <Button Background="Transparent" Padding="0" Width="24" Height="24"
                   CornerRadius="3" Cursor="Hand"
                   Click="OpenConnectionProfile_Click"
-                  ToolTip.Tip="{x:Static res:Strings.Sessions}">
+                  ToolTip.Tip="{loc:Localize Sessions}">
             <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.plus}"
                            Foreground="{DynamicResource VelaTextTertiary}" />
           </Button>
@@ -257,7 +256,7 @@
                放不下数字标签,而"有没有新东西"本来也只需要一个点就能说清。 -->
           <Button Width="24" Height="24" Background="Transparent" Padding="0"
                   CornerRadius="3" Command="{Binding NotificationsCommand}"
-                  ToolTip.Tip="{x:Static res:Strings.Notifications}" ToolTip.Placement="Right" Cursor="Hand">
+                  ToolTip.Tip="{loc:Localize Notifications}" ToolTip.Placement="Right" Cursor="Hand">
             <Panel>
               <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.bell}"
                              Foreground="{DynamicResource VelaTextTertiary}" />
@@ -270,13 +269,13 @@
           </Button>
           <Button Width="24" Height="24" Background="Transparent" Padding="0"
                   CornerRadius="3" Click="OpenPlugins_Click"
-                  ToolTip.Tip="{x:Static res:Strings.Plugins}" ToolTip.Placement="Right" Cursor="Hand">
+                  ToolTip.Tip="{loc:Localize Plugins}" ToolTip.Placement="Right" Cursor="Hand">
             <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.plug}"
                            Foreground="{DynamicResource VelaTextTertiary}" />
           </Button>
           <Button Width="24" Height="24" Background="Transparent" Padding="0"
                   CornerRadius="3" Click="OpenSettings_Click"
-                  ToolTip.Tip="{x:Static res:Strings.Settings}" ToolTip.Placement="Right" Cursor="Hand">
+                  ToolTip.Tip="{loc:Localize Settings}" ToolTip.Placement="Right" Cursor="Hand">
             <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.settings}"
                            Foreground="{DynamicResource VelaTextTertiary}" />
           </Button>
@@ -343,7 +342,7 @@
       <Button Width="24" Height="24" Background="Transparent" Padding="0"
               CornerRadius="3" Cursor="Hand"
               Click="OpenConnectionProfile_Click"
-              ToolTip.Tip="{x:Static res:Strings.Sessions}" ToolTip.Placement="Right">
+              ToolTip.Tip="{loc:Localize Sessions}" ToolTip.Placement="Right">
         <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.plus}"
                        Foreground="{DynamicResource VelaTextTertiary}" />
       </Button>
@@ -355,7 +354,7 @@
       <StackPanel Orientation="Vertical" Spacing="6" HorizontalAlignment="Center">
         <Button Width="24" Height="24" Background="Transparent" Padding="0"
                 CornerRadius="3" Command="{Binding NotificationsCommand}"
-                ToolTip.Tip="{x:Static res:Strings.Notifications}" ToolTip.Placement="Right" Cursor="Hand">
+                ToolTip.Tip="{loc:Localize Notifications}" ToolTip.Placement="Right" Cursor="Hand">
           <Panel>
             <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.bell}"
                            Foreground="{DynamicResource VelaTextTertiary}" />
@@ -368,13 +367,13 @@
         </Button>
         <Button Width="24" Height="24" Background="Transparent" Padding="0"
                 CornerRadius="3" Click="OpenPlugins_Click"
-                ToolTip.Tip="{x:Static res:Strings.Plugins}" ToolTip.Placement="Right" Cursor="Hand">
+                ToolTip.Tip="{loc:Localize Plugins}" ToolTip.Placement="Right" Cursor="Hand">
           <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.plug}"
                          Foreground="{DynamicResource VelaTextTertiary}" />
         </Button>
         <Button Width="24" Height="24" Background="Transparent" Padding="0"
                 CornerRadius="3" Click="OpenSettings_Click"
-                ToolTip.Tip="{x:Static res:Strings.Settings}" ToolTip.Placement="Right" Cursor="Hand">
+                ToolTip.Tip="{loc:Localize Settings}" ToolTip.Placement="Right" Cursor="Hand">
           <pc:LucideIcon Width="13" Height="13" Data="{StaticResource Icon.settings}"
                          Foreground="{DynamicResource VelaTextTertiary}" />
         </Button>

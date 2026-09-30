@@ -30,8 +30,39 @@ public partial class LocalizedKeyUsageTests
     [GeneratedRegex(@"Strings\.Get\(""([A-Za-z0-9_]+)""\)")]
     private static partial Regex CodeKey { get; }
 
+    /// <summary>XAML 里用 x:Static 直接取 Strings 的静态属性,如 {x:Static res:Strings.Upload}。</summary>
+    [GeneratedRegex(@"\{x:Static\s+\w+:Strings\.\w+\s*\}")]
+    private static partial Regex XamlStaticString { get; }
+
     [TestMethod]
     public void EveryLocalizeKeyUsedInXaml_ExistsInResources() => AssertAllKeysDefined("*.axaml", XamlKey, minimumExpected: 100);
+
+    /// <summary>
+    /// XAML 取词一律走 {loc:Localize},不许用 x:Static。
+    /// </summary>
+    /// <remarks>
+    /// x:Static 在视图加载时取一次值就定住了。主窗口只加载一次,切了语言它还停在启动时的语言 ——
+    /// 用户报的「切英文后侧栏的通知 / 插件 / 设置提示、会话右键的连接 / 删除、SFTP 的上传仍是中文」
+    /// 就是这么来的。{loc:Localize} 在换语言时逐条重取。
+    /// </remarks>
+    [TestMethod]
+    public void Xaml_TakesStringsThroughLocalize_NotXStatic()
+    {
+        List<string> offenders = [];
+        foreach (string file in Directory.EnumerateFiles(SourceRoot(), "*.axaml", SearchOption.AllDirectories))
+        {
+            if (file.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal) ||
+                file.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal))
+            {
+                continue;
+            }
+            offenders.AddRange(XamlStaticString.Matches(File.ReadAllText(file))
+                                               .Select(match => $"  {Path.GetFileName(file)}: {match.Value}"));
+        }
+
+        Assert.IsEmpty(offenders,
+                       "以下文案用 x:Static 取词,切换语言后不会刷新,改成 {loc:Localize 键名}:\n" + string.Join("\n", offenders));
+    }
 
     [TestMethod]
     public void EveryLocalizeKeyUsedInCode_ExistsInResources() => AssertAllKeysDefined("*.cs", CodeKey, minimumExpected: 50);

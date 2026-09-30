@@ -5,7 +5,6 @@
              xmlns:vm="using:VelaShell.Presentation.ViewModels"
              xmlns:pc="using:VelaShell.Controls.Controls"
              xmlns:conv="using:VelaShell.Converters"
-             xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
              xmlns:loc="using:VelaShell.Localization"
              mc:Ignorable="d" d:DesignWidth="260" d:DesignHeight="400"
              x:Class="VelaShell.Views.SessionTreeView"
@@ -253,7 +252,7 @@
                    设计帧里的「会话设置」与「编辑」打开的是同一个对话框,已去掉。
                    右键会先选中所指行(Session_PointerPressed),命令都作用于 SelectedNode。 -->
               <ContextMenu x:DataType="vm:SessionTreeNodeViewModel">
-                <MenuItem Header="{x:Static res:Strings.Connect}"
+                <MenuItem Header="{loc:Localize Connect}"
                           Command="{Binding $parent[ListBox].((vm:SessionTreeViewModel)DataContext).ConnectCommand}"
                           IsVisible="{Binding !IsGroup}"
                           Foreground="{DynamicResource VelaTextPrimary}"
@@ -350,7 +349,7 @@
                   </MenuItem.Icon>
                 </MenuItem>
                 <Separator IsVisible="{Binding !IsGroup}" />
-                <MenuItem Header="{x:Static res:Strings.Delete}"
+                <MenuItem Header="{loc:Localize Delete}"
                           Command="{Binding $parent[ListBox].((vm:SessionTreeViewModel)DataContext).DeleteSessionCommand}"
                           IsVisible="{Binding !IsGroup}"
                           Foreground="{DynamicResource VelaError}">

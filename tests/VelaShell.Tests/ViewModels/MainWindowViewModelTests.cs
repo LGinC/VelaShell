@@ -1,8 +1,10 @@
+using System.Globalization;
 using NSubstitute;
 using ReactiveUI.Builder;
 using ReactiveUI.Primitives;
 using ReactiveUI.Primitives.Concurrency;
 using VelaShell.Core.Data;
+using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
 using VelaShell.Core.Sftp;
 using VelaShell.Core.Sync;
@@ -328,6 +330,54 @@ public class MainWindowViewModelTests
         );
 
         Assert.IsTrue(vm.Sidebar.IsQuickCommandsVisible);
+    }
+
+    /// <summary>
+    /// 换语言后,C# 侧拼好存着的文案要跟着换:命令面板照着注册时取好的标题显示,
+    /// X Server 按钮的提示、会话树的置顶菜单项与「未分组」也都是先取好的 ——
+    /// {loc:Localize} 管不到它们(用户报:切英文后命令面板、X Server 提示仍是中文)。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("i18n")]
+    public async Task LanguageChange_RefreshesTextComposedInCode()
+    {
+        CultureInfo uiCulture = CultureInfo.CurrentUICulture;
+        CultureInfo culture = CultureInfo.CurrentCulture;
+        CultureInfo? defaultUiCulture = CultureInfo.DefaultThreadCurrentUICulture;
+        CultureInfo? defaultCulture = CultureInfo.DefaultThreadCurrentCulture;
+        try
+        {
+            var localization = new LocalizationService();
+            localization.SetLanguage("zh-CN");
+            ISessionRepository repository = Substitute.For<ISessionRepository>();
+            repository.GetAllGroupsAsync().Returns([]);
+            repository.GetAllSessionsAsync()
+                      .Returns([new SessionProfile { Id = Guid.NewGuid(), Name = "web", Host = "web.example.com", Username = "root" }]);
+            var vm = new MainWindowViewModel(sessionRepository: repository, localization: localization);
+            await vm.InitializeAsync();
+            Assert.AreEqual("新建 SSH 连接", vm.Commands.Find("session.new")!.Title);
+            Assert.AreEqual("启动 X Server", vm.XServer.ToolTip);
+            SessionTreeNodeViewModel session = vm.Sidebar.SessionTree!.Nodes.Single();
+            var raised = new List<string>();
+            session.PropertyChanged += (_, e) => raised.Add(e.PropertyName ?? string.Empty);
+
+            localization.SetLanguage("en");
+
+            CommandDescriptor command = vm.Commands.Find("session.new")!;
+            Assert.AreEqual("New SSH Connection", command.Title);
+            Assert.AreEqual("Session", command.Category);
+            Assert.AreEqual("Start X Server", vm.XServer.ToolTip);
+            Assert.Contains(nameof(SessionTreeNodeViewModel.PinToggleText), raised);
+            Assert.Contains(nameof(SessionTreeNodeViewModel.StatusTagText), raised);
+            Assert.AreEqual("Ungrouped", vm.Sidebar.SessionTree.GroupNodes.Single(node => node.Id == Guid.Empty).Name);
+        }
+        finally
+        {
+            CultureInfo.CurrentUICulture = uiCulture;
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.DefaultThreadCurrentUICulture = defaultUiCulture;
+            CultureInfo.DefaultThreadCurrentCulture = defaultCulture;
+        }
     }
 
     [TestMethod]

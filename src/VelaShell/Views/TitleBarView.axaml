@@ -5,7 +5,6 @@
              xmlns:vm="using:VelaShell.ViewModels"
              xmlns:pc="using:VelaShell.Controls.Controls"
              xmlns:loc="using:VelaShell.Localization"
-             xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
              mc:Ignorable="d" d:DesignWidth="1440" d:DesignHeight="28"
              x:Class="VelaShell.Views.TitleBarView"
              x:DataType="vm:MainWindowViewModel">
@@ -82,7 +81,7 @@
                   Margin="12,0" VerticalAlignment="Center" IsHitTestVisible="False">
         <Panel Classes="traffic-light-spacer" />
         <Image Source="avares://VelaShell/Assets/velashell.png" Width="18" Height="18" />
-        <TextBlock Text="{x:Static res:Strings.AppName}"
+        <TextBlock Text="{loc:Localize AppName}"
                    FontFamily="{DynamicResource VelaUiFont}"
                    FontSize="{DynamicResource VelaFontSize12}" FontWeight="Medium"
                    Foreground="{DynamicResource VelaTextSecondary}"

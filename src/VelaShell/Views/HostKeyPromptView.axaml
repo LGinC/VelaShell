@@ -4,12 +4,11 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:VelaShell.ViewModels"
         xmlns:pc="using:VelaShell.Controls.Controls"
-        xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
         xmlns:loc="using:VelaShell.Localization"
         mc:Ignorable="d" d:DesignWidth="484" d:DesignHeight="400"
         x:Class="VelaShell.Views.HostKeyPromptView"
         x:DataType="vm:HostKeyPromptViewModel"
-        Title="{x:Static res:Strings.HostKeyVerification}"
+        Title="{loc:Localize HostKeyVerification}"
         Width="492"
         SizeToContent="Height"
         CanResize="False"
@@ -86,7 +85,7 @@
                          Foreground="{DynamicResource VelaWarning}"
                          VerticalAlignment="Center" Margin="0,0,10,0" />
           <TextBlock Grid.Column="1"
-                     Text="{x:Static res:Strings.HostKeyVerification}"
+                     Text="{loc:Localize HostKeyVerification}"
                      Foreground="{DynamicResource VelaTextPrimary}"
                      FontSize="{DynamicResource VelaFontSize13}" FontWeight="SemiBold"
                      VerticalAlignment="Center" />
@@ -145,19 +144,19 @@
           <StackPanel Spacing="8">
 
             <Grid ColumnDefinitions="100,*">
-              <TextBlock Grid.Column="0" Classes="info-label" Text="{x:Static res:Strings.Host}" />
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize Host}" />
               <TextBlock Grid.Column="1" Classes="info-value">
                 <Run Text="{Binding Host}" /><Run Text=":" /><Run Text="{Binding Port}" />
               </TextBlock>
             </Grid>
 
             <Grid ColumnDefinitions="100,*">
-              <TextBlock Grid.Column="0" Classes="info-label" Text="{x:Static res:Strings.KeyType}" />
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize KeyType}" />
               <TextBlock Grid.Column="1" Classes="info-value" Text="{Binding KeyType}" />
             </Grid>
 
             <Grid ColumnDefinitions="100,*">
-              <TextBlock Grid.Column="0" Classes="info-label" Text="{x:Static res:Strings.Fingerprint}" />
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize Fingerprint}" />
               <TextBlock Grid.Column="1" Classes="mono"
                          Text="{Binding Fingerprint}"
                          TextWrapping="Wrap" />
@@ -187,14 +186,14 @@
         <StackPanel Orientation="Horizontal" Spacing="8"
                     HorizontalAlignment="Right" VerticalAlignment="Center">
           <Button Classes="reject"
-                  Content="{x:Static res:Strings.Cancel}"
+                  Content="{loc:Localize Cancel}"
                   Command="{Binding CancelCommand}" />
           <Button Classes="trust-once"
-                  Content="{x:Static res:Strings.TrustOnce}"
+                  Content="{loc:Localize TrustOnce}"
                   Command="{Binding TrustOnceCommand}"
                   ToolTip.Tip="{loc:Localize HostKey_TrustOnceTip}" />
           <Button Classes="trust"
-                  Content="{x:Static res:Strings.TrustPermanently}"
+                  Content="{loc:Localize TrustPermanently}"
                   Command="{Binding TrustPermanentlyCommand}"
                   ToolTip.Tip="{loc:Localize HostKey_TrustPermanentlyTip}" />
         </StackPanel>

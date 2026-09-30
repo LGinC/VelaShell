@@ -3,7 +3,6 @@
              xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
              xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
              xmlns:vm="using:VelaShell.ViewModels"
-             xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
              xmlns:loc="using:VelaShell.Localization"
              xmlns:pc="using:VelaShell.Controls.Controls"
              mc:Ignorable="d" d:DesignWidth="800" d:DesignHeight="220"
@@ -204,12 +203,12 @@
                     FocusAdorner="{x:Null}"
                     Theme="{DynamicResource VelaAccentPillButtonTheme}"
                     Command="{Binding UploadCommand}"
-                    ToolTip.Tip="{x:Static res:Strings.Upload}">
+                    ToolTip.Tip="{loc:Localize Upload}">
               <StackPanel Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
                 <pc:LucideIcon Width="12" Height="12"
                                Data="{StaticResource Icon.upload}"
                                Foreground="{DynamicResource VelaAccent}" />
-                <TextBlock Text="{x:Static res:Strings.Upload}"
+                <TextBlock Text="{loc:Localize Upload}"
                            Foreground="{DynamicResource VelaAccent}"
                            FontFamily="{DynamicResource VelaUiMonoFont}"
                            FontSize="{DynamicResource VelaFontSize10}" FontWeight="Medium"
@@ -238,7 +237,7 @@
             <Button Classes="toolbar-btn" Width="24" Height="24" Padding="0"
                     HorizontalContentAlignment="Center" VerticalContentAlignment="Center"
                     Command="{Binding ShowTransfersCommand}"
-                    ToolTip.Tip="{x:Static res:Strings.TransferHistory}">
+                    ToolTip.Tip="{loc:Localize TransferHistory}">
               <pc:LucideIcon Width="13" Height="13"
                              Data="{StaticResource Icon.history}"
                              Foreground="{DynamicResource VelaTextTertiary}" />
@@ -912,7 +911,7 @@
                  Foreground="{DynamicResource VelaAccent}" />
           <!-- 取消进行中的删除;已移除的条目保持移除状态。 -->
           <Button IsVisible="{Binding IsDeleteProgressVisible}"
-                  Content="{x:Static res:Strings.Cancel}"
+                  Content="{loc:Localize Cancel}"
                   Command="{Binding CancelDeleteCommand}"
                   HorizontalAlignment="Center"
                   Padding="16,4"

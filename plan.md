@@ -1408,3 +1408,16 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 设置 → 常规 → 语言:下拉首项加「跟随系统」(`AvailableLanguages` 首项空串),新增本地化键 `SetGeneral_LanguageSystem`,五份 resx 齐。README 两份的「本地化」一行补上默认跟随系统。
 
 **三、验证**:新增 `LanguageDefaultsTests` 2 条(新配置跟随系统、存量 `zh-CN` 原样保留);`LocalizationTests` 加系统文化折算 16 组数据行,以及「跟随系统取构造时的系统文化、不取上一次选的语言」2 条;`SettingsViewModelTests` 加下拉首项 ↔ 空串 1 条。整个解决方案 0 失败:`VelaShell.Core.Tests` 594 通过 / 20 跳过,`VelaShell.Tests` 1605 通过 / 16 跳过(跳过的都是按环境早退的 Docker / 集成用例)。
+
+## ✅ 142. 2026-09-29 切换界面语言后仍是中文的几处跟着换(用户反馈,§141 后续)
+
+**一、问题**:设置里切到英文,界面上仍有不少文案停在中文:标题栏 X Server 按钮的悬停提示、资源管理器「+」的提示与会话右键的「连接」「删除」、侧栏左下角通知 / 插件 / 设置的提示、Ctrl+P 命令面板里的大部分命令、SFTP 的「上传」与传输记录的提示。两类原因:
+- **XAML 用 `{x:Static res:Strings.X}` 取词**:视图加载时取一次值就定住了。主窗口只加载一次,切了语言它还停在启动时的语言。9 个视图里共 40 处。
+- **C# 侧拼好存着的文案**:命令的标题与分类在 `RegisterCommands()` 注册时就取好了,命令面板照着显示;X Server 按钮的提示只在服务状态变化时重算;会话树的置顶菜单项与状态标签是计算属性,没人发变更通知;「移动到分组」里的「未分组」在建树时取好了名字;状态栏的连接状态只在切标签时重写。
+
+**二、做法**:
+- 40 处 `x:Static` 一律改成 `{loc:Localize 键名}`,不再用的 `xmlns:res` 一并删掉(`MainWindow.axaml` 换成 `xmlns:loc`)。
+- `MainWindowViewModel` 注入 `ILocalizationService`,换语言时 `RefreshLocalizedText()`:重新注册命令(按 id 替换,顺序不变)、`XServerToggleViewModel.RefreshLocalizedText()`、`SessionTreeViewModel.RefreshLocalizedText()`(会话行重发置顶菜单项与状态标签的变更通知、「未分组」改名)、重写状态栏。
+- 按需打开的对话框与窗口(插件管理、回放中心、审计日志……)每次打开都现取文案,不在此列;命令面板的会话条目在每次打开时现建,也不受影响。AI 插件的命令本就在 `LocaleChanged` 时重新注册。
+
+**三、验证**:`LocalizedKeyUsageTests` 新增 `Xaml_TakesStringsThroughLocalize_NotXStatic`,扫 `src` 下全部 XAML,出现 `x:Static …:Strings.` 即失败(改之前列出的正是这 40 处)。`MainWindowViewModelTests` 新增 `LanguageChange_RefreshesTextComposedInCode`:中文下建主窗口视图模型,切英文后命令标题 / 分类、X Server 提示、「未分组」都换成英文,会话行发出置顶菜单项与状态标签的变更通知。

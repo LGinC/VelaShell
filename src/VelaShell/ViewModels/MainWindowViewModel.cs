@@ -13,6 +13,7 @@ using ReactiveUI.Primitives.Signals;
 using VelaShell.Core.Data;
 using VelaShell.Core.Diagnostics;
 using VelaShell.Core.Ftp;
+using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
 using VelaShell.Core.Notifications;
 using VelaShell.Core.Processes;
@@ -227,7 +228,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         IUpdateService? updateService = null,
         IThemeService? themeService = null,
         IConnectivityMonitor? connectivityMonitor = null,
-        ILocalXServer? localXServer = null
+        ILocalXServer? localXServer = null,
+        ILocalizationService? localization = null
     )
     {
         // 注册表可注入(DI 里与插件命令桥共享同一单例);无 UI 单测传 null 时自己创建一个。
@@ -469,6 +471,21 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         CloseActiveTabCommand = ReactiveCommand.Create(CloseActiveTab);
         RegisterCommands();
         RunCommand = ReactiveCommand.Create<string>(id => Commands.Execute(id));
+        localization?.LanguageChanged += _ => RefreshLocalizedText();
+    }
+
+    /// <summary>
+    /// 换语言后重算 C# 侧拼好存着的文案 —— XAML 里的 {loc:Localize} 自己会刷新,这些不会:
+    /// 命令的标题与分类(注册时就取好了,命令面板照着显示)、标题栏 X Server 按钮的悬停提示、
+    /// 会话树的置顶菜单项 / 状态标签 / 「未分组」、状态栏的连接状态。
+    /// </summary>
+    private void RefreshLocalizedText()
+    {
+        // 按 id 重新注册即替换,顺序不变
+        RegisterCommands();
+        XServer.RefreshLocalizedText();
+        Sidebar.SessionTree?.RefreshLocalizedText();
+        UpdateStatusBarForActiveTab();
     }
 
     /// <summary>

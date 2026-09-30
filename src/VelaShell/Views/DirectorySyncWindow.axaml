@@ -5,7 +5,6 @@
         xmlns:vm="using:VelaShell.ViewModels"
         xmlns:pc="using:VelaShell.Controls.Controls"
         xmlns:loc="using:VelaShell.Localization"
-        xmlns:res="clr-namespace:VelaShell.Core.Resources;assembly=VelaShell.Core"
         xmlns:sys="using:System"
         mc:Ignorable="d" d:DesignWidth="1080" d:DesignHeight="700"
         x:Class="VelaShell.Views.DirectorySyncWindow"
@@ -348,7 +347,7 @@
             <Button Theme="{DynamicResource VelaOutlineButtonTheme}"
                     Command="{Binding CancelCommand}"
                     IsVisible="{Binding IsBusy}"
-                    Content="{x:Static res:Strings.Cancel}" />
+                    Content="{loc:Localize Cancel}" />
             <Button Theme="{DynamicResource VelaOutlineButtonTheme}"
                     Command="{Binding CompareCommand}"
                     IsVisible="{Binding !IsBusy}" IsEnabled="{Binding CanCompare}"

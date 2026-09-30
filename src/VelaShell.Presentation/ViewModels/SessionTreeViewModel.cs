@@ -745,6 +745,22 @@ public sealed class SessionTreeViewModel : ReactiveObject
     private IEnumerable<SessionTreeNodeViewModel> EnumerateSessionNodes() =>
         Nodes.SelectMany(node => node.IsGroup ? node.Children : [node]);
 
+    /// <summary>
+    /// 换语言后重取树上 C# 侧拼的文案:会话行的置顶菜单项与状态标签,
+    /// 以及「移动到分组」里的「未分组」(它在建树时就取好了名字)。
+    /// </summary>
+    public void RefreshLocalizedText()
+    {
+        foreach (SessionTreeNodeViewModel node in EnumerateSessionNodes())
+        {
+            node.RefreshLocalizedText();
+        }
+        if (GroupNodes.FirstOrDefault(node => node.Id == Guid.Empty) is { } ungrouped)
+        {
+            ungrouped.Name = Strings.Get("Svc_Ungrouped");
+        }
+    }
+
     /// <summary>在树根与各分组下查找会话节点;<paramref name="parentGroup" /> 为 null 表示根级。</summary>
     private SessionTreeNodeViewModel? FindSessionNode(
         Guid sessionId,
