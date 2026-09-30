@@ -68,6 +68,21 @@ public class SettingsViewModelTests
 
     [TestMethod]
     [TestCategory("Settings")]
+    public void LanguageDropdown_FirstItemFollowsTheSystem()
+    {
+        // 首项「跟随系统」对应空串(出厂值);GeneralSettingsPage 的条目顺序与 AvailableLanguages 一致
+        SettingsViewModel vm = CreateVm();
+        Assert.AreEqual(string.Empty, vm.Language);
+        Assert.AreEqual(0, vm.LanguageIndex);
+
+        vm.LanguageIndex = 2;
+        Assert.AreEqual("en", vm.Language);
+        vm.LanguageIndex = 0;
+        Assert.AreEqual(string.Empty, vm.Language);
+    }
+
+    [TestMethod]
+    [TestCategory("Settings")]
     public async Task LoadCommand_LoadsSettingsFromService()
     {
         var settings = new AppSettings

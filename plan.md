@@ -1396,3 +1396,15 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - `DESIGN.md` §4.2 标题栏一行改写对话框那半句,并写明「窗口键贴角的窗口,卡片要 `ClipToBounds`」。
 
 **三、验证**:`DialogTitleBarAssert` 新增 `CloseHoverStaysInsideTheRoundedCorner`:按 Windows 的浮起卡片装外框、悬停关闭键、截一帧 —— 方块里离图标远的一点是红的(悬停确实生效),卡片描边内侧右上角的第一个像素(落在方块里、却在圆角外)不能是红的。三个对话框各一条,改之前三条都红。`FollowsSpec` 改为「标题前有且只有一个 15px 线条图标(关闭键的 × 不算)」,图标去掉的那一版上两条都红。`WindowChromeCoverageTests` 的扫描加一条:XAML 里有 `caption-close` 的窗口,卡片必须写 `ClipToBounds="True"`,改之前点出的正是这三个。把右上角放大 8 倍截图人眼看过。整套 `VelaShell.Tests` 1604 通过 / 16 跳过。
+
+## ✅ 141. 2026-09-29 界面语言出厂跟随系统,对不上用英文(AppImage 目录收录要求)
+
+**一、问题**:`AppSettings.Language` 出厂是 `zh-CN`,非中文环境下全新安装也是一屏中文。AppImage 目录的收录 PR([AppImage/appimage.github.io#8573](https://github.com/AppImage/appimage.github.io/pull/8573))因此卡住:目录面向全球用户,要求非中文环境(`LANG` / `LC_*`)默认显示英文界面,中文环境照旧中文。
+
+**二、做法**:
+- 出厂值改成空串(空 = 跟随系统)。`LocalizationService.SetLanguage("")` 按系统界面文化折算:沿父文化链在五种界面语言里找,中文按书写体系归到简 / 繁(zh-SG → 简体,zh-HK / zh-MO → 繁体),一个都对不上(德语、法语、`LANG=C` 的不变文化……)就用英文。系统语言由 .NET 取:Windows 是显示语言,Linux 依次看 `LC_ALL` / `LC_MESSAGES` / `LANG`。
+- 系统界面文化在服务构造时快照 —— `SetLanguage` 会改写环境文化,现读 `CurrentUICulture` 的话,从「日本語」切回「跟随系统」就停在日语。
+- **用户选过的语言优先**,运行时照旧直接用它。**存量配置不迁移**:已经落盘的 `zh-CN` 分不清是用户选的还是旧出厂值(窗口状态等好几处会整份回写设置,旧出厂值基本都落了盘),照旧生效,同 §131 的强调色。
+- 设置 → 常规 → 语言:下拉首项加「跟随系统」(`AvailableLanguages` 首项空串),新增本地化键 `SetGeneral_LanguageSystem`,五份 resx 齐。README 两份的「本地化」一行补上默认跟随系统。
+
+**三、验证**:新增 `LanguageDefaultsTests` 2 条(新配置跟随系统、存量 `zh-CN` 原样保留);`LocalizationTests` 加系统文化折算 16 组数据行,以及「跟随系统取构造时的系统文化、不取上一次选的语言」2 条;`SettingsViewModelTests` 加下拉首项 ↔ 空串 1 条。整个解决方案 0 失败:`VelaShell.Core.Tests` 594 通过 / 20 跳过,`VelaShell.Tests` 1605 通过 / 16 跳过(跳过的都是按环境早退的 Docker / 集成用例)。

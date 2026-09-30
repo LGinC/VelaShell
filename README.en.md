@@ -49,7 +49,7 @@ Three trade-offs run through all of it: **keyboard-first**, **information-dense*
 | **Workspace** | VelaDock drag-to-split · grouped sessions with pinning · import from WinSCP / Xshell / `~/.ssh/config` · command palette (`Ctrl+P` / `Ctrl+K`) · quick-command snippets · **synchronised input across terminals** · smart command completion · message centre and security news feed |
 | **Data** | Embedded SonnetDB (document + time series) · AES-256-GCM credential encryption · GitHub Gist cloud sync (optional passphrase end-to-end encryption, revisitable revisions) · security audit log (filterable viewer, configurable retention) · session logs |
 | **Appearance** | 12 named themes (7 dark, 5 light) · 16 terminal palettes paired with the UI themes · fully tokenised, zero hard-coded colours · Cascadia Mono bundled |
-| **Localisation** | 简体中文 / English / 繁體中文 / 日本語 / 한국어 — the five resx files share an identical key set; missing translations and orphaned keys both turn the tests red |
+| **Localisation** | 简体中文 / English / 繁體中文 / 日本語 / 한국어 — follows the system language by default, English when there is no match; the five resx files share an identical key set; missing translations and orphaned keys both turn the tests red |
 | **Extensibility** | Dual-mode plugin host (collectible ALC / separate process + named-pipe RPC) · `.vpx` packages and a plugin manager (update checks, pinned publisher fingerprints) · per-capability consent for dangerous APIs · first-party AI assistant plugin |
 | **Desktop integration** | Single instance · tray · launch at login · Xshell-compatible launch (bastion hosts and SSO portals can start it) · URL protocol registration |
 

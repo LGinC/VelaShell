@@ -89,9 +89,10 @@
         <TextBlock Classes="row-label" Text="{loc:Localize Language}" />
         <TextBlock Classes="row-desc" Text="{loc:Localize SetGeneral_UiLanguageDesc}" />
       </StackPanel>
-      <!-- 条目顺序必须与 SettingsViewModel.AvailableLanguages 一致;
-           语言名用各语言本名(任何界面语言下都能认出自己的语言)。 -->
+      <!-- 条目顺序必须与 SettingsViewModel.AvailableLanguages 一致;首项「跟随系统」随界面语言翻译,
+           其余语言名用各语言本名(任何界面语言下都能认出自己的语言)。 -->
       <ComboBox Grid.Column="1" Width="160" SelectedIndex="{Binding LanguageIndex}" VerticalAlignment="Center">
+        <ComboBoxItem Content="{loc:Localize SetGeneral_LanguageSystem}" />
         <ComboBoxItem Content="简体中文" />
         <ComboBoxItem Content="English" />
         <ComboBoxItem Content="繁體中文" />
