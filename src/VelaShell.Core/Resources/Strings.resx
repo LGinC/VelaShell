@@ -82,6 +82,54 @@
   <data name="AuditLog_Truncated" xml:space="preserve">
     <value>only the latest {0} loaded</value>
   </data>
+  <data name="Diag_ReportFileName" xml:space="preserve">
+    <value>diagnostics-{0}-{1}.txt</value>
+  </data>
+  <data name="Diag_ReportGeneratedAt" xml:space="preserve">
+    <value>Generated: {0}</value>
+  </data>
+  <data name="Diag_ReportIssue" xml:space="preserve">
+    <value>Issue found: {0}</value>
+  </data>
+  <data name="Diag_ReportNoIssue" xml:space="preserve">
+    <value>No issues found; all checks passed.</value>
+  </data>
+  <data name="Diag_ReportStatusFailed" xml:space="preserve">
+    <value>Failed</value>
+  </data>
+  <data name="Diag_ReportStatusNotRun" xml:space="preserve">
+    <value>Not run</value>
+  </data>
+  <data name="Diag_ReportStatusPassed" xml:space="preserve">
+    <value>Passed</value>
+  </data>
+  <data name="Diag_ReportStatusSkipped" xml:space="preserve">
+    <value>Skipped</value>
+  </data>
+  <data name="Diag_ReportStatusWarning" xml:space="preserve">
+    <value>Warning</value>
+  </data>
+  <data name="Diag_ReportSuggestion" xml:space="preserve">
+    <value>Suggestion {0}: {1}</value>
+  </data>
+  <data name="Diag_ReportTarget" xml:space="preserve">
+    <value>Target: {0}</value>
+  </data>
+  <data name="Diag_ReportTitle" xml:space="preserve">
+    <value>VelaShell Connection Diagnostics Report</value>
+  </data>
+  <data name="Diag_ReportViaJump" xml:space="preserve">
+    <value>Route: via jump host</value>
+  </data>
+  <data name="Diag_RunFailed" xml:space="preserve">
+    <value>Diagnostics failed to run</value>
+  </data>
+  <data name="Diag_StatusChecking" xml:space="preserve">
+    <value>… Checking</value>
+  </data>
+  <data name="Diag_TargetSummary" xml:space="preserve">
+    <value>// Step-by-step analysis of DNS, handshake, authentication and channel setup — {0} ({1})</value>
+  </data>
   <data name="DualSftp_CannotReceive" xml:space="preserve">
     <value>{0} cannot take files streamed from another server (its plugin does not support streamed uploads).</value>
   </data>
@@ -543,6 +591,9 @@
   </data>
   <data name="Modified" xml:space="preserve">
     <value>Modified</value>
+  </data>
+  <data name="Trace_TtlIgnored" xml:space="preserve">
+    <value>TTL probing had no effect: the local ICMP implementation ignores TTL (on Linux this usually means CAP_NET_RAW is missing or net.ipv4.ping_group_range is not opened up, so .NET falls back to calling the system ping).</value>
   </data>
   <data name="Tree_OpenDualSftp" xml:space="preserve">
     <value>Open in dual-pane SFTP</value>
@@ -2229,6 +2280,9 @@ Paste anyway?</value>
   <data name="SetDonate_ContributeTitle" xml:space="preserve">
     <value>The best way to support: contribute</value>
   </data>
+  <data name="SetDonate_Copied" xml:space="preserve">
+    <value>Copied</value>
+  </data>
   <data name="SetDonate_CopyPaymentLink" xml:space="preserve">
     <value>Copy Payment Link</value>
   </data>
@@ -2750,6 +2804,9 @@ Paste anyway?</value>
   </data>
   <data name="SetSync_TokenPlaceholder" xml:space="preserve">
     <value>ghp_… (leave blank to keep the saved token)</value>
+  </data>
+  <data name="SetSync_UnknownDevice" xml:space="preserve">
+    <value>Unknown device</value>
   </data>
   <data name="SetSync_WhatIsGist" xml:space="preserve">
     <value>What is a Gist?</value>

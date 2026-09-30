@@ -645,6 +645,9 @@
   <data name="Modified" xml:space="preserve">
     <value>修改時間</value>
   </data>
+  <data name="Trace_TtlIgnored" xml:space="preserve">
+    <value>TTL 探測未生效:本機的 ICMP 實作忽略了 TTL(Linux 上常見於缺少 CAP_NET_RAW 或 net.ipv4.ping_group_range 未開放,此時 .NET 會退化為呼叫系統 ping)。</value>
+  </data>
   <data name="Tree_OpenDualSftp" xml:space="preserve">
     <value>在雙欄 SFTP 中開啟</value>
   </data>
@@ -1152,14 +1155,62 @@
   <data name="Diag_IssueFound" xml:space="preserve">
     <value>發現問題:</value>
   </data>
+  <data name="Diag_ReportFileName" xml:space="preserve">
+    <value>診斷報告-{0}-{1}.txt</value>
+  </data>
+  <data name="Diag_ReportGeneratedAt" xml:space="preserve">
+    <value>產生時間: {0}</value>
+  </data>
+  <data name="Diag_ReportIssue" xml:space="preserve">
+    <value>發現問題: {0}</value>
+  </data>
+  <data name="Diag_ReportNoIssue" xml:space="preserve">
+    <value>未發現問題,各項檢測均通過。</value>
+  </data>
+  <data name="Diag_ReportStatusFailed" xml:space="preserve">
+    <value>失敗</value>
+  </data>
+  <data name="Diag_ReportStatusNotRun" xml:space="preserve">
+    <value>未執行</value>
+  </data>
+  <data name="Diag_ReportStatusPassed" xml:space="preserve">
+    <value>通過</value>
+  </data>
+  <data name="Diag_ReportStatusSkipped" xml:space="preserve">
+    <value>跳過</value>
+  </data>
+  <data name="Diag_ReportStatusWarning" xml:space="preserve">
+    <value>警告</value>
+  </data>
+  <data name="Diag_ReportSuggestion" xml:space="preserve">
+    <value>建議 {0}: {1}</value>
+  </data>
+  <data name="Diag_ReportTarget" xml:space="preserve">
+    <value>目標: {0}</value>
+  </data>
+  <data name="Diag_ReportTitle" xml:space="preserve">
+    <value>VelaShell 連線診斷報告</value>
+  </data>
+  <data name="Diag_ReportViaJump" xml:space="preserve">
+    <value>鏈路: 經由跳板連線</value>
+  </data>
   <data name="Diag_Rerun" xml:space="preserve">
     <value>重新檢測</value>
+  </data>
+  <data name="Diag_RunFailed" xml:space="preserve">
+    <value>診斷執行出錯</value>
   </data>
   <data name="Diag_Running" xml:space="preserve">
     <value>// 正在逐項檢測,請稍候…</value>
   </data>
+  <data name="Diag_StatusChecking" xml:space="preserve">
+    <value>… 檢測中</value>
+  </data>
   <data name="Diag_Steps" xml:space="preserve">
     <value>診斷步驟</value>
+  </data>
+  <data name="Diag_TargetSummary" xml:space="preserve">
+    <value>// 逐步分析 DNS、交握、認證與通道建立 — {0} ({1})</value>
   </data>
   <data name="Diag_Title" xml:space="preserve">
     <value>連線診斷</value>
@@ -2338,6 +2389,9 @@
   <data name="SetDonate_ContributeTitle" xml:space="preserve">
     <value>最好的支持方式:參與貢獻</value>
   </data>
+  <data name="SetDonate_Copied" xml:space="preserve">
+    <value>已複製</value>
+  </data>
   <data name="SetDonate_CopyPaymentLink" xml:space="preserve">
     <value>複製付款連結</value>
   </data>
@@ -2859,6 +2913,9 @@
   </data>
   <data name="SetSync_TokenPlaceholder" xml:space="preserve">
     <value>ghp_…(留空 = 保留已儲存的權杖)</value>
+  </data>
+  <data name="SetSync_UnknownDevice" xml:space="preserve">
+    <value>未知裝置</value>
   </data>
   <data name="SetSync_WhatIsGist" xml:space="preserve">
     <value>什麼是 Gist?</value>

@@ -283,6 +283,18 @@ public class TunnelPanelViewModel : ReactiveObject, IDisposable
     /// <summary>表单标题:根据是否处于编辑模式显示"编辑隧道"或"新建隧道"。</summary>
     public string FormTitle => IsEditing ? Strings.Get("Msg_EditTunnel") : Strings.Get("NewTunnel");
 
+    /// <summary>换语言后让绑定重取 C# 侧拼的文案(服务器状态行、表单标题与按钮、各隧道行)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(ServerStatusText));
+        this.RaisePropertyChanged(nameof(FormTitle));
+        this.RaisePropertyChanged(nameof(SubmitButtonText));
+        foreach (TunnelItemViewModel tunnel in Tunnels)
+        {
+            tunnel.RefreshLocalizedText();
+        }
+    }
+
     /// <summary>提交按钮文案:编辑模式显示"保存",否则显示"创建"。</summary>
     public string SubmitButtonText => IsEditing ? Strings.Get("Save") : Strings.Get("Msg_Create");
 

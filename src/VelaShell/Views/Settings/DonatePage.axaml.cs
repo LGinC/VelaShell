@@ -3,6 +3,7 @@ using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
+using VelaShell.Core.Resources;
 using FireAndForget = VelaShell.Services.FireAndForget;
 
 namespace VelaShell.Views.Settings;
@@ -32,10 +33,12 @@ public partial class DonatePage : UserControl
             return;
         }
         await clipboard.SetTextAsync(WiseLink);
-        if (sender is Button button && button.Content is string original && original != "已复制")
+        string copied = Strings.Get("SetDonate_Copied");
+        if (sender is Button button && button.Content is string original && original != copied)
         {
-            button.Content = "已复制";
-            DispatcherTimer.RunOnce(() => button.Content = original, TimeSpan.FromSeconds(1.5));
+            // SetCurrentValue 而不是直接赋值:直接赋值会把 {loc:Localize} 的绑定顶掉,之后换语言这个按钮就不跟了
+            button.SetCurrentValue(ContentControl.ContentProperty, copied);
+            DispatcherTimer.RunOnce(() => button.SetCurrentValue(ContentControl.ContentProperty, original), TimeSpan.FromSeconds(1.5));
         }
     });
 }

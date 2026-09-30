@@ -182,6 +182,8 @@ public class App : Application
                 var culture = new System.Globalization.CultureInfo(lang);
                 System.Globalization.CultureInfo.CurrentUICulture = culture;
                 System.Globalization.CultureInfo.CurrentCulture = culture;
+                // 托盘菜单是建托盘图标时拼好的原生菜单,不重建就停在旧语言
+                _trayIconService?.RefreshLocalizedText();
             });
         _themeService.ThemeChanged += OnThemeChanged;
         _themeService.AccentChanged += ApplyAccent;

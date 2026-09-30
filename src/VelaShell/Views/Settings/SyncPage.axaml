@@ -191,7 +191,7 @@
                       <StackPanel Orientation="Horizontal" Spacing="8">
                         <TextBlock FontSize="{DynamicResource VelaFontSize12}" FontWeight="Medium"
                                    Foreground="{DynamicResource VelaTextPrimary}"
-                                   Text="{Binding DeviceName, Mode=OneWay, TargetNullValue=未知设备}" />
+                                   Text="{Binding DeviceName, Mode=OneWay, Converter={x:Static conv:DeviceNameConverter.Instance}}" />
                         <TextBlock FontSize="{DynamicResource VelaFontSize10}" VerticalAlignment="Center"
                                    FontFamily="{DynamicResource VelaUiMonoFont}"
                                    Foreground="{DynamicResource VelaTextMuted}"

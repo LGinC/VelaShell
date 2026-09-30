@@ -477,7 +477,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// <summary>
     /// 换语言后重算 C# 侧拼好存着的文案 —— XAML 里的 {loc:Localize} 自己会刷新,这些不会:
     /// 命令的标题与分类(注册时就取好了,命令面板照着显示)、标题栏 X Server 按钮的悬停提示、
-    /// 会话树的置顶菜单项 / 状态标签 / 「未分组」、状态栏的连接状态。
+    /// 会话树的置顶菜单项 / 状态标签 / 「未分组」、最近连接的相对时间与提示、状态栏、
+    /// 消息中心、隧道面板、终端标签的连接 / 断开覆盖层。
     /// </summary>
     private void RefreshLocalizedText()
     {
@@ -485,7 +486,19 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         RegisterCommands();
         XServer.RefreshLocalizedText();
         Sidebar.SessionTree?.RefreshLocalizedText();
+        Sidebar.RecentConnections.RefreshLocalizedText();
+        StatusBar.RefreshLocalizedText();
+        if (ActiveTerminalTab is null)
+        {
+            StatusBar.ClearSessionMetrics();
+        }
         UpdateStatusBarForActiveTab();
+        NotificationPanel?.RefreshLocalizedText();
+        TunnelPanel?.RefreshLocalizedText();
+        foreach (TerminalTabViewModel tab in TerminalTabs)
+        {
+            tab.RefreshLocalizedText();
+        }
     }
 
     /// <summary>

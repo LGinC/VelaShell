@@ -304,6 +304,9 @@ public class SyncViewModel : ReactiveObject
         }
     }
 
+    /// <summary>换语言后重写「上次同步」一行(它是拼好存着的)。</summary>
+    public void RefreshLocalizedText() => UpdateLastSyncText();
+
     private void UpdateLastSyncText() =>
         LastSyncText = _config.LastSyncAtUtc is { } at
                            ? Strings.Format("Msg_LastSyncAt", at.ToLocalTime())

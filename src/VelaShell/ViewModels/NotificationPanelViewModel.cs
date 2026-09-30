@@ -280,4 +280,14 @@ public class NotificationPanelViewModel : ReactiveObject, IDisposable, IDraggabl
             item.RefreshRelativeTime();
         }
     }
+
+    /// <summary>换语言后让绑定重取 C# 侧拼的文案(空列表提示、各条消息的徽标 / 链接 / 相对时间)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(EmptyHint));
+        foreach (NotificationItemViewModel item in Items)
+        {
+            item.RefreshLocalizedText();
+        }
+    }
 }

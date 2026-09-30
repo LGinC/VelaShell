@@ -370,6 +370,7 @@ public class MainWindowViewModelTests
             Assert.Contains(nameof(SessionTreeNodeViewModel.PinToggleText), raised);
             Assert.Contains(nameof(SessionTreeNodeViewModel.StatusTagText), raised);
             Assert.AreEqual("Ungrouped", vm.Sidebar.SessionTree.GroupNodes.Single(node => node.Id == Guid.Empty).Name);
+            Assert.AreEqual("No background tasks", vm.StatusBar.BackgroundTooltip);
         }
         finally
         {

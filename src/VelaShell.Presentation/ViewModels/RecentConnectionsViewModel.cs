@@ -68,6 +68,17 @@ public sealed class RecentConnectionsViewModel : ReactiveObject
         }
     }
 
+    /// <summary>换语言后按原记录重建各项:相对时间与悬停提示是建项时拼好的。不读存储。</summary>
+    public void RefreshLocalizedText()
+    {
+        RecentConnectionEntry[] entries = [.. Connections.Select(item => item.Entry)];
+        Connections.Clear();
+        foreach (RecentConnectionEntry entry in entries)
+        {
+            Connections.Add(new(entry));
+        }
+    }
+
     private async Task ClearAllAsync()
     {
         if (_recentConnectionService is not null)

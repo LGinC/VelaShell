@@ -90,6 +90,14 @@ public class NotificationItemViewModel(NotificationItem item) : ReactiveObject
     /// <summary>由面板的时钟调用,刷新相对时间。</summary>
     public void RefreshRelativeTime() => this.RaisePropertyChanged(nameof(RelativeTime));
 
+    /// <summary>换语言后让绑定重取 C# 侧拼的文案(类别徽标、链接按钮、相对时间)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(KindBadge));
+        this.RaisePropertyChanged(nameof(LinkLabel));
+        RefreshRelativeTime();
+    }
+
     /// <summary>把时间差说成人话;未来时间(源端时钟偏了)一律当作「刚刚」。</summary>
     public static string FormatRelative(TimeSpan age)
     {

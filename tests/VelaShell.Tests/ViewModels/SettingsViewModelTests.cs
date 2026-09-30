@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using NSubstitute;
 using ReactiveUI.Primitives;
 using VelaShell.Core.Data;
+using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
 using VelaShell.Core.Services;
 using VelaShell.Core.Ssh;
@@ -64,6 +65,43 @@ public class SettingsViewModelTests
 
         Assert.HasCount(1, snapshots);
         Assert.AreEqual(80, snapshots[0].Appearance.WindowOpacityPercent);
+    }
+
+    /// <summary>
+    /// 语言要先于落盘切换:落盘触发的 SettingsSaved 会把设置重新下发到已打开的终端,
+    /// 行号栏右键菜单等文案是下发时现取的 —— 晚一步换语言,它们就停在旧语言。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Settings")]
+    public async Task SaveCommand_SwitchesLanguageBeforePersisting()
+    {
+        ILocalizationService localization = Substitute.For<ILocalizationService>();
+        var vm = new SettingsViewModel(_settingsService, _themeService, localizationService: localization);
+        vm.Language = "en";
+
+        await vm.SaveCommand.Execute().FirstAsync();
+
+        Received.InOrder(() =>
+        {
+            localization.SetLanguage("en");
+            _settingsService.SaveSettingsAsync(Arg.Any<AppSettings>());
+        });
+    }
+
+    /// <summary>
+    /// 换语言时主题下拉的条目整表重建,ComboBox 在那一下把选中项清成 -1 推回来 ——
+    /// 当成「回到默认主题」的话,切一次语言主题就被换掉了。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("Settings")]
+    public void ThemeIndex_IgnoresTheClearedSelection()
+    {
+        SettingsViewModel vm = CreateVm();
+        vm.Theme = "nord";
+
+        vm.ThemeIndex = -1;
+
+        Assert.AreEqual("nord", vm.Theme);
     }
 
     [TestMethod]

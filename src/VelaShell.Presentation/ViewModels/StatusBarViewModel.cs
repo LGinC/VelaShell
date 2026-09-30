@@ -123,6 +123,20 @@ public sealed class StatusBarViewModel(ISequencer scheduler) : ReactiveObject, I
     public string SelectionLabel => Strings.Format("Status_Selected", SelectionLength);
 
     /// <summary>
+    /// 换语言后重取 C# 侧拼的文案:选区字数、资源按钮的合并提示、空闲时的后台任务提示。
+    /// 有会话时的各段指标提示由采样循环下一拍重写;没有会话时的占位由调用方 <see cref="ClearSessionMetrics" /> 重置。
+    /// </summary>
+    public void RefreshLocalizedText()
+    {
+        if (!HasBackgroundActivity)
+        {
+            BackgroundTooltip = Strings.Get("BackgroundTasksIdle");
+        }
+        this.RaisePropertyChanged(nameof(SelectionLabel));
+        this.RaisePropertyChanged(nameof(MetricsTooltip));
+    }
+
+    /// <summary>
     /// 可热切的编码列表(状态栏点编码弹出的菜单)。由宿主注入,与设置页共用同一张表。
     /// </summary>
     public IReadOnlyList<string> AvailableEncodings
