@@ -70,7 +70,7 @@ internal static class DialogTitleBarAssert
     private static (byte R, byte G, byte B, byte A) Pixel(WriteableBitmap frame, Point at)
     {
         uint[] pixel = new uint[1];
-        GCHandle pin = GCHandle.Alloc(pixel, GCHandleType.Pinned);
+        var pin = GCHandle.Alloc(pixel, GCHandleType.Pinned);
         try
         {
             frame.CopyPixels(new PixelRect((int)at.X, (int)at.Y, 1, 1), pin.AddrOfPinnedObject(), 4, 4);

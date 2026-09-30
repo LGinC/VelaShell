@@ -174,7 +174,7 @@ public partial class SessionTreeView : UserControl
         (modifiers & (KeyModifiers.Control | KeyModifiers.Meta)) != 0;
 
     /// <summary>各会话行自己的那份右键菜单(第一次换成双选菜单时记下,换回来时用)。</summary>
-    private readonly ConditionalWeakTable<Control, ContextMenu> _rowMenus = new();
+    private readonly ConditionalWeakTable<Control, ContextMenu> _rowMenus = [];
 
     /// <summary>
     /// 右键按下时,给这一行挂上该弹的菜单:它在 Ctrl 双选里 → 双选专用菜单;否则 → 行上原本那份。

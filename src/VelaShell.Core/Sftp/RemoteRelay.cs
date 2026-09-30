@@ -39,7 +39,7 @@ public static class RemoteRelay
     /// <param name="resumeOffset">
     /// &gt; 0 表示目标已有前一次留下的半截,试着从那里接着传(真正的起点由目标端按此刻的状态核实,
     /// 见 <see cref="ISftpService.UploadStreamAsync" />)。源流不可 Seek(FTP 的数据流、多数插件协议)时核实不了,
-/// 抛 <see cref="VelaSftpResumeMismatchException" />,目标未被碰过。
+    /// 抛 <see cref="VelaSftpResumeMismatchException" />,目标未被碰过。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
     public static async Task CopyFileAsync(

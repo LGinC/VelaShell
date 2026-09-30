@@ -142,7 +142,7 @@ public sealed partial class X11Server
         CancellationTokenSource? connection = null;
         // 连接建立阶段的读写用它:到了 SetupTimeout 还没发完就取消。等执行线程登记客户端那一步不计在内 ——
         // 那一步半途取消的话,执行线程照样登记了,却没人再用这个客户端。
-        using CancellationTokenSource setup = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        using var setup = CancellationTokenSource.CreateLinkedTokenSource(ct);
         setup.CancelAfter(SetupTimeout);
 
         XClient? client = null;

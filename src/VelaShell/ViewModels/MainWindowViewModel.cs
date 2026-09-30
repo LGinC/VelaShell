@@ -2132,7 +2132,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         QuickCommandExecutionRequest request
     )
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse(request.CommandText);
+        var template = QuickCommandTemplate.Parse(request.CommandText);
         if (!template.HasVariables || QuickCommandVariablePrompt is not { } prompt)
         {
             // 没有占位(或没有窗口可以问,如 headless 测试)时原样发送,与引入占位之前一致。

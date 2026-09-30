@@ -33,7 +33,6 @@ internal sealed class XProtocolError(XErrorCode code, uint badValue = 0)
 internal sealed class XRequestReader
 {
     private readonly byte[] _data;
-    private readonly int _length;
     private readonly bool _bigEndian;
     private int _pos;
 
@@ -49,7 +48,7 @@ internal sealed class XRequestReader
     public XRequestReader(byte[] data, int length, bool bigEndian)
     {
         _data = data;
-        _length = length;
+        Length = length;
         _bigEndian = bigEndian;
         _pos = 4;
     }
@@ -72,14 +71,14 @@ internal sealed class XRequestReader
     public byte Data => _data[1];
 
     /// <summary>剩余可读字节数。</summary>
-    public int Remaining => _length - _pos;
+    public int Remaining => Length - _pos;
 
     /// <summary>整条请求的长度(字节)。</summary>
-    public int Length => _length;
+    public int Length { get; }
 
     private ReadOnlySpan<byte> Take(int count)
     {
-        if (count < 0 || _pos + count > _length)
+        if (count < 0 || _pos + count > Length)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
@@ -115,7 +114,7 @@ internal sealed class XRequestReader
     {
         byte[] bytes = Take(count).ToArray();
         int pad = XWire.Pad(count) - count;
-        if (pad > 0 && _pos + pad <= _length)
+        if (pad > 0 && _pos + pad <= Length)
         {
             _pos += pad;
         }

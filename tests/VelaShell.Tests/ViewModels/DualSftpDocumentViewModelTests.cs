@@ -53,11 +53,11 @@ public class DualSftpDocumentViewModelTests
     [TestMethod]
     public async Task ReceiveFromPeer_StreamsFilesAndRecreatesFolders_OnThisSession()
     {
-        (ISftpService sftp, FileBrowserViewModel left, FileBrowserViewModel right) = PanePair();
+        (ISftpService sftp, _, FileBrowserViewModel right) = PanePair();
         RemoteFileInfo file = Entry("/src/a.txt", 5);
         RemoteFileInfo folder = Entry("/src/dir", directory: true);
         RemoteFileInfo nested = Entry("/src/dir/b.txt", 7);
-        sftp.ListDirectoryAsync(Left, "/src/dir", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo> { nested });
+        sftp.ListDirectoryAsync(Left, "/src/dir", Arg.Any<CancellationToken>()).Returns([nested]);
         Readable(sftp, Left, file);
         Readable(sftp, Left, nested);
 
@@ -89,7 +89,7 @@ public class DualSftpDocumentViewModelTests
     public async Task ReceiveFromPeer_SkipPolicy_LeavesAnExistingTargetAlone()
     {
         (ISftpService sftp, _, FileBrowserViewModel right) = PanePair(new() { ConflictPolicy = "skip", ResumeEnabled = false });
-        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo> { Entry("/a.txt") });
+        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns([Entry("/a.txt")]);
         RemoteFileInfo file = Entry("/src/a.txt");
         Readable(sftp, Left, file);
 
@@ -148,7 +148,7 @@ public class DualSftpDocumentViewModelTests
         // 而不是按同名冲突去问覆盖还是跳过。
         (ISftpService sftp, _, FileBrowserViewModel right) =
             PanePair(new() { ConflictPolicy = "ask", ResumeEnabled = true });
-        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo> { Entry("/a.txt", 4) });
+        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns([Entry("/a.txt", 4)]);
         sftp.GetFileInfoAsync(Right, "/a.txt", Arg.Any<CancellationToken>()).Returns(Entry("/a.txt", 4));
         RemoteFileInfo file = Entry("/src/a.txt", 10);
         Readable(sftp, Left, file);
@@ -165,7 +165,7 @@ public class DualSftpDocumentViewModelTests
     {
         (ISftpService sftp, _, FileBrowserViewModel right) =
             PanePair(new() { ConflictPolicy = "skip", ResumeEnabled = true });
-        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo> { Entry("/a.txt", 10) });
+        sftp.ListDirectoryAsync(Right, "/", Arg.Any<CancellationToken>()).Returns([Entry("/a.txt", 10)]);
         sftp.GetFileInfoAsync(Right, "/a.txt", Arg.Any<CancellationToken>()).Returns(Entry("/a.txt", 10));
         RemoteFileInfo file = Entry("/src/a.txt", 10);
         Readable(sftp, Left, file);
@@ -283,18 +283,18 @@ public class DualSftpDocumentViewModelTests
         DateTime t = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
         sftp.GetWorkingDirectoryAsync(Left, Arg.Any<CancellationToken>()).Returns("/l");
         sftp.GetWorkingDirectoryAsync(Right, Arg.Any<CancellationToken>()).Returns("/r");
-        sftp.ListDirectoryAsync(Left, "/l", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo>
-        {
+        sftp.ListDirectoryAsync(Left, "/l", Arg.Any<CancellationToken>()).Returns(
+        [
             Entry("/l/same.txt", 3, modified: t),
             Entry("/l/only-left.txt", 3, modified: t),
             Entry("/l/newer.txt", 3, modified: t.AddHours(1)),
-        });
-        sftp.ListDirectoryAsync(Right, "/r", Arg.Any<CancellationToken>()).Returns(new List<RemoteFileInfo>
-        {
+        ]);
+        sftp.ListDirectoryAsync(Right, "/r", Arg.Any<CancellationToken>()).Returns(
+        [
             Entry("/r/same.txt", 3, modified: t),
             Entry("/r/newer.txt", 3, modified: t),
             Entry("/r/only-right.txt", 3, modified: t),
-        });
+        ]);
         var vm = new DualSftpDocumentViewModel(
             new(Profile("alpha", ConnectionType.SSH), Left, null, (_, _) => Task.CompletedTask),
             new(Profile("beta", ConnectionType.SFTP), Right, null, (_, _) => Task.CompletedTask),

@@ -76,8 +76,10 @@ public class SettingsViewModelTests
     public async Task SaveCommand_SwitchesLanguageBeforePersisting()
     {
         ILocalizationService localization = Substitute.For<ILocalizationService>();
-        var vm = new SettingsViewModel(_settingsService, _themeService, localizationService: localization);
-        vm.Language = "en";
+        var vm = new SettingsViewModel(_settingsService, _themeService, localizationService: localization)
+        {
+            Language = "en"
+        };
 
         await vm.SaveCommand.Execute().FirstAsync();
 

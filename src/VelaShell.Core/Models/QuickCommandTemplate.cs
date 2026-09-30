@@ -29,10 +29,7 @@ public sealed record QuickCommandVariable(string Name, string DefaultValue);
 /// </remarks>
 public sealed partial class QuickCommandTemplate
 {
-    private static readonly HashSet<string> GoTemplateKeywords = new(StringComparer.Ordinal)
-    {
-        "end", "else", "break", "continue"
-    };
+    private static readonly HashSet<string> GoTemplateKeywords = [with(StringComparer.Ordinal), "end", "else", "break", "continue"];
 
     private QuickCommandTemplate(string text, IReadOnlyList<QuickCommandVariable> variables)
     {

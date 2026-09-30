@@ -223,9 +223,9 @@ public sealed class DockTabPanel : Panel
     private Size MeasureRows(double limit)
     {
         int count = Children.Count;
-        var widths = new double[count];
-        var rowOf = new int[count];
-        var xs = new double[count];
+        double[] widths = new double[count];
+        int[] rowOf = new int[count];
+        double[] xs = new double[count];
         List<double> rowHeights = [];
         double x = 0;
         double rowHeight = MinRowHeight;
@@ -259,7 +259,7 @@ public sealed class DockTabPanel : Panel
             rowHeights.Add(rowHeight);
         }
 
-        var rowTops = new double[rowHeights.Count];
+        double[] rowTops = new double[rowHeights.Count];
         double y = 0;
         for (int row = 0; row < rowHeights.Count; row++)
         {

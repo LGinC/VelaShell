@@ -16,7 +16,7 @@ public class QuickCommandTemplateTests
     [TestMethod]
     public void Parse_FindsNamesAndDefaults_InOrderOfFirstAppearance()
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse("journalctl -u {{svc}} -n {{lines=200}} --since {{since=today}}");
+        var template = QuickCommandTemplate.Parse("journalctl -u {{svc}} -n {{lines=200}} --since {{since=today}}");
 
         Assert.IsTrue(template.HasVariables);
         CollectionAssert.AreEqual(
@@ -27,7 +27,7 @@ public class QuickCommandTemplateTests
     [TestMethod]
     public void Parse_SameNameTwice_AsksOnce_AndKeepsTheFirstNonEmptyDefault()
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse("cp {{file}} {{file}}.bak && ls {{dir}} {{dir=/tmp}}");
+        var template = QuickCommandTemplate.Parse("cp {{file}} {{file}}.bak && ls {{dir}} {{dir=/tmp}}");
 
         CollectionAssert.AreEqual(
             new[] { new QuickCommandVariable("file", ""), new QuickCommandVariable("dir", "/tmp") },
@@ -44,7 +44,7 @@ public class QuickCommandTemplateTests
     [DataRow("echo {{}} {{=x}} {{1st}}")]
     public void Parse_LeavesTemplateLanguagesAlone(string command)
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse(command);
+        var template = QuickCommandTemplate.Parse(command);
 
         Assert.IsFalse(template.HasVariables, string.Join(", ", template.Variables));
         Assert.AreEqual(command, template.Render(new Dictionary<string, string>()));
@@ -53,7 +53,7 @@ public class QuickCommandTemplateTests
     [TestMethod]
     public void Parse_AcceptsNonAsciiAndHyphenatedNames()
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse("kubectl logs {{pod-name}} -n {{命名空间=default}}");
+        var template = QuickCommandTemplate.Parse("kubectl logs {{pod-name}} -n {{命名空间=default}}");
 
         CollectionAssert.AreEqual(new[] { "pod-name", "命名空间" }, template.Variables.Select(v => v.Name).ToArray());
     }
@@ -61,7 +61,7 @@ public class QuickCommandTemplateTests
     [TestMethod]
     public void Render_UsesGivenValues_ThenDefaults_AndLeavesGoActionsInPlace()
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse(
+        var template = QuickCommandTemplate.Parse(
             "docker ps -f name={{name}} --format '{{.Names}}' | head -n {{n=5}}");
 
         string rendered = template.Render(new Dictionary<string, string> { ["name"] = "web" });
@@ -73,7 +73,7 @@ public class QuickCommandTemplateTests
     public void Render_FlattensLineBreaksInValues()
     {
         // 快捷命令只发正文、不带回车;值里夹一个换行就等于替用户按了回车,命令提前执行
-        QuickCommandTemplate template = QuickCommandTemplate.Parse("grep {{pattern}} app.log");
+        var template = QuickCommandTemplate.Parse("grep {{pattern}} app.log");
 
         string rendered = template.Render(new Dictionary<string, string> { ["pattern"] = "a\r\nb\nc\rd" });
 
@@ -83,7 +83,7 @@ public class QuickCommandTemplateTests
     [TestMethod]
     public void Render_WithoutVariables_ReturnsTheTextVerbatim()
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse("uptime");
+        var template = QuickCommandTemplate.Parse("uptime");
 
         Assert.IsFalse(template.HasVariables);
         Assert.AreEqual("uptime", template.Render(new Dictionary<string, string> { ["unused"] = "x" }));

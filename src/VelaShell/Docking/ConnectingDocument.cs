@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Avalonia.Controls;
 using Avalonia.Media;
 using VelaShell.Core.Models;
@@ -33,7 +34,7 @@ public sealed class ConnectingDocument : DockDocument, IDockViewProvider
     {
         Profile = profile ?? throw new ArgumentNullException(nameof(profile));
         TypeLabel = typeLabel;
-        _displayName = displayName;
+        DisplayName = displayName;
         // 占位标签的 Id 不能取会话 id —— 那玩意儿正是还没有的东西。用一个进程内唯一值,
         // 与真文档换手之后它就随占位一起消失了。
         Id = $"connecting-{Guid.NewGuid():N}";
@@ -61,13 +62,12 @@ public sealed class ConnectingDocument : DockDocument, IDockViewProvider
         }
     }
 
-    private readonly string? _displayName;
-
     /// <summary>
     /// 标签与覆盖层里指代这条连接的名称:建标签时给了就用它,否则优先用配置的显示名,没起名才退回主机。
     /// </summary>
+    [AllowNull]
     public string DisplayName =>
-        _displayName ?? (string.IsNullOrWhiteSpace(Profile.Name) ? Profile.Host : Profile.Name);
+        field ?? (string.IsNullOrWhiteSpace(Profile.Name) ? Profile.Host : Profile.Name);
 
     /// <summary>
     /// 标签上的状态圆点。与终端 / SFTP / 工作台标签共用一套 <see cref="SessionStatus" />,

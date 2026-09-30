@@ -44,8 +44,9 @@ public static partial class SshAlgorithmPreferences
     /// OpenSSH 认得、本版却没实现的常见算法:写了它们要说「没实现」而不是「不认识」——
     /// 抄过来的配置里最常见的就是这几个,用户要知道的是「放开也没用」。
     /// </summary>
-    private static readonly HashSet<string> KnownButUnimplemented = new(StringComparer.Ordinal)
-    {
+    private static readonly HashSet<string> KnownButUnimplemented =
+    [
+        with(StringComparer.Ordinal),
         "aes128-cbc", "aes192-cbc", "aes256-cbc", "3des-cbc", "blowfish-cbc", "cast128-cbc",
         "arcfour", "arcfour128", "arcfour256", "rijndael-cbc@lysator.liu.se",
         "diffie-hellman-group1-sha1", "diffie-hellman-group-exchange-sha1", "diffie-hellman-group-exchange-sha256",
@@ -54,7 +55,7 @@ public static partial class SshAlgorithmPreferences
         "hmac-sha1-96", "hmac-sha1-96-etm@openssh.com", "hmac-ripemd160", "hmac-ripemd160@openssh.com",
         "umac-64@openssh.com", "umac-128@openssh.com", "umac-64-etm@openssh.com", "umac-128-etm@openssh.com",
         "ssh-rsa-cert-v01@openssh.com", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
-    };
+    ];
 
     /// <summary>本版实现了、可以写进这一类清单的算法。</summary>
     public static IReadOnlyList<string> Available(SshAlgorithmKind kind) => Select(Legacy, kind);

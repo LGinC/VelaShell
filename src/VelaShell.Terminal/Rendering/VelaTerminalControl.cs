@@ -829,10 +829,7 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
 
         // 拖到缩放不同的显示器上,行列不变而像素变了:远端的像素认知也得跟上。
         _scalingSource = TopLevel.GetTopLevel(this);
-        if (_scalingSource is not null)
-        {
-            _scalingSource.ScalingChanged += OnScalingChanged;
-        }
+        _scalingSource?.ScalingChanged += OnScalingChanged;
         RaisePtySizeChangedIfPixelsMoved();
     }
 
@@ -840,11 +837,8 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
     protected override void OnDetachedFromVisualTree(VisualTreeAttachmentEventArgs e)
     {
         base.OnDetachedFromVisualTree(e);
-        if (_scalingSource is not null)
-        {
-            _scalingSource.ScalingChanged -= OnScalingChanged;
-            _scalingSource = null;
-        }
+        _scalingSource?.ScalingChanged -= OnScalingChanged;
+        _scalingSource = null;
     }
 
     private void OnScalingChanged(object? sender, EventArgs e) => RaisePtySizeChangedIfPixelsMoved();

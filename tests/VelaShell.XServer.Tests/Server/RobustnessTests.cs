@@ -79,7 +79,7 @@ public sealed class RobustnessTests
         await c.SendManyAsync(chain.Select((id, i) => CreateWindow(id, i == 0 ? c.RootWindow : chain[i - 1])));
         // 从外往里逐个映射、再从里往外逐个取消映射:每次只该重画那个窗口(或父窗口)的子树。原先从顶层走起,
         // 每个窗口的可见区域都要沿祖先算一遍 —— 映射一个 d 层深的窗口是 O(d²),整条链 O(n³),256 层要好几秒。
-        Stopwatch elapsed = Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
         await c.SendManyAsync(chain.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (8, 0, b => b.U32(id))));   // MapWindow
         await c.SyncAsync();
         await c.SendManyAsync(Enumerable.Reverse(chain).Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (10, 0, b => b.U32(id))));   // UnmapWindow

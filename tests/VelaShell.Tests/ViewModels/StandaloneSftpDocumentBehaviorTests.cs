@@ -277,7 +277,7 @@ public sealed class StandaloneSftpDocumentBehaviorTests
 
         // 重算经 RxSchedulers.MainThreadScheduler 排队 —— 产品里那是 Avalonia 的调度器,本程序集的
         // ModuleInit 却设成了就地执行,那样验不出「回到 UI 线程」。这条用例里换成真的,用完还原。
-        var previousScheduler = RxSchedulers.MainThreadScheduler;
+        ISequencer previousScheduler = RxSchedulers.MainThreadScheduler;
         try
         {
             await _session.RunOnUiAsync(async () =>

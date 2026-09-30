@@ -206,7 +206,7 @@ public sealed class SyncCompositeTests
 
         // 48 条 1 MB 的 NoOperation:只数条数(1024)的话全都读进来挂着;按字节算,攒到 32 MB 读端就停。
         byte[] payload = new byte[1 << 20];
-        Task flood = Task.Run(async () =>
+        var flood = Task.Run(async () =>
         {
             for (int i = 0; i < 48; i++)
             {
