@@ -236,4 +236,55 @@ public class LocalizationTests : IDisposable
         service.SetLanguage("ja-JP");
         Assert.AreEqual("クイック接続", service.GetString("QuickConnect"), "ja-JP 应回退到 ja");
     }
+
+    /// <summary>
+    /// 跟随系统:系统界面语言折算成五种界面语言之一,对不上就用英文 ——
+    /// AppImage 目录的收录要求(appimage.github.io#8573):非中文环境默认英文界面。
+    /// </summary>
+    [TestMethod]
+    [DataRow("zh-CN", "zh-CN")]
+    [DataRow("zh-SG", "zh-CN")]
+    [DataRow("zh-Hans", "zh-CN")]
+    [DataRow("zh", "zh-CN")]
+    [DataRow("zh-TW", "zh-TW")]
+    [DataRow("zh-HK", "zh-TW")]
+    [DataRow("zh-MO", "zh-TW")]
+    [DataRow("zh-Hant", "zh-TW")]
+    [DataRow("ja-JP", "ja")]
+    [DataRow("ko-KR", "ko")]
+    [DataRow("en-US", "en")]
+    [DataRow("en-GB", "en")]
+    [DataRow("de-DE", "en")]
+    [DataRow("fr-FR", "en")]
+    [DataRow("pt-BR", "en")]
+    [DataRow("", "en")]
+    public void ResolveSystemLanguage_PicksASupportedLanguageOrEnglish(string system, string expected) =>
+        Assert.AreEqual(expected, LocalizationService.ResolveSystemLanguage(new CultureInfo(system)));
+
+    [TestMethod]
+    public void SetLanguage_Empty_FollowsTheSystemLanguage()
+    {
+        CultureInfo.CurrentUICulture = new("de-DE");
+        var german = new LocalizationService();
+        german.SetLanguage("");
+        Assert.AreEqual("en", german.CurrentLanguage);
+        Assert.AreEqual("Quick Connect", german.GetString("QuickConnect"));
+
+        CultureInfo.CurrentUICulture = new("zh-HK");
+        var hongKong = new LocalizationService();
+        hongKong.SetLanguage("");
+        Assert.AreEqual("zh-TW", hongKong.CurrentLanguage);
+        Assert.AreEqual("快速連線", hongKong.GetString("QuickConnect"));
+    }
+
+    [TestMethod]
+    public void SetLanguage_BackToFollowSystem_UsesTheSystemLanguageNotTheLastChoice()
+    {
+        // SetLanguage 改写了环境文化;跟随系统若现读 CurrentUICulture,会停在上一次选的日语
+        CultureInfo.CurrentUICulture = new("ko-KR");
+        var service = new LocalizationService();
+        service.SetLanguage("ja");
+        service.SetLanguage("");
+        Assert.AreEqual("ko", service.CurrentLanguage);
+    }
 }

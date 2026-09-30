@@ -302,7 +302,7 @@ public partial class SettingsViewModel : ReactiveObject
     // 默认值一律与 AppSettings 模型保持一致(设置审计 C-05/C-06):
     // VM 仅是绑定层,载入时会被 ApplyToViewModel 覆盖,不得自行声明业务默认值。
 
-    /// <summary>界面语言(区域代码,如 "zh-CN");保存后即时切换,无需重启。</summary>
+    /// <summary>界面语言(区域代码,如 "zh-CN";空串 = 跟随系统);保存后即时切换,无需重启。</summary>
     public string Language
     {
         get;
@@ -603,8 +603,8 @@ public partial class SettingsViewModel : ReactiveObject
         }
     }
 
-    /// <summary>支持的界面语言(顺序即语言下拉的条目顺序)。</summary>
-    public string[] AvailableLanguages { get; } = ["zh-CN", "en", "zh-TW", "ja", "ko"];
+    /// <summary>支持的界面语言(顺序即语言下拉的条目顺序);首项空串 = 跟随系统(出厂值)。</summary>
+    public string[] AvailableLanguages { get; } = ["", "zh-CN", "en", "zh-TW", "ja", "ko"];
 
     /// <summary>主题下拉可选值(具名主题的 Id,末项为“跟随系统”)。</summary>
     public string[] AvailableThemes { get; } = UiThemeCatalog.SelectableIds;

@@ -2217,6 +2217,9 @@
   <data name="SetGeneral_LanguageSection" xml:space="preserve">
     <value>언어 및 지역</value>
   </data>
+  <data name="SetGeneral_LanguageSystem" xml:space="preserve">
+    <value>시스템 따르기</value>
+  </data>
   <data name="SetGeneral_LaunchAtStartup" xml:space="preserve">
     <value>시작 시 자동 실행</value>
   </data>

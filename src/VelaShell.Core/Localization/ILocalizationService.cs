@@ -20,7 +20,7 @@ public interface ILocalizationService
     /// <summary>
     /// 设置应用的 UI 语言
     /// </summary>
-    /// <param name="language">语言代码(如 "en"、"zh-CN")</param>
+    /// <param name="language">语言代码(如 "en"、"zh-CN");空串 = 跟随系统</param>
     void SetLanguage(string language);
 
     /// <summary>UI 语言变更后触发,使实时绑定的文本可以刷新。</summary>

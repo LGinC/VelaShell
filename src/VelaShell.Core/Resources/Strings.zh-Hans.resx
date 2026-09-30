@@ -2473,6 +2473,9 @@
   <data name="SetGeneral_LanguageSection" xml:space="preserve">
     <value>语言与区域</value>
   </data>
+  <data name="SetGeneral_LanguageSystem" xml:space="preserve">
+    <value>跟随系统</value>
+  </data>
   <data name="SetGeneral_LaunchAtStartup" xml:space="preserve">
     <value>开机自启动</value>
   </data>

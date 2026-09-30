@@ -2364,6 +2364,9 @@ Paste anyway?</value>
   <data name="SetGeneral_LanguageSection" xml:space="preserve">
     <value>Language &amp; Region</value>
   </data>
+  <data name="SetGeneral_LanguageSystem" xml:space="preserve">
+    <value>Follow system</value>
+  </data>
   <data name="SetGeneral_LaunchAtStartup" xml:space="preserve">
     <value>Launch at startup</value>
   </data>

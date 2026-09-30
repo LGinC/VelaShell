@@ -7,8 +7,16 @@ namespace VelaShell.Core.Models;
 /// <summary>应用全局设置的根模型:序列化为 SonnetDB app_config 文档,聚合各页面的分组选项。</summary>
 public class AppSettings
 {
-    /// <summary>界面显示语言(BCP-47 文化名,如 zh-CN);切换后实时应用。</summary>
-    public string Language { get; set; } = "zh-CN";
+    /// <summary>
+    /// 界面显示语言(BCP-47 文化名,如 zh-CN);空 = 跟随系统。切换后实时应用。
+    /// <para>
+    /// 出厂为空:按系统界面语言在五种界面语言里挑,一个都对不上就用英文
+    /// (<see cref="Localization.LocalizationService.ResolveSystemLanguage" />)。
+    /// 旧出厂值是 zh-CN,非中文环境下全新安装也是一屏中文。存量配置里已经写着的语言照旧生效
+    /// —— 分不清那是用户选的还是旧出厂值,不做迁移。
+    /// </para>
+    /// </summary>
+    public string Language { get; set; } = "";
 
     /// <summary>界面主题标识(如 dark / light)。</summary>
     public string Theme { get; set; } = "dark";
