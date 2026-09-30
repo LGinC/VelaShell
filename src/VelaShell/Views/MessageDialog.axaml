@@ -65,6 +65,18 @@
       <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
       <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
     </Style>
+    <!-- 可编辑下拉(属性弹窗的属主/属组):与上面的输入框同一套外观,字体继承进弹层条目。 -->
+    <Style Selector="ContentControl#BodyHost ComboBox">
+      <Setter Property="Background" Value="{DynamicResource VelaBgInput}" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderPrimary}" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
 
     <Style Selector="Button.dlg-outline">
       <Setter Property="Background" Value="Transparent" />

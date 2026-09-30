@@ -77,6 +77,14 @@ public sealed class RoutingRemoteFileService(
         Resolve(sessionId).SetPermissionsAsync(sessionId, remotePath, octalMode, cancellationToken);
 
     /// <inheritdoc />
+    public Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default) =>
+        Resolve(sessionId).SetOwnerAsync(sessionId, remotePath, owner, group, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+        Resolve(sessionId).GetOwnerChoicesAsync(sessionId, cancellationToken);
+
+    /// <inheritdoc />
     public Task SetLastWriteTimeAsync(Guid sessionId, string remotePath, DateTime lastWriteTimeUtc, CancellationToken cancellationToken = default) =>
         Resolve(sessionId).SetLastWriteTimeAsync(sessionId, remotePath, lastWriteTimeUtc, cancellationToken);
 

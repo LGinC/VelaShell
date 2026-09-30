@@ -3171,6 +3171,12 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Sftp_Octal" xml:space="preserve">
     <value>8進数</value>
   </data>
+  <data name="Sftp_OwnerPlaceholder" xml:space="preserve">
+    <value>ユーザー名または UID</value>
+  </data>
+  <data name="Sftp_GroupPlaceholder" xml:space="preserve">
+    <value>グループ名または GID</value>
+  </data>
   <data name="Sftp_Open" xml:space="preserve">
     <value>開く</value>
   </data>
@@ -3903,6 +3909,12 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SftpSvc_ResumeDownloadMismatch" xml:space="preserve">
     <value>{0} のローカルファイルは転送の待機中に変更されたため、レジューム転送できません。再試行すると、上書き / スキップの競合として処理されます。</value>
+  </data>
+  <data name="SftpSvc_UnknownUser" xml:space="preserve">
+    <value>リモートホストに「{0}」というユーザーはいません。既存のユーザー名か、数値の UID を入力してください。</value>
+  </data>
+  <data name="SftpSvc_UnknownGroup" xml:space="preserve">
+    <value>リモートホストに「{0}」というグループはありません。既存のグループ名か、数値の GID を入力してください。</value>
   </data>
   <data name="SetTransfer_Resume" xml:space="preserve">
     <value>中断した転送を再開</value>

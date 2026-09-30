@@ -3397,6 +3397,12 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="Sftp_Octal" xml:space="preserve">
     <value>八进制</value>
   </data>
+  <data name="Sftp_OwnerPlaceholder" xml:space="preserve">
+    <value>用户名或 UID</value>
+  </data>
+  <data name="Sftp_GroupPlaceholder" xml:space="preserve">
+    <value>组名或 GID</value>
+  </data>
   <data name="Sftp_Open" xml:space="preserve">
     <value>打开</value>
   </data>
@@ -4077,6 +4083,12 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="SftpSvc_ResumeDownloadMismatch" xml:space="preserve">
     <value>{0} 的本地文件在本次传输排队期间发生了变化,已无法续传。重试即可按覆盖/跳过的冲突方式处理。</value>
+  </data>
+  <data name="SftpSvc_UnknownUser" xml:space="preserve">
+    <value>远端没有名为“{0}”的用户。请填写已有的用户名,或数字 UID。</value>
+  </data>
+  <data name="SftpSvc_UnknownGroup" xml:space="preserve">
+    <value>远端没有名为“{0}”的用户组。请填写已有的组名,或数字 GID。</value>
   </data>
   <data name="SetTransfer_Resume" xml:space="preserve">
     <value>恢复中断的传输</value>

@@ -85,6 +85,12 @@ public interface ISftpClientWrapper : IAsyncDisposable
     Task ChangePermissionsAsync(string path, short mode, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 修改远端条目的属主与属组(SFTP setstat 的 uid/gid)。为 null 的一项沿用当前值:
+    /// SFTP v3 的 uid 与 gid 共用一个标志位,只改一项也得两个一起给,所以实现要先 stat 取回另一项。
+    /// </summary>
+    Task ChangeOwnerAsync(string path, int? userId, int? groupId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 设置远端条目的最后修改时间(SFTP setstat)。用于"保留时间戳"的上传收尾
     /// (scp -p 语义):上传完成后把远端 mtime 设回本地源文件的 mtime。
     /// </summary>

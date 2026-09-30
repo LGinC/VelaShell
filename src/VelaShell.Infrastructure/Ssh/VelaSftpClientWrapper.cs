@@ -269,6 +269,44 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
     /// <inheritdoc />
     /// <remarks>
+    /// 只改一项时先 stat 取回另一项再一并写回(uid 与 gid 共用一个标志位)。
+    /// 服务端 stat 时没报 uid/gid 就不写:拿不到的那一项会被当成 0,等于把文件交给 root。
+    /// </remarks>
+    public Task ChangeOwnerAsync(string path, int? userId, int? groupId, CancellationToken ct = default) =>
+        GuardedAsync(async () =>
+        {
+            if (userId is null && groupId is null)
+            {
+                return;
+            }
+            SftpFileSystem fs = EnsureConnected();
+            uint uid;
+            uint gid;
+            if (userId is { } u && groupId is { } g)
+            {
+                (uid, gid) = (unchecked((uint)u), unchecked((uint)g));
+            }
+            else
+            {
+                SftpFileAttributes current = await fs.GetAttributesAsync(path, ct).ConfigureAwait(false);
+                if (!current.HasUidGid)
+                {
+                    throw new NotSupportedException($"The server did not report the current owner of {path}; set owner and group together.");
+                }
+                uid = userId is { } newUid ? unchecked((uint)newUid) : current.UserId;
+                gid = groupId is { } newGid ? unchecked((uint)newGid) : current.GroupId;
+            }
+            var attributes = new SftpFileAttributes
+            {
+                Flags = SftpAttributeFields.UidGid,
+                UserId = uid,
+                GroupId = gid,
+            };
+            await fs.SetAttributesAsync(path, attributes, ct).ConfigureAwait(false);
+        }, ct);
+
+    /// <inheritdoc />
+    /// <remarks>
     /// 库那一侧会**先把当前的 atime 取回来**再一并写回 —— SFTP 的 atime 与 mtime
     /// 共用一个标志位,只给一个会把另一个抹成 1970 年。
     /// </remarks>

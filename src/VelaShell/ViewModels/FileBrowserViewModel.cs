@@ -955,7 +955,7 @@ public class FileBrowserViewModel : ReactiveObject
     /// </summary>
     public ReactiveCommand<ProtocolActionViewModel, RxVoid> InvokeProtocolActionCommand { get; }
 
-    /// <summary>属性弹窗(合并了 chmod 权限编辑,确定时应用变更)。</summary>
+    /// <summary>属性弹窗(合并了 chmod 权限与 chown 属主/属组编辑,确定时应用变更)。</summary>
     public ReactiveCommand<RemoteFileInfoViewModel, RxVoid> PropertiesCommand { get; }
 
     /// <summary>删除选中的单个文件或目录(先弹确认)。</summary>
@@ -1131,10 +1131,11 @@ public class FileBrowserViewModel : ReactiveObject
     private IReadOnlyList<ProtocolAction> _declaredActions = [];
 
     /// <summary>
-    /// 由视图设置:展示合并的属性 + 权限弹窗(参考 WinSCP:属性与权限矩阵在同一弹窗)。
-    /// 返回三位八进制权限值(十进制表示,如 755),取消或未修改时返回 null。
+    /// 由视图设置:展示合并的属性 + 权限 + 属主弹窗(参考 WinSCP:属性、权限矩阵与属主/属组在同一弹窗)。
+    /// 第二个参数是可选的用户名与组名;为 null 表示后端改不了属主,弹窗里属主/属组只读。
+    /// 返回改了的项,取消时返回 null。
     /// </summary>
-    public Func<RemoteFileInfoViewModel, Task<short?>>? ShowFileProperties { get; set; }
+    public Func<RemoteFileInfoViewModel, RemoteOwnerChoices?, Task<FilePropertiesChange?>>? ShowFileProperties { get; set; }
 
     /// <summary>
     /// 由视图设置:要求用户确认危险操作(参数 = 提示消息) → true 表示继续。在删除前使用。
@@ -3335,21 +3336,57 @@ public class FileBrowserViewModel : ReactiveObject
             return;
         }
 
-        // 属性弹窗内含权限矩阵;确定且权限有变化时返回新 mode,由这里落到 chmod。
-        short? mode = await ShowFileProperties(file);
-        if (mode is null)
+        // 能改属主的后端才给候选名单(FTP、插件协议给 null,弹窗里属主/属组只读)。
+        // 名单取不到不该挡住看属性,当作改不了属主就是。
+        RemoteOwnerChoices? ownerChoices = null;
+        try
+        {
+            ownerChoices = await _sftpService.GetOwnerChoicesAsync(_sessionId, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 退回只读。
+        }
+
+        // 属性弹窗内含权限矩阵与属主/属组;确定后只带回改了的项,由这里落到 chown / chmod。
+        FilePropertiesChange? change = await ShowFileProperties(file, ownerChoices);
+        if (change is null || change.IsEmpty)
         {
             return;
         }
+        bool applied = false;
+        string? error = null;
         try
         {
             ErrorMessage = null;
-            await _sftpService.SetPermissionsAsync(_sessionId, file.FullPath, mode.Value, ct);
-            await RefreshAsync(ct);
+
+            // 先 chown 再 chmod:属主是最容易被拒的一项(非 root 只能把属组改成自己所在的组),
+            // 放在前面,它被拒时什么都还没改。
+            if (change.Owner is not null || change.Group is not null)
+            {
+                await _sftpService.SetOwnerAsync(_sessionId, file.FullPath, change.Owner, change.Group, ct);
+                applied = true;
+            }
+            if (change.Mode is { } mode)
+            {
+                await _sftpService.SetPermissionsAsync(_sessionId, file.FullPath, mode, ct);
+                applied = true;
+            }
         }
         catch (Exception ex)
         {
-            ErrorMessage = ex.Message;
+            error = ex.Message;
+        }
+
+        // 只成了一半(chown 过了、chmod 被拒)也要刷新,列表才与远端对得上。
+        // 刷新会清错误条,所以错误在刷新之后再写。
+        if (applied)
+        {
+            await RefreshAsync(ct);
+        }
+        if (error is not null)
+        {
+            ErrorMessage = error;
         }
     }
 

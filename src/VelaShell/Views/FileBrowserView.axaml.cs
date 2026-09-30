@@ -884,12 +884,13 @@ public partial class FileBrowserView : UserControl
     }
 
     /// <summary>
-    /// 属性弹窗(参考 WinSCP):基本信息 + rwx 权限矩阵 + 八进制输入合并在一个界面。
+    /// 属性弹窗(参考 WinSCP):基本信息 + 属主/属组 + rwx 权限矩阵 + 八进制输入合并在一个界面。
     /// 文本着色一律走 MessageDialog 的 BodyHost 样式类(dim/mono/mono-accent)—— 代码里
     /// FindResource 取不到主题字典的画刷(会拿到 null 把文字画没)。
-    /// 确定且权限有变化时返回新 mode(三位八进制按十进制书写,如 755),否则返回 null。
+    /// <paramref name="ownerChoices" /> 不为 null 时属主/属组是可编辑下拉(候选取自远端 passwd/group),
+    /// 为 null 时后端改不了属主,两行只读。确定时返回改了的项,取消时返回 null。
     /// </summary>
-    private async Task<short?> ShowFilePropertiesAsync(RemoteFileInfoViewModel file)
+    private async Task<FilePropertiesChange?> ShowFilePropertiesAsync(RemoteFileInfoViewModel file, RemoteOwnerChoices? ownerChoices)
     {
         if (TopLevel.GetTopLevel(this) is not Window owner)
         {
@@ -958,8 +959,40 @@ public partial class FileBrowserView : UserControl
         AddRow(Strings.Get("Sftp_LinkTarget"), file.LinkTarget ?? string.Empty);
         AddRow(Strings.Size, file.FormattedSize);
         AddRow(Strings.Modified, file.FormattedModifiedTime);
-        AddRow(Strings.PermissionOwner, file.Owner);
-        AddRow(Strings.PermissionGroup, file.Group);
+
+        // 可编辑下拉:从候选里挑,或直接填名称 / 数字 id(候选为空时 —— 纯 SFTP 账号查不到表 —— 只能填数字)。
+        ComboBox AddOwnerRow(string label, string value, IReadOnlyList<string> choices, string placeholder)
+        {
+            var grid = new Grid { ColumnDefinitions = [with("96,*")] };
+            var labelText = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+            labelText.Classes.Add("dim");
+            grid.Children.Add(labelText);
+            var box = new ComboBox
+            {
+                IsEditable = true,
+                ItemsSource = choices,
+                Text = value,
+                PlaceholderText = placeholder,
+                MaxDropDownHeight = 240,
+            };
+            Grid.SetColumn(box, 1);
+            grid.Children.Add(box);
+            rows.Children.Add(grid);
+            return box;
+        }
+
+        ComboBox? ownerBox = null;
+        ComboBox? groupBox = null;
+        if (ownerChoices is null)
+        {
+            AddRow(Strings.PermissionOwner, file.Owner);
+            AddRow(Strings.PermissionGroup, file.Group);
+        }
+        else
+        {
+            ownerBox = AddOwnerRow(Strings.PermissionOwner, file.Owner, ownerChoices.Users, Strings.Get("Sftp_OwnerPlaceholder"));
+            groupBox = AddOwnerRow(Strings.PermissionGroup, file.Group, ownerChoices.Groups, Strings.Get("Sftp_GroupPlaceholder"));
+        }
         content.Children.Add(rows);
 
         // ── 权限矩阵("drwxr-xr-x" → 9 个 rwx 标志;异常串回退为全不勾) ────────
@@ -1120,6 +1153,17 @@ public partial class FileBrowserView : UserControl
             return null;
         }
         short newMode = CurrentMode();
-        return newMode == initialMode ? null : newMode;
+        return new(
+            newMode == initialMode ? null : newMode,
+            ChangedOwnerText(ownerBox, file.Owner),
+            ChangedOwnerText(groupBox, file.Group));
+    }
+
+    /// <summary>属主/属组下拉里改过的文本;没改、清空或只读(<paramref name="box" /> 为 null)时为 null。</summary>
+    /// <remarks>清空当作没改:属主不存在「设成空」这回事。</remarks>
+    private static string? ChangedOwnerText(ComboBox? box, string original)
+    {
+        string text = box?.Text?.Trim() ?? string.Empty;
+        return text.Length == 0 || string.Equals(text, original, StringComparison.Ordinal) ? null : text;
     }
 }

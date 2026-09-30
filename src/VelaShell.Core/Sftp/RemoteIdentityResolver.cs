@@ -5,14 +5,24 @@ using VelaShell.Core.Ssh;
 namespace VelaShell.Core.Sftp;
 
 /// <summary>
-/// 一次远端查表得到的 UID/GID → 名称映射。查不到的 id 不入表,由取名方法回退数字。
+/// 一次远端查表得到的 UID/GID ↔ 名称映射。查不到的 id 不入表,由取名方法回退数字。
 /// </summary>
 /// <param name="Users">UID → 用户名。</param>
 /// <param name="Groups">GID → 组名。</param>
-internal sealed record RemoteIdentityMap(IReadOnlyDictionary<int, string> Users, IReadOnlyDictionary<int, string> Groups)
+/// <param name="UserIds">用户名 → UID。同一个 id 有几个名字(如 BSD 的 root 与 toor)时每个名字都在。</param>
+/// <param name="GroupIds">组名 → GID,同上。</param>
+internal sealed record RemoteIdentityMap(
+    IReadOnlyDictionary<int, string> Users,
+    IReadOnlyDictionary<int, string> Groups,
+    IReadOnlyDictionary<string, int> UserIds,
+    IReadOnlyDictionary<string, int> GroupIds)
 {
     /// <summary>查表不可用时的空映射:所有 id 都回退为数字。</summary>
-    public static readonly RemoteIdentityMap Empty = new(new Dictionary<int, string>(), new Dictionary<int, string>());
+    public static readonly RemoteIdentityMap Empty = new(
+        new Dictionary<int, string>(),
+        new Dictionary<int, string>(),
+        new Dictionary<string, int>(),
+        new Dictionary<string, int>());
 
     /// <summary>取 UID 对应的用户名;查不到则回退十进制数字(与 ls -n 的显示一致)。</summary>
     public string UserName(int uid) =>
@@ -21,6 +31,31 @@ internal sealed record RemoteIdentityMap(IReadOnlyDictionary<int, string> Users,
     /// <summary>取 GID 对应的组名;查不到则回退十进制数字。</summary>
     public string GroupName(int gid) =>
         Groups.TryGetValue(gid, out string? name) ? name : gid.ToString(CultureInfo.InvariantCulture);
+
+    /// <summary>把 chown 的属主输入翻成 UID,规则见 <see cref="TryResolve" />。</summary>
+    public bool TryResolveUser(string text, out int uid) => TryResolve(UserIds, text, out uid);
+
+    /// <summary>把 chown 的属组输入翻成 GID,规则见 <see cref="TryResolve" />。</summary>
+    public bool TryResolveGroup(string text, out int gid) => TryResolve(GroupIds, text, out gid);
+
+    /// <summary>
+    /// 先当名称查表,查不到再当十进制数字 —— 与 chown 命令同一个顺序(名字就叫「1000」的用户优先于 UID 1000)。
+    /// 数字按 32 位无符号读,再按位转成 <see cref="SftpEntry.UserId" /> 用的 int,与列目录时的映射对得上。
+    /// </summary>
+    private static bool TryResolve(IReadOnlyDictionary<string, int> byName, string text, out int id)
+    {
+        if (byName.TryGetValue(text, out id))
+        {
+            return true;
+        }
+        if (uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out uint numeric))
+        {
+            id = unchecked((int)numeric);
+            return true;
+        }
+        id = 0;
+        return false;
+    }
 }
 
 /// <summary>
@@ -95,16 +130,20 @@ internal sealed class RemoteIdentityResolver(ISshConnectionService connectionSer
         // 没有分隔标记 = group 段没跑出来(如 echo 被 shell 吞掉);passwd 段仍可用。
         string passwd = split >= 0 ? output[..split] : output;
         string group = split >= 0 ? output[(split + SectionSeparator.Length)..] : string.Empty;
-        return new(ParseSection(passwd), ParseSection(group));
+        (Dictionary<int, string> users, Dictionary<string, int> userIds) = ParseSection(passwd);
+        (Dictionary<int, string> groups, Dictionary<string, int> groupIds) = ParseSection(group);
+        return new(users, groups, userIds, groupIds);
     }
 
     /// <summary>
     /// 解析 passwd/group 的行格式 "name:x:id:…" —— 两张表的前三列同构,故共用。
-    /// 同 id 多行时以首行为准:getent 的首行即 NSS 的解析结果。
+    /// 同 id 多行时 id → 名称以首行为准:getent 的首行即 NSS 的解析结果;
+    /// 名称 → id 则每个名字都收(chown 填别名也得认)。名称区分大小写,与 Unix 一致。
     /// </summary>
-    private static Dictionary<int, string> ParseSection(string section)
+    private static (Dictionary<int, string> ById, Dictionary<string, int> ByName) ParseSection(string section)
     {
         Dictionary<int, string> map = [];
+        Dictionary<string, int> byName = new(StringComparer.Ordinal);
         foreach (string line in section.Split('\n'))
         {
             string[] parts = line.Split(':');
@@ -122,8 +161,9 @@ internal sealed class RemoteIdentityResolver(ISshConnectionService connectionSer
             if (name.Length > 0)
             {
                 map.TryAdd(id, name);
+                byName.TryAdd(name, id);
             }
         }
-        return map;
+        return (map, byName);
     }
 }

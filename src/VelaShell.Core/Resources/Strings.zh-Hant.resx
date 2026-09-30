@@ -3397,6 +3397,12 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Sftp_Octal" xml:space="preserve">
     <value>八進位</value>
   </data>
+  <data name="Sftp_OwnerPlaceholder" xml:space="preserve">
+    <value>使用者名稱或 UID</value>
+  </data>
+  <data name="Sftp_GroupPlaceholder" xml:space="preserve">
+    <value>群組名稱或 GID</value>
+  </data>
   <data name="Sftp_Open" xml:space="preserve">
     <value>開啟</value>
   </data>
@@ -4077,6 +4083,12 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="SftpSvc_ResumeDownloadMismatch" xml:space="preserve">
     <value>{0} 的本機檔案在本次傳輸排隊期間發生了變化,已無法續傳。重試即可按覆蓋/略過的衝突方式處理。</value>
+  </data>
+  <data name="SftpSvc_UnknownUser" xml:space="preserve">
+    <value>遠端沒有名為「{0}」的使用者。請填寫既有的使用者名稱,或數字 UID。</value>
+  </data>
+  <data name="SftpSvc_UnknownGroup" xml:space="preserve">
+    <value>遠端沒有名為「{0}」的群組。請填寫既有的群組名稱,或數字 GID。</value>
   </data>
   <data name="SetTransfer_Resume" xml:space="preserve">
     <value>恢復中斷的傳輸</value>
