@@ -1435,3 +1435,17 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 不在此列:调试日志(`Trace.WriteLine`)、匹配远端输出的中文关键词(提示词识别、FTP 回复、诊断原因)、调用方会捕获的内部异常;SSH / X 服务端库的中文诊断文本另有 `feature-plan.md` 条目。
 
 **三、验证**:`LocalizedKeyUsageTests` 新增两条守卫 —— `Xaml_HasNoHardcodedChineseText`(XAML 属性值与元素文本不许写死中文,语言下拉的本名除外)与 `Code_HasNoHardcodedChineseText`(C# 字符串字面量不许写死中文;跳过注释、调试日志、分析器豁免理由与正则特性,匹配远端输出的几个文件列了白名单并附理由)。`ConnectionDiagnosticsViewModelTests` 钉住英文界面下的步骤名、副标题与报告不含中文;`SettingsViewModelTests` 钉住「先换语言再落盘」与「主题索引忽略 -1」;`LanguageChange_RefreshesTextComposedInCode` 补状态栏空闲提示。整个解决方案 0 失败:`VelaShell.Core.Tests` 594 通过 / 20 跳过,`VelaShell.Tests` 1612 通过 / 16 跳过。⚠️ 中间踩了一脚:往 resx 里按字母序插键时,zh-Hans / zh-Hant 文件头的样例注释里有 `<data name="Name1">`,16 个键被插进了注释 —— 编译不报错,是 `AllCultures_HaveIdenticalKeySets` 报「zh-Hans 缺失 16 键」才发现的。
+
+## ✅ 144. 2026-09-30 远端文件改属主 / 属组(chown)(`feature-plan.md` 🟢 P3 项)
+
+**一、问题**:属性弹窗里属主、属组只读,`ISftpService` 只有 chmod 没有 chown(velashell-docs 的 WinSCP 差距分析里记为 ❌)。
+
+**二、做法**:
+- **契约**:`ISftpService` 加 `SetOwnerAsync(sessionId, path, owner, group)`(填名称或十进制数字 id,null 表示这一项不改)与 `GetOwnerChoicesAsync`(可选的用户名 / 组名;返回 null 表示后端改不了属主);`ISftpClientWrapper` 加 `ChangeOwnerAsync(path, uid?, gid?)`。
+- **SFTP**:名称翻数字 id 复用列目录显示名称的那张查表(`RemoteIdentityResolver`,每会话一次 `getent passwd` / `group`),查表多记一份名称 → id,同 id 的别名(BSD 的 `toor`)也认。顺序与 `chown` 命令一致:先当名称查,查不到再当数字。两样都不是就抛本地化的 `ArgumentException`(`SftpSvc_UnknownUser` / `SftpSvc_UnknownGroup`),不发请求。纯 SFTP 账号查不到表时候选为空,仍可填数字。
+- **`VelaSftpClientWrapper`**:SFTP v3 的 uid 与 gid 共用一个标志位,只改一项时先 stat 取回另一项再一并 setstat;服务端 stat 时没报 uid/gid 就不写 —— 拿不到的一项会被当成 0,等于把文件交给 root。只用库的公开 `SetAttributesAsync`,`src/VelaShell.Ssh` 没动。
+- **FTP 与插件协议**:FTP 没有改属主的标准命令,SDK 的 `IProtocolFileSystem` 没有这一面;`GetOwnerChoicesAsync` 返回 null,`SetOwnerAsync` 抛 `NotSupportedException`。路由与串行化装饰器透传。
+- **界面**:候选不为 null 时,属性弹窗的属主 / 属组换成可编辑下拉(`MessageDialog` 的 BodyHost 补一条 ComboBox 样式,与输入框同一套令牌),占位文字 `Sftp_OwnerPlaceholder` / `Sftp_GroupPlaceholder`,清空当作不改;否则两行照旧只读。`ShowFileProperties` 改为带回 `FilePropertiesChange`(只带改了的项)。确定后**先 chown 再 chmod**:属主最容易被拒(非 root 只能把属组改成自己所在的组),放前面,被拒时什么都还没改;chown 成了、chmod 被拒时照样刷新列表,错误在刷新之后再写,不被刷新清掉。
+- 不递归、不批量(与 chmod 一致);符号链接改的是它指向的对象。
+
+**三、验证**:`SftpServiceTests` 新增 9 条(名称翻译、只改属组、无查表时的数字 id、名字像数字时名字优先、别名、未知名称不发请求、空操作、候选排序、无查表时给空名单而非 null);`FileBrowserViewModelTests` 新增 5 条(候选透传、候选取不到退回只读、先 chown 再 chmod、chown 被拒不动权限、chmod 被拒仍刷新且保留错误),原有 3 条改用新委托;`SerializedSftpServiceTests` 的透传清单补两项。新增 `SftpOwnerIntegrationTests`(DockerIntegration)对真实 OpenSSH:只改属组时属主原样写回,把属主交给 root 冒出 `VelaSftpPermissionDeniedException` 且文件不动。把「沿用当前值」临时改成写 0 后,该用例报服务端 Permission denied 失败,确认它真跑过、不是早退记为通过。另用 headless 截图核对了弹窗(深 / 浅主题,可编辑 / 只读 / 下拉展开)。整个解决方案:`VelaShell.Core.Tests` 616 通过 / 10 跳过 / 1 失败,`VelaShell.Tests` 1626 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 569 通过 / 4 跳过,其余全过。唯一的失败 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 与本改动无关:本机的 `velashell-test-shells` 镜像建于 09-22,早于 Dockerfile 里给 `vela-dash` 关 X11 的 `Match` 段(09-23),靶机没按预期拒绝 X11;重建该镜像即可。
