@@ -69,6 +69,12 @@ public sealed class SerializedSftpService(ISftpService inner, Guid sessionId) : 
     /// <summary>设置远端文件权限的串行化透传。</summary>
     public Task SetPermissionsAsync(Guid sessionId, string remotePath, short octalMode, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.SetPermissionsAsync(sessionId, remotePath, octalMode, token), cancellationToken);
 
+    /// <summary>修改远端属主/属组的串行化透传。</summary>
+    public Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.SetOwnerAsync(sessionId, remotePath, owner, group, token), cancellationToken);
+
+    /// <summary>取可选属主/属组的串行化透传。</summary>
+    public Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.GetOwnerChoicesAsync(sessionId, token), cancellationToken);
+
     /// <summary>设置远端修改时间的串行化透传。</summary>
     public Task SetLastWriteTimeAsync(Guid sessionId, string remotePath, DateTime lastWriteTimeUtc, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.SetLastWriteTimeAsync(sessionId, remotePath, lastWriteTimeUtc, token), cancellationToken);
 

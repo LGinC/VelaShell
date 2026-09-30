@@ -210,6 +210,8 @@ public sealed class SerializedSftpServiceTests
         await service.EnsureDirectoryAsync(inner.SessionId, "/ensure", cancellationToken: cancellation.Token);
         await service.RenameAsync(inner.SessionId, "/old", "/new", cancellation.Token);
         await service.SetPermissionsAsync(inner.SessionId, "/permissions", 755, cancellation.Token);
+        await service.SetOwnerAsync(inner.SessionId, "/owner", "deploy", "www-data", cancellation.Token);
+        await service.GetOwnerChoicesAsync(inner.SessionId, cancellation.Token);
         await service.GetFileInfoAsync(inner.SessionId, "/info", cancellation.Token);
         await service.ExistsAsync(inner.SessionId, "/exists", cancellation.Token);
         await service.GetWorkingDirectoryAsync(inner.SessionId, cancellation.Token);
@@ -217,7 +219,7 @@ public sealed class SerializedSftpServiceTests
 
         // Then
         Assert.AreSequenceEqual(
-            ["ListDirectory", "Upload", "Download", "Delete", "CreateDirectory", "CreateFile", "EnsureDirectory", "Rename", "SetPermissions", "GetFileInfo", "Exists", "GetWorkingDirectory", "CloseSession"],
+            ["ListDirectory", "Upload", "Download", "Delete", "CreateDirectory", "CreateFile", "EnsureDirectory", "Rename", "SetPermissions", "SetOwner", "GetOwnerChoices", "GetFileInfo", "Exists", "GetWorkingDirectory", "CloseSession"],
             inner.OperationNames);
         Assert.IsTrue(inner.CancellationTokens[..^1].All(token => token == cancellation.Token));
         Assert.AreEqual(CancellationToken.None, inner.CancellationTokens[^1]);
@@ -286,6 +288,8 @@ public sealed class SerializedSftpServiceTests
         public Task EnsureDirectoryAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) => InvokeAsync("EnsureDirectory", cancellationToken);
         public Task RenameAsync(Guid sessionId, string oldPath, string newPath, CancellationToken cancellationToken = default) => InvokeAsync("Rename", cancellationToken);
         public Task SetPermissionsAsync(Guid sessionId, string remotePath, short octalMode, CancellationToken cancellationToken = default) => InvokeAsync("SetPermissions", cancellationToken);
+        public Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default) => InvokeAsync("SetOwner", cancellationToken);
+        public Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default) => InvokeAsync<RemoteOwnerChoices?>("GetOwnerChoices", null, cancellationToken);
         public Task SetLastWriteTimeAsync(Guid sessionId, string remotePath, DateTime lastWriteTimeUtc, CancellationToken cancellationToken = default) => InvokeAsync("SetLastWriteTime", cancellationToken);
         public Task<IReadOnlyDictionary<string, string?>> ComputeSha256Async(Guid sessionId, IReadOnlyList<string> remotePaths, CancellationToken cancellationToken = default) => InvokeAsync<IReadOnlyDictionary<string, string?>>("ComputeSha256", new Dictionary<string, string?>(), cancellationToken);
         public Task CreateSymbolicLinkAsync(Guid sessionId, string linkPath, string targetPath, CancellationToken cancellationToken = default) => InvokeAsync("CreateSymbolicLink", cancellationToken);

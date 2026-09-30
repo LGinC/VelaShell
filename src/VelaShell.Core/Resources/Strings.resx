@@ -3288,6 +3288,14 @@ Open Settings now to configure it?</value>
   <data name="Sftp_Octal" xml:space="preserve">
     <value>Octal</value>
   </data>
+  <data name="Sftp_OwnerPlaceholder" xml:space="preserve">
+    <value>User name or UID</value>
+    <comment>属性弹窗里属主输入框的占位文字。</comment>
+  </data>
+  <data name="Sftp_GroupPlaceholder" xml:space="preserve">
+    <value>Group name or GID</value>
+    <comment>属性弹窗里属组输入框的占位文字。</comment>
+  </data>
   <data name="Sftp_Open" xml:space="preserve">
     <value>Open</value>
   </data>
@@ -3942,6 +3950,12 @@ Overwrite it?</value>
   </data>
   <data name="SftpSvc_ResumeDownloadMismatch" xml:space="preserve">
     <value>The local file for {0} changed while this transfer was queued, so it can no longer be resumed. Retry the transfer to resolve it as an overwrite/skip conflict.</value>
+  </data>
+  <data name="SftpSvc_UnknownUser" xml:space="preserve">
+    <value>The remote host has no user named "{0}". Enter an existing user name or a numeric UID.</value>
+  </data>
+  <data name="SftpSvc_UnknownGroup" xml:space="preserve">
+    <value>The remote host has no group named "{0}". Enter an existing group name or a numeric GID.</value>
   </data>
   <data name="SetTransfer_Resume" xml:space="preserve">
     <value>Resume interrupted transfers</value>

@@ -374,6 +374,19 @@ public sealed class FtpFileService(IProxyResolver? proxyResolver = null) : ISftp
 
     /// <inheritdoc />
     /// <remarks>
+    /// FTP 没有改属主的标准命令(<c>SITE CHOWN</c> 不在任何 RFC 里,各家服务器要么没有、要么只给 root),
+    /// 如实报不支持。属性弹窗靠 <see cref="GetOwnerChoicesAsync" /> 返回 null 把属主/属组显示成只读,
+    /// 正常走不到这里。
+    /// </remarks>
+    public Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default) =>
+        Task.FromException(new NotSupportedException("FTP has no standard command for changing file ownership."));
+
+    /// <inheritdoc />
+    public Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+        Task.FromResult<RemoteOwnerChoices?>(null);
+
+    /// <inheritdoc />
+    /// <remarks>
     /// 走 FluentFTP 的 <c>GetChecksum</c>:服务器通告了 <c>HASH</c>(draft-bryan-ftpext-hash)且支持 SHA-256 时用它,
     /// 否则试 <c>XSHA256</c>。指定了 SHA-256 就不会退而求其次去用 MD5 / CRC —— 服务器只有那些时库抛
     /// <see cref="FtpHashUnsupportedException" />,这里翻译成 <see cref="NotSupportedException" />。

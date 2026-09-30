@@ -807,6 +807,116 @@ public class SftpServiceTests
                        "分隔标记未加引号,group 段会被 shell 当注释吞掉。");
     }
 
+    // —— chown:名称 → 数字 id(与上面的显示翻译共用同一张表)————————————————
+
+    [TestMethod]
+    public async Task SetOwnerAsync_TranslatesNamesUsingRemotePasswdDatabase()
+    {
+        GivenIdentityLookupReturns(IdentityLookupOutput);
+
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", "deploy", "www-data");
+
+        await _sftpClient.Received(1).ChangeOwnerAsync("/srv/app.log", 1000, 33, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>只改一项:另一项传 null,由客户端取回当前值一并写回(uid/gid 共用一个标志位)。</summary>
+    [TestMethod]
+    public async Task SetOwnerAsync_OnlyGroup_LeavesOwnerToTheClient()
+    {
+        GivenIdentityLookupReturns(IdentityLookupOutput);
+
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", null, "www-data");
+
+        await _sftpClient.Received(1).ChangeOwnerAsync("/srv/app.log", null, 33, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>纯 SFTP 账号查不到表:数字 id 照样能用。</summary>
+    [TestMethod]
+    public async Task SetOwnerAsync_WithoutIdentityDatabase_AcceptsNumericIds()
+    {
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", " 1001 ", "4294967294");
+
+        await _sftpClient.Received(1).ChangeOwnerAsync("/srv/app.log", 1001, unchecked((int)4294967294u), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>与 chown 命令同一个顺序:名字就叫「42」的用户优先于 UID 42。</summary>
+    [TestMethod]
+    public async Task SetOwnerAsync_NameThatLooksNumeric_PrefersTheName()
+    {
+        GivenIdentityLookupReturns("""
+                                   42:x:1234:1234::/home/42:/bin/sh
+                                   ###VELA-GROUPS###
+                                   """);
+
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", "42", null);
+
+        await _sftpClient.Received(1).ChangeOwnerAsync("/srv/app.log", 1234, null, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>同一个 UID 的别名(BSD 的 toor)显示时让位给首行,填进来时照样认。</summary>
+    [TestMethod]
+    public async Task SetOwnerAsync_AliasSharingAnId_Resolves()
+    {
+        GivenIdentityLookupReturns("""
+                                   root:x:0:0:root:/root:/bin/sh
+                                   toor:x:0:0:Bourne-again Superuser:/root:/bin/sh
+                                   ###VELA-GROUPS###
+                                   wheel:x:0:root
+                                   """);
+
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", "toor", "wheel");
+
+        await _sftpClient.Received(1).ChangeOwnerAsync("/srv/app.log", 0, 0, Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>表里没有、也不是数字:当场报错,不往服务端发任何东西。</summary>
+    [TestMethod]
+    [DataRow("ghost", null)]
+    [DataRow(null, "ghosts")]
+    [DataRow("-1", null)]
+    [DataRow("", null)]
+    public async Task SetOwnerAsync_UnknownName_ThrowsWithoutTouchingTheServer(string? owner, string? group)
+    {
+        GivenIdentityLookupReturns(IdentityLookupOutput);
+
+        ArgumentException ex = await Assert.ThrowsExactlyAsync<ArgumentException>(() => _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", owner, group));
+
+        // 消息原样进错误条:不能拖着「(Parameter 'owner')」这种尾巴。
+        Assert.IsNull(ex.ParamName);
+        await _sftpClient.DidNotReceive().ChangeOwnerAsync(Arg.Any<string>(), Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
+    }
+
+    [TestMethod]
+    public async Task SetOwnerAsync_NothingToChange_IsANoOp()
+    {
+        await _sftpService.SetOwnerAsync(_sessionId, "/srv/app.log", null, null);
+
+        await _sftpClient.DidNotReceive().ChangeOwnerAsync(Arg.Any<string>(), Arg.Any<int?>(), Arg.Any<int?>(), Arg.Any<CancellationToken>());
+    }
+
+    [TestMethod]
+    public async Task GetOwnerChoicesAsync_ListsNamesFromIdentityDatabaseInOrdinalOrder()
+    {
+        GivenIdentityLookupReturns(IdentityLookupOutput);
+
+        RemoteOwnerChoices? choices = await _sftpService.GetOwnerChoicesAsync(_sessionId);
+
+        Assert.IsNotNull(choices);
+        Assert.AreSequenceEqual(["deploy", "root"], choices.Users);
+        Assert.AreSequenceEqual(["root", "www-data"], choices.Groups);
+    }
+
+    /// <summary>查不到表不等于改不了属主:给空名单(弹窗照样可填数字),而不是 null(只读)。</summary>
+    [TestMethod]
+    public async Task GetOwnerChoicesAsync_WithoutIdentityDatabase_ReturnsEmptyListsNotNull()
+    {
+        RemoteOwnerChoices? choices = await _sftpService.GetOwnerChoicesAsync(_sessionId);
+
+        Assert.IsNotNull(choices);
+        Assert.IsEmpty(choices.Users);
+        Assert.IsEmpty(choices.Groups);
+    }
+
     private ISshClientWrapper GivenIdentityLookupReturns(string output)
     {
         ISshClientWrapper sshClient = Substitute.For<ISshClientWrapper>();

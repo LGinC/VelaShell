@@ -16,6 +16,14 @@ public readonly record struct SftpDeleteProgress(int DeletedCount, int TotalCoun
 }
 
 /// <summary>
+/// 改属主/属组时可选的用户名与组名(远端 passwd/group 库里查到的),各按序数排好。
+/// 列表为空不代表改不了 —— 查不到表(纯 SFTP 账号没有 exec 通道)时照样可以直接填数字 id。
+/// </summary>
+/// <param name="Users">可选的用户名。</param>
+/// <param name="Groups">可选的组名。</param>
+public sealed record RemoteOwnerChoices(IReadOnlyList<string> Users, IReadOnlyList<string> Groups);
+
+/// <summary>
 /// 基于已有 SSH 会话的 SFTP 文件操作:目录列举、上传/下载、删除、创建、重命名、权限与元数据查询,以会话 id 为键。
 /// </summary>
 public interface ISftpService : IAsyncDisposable
@@ -82,6 +90,21 @@ public interface ISftpService : IAsyncDisposable
     /// 以十进制数书写(如 755、644),与 `chmod` 记法一致。
     /// </summary>
     Task SetPermissionsAsync(Guid sessionId, string remotePath, short octalMode, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 修改远端条目的属主与属组(chown)。<paramref name="owner" /> / <paramref name="group" /> 填用户名 / 组名
+    /// 或十进制数字 id,为 null 表示这一项不改,两个都为 null 时什么都不做。
+    /// 名称按远端的 passwd/group 库翻成数字 id,翻不出来抛 <see cref="ArgumentException" />。
+    /// 符号链接改的是它指向的对象(与 <see cref="SetPermissionsAsync" /> 一致)。
+    /// 后端没有这种能力(FTP、插件协议)时抛 <see cref="NotSupportedException" />。
+    /// </summary>
+    Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 改属主/属组时可选的用户名与组名。后端改不了属主(FTP、插件协议)时返回 null ——
+    /// 属性弹窗据此把属主/属组显示成只读,而不是让用户填完再报「不支持」。
+    /// </summary>
+    Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 把远端文件的修改时间设为 <paramref name="lastWriteTimeUtc" />(UTC)。目录同步靠它在上传后

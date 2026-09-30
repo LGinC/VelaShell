@@ -991,10 +991,10 @@ public class FileBrowserViewModelTests
     public async Task Properties_InvokesViewCallback()
     {
         RemoteFileInfoViewModel? shown = null;
-        _vm.ShowFileProperties = f =>
+        _vm.ShowFileProperties = (f, _) =>
         {
             shown = f;
-            return Task.FromResult<short?>(null);
+            return Task.FromResult<FilePropertiesChange?>(null);
         };
         var file = new RemoteFileInfoViewModel(CreateTestFiles()[0]);
         await _vm.PropertiesCommand.Execute(file).FirstAsync();
@@ -1694,12 +1694,12 @@ public class FileBrowserViewModelTests
         Assert.AreEqual("/home/user/documents", crumbs[2].Path);
     }
 
-    // 属性弹窗已合并 chmod(参考 WinSCP):ShowFileProperties 返回变更后的 mode,null = 取消/未改。
+    // 属性弹窗已合并 chmod 与 chown(参考 WinSCP):ShowFileProperties 只带回改了的项,null = 取消。
     [TestMethod]
     [TestCategory("FileBrowser")]
     public async Task Properties_WithChangedMode_AppliesChmod()
     {
-        _vm.ShowFileProperties = _ => Task.FromResult<short?>(755);
+        _vm.ShowFileProperties = (_, _) => Task.FromResult<FilePropertiesChange?>(new(755, null, null));
         _sftpService
             .ListDirectoryAsync(_sessionId, Arg.Any<string>(), Arg.Any<CancellationToken>())
             .Returns(Task.FromResult(new List<RemoteFileInfo>()));
@@ -1713,13 +1713,25 @@ public class FileBrowserViewModelTests
                 755,
                 Arg.Any<CancellationToken>()
             );
+        await _sftpService
+            .DidNotReceive()
+            .SetOwnerAsync(
+                Arg.Any<Guid>(),
+                Arg.Any<string>(),
+                Arg.Any<string?>(),
+                Arg.Any<string?>(),
+                Arg.Any<CancellationToken>()
+            );
     }
 
     [TestMethod]
     [TestCategory("FileBrowser")]
-    public async Task Properties_CancelledOrUnchanged_DoesNotChmod()
+    [DataRow(false, DisplayName = "取消")]
+    [DataRow(true, DisplayName = "确定但什么都没改")]
+    public async Task Properties_CancelledOrUnchanged_ChangesNothing(bool confirmedWithoutChanges)
     {
-        _vm.ShowFileProperties = _ => Task.FromResult<short?>(null);
+        FilePropertiesChange? change = confirmedWithoutChanges ? new(null, null, null) : null;
+        _vm.ShowFileProperties = (_, _) => Task.FromResult(change);
         var file = new RemoteFileInfoViewModel(CreateTestFiles()[1]);
         await _vm.PropertiesCommand.Execute(file).FirstAsync();
         await _sftpService
@@ -1730,6 +1742,116 @@ public class FileBrowserViewModelTests
                 Arg.Any<short>(),
                 Arg.Any<CancellationToken>()
             );
+        await _sftpService
+            .DidNotReceive()
+            .SetOwnerAsync(
+                Arg.Any<Guid>(),
+                Arg.Any<string>(),
+                Arg.Any<string?>(),
+                Arg.Any<string?>(),
+                Arg.Any<CancellationToken>()
+            );
+    }
+
+    /// <summary>后端给的候选名单原样交给弹窗;null(FTP、插件协议)即属主/属组只读。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Properties_PassesOwnerChoicesToDialog()
+    {
+        var choices = new RemoteOwnerChoices(["deploy", "root"], ["root", "www-data"]);
+        _sftpService
+            .GetOwnerChoicesAsync(_sessionId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<RemoteOwnerChoices?>(choices));
+        RemoteOwnerChoices? passed = null;
+        _vm.ShowFileProperties = (_, c) =>
+        {
+            passed = c;
+            return Task.FromResult<FilePropertiesChange?>(null);
+        };
+        await _vm.PropertiesCommand.Execute(new RemoteFileInfoViewModel(CreateTestFiles()[1])).FirstAsync();
+        Assert.AreSame(choices, passed);
+    }
+
+    /// <summary>候选名单取不到不该挡住看属性:退回只读照样打开。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Properties_WhenOwnerChoicesFail_StillOpensReadOnly()
+    {
+        _sftpService
+            .GetOwnerChoicesAsync(_sessionId, Arg.Any<CancellationToken>())
+            .Returns(Task.FromException<RemoteOwnerChoices?>(new InvalidOperationException("session gone")));
+        bool shown = false;
+        RemoteOwnerChoices? passed = new([], []);
+        _vm.ShowFileProperties = (_, c) =>
+        {
+            shown = true;
+            passed = c;
+            return Task.FromResult<FilePropertiesChange?>(null);
+        };
+        await _vm.PropertiesCommand.Execute(new RemoteFileInfoViewModel(CreateTestFiles()[1])).FirstAsync();
+        Assert.IsTrue(shown);
+        Assert.IsNull(passed);
+        Assert.IsNull(_vm.ErrorMessage);
+    }
+
+    /// <summary>属主与权限都改了:先 chown 再 chmod,只改属主时属组传 null(沿用当前值)。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Properties_WithChangedOwnerAndMode_ChownsThenChmods()
+    {
+        _vm.ShowFileProperties = (_, _) => Task.FromResult<FilePropertiesChange?>(new(640, "deploy", null));
+        _sftpService
+            .ListDirectoryAsync(_sessionId, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new List<RemoteFileInfo>()));
+        await _vm.PropertiesCommand.Execute(new RemoteFileInfoViewModel(CreateTestFiles()[1])).FirstAsync();
+        Received.InOrder(() =>
+        {
+            _sftpService.SetOwnerAsync(_sessionId, "/home/user/readme.txt", "deploy", null, Arg.Any<CancellationToken>());
+            _sftpService.SetPermissionsAsync(_sessionId, "/home/user/readme.txt", 640, Arg.Any<CancellationToken>());
+        });
+        Assert.IsNull(_vm.ErrorMessage);
+    }
+
+    /// <summary>chown 被拒:权限也不动,错误条说出原因,列表不必刷新(什么都没改)。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Properties_ChownRejected_LeavesModeAloneAndShowsError()
+    {
+        _vm.ShowFileProperties = (_, _) => Task.FromResult<FilePropertiesChange?>(new(640, "root", "root"));
+        _sftpService
+            .SetOwnerAsync(_sessionId, Arg.Any<string>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("Permission denied")));
+        await _vm.PropertiesCommand.Execute(new RemoteFileInfoViewModel(CreateTestFiles()[1])).FirstAsync();
+        await _sftpService
+            .DidNotReceive()
+            .SetPermissionsAsync(Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<short>(), Arg.Any<CancellationToken>());
+        await _sftpService
+            .DidNotReceive()
+            .ListDirectoryAsync(Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+        Assert.AreEqual("Permission denied", _vm.ErrorMessage);
+    }
+
+    /// <summary>chown 成了、chmod 被拒:刷新让列表与远端对上,错误条不被刷新清掉。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Properties_ChmodRejectedAfterChown_RefreshesAndKeepsError()
+    {
+        _vm.CurrentPath = "/home/user";
+        _vm.ShowFileProperties = (_, _) => Task.FromResult<FilePropertiesChange?>(new(640, null, "www-data"));
+        _sftpService
+            .ListDirectoryAsync(_sessionId, "/home/user", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(CreateTestFiles()));
+        _sftpService
+            .SetPermissionsAsync(_sessionId, Arg.Any<string>(), Arg.Any<short>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromException(new InvalidOperationException("Operation not permitted")));
+        await _vm.PropertiesCommand.Execute(new RemoteFileInfoViewModel(CreateTestFiles()[1])).FirstAsync();
+        await _sftpService
+            .Received(1)
+            .SetOwnerAsync(_sessionId, "/home/user/readme.txt", null, "www-data", Arg.Any<CancellationToken>());
+        await _sftpService
+            .Received(1)
+            .ListDirectoryAsync(_sessionId, "/home/user", Arg.Any<CancellationToken>());
+        Assert.AreEqual("Operation not permitted", _vm.ErrorMessage);
     }
 
     [TestMethod]

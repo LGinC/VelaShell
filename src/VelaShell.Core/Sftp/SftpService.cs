@@ -562,6 +562,52 @@ public class SftpService : ISftpService
         await client.ChangePermissionsAsync(remotePath, octalMode, CancellationToken.None).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// 改远端条目的属主/属组(SFTP setstat 的 uid/gid)。SFTP 只认数字 id,名称按会话缓存的 passwd/group 表翻译
+    /// (与列目录显示名称是同一张表),表里没有的名字才当数字读;两样都不是就报错,不发请求。
+    /// </summary>
+    public async Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(remotePath);
+        if (owner is null && group is null)
+        {
+            return;
+        }
+        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        RemoteIdentityMap identities = await _identities.GetAsync(sessionId).ConfigureAwait(false);
+        int? uid = null;
+        int? gid = null;
+
+        // 不带 paramName:ArgumentException 会把「(Parameter 'owner')」拼进 Message,而错误条显示的就是 Message。
+        if (owner is not null)
+        {
+            string text = owner.Trim();
+            uid = text.Length > 0 && identities.TryResolveUser(text, out int resolved)
+                ? resolved
+                : throw new ArgumentException(Strings.Format("SftpSvc_UnknownUser", text));
+        }
+        if (group is not null)
+        {
+            string text = group.Trim();
+            gid = text.Length > 0 && identities.TryResolveGroup(text, out int resolved)
+                ? resolved
+                : throw new ArgumentException(Strings.Format("SftpSvc_UnknownGroup", text));
+        }
+        await client.ChangeOwnerAsync(remotePath, uid, gid, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 可选的用户名与组名取自同一张查表缓存,不额外往返。查不到表时两张列表都是空的 ——
+    /// SFTP 照样改得了属主,只是只能填数字 id,所以返回空列表而不是 null。
+    /// </summary>
+    public async Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        RemoteIdentityMap identities = await _identities.GetAsync(sessionId).WaitAsync(cancellationToken).ConfigureAwait(false);
+        return new(
+            [.. identities.UserIds.Keys.Order(StringComparer.Ordinal)],
+            [.. identities.GroupIds.Keys.Order(StringComparer.Ordinal)]);
+    }
+
     /// <summary>设置远端条目的修改时间(SFTP setstat,与上传收尾的「保留时间戳」同一条路)。</summary>
     public async Task SetLastWriteTimeAsync(Guid sessionId, string remotePath, DateTime lastWriteTimeUtc, CancellationToken cancellationToken = default)
     {

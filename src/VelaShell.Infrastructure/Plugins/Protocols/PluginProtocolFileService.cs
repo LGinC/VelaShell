@@ -283,6 +283,25 @@ public sealed class PluginProtocolFileService(PluginProtocolRegistry registry)
 
     /// <inheritdoc />
     /// <remarks>
+    /// SDK 的 <see cref="IProtocolFileSystem" /> 没有改属主这一面,如实报不支持。
+    /// 真要支持得先在 SDK 里加契约,不能在宿主这边编一个。
+    /// </remarks>
+    public Task SetOwnerAsync(Guid sessionId, string remotePath, string? owner, string? group, CancellationToken cancellationToken = default)
+    {
+        Session session = Require(sessionId);
+        return Task.FromException(new NotSupportedException($"Protocol '{session.Descriptor.Id}' does not support changing file ownership."));
+    }
+
+    /// <inheritdoc />
+    /// <remarks>改不了属主(见 <see cref="SetOwnerAsync" />),属性弹窗据此把属主/属组显示成只读。</remarks>
+    public Task<RemoteOwnerChoices?> GetOwnerChoicesAsync(Guid sessionId, CancellationToken cancellationToken = default)
+    {
+        _ = Require(sessionId);
+        return Task.FromResult<RemoteOwnerChoices?>(null);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
     /// SDK 的 <see cref="IProtocolFileSystem" /> 没有链接这一面(S3 / WebDAV 这类对象存储本来也没有),
     /// 所以如实报不支持。真要支持得先在 SDK 里加契约,不能在宿主这边编一个。
     /// </remarks>
