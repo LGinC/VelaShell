@@ -59,6 +59,9 @@ public sealed class TrayIconService(Application app) : IDisposable
         }
     }
 
+    /// <summary>换语言后重建托盘菜单(「显示主窗口」「退出」是建菜单时取好的)。</summary>
+    public void RefreshLocalizedText() => _trayIcon?.Menu = BuildMenu();
+
     private NativeMenu BuildMenu()
     {
         var show = new NativeMenuItem(Strings.Get("Tray_ShowMainWindow"));

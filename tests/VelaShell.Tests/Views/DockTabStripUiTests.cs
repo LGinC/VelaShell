@@ -107,7 +107,7 @@ public sealed class DockTabStripUiTests
             Border indicator = group.GetVisualDescendants().OfType<Border>().Single(b => b.Name == "ActiveTabIndicator");
             Point lastOrigin = Container(group, docs[^1]).TranslatePoint(default, strip)!.Value;
             // 读基值:强调线换位走 180ms 过渡,headless 里时钟不走,读到的会是过渡起点。
-            var target = (ITransform)indicator.GetBaseValue(Visual.RenderTransformProperty).Value!;
+            ITransform target = indicator.GetBaseValue(Visual.RenderTransformProperty).Value!;
             Assert.AreEqual(lastOrigin.Y, target.Value.M32, 0.5);
             SaveOptionalFrame(window, "dock-tabs-multirow.png");
 

@@ -133,7 +133,7 @@ public sealed class RecordingPlayerTitleBarUiTests
         _localization.SetLanguage("zh-CN");
 
         ISessionRecordingStore store = Substitute.For<ISessionRecordingStore>();
-        store.ListRecordingsAsync(Arg.Any<CancellationToken>()).Returns(new List<SessionRecording>());
+        store.ListRecordingsAsync(Arg.Any<CancellationToken>()).Returns([]);
         ISettingsService settings = Substitute.For<ISettingsService>();
         var appSettings = new AppSettings();
         appSettings.Security.RecordProductionSessions = autoRecord;

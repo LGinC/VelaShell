@@ -105,7 +105,12 @@ public partial class SettingsViewModel
         get => XServer.DisplayNumber < 0 ? 0 : Math.Min(XServer.DisplayNumber, XServerOptions.MaxDisplayNumber) + 1;
         set
         {
-            XServer.DisplayNumber = value <= 0 ? XServerOptions.AutoDisplayNumber : value - 1;
+            // -1 是 ComboBox 在换语言重建条目那一下清空的选中项,不是用户选了「自动」
+            if (value < 0)
+            {
+                return;
+            }
+            XServer.DisplayNumber = value == 0 ? XServerOptions.AutoDisplayNumber : value - 1;
             this.RaisePropertyChanged();
         }
     }

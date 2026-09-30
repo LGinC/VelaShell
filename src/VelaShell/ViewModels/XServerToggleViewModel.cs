@@ -122,6 +122,9 @@ public sealed class XServerToggleViewModel : ReactiveObject
         await StartAsync();
     }
 
+    /// <summary>换语言后重算悬停提示(它是 C# 侧拼好存着的,不随 {loc:Localize} 刷新)。</summary>
+    public void RefreshLocalizedText() => Refresh();
+
     private void Refresh()
     {
         IsRunning = _server?.State == XServerState.Running;

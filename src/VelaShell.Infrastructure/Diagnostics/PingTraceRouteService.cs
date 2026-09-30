@@ -3,6 +3,7 @@ using System.Net;
 using System.Net.NetworkInformation;
 using System.Runtime.CompilerServices;
 using VelaShell.Core.Diagnostics;
+using VelaShell.Core.Resources;
 
 namespace VelaShell.Infrastructure.Diagnostics;
 
@@ -104,10 +105,7 @@ public sealed class PingTraceRouteService : ITraceRouteService
         {
             return;
         }
-        throw new PlatformNotSupportedException(
-            "TTL 探测未生效:本机的 ICMP 实现忽略了 TTL(Linux 上常见于缺少 CAP_NET_RAW 或 "
-            + "net.ipv4.ping_group_range 未放开,此时 .NET 会退化为调用系统 ping)。"
-        );
+        throw new PlatformNotSupportedException(Strings.Get("Trace_TtlIgnored"));
     }
 
     /// <summary>判断是否为私有/环回/链路本地地址(这类目标一跳可达属正常)。</summary>

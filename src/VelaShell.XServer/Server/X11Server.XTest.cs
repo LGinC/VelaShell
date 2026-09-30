@@ -106,7 +106,7 @@ public sealed partial class X11Server
         }
         // 延迟以毫秒计:到点之前这个客户端的后续请求暂存(RunItem 里 DeferIfFakeInputPending),执行线程不阻塞;
         // 到点后回到执行线程注入,再按原顺序放回暂存的请求。客户端先断开了计时器随之取消。
-        CancellationTokenSource timer = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        var timer = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _fakeInputDelays[c] = (timer, []);
         _ = DelayThenPostAsync(delay, () => EndFakeInputDelay(c, Run), timer.Token);
     }

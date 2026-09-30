@@ -133,8 +133,8 @@ public sealed class RegionTests
                 board.Add(new XRect(x, y, 1, 1));
             }
         }
-        Stopwatch watch = Stopwatch.StartNew();
-        Region region = Region.FromRects(board.OrderBy(r => (r.X * 7919) % 200).ThenBy(r => r.Y));   // 打乱顺序
+        var watch = Stopwatch.StartNew();
+        var region = Region.FromRects(board.OrderBy(r => (r.X * 7919) % 200).ThenBy(r => r.Y));   // 打乱顺序
         region.Union(new XRect(50, 50, 100, 100));
         region.Subtract(new XRect(0, 0, 10, 10));
         watch.Stop();
@@ -147,13 +147,13 @@ public sealed class RegionTests
     public void 块数超上限退化成外接矩形并置上Saturated_参与运算的结果也带着它()
     {
         List<XRect> dots = [.. Enumerable.Range(0, Region.MaxRects + 1).Select(i => new XRect(i * 2, 0, 1, 1))];
-        Region tooMany = Region.FromRects(dots);
+        var tooMany = Region.FromRects(dots);
         Assert.IsTrue(tooMany.Saturated);
         CollectionAssert.AreEqual(new[] { new XRect(0, 0, (Region.MaxRects * 2) + 1, 1) }, tooMany.Rects.ToArray());
 
         // 横条减竖条:结果是一张网格,块数是两边的乘积。
-        Region bars = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(0, i * 2, 400, 1)));
-        Region columns = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(i * 2, 0, 1, 400)));
+        var bars = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(0, i * 2, 400, 1)));
+        var columns = Region.FromRects(Enumerable.Range(0, 200).Select(i => new XRect(i * 2, 0, 1, 400)));
         Assert.IsFalse(bars.Saturated || columns.Saturated);
         Region grid = bars.Clone().Subtract(columns);
         Assert.IsTrue(grid.Saturated, "200 × 200 块超了上限");
@@ -166,9 +166,9 @@ public sealed class RegionTests
     {
         // 一带里一万六千段;减数是一万六千条细带,与它们都不相交 —— 每条细带都要把那一带整个过一遍。
         const int n = 16000;
-        Region comb = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect(i * 2, 0, 1, n * 2)));
-        Region thin = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect((n * 2) + 10, i * 2, 1, 1)));
-        Stopwatch watch = Stopwatch.StartNew();
+        var comb = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect(i * 2, 0, 1, n * 2)));
+        var thin = Region.FromRects(Enumerable.Range(0, n).Select(i => new XRect((n * 2) + 10, i * 2, 1, 1)));
+        var watch = Stopwatch.StartNew();
         Region result = comb.Clone().Subtract(thin);
         watch.Stop();
         Assert.IsTrue(result.Saturated, "超了归并预算");

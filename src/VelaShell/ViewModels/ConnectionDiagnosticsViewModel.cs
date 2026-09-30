@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.Text;
 using Avalonia.Threading;
 using ReactiveUI;
 using ReactiveUI.Primitives;
 using VelaShell.Core.Models;
+using VelaShell.Core.Resources;
 using VelaShell.Presentation.Services;
 
 namespace VelaShell.ViewModels;
@@ -44,7 +46,7 @@ public sealed class DiagnosticStepItemViewModel(int index, string name) : Reacti
     /// <summary>状态列文本:✅ 4ms / ⚠ 原因 / ✗ 原因 / ⏸ 等待修复后重试(设计 RGXg1)。</summary>
     public string StatusText => Status switch
     {
-        DiagnosticStepStatus.Running => "… 检测中",
+        DiagnosticStepStatus.Running => Strings.Get("Diag_StatusChecking"),
         DiagnosticStepStatus.Success => ElapsedMs is { } ms ? $"✓  {ms}ms" : "✓",
         DiagnosticStepStatus.Warning => "⚠",
         DiagnosticStepStatus.Failed => "✗",
@@ -108,10 +110,10 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
         _diagnosticsService = diagnosticsService ?? throw new ArgumentNullException(nameof(diagnosticsService));
         Steps =
         [
-            new(0, "DNS 解析"),
-            new(1, "TCP 建链"),
-            new(2, "SSH 握手"),
-            new(3, "用户认证")
+            new(0, Strings.Get("DiagSvc_StepDns")),
+            new(1, Strings.Get("DiagSvc_StepTcp")),
+            new(2, Strings.Get("DiagSvc_StepSsh")),
+            new(3, Strings.Get("DiagSvc_StepAuth"))
         ];
         Suggestions = [];
         IObservable<bool> canRun = this.WhenAnyValue(x => x.IsBusy, busy => !busy);
@@ -119,7 +121,10 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
     }
 
     /// <summary>标题栏副标题里的目标描述。</summary>
-    public string TargetSummary => $"// 逐步分析 DNS、握手、认证与通道建立 — {(_profile.Name is { Length: > 0 } n ? n : _profile.Host)} ({_profile.Username}@{_profile.Host}:{_profile.Port})";
+    public string TargetSummary => Strings.Format(
+        "Diag_TargetSummary",
+        _profile.Name is { Length: > 0 } n ? n : _profile.Host,
+        $"{_profile.Username}@{_profile.Host}:{_profile.Port}");
 
     /// <summary>诊断步骤集合(DNS、TCP、SSH、认证),供步骤面板绑定。</summary>
     public ObservableCollection<DiagnosticStepItemViewModel> Steps { get; }
@@ -169,7 +174,10 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
     public bool CanExport => _lastReport is not null;
 
     /// <summary>导出文件名建议。</summary>
-    public string SuggestedReportFileName => $"诊断报告-{(_profile.Name is { Length: > 0 } n ? n : _profile.Host)}-{DateTime.Now:yyyyMMdd-HHmmss}.txt";
+    public string SuggestedReportFileName => Strings.Format(
+        "Diag_ReportFileName",
+        _profile.Name is { Length: > 0 } n ? n : _profile.Host,
+        DateTime.Now.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture));
 
     private async Task RunAsync(CancellationToken cancellationToken)
     {
@@ -209,7 +217,7 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
         }
         catch (Exception ex)
         {
-            IssueTitle = "诊断执行出错";
+            IssueTitle = Strings.Get("Diag_RunFailed");
             IssueDescription = ex.Message;
         }
         finally
@@ -222,23 +230,23 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
     public string BuildReportText()
     {
         var builder = new StringBuilder();
-        builder.AppendLine("VelaShell 连接诊断报告");
-        builder.AppendLine($"生成时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        builder.AppendLine($"目标: {_profile.Name} ({_profile.Username}@{_profile.Host}:{_profile.Port})");
+        builder.AppendLine(Strings.Get("Diag_ReportTitle"));
+        builder.AppendLine(Strings.Format("Diag_ReportGeneratedAt", DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)));
+        builder.AppendLine(Strings.Format("Diag_ReportTarget", $"{_profile.Name} ({_profile.Username}@{_profile.Host}:{_profile.Port})"));
         if (_profile.JumpHostProfileId is not null)
         {
-            builder.AppendLine("链路: 经由跳板连接");
+            builder.AppendLine(Strings.Get("Diag_ReportViaJump"));
         }
         builder.AppendLine(new('-', 48));
         foreach (DiagnosticStepItemViewModel step in Steps)
         {
             string status = step.Status switch
             {
-                DiagnosticStepStatus.Success => "通过",
-                DiagnosticStepStatus.Warning => "警告",
-                DiagnosticStepStatus.Failed => "失败",
-                DiagnosticStepStatus.Skipped => "跳过",
-                _ => "未执行"
+                DiagnosticStepStatus.Success => Strings.Get("Diag_ReportStatusPassed"),
+                DiagnosticStepStatus.Warning => Strings.Get("Diag_ReportStatusWarning"),
+                DiagnosticStepStatus.Failed => Strings.Get("Diag_ReportStatusFailed"),
+                DiagnosticStepStatus.Skipped => Strings.Get("Diag_ReportStatusSkipped"),
+                _ => Strings.Get("Diag_ReportStatusNotRun")
             };
             builder.Append($"{step.DisplayName,-24} [{status}]");
             if (step.ElapsedMs is { } ms)
@@ -254,7 +262,7 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
         builder.AppendLine(new('-', 48));
         if (HasIssue)
         {
-            builder.AppendLine($"发现问题: {IssueTitle}");
+            builder.AppendLine(Strings.Format("Diag_ReportIssue", IssueTitle));
             if (!string.IsNullOrEmpty(IssueDescription))
             {
                 builder.AppendLine(IssueDescription);
@@ -262,14 +270,14 @@ public class ConnectionDiagnosticsViewModel : ReactiveObject
         }
         else
         {
-            builder.AppendLine("未发现问题,各项检测均通过。");
+            builder.AppendLine(Strings.Get("Diag_ReportNoIssue"));
         }
         if (Suggestions.Count > 0)
         {
             builder.AppendLine();
             for (int i = 0; i < Suggestions.Count; i++)
             {
-                builder.AppendLine($"建议 {i + 1}: {Suggestions[i]}");
+                builder.AppendLine(Strings.Format("Diag_ReportSuggestion", i + 1, Suggestions[i]));
             }
         }
         return builder.ToString();

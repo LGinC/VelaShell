@@ -232,7 +232,8 @@ public sealed partial class ConPtyShellStream : IShellStreamWrapper
                     string.IsNullOrEmpty(workingDirectory) ? null : workingDirectory,
                     ref startupInfo, out NativeMethods.PROCESS_INFORMATION processInfo))
             {
-                throw new InvalidOperationException($"无法启动本地 shell(CreateProcess {Marshal.GetLastWin32Error()}):{commandLine}");
+                // 外层按界面语言包一句「启动 {shell} 失败:…」(Msg_LocalShellStartFailed),这里只给技术细节,与上一行同样写英文
+                throw new InvalidOperationException($"CreateProcess failed ({Marshal.GetLastWin32Error()}): {commandLine}");
             }
 
             // 把刚启动的 shell 收进「随句柄关闭而整树终止」的 Job,关标签时据此秒杀进程树。

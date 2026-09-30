@@ -641,7 +641,7 @@ internal sealed partial class GlContext
         {
             return;
         }
-        Vector4[] row = new Vector4[i1 - i0];
+        var row = new Vector4[i1 - i0];
         Span<float> comp = stackalloc float[4];
         for (int j = j0; j < j1; j++)
         {
@@ -797,7 +797,7 @@ internal sealed partial class GlContext
             int sy = s.Height - 1 - (y + j0 + j);   // GL 的 y 向上,缓冲的第 0 行在最上面
             Array.Copy(buffer, (sy * s.Width) + x + i0, source, j * w, w);
         }
-        Vector4[] row = new Vector4[w];
+        var row = new Vector4[w];
         for (int j = 0; j < h; j++)
         {
             for (int i = 0; i < w; i++)

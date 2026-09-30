@@ -13,6 +13,7 @@ using ReactiveUI.Primitives.Signals;
 using VelaShell.Core.Data;
 using VelaShell.Core.Diagnostics;
 using VelaShell.Core.Ftp;
+using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
 using VelaShell.Core.Notifications;
 using VelaShell.Core.Processes;
@@ -227,7 +228,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         IUpdateService? updateService = null,
         IThemeService? themeService = null,
         IConnectivityMonitor? connectivityMonitor = null,
-        ILocalXServer? localXServer = null
+        ILocalXServer? localXServer = null,
+        ILocalizationService? localization = null
     )
     {
         // 注册表可注入(DI 里与插件命令桥共享同一单例);无 UI 单测传 null 时自己创建一个。
@@ -469,6 +471,34 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         CloseActiveTabCommand = ReactiveCommand.Create(CloseActiveTab);
         RegisterCommands();
         RunCommand = ReactiveCommand.Create<string>(id => Commands.Execute(id));
+        localization?.LanguageChanged += _ => RefreshLocalizedText();
+    }
+
+    /// <summary>
+    /// 换语言后重算 C# 侧拼好存着的文案 —— XAML 里的 {loc:Localize} 自己会刷新,这些不会:
+    /// 命令的标题与分类(注册时就取好了,命令面板照着显示)、标题栏 X Server 按钮的悬停提示、
+    /// 会话树的置顶菜单项 / 状态标签 / 「未分组」、最近连接的相对时间与提示、状态栏、
+    /// 消息中心、隧道面板、终端标签的连接 / 断开覆盖层。
+    /// </summary>
+    private void RefreshLocalizedText()
+    {
+        // 按 id 重新注册即替换,顺序不变
+        RegisterCommands();
+        XServer.RefreshLocalizedText();
+        Sidebar.SessionTree?.RefreshLocalizedText();
+        Sidebar.RecentConnections.RefreshLocalizedText();
+        StatusBar.RefreshLocalizedText();
+        if (ActiveTerminalTab is null)
+        {
+            StatusBar.ClearSessionMetrics();
+        }
+        UpdateStatusBarForActiveTab();
+        NotificationPanel?.RefreshLocalizedText();
+        TunnelPanel?.RefreshLocalizedText();
+        foreach (TerminalTabViewModel tab in TerminalTabs)
+        {
+            tab.RefreshLocalizedText();
+        }
     }
 
     /// <summary>
@@ -2102,7 +2132,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         QuickCommandExecutionRequest request
     )
     {
-        QuickCommandTemplate template = QuickCommandTemplate.Parse(request.CommandText);
+        var template = QuickCommandTemplate.Parse(request.CommandText);
         if (!template.HasVariables || QuickCommandVariablePrompt is not { } prompt)
         {
             // 没有占位(或没有窗口可以问,如 headless 测试)时原样发送,与引入占位之前一致。

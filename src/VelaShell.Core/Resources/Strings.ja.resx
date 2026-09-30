@@ -304,14 +304,62 @@
   <data name="Diag_IssueFound" xml:space="preserve">
     <value>問題を検出:</value>
   </data>
+  <data name="Diag_ReportFileName" xml:space="preserve">
+    <value>診断レポート-{0}-{1}.txt</value>
+  </data>
+  <data name="Diag_ReportGeneratedAt" xml:space="preserve">
+    <value>生成日時: {0}</value>
+  </data>
+  <data name="Diag_ReportIssue" xml:space="preserve">
+    <value>検出された問題: {0}</value>
+  </data>
+  <data name="Diag_ReportNoIssue" xml:space="preserve">
+    <value>問題は見つかりませんでした。すべてのチェックに合格しました。</value>
+  </data>
+  <data name="Diag_ReportStatusFailed" xml:space="preserve">
+    <value>失敗</value>
+  </data>
+  <data name="Diag_ReportStatusNotRun" xml:space="preserve">
+    <value>未実行</value>
+  </data>
+  <data name="Diag_ReportStatusPassed" xml:space="preserve">
+    <value>合格</value>
+  </data>
+  <data name="Diag_ReportStatusSkipped" xml:space="preserve">
+    <value>スキップ</value>
+  </data>
+  <data name="Diag_ReportStatusWarning" xml:space="preserve">
+    <value>警告</value>
+  </data>
+  <data name="Diag_ReportSuggestion" xml:space="preserve">
+    <value>提案 {0}: {1}</value>
+  </data>
+  <data name="Diag_ReportTarget" xml:space="preserve">
+    <value>対象: {0}</value>
+  </data>
+  <data name="Diag_ReportTitle" xml:space="preserve">
+    <value>VelaShell 接続診断レポート</value>
+  </data>
+  <data name="Diag_ReportViaJump" xml:space="preserve">
+    <value>経路: 踏み台経由</value>
+  </data>
   <data name="Diag_Rerun" xml:space="preserve">
     <value>再検査</value>
+  </data>
+  <data name="Diag_RunFailed" xml:space="preserve">
+    <value>診断の実行中にエラーが発生しました</value>
   </data>
   <data name="Diag_Running" xml:space="preserve">
     <value>// 検査を実行中です。しばらくお待ちください…</value>
   </data>
+  <data name="Diag_StatusChecking" xml:space="preserve">
+    <value>… 検査中</value>
+  </data>
   <data name="Diag_Steps" xml:space="preserve">
     <value>診断ステップ</value>
+  </data>
+  <data name="Diag_TargetSummary" xml:space="preserve">
+    <value>// DNS・ハンドシェイク・認証・チャネル確立を順に分析 — {0} ({1})</value>
   </data>
   <data name="Diag_Title" xml:space="preserve">
     <value>接続診断</value>
@@ -2082,6 +2130,9 @@
   <data name="SetDonate_ContributeTitle" xml:space="preserve">
     <value>最高のサポート:コントリビュート</value>
   </data>
+  <data name="SetDonate_Copied" xml:space="preserve">
+    <value>コピーしました</value>
+  </data>
   <data name="SetDonate_CopyPaymentLink" xml:space="preserve">
     <value>支払いリンクをコピー</value>
   </data>
@@ -2603,6 +2654,9 @@
   </data>
   <data name="SetSync_TokenPlaceholder" xml:space="preserve">
     <value>ghp_…(空欄 = 保存済みトークンを保持)</value>
+  </data>
+  <data name="SetSync_UnknownDevice" xml:space="preserve">
+    <value>不明なデバイス</value>
   </data>
   <data name="SetSync_WhatIsGist" xml:space="preserve">
     <value>Gist とは?</value>
@@ -3356,6 +3410,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Theme" xml:space="preserve">
     <value>テーマ</value>
+  </data>
+  <data name="Trace_TtlIgnored" xml:space="preserve">
+    <value>TTL によるプローブが効いていません:ローカルの ICMP 実装が TTL を無視しています(Linux では CAP_NET_RAW がないか net.ipv4.ping_group_range が開放されておらず、.NET がシステムの ping 呼び出しにフォールバックしている場合によく起こります)。</value>
   </data>
   <data name="Transfer_CancelRemainingTip" xml:space="preserve">
     <value>残りの転送をキャンセル</value>

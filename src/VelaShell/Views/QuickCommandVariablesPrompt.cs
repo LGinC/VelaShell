@@ -27,7 +27,7 @@ public static class QuickCommandVariablesPrompt
         };
         var fields = new Grid
         {
-            ColumnDefinitions = new ColumnDefinitions("Auto,12,*"),
+            ColumnDefinitions = [with("Auto,12,*")],
             RowSpacing = 8
         };
         TextBox? first = null;

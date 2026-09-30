@@ -531,6 +531,14 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
                 ? Strings.Format("Msg_LocalShellExitedDetail", OverlayHostLabel)
                 : Strings.Format("Msg_SshConnectionLostDetail", OverlayHostLabel);
 
+    /// <summary>换语言后让绑定重取覆盖层的标题与详情(断开状态会一直挂着,不重取就停在旧语言)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(ConnectingOverlayTitle));
+        this.RaisePropertyChanged(nameof(DisconnectOverlayTitle));
+        this.RaisePropertyChanged(nameof(DisconnectOverlayDetail));
+    }
+
     /// <summary>
     /// 覆盖层中指代本会话的名称:优先用配置的显示名称(用户认得的那个),
     /// 没起名时才退回 host:port;本地终端用 shell 名称。

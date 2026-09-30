@@ -1408,3 +1408,30 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 设置 → 常规 → 语言:下拉首项加「跟随系统」(`AvailableLanguages` 首项空串),新增本地化键 `SetGeneral_LanguageSystem`,五份 resx 齐。README 两份的「本地化」一行补上默认跟随系统。
 
 **三、验证**:新增 `LanguageDefaultsTests` 2 条(新配置跟随系统、存量 `zh-CN` 原样保留);`LocalizationTests` 加系统文化折算 16 组数据行,以及「跟随系统取构造时的系统文化、不取上一次选的语言」2 条;`SettingsViewModelTests` 加下拉首项 ↔ 空串 1 条。整个解决方案 0 失败:`VelaShell.Core.Tests` 594 通过 / 20 跳过,`VelaShell.Tests` 1605 通过 / 16 跳过(跳过的都是按环境早退的 Docker / 集成用例)。
+
+## ✅ 142. 2026-09-29 切换界面语言后仍是中文的几处跟着换(用户反馈,§141 后续)
+
+**一、问题**:设置里切到英文,界面上仍有不少文案停在中文:标题栏 X Server 按钮的悬停提示、资源管理器「+」的提示与会话右键的「连接」「删除」、侧栏左下角通知 / 插件 / 设置的提示、Ctrl+P 命令面板里的大部分命令、SFTP 的「上传」与传输记录的提示。两类原因:
+- **XAML 用 `{x:Static res:Strings.X}` 取词**:视图加载时取一次值就定住了。主窗口只加载一次,切了语言它还停在启动时的语言。9 个视图里共 40 处。
+- **C# 侧拼好存着的文案**:命令的标题与分类在 `RegisterCommands()` 注册时就取好了,命令面板照着显示;X Server 按钮的提示只在服务状态变化时重算;会话树的置顶菜单项与状态标签是计算属性,没人发变更通知;「移动到分组」里的「未分组」在建树时取好了名字;状态栏的连接状态只在切标签时重写。
+
+**二、做法**:
+- 40 处 `x:Static` 一律改成 `{loc:Localize 键名}`,不再用的 `xmlns:res` 一并删掉(`MainWindow.axaml` 换成 `xmlns:loc`)。
+- `MainWindowViewModel` 注入 `ILocalizationService`,换语言时 `RefreshLocalizedText()`:重新注册命令(按 id 替换,顺序不变)、`XServerToggleViewModel.RefreshLocalizedText()`、`SessionTreeViewModel.RefreshLocalizedText()`(会话行重发置顶菜单项与状态标签的变更通知、「未分组」改名)、重写状态栏。
+- 按需打开的对话框与窗口(插件管理、回放中心、审计日志……)每次打开都现取文案,不在此列;命令面板的会话条目在每次打开时现建,也不受影响。AI 插件的命令本就在 `LocaleChanged` 时重新注册。
+
+**三、验证**:`LocalizedKeyUsageTests` 新增 `Xaml_TakesStringsThroughLocalize_NotXStatic`,扫 `src` 下全部 XAML,出现 `x:Static …:Strings.` 即失败(改之前列出的正是这 40 处)。`MainWindowViewModelTests` 新增 `LanguageChange_RefreshesTextComposedInCode`:中文下建主窗口视图模型,切英文后命令标题 / 分类、X Server 提示、「未分组」都换成英文,会话行发出置顶菜单项与状态标签的变更通知。
+
+## ✅ 143. 2026-09-29 排查其余不随语言变的文案(用户要求,§142 后续)
+
+**一、问题**:§142 修完用户点名的几处后全库排查,又找出两类:
+- **写死的中文,换语言、重启都不变**:连接诊断窗口的步骤名、副标题、「检测中」、出错标题与整份导出报告(连文件名都是「诊断报告-…」);捐赠页复制后的「已复制」;云同步版本历史的 `TargetNullValue=未知设备`;路由追踪的 TTL 失效提示;本地终端启动失败时内层异常的「无法启动本地 shell」。
+- **C# 侧拼好存着、换语言不重算**:托盘菜单(建托盘图标时拼好的原生菜单);终端行号栏右键菜单(设置保存时下发,而保存先于换语言,永远慢一拍);侧栏最近连接的相对时间与悬停提示;状态栏空闲时的后台任务提示、资源提示与选区字数;消息中心的空列表提示与每条的徽标 / 链接 / 相对时间;隧道面板的服务器状态、表单标题与按钮、各隧道行;终端标签的连接 / 断开覆盖层;设置页主题下拉末项「跟随系统」、X Server 检测状态、云同步「上次同步」。
+
+**二、做法**:
+- 新增 19 个本地化键(`Diag_Report*`、`Diag_RunFailed`、`Diag_StatusChecking`、`Diag_TargetSummary`、`SetDonate_Copied`、`SetSync_UnknownDevice`、`Trace_TtlIgnored`),五份 resx 齐;连接诊断的初始步骤名复用服务里已有的 `DiagSvc_Step*`。云同步的设备名改走新的 `DeviceNameConverter`(绑定属性里套不了 {loc:Localize})。捐赠页「已复制」改用 `SetCurrentValue`,不再把按钮上 {loc:Localize} 的绑定顶掉。本地终端的内层异常改成英文技术细节,外层 `Msg_LocalShellStartFailed` 本来就按界面语言包一句。
+- `SettingsViewModel.SaveAsync` 先换语言再落盘;托盘由 `App` 在换语言时重建菜单;`MainWindowViewModel.RefreshLocalizedText()` 追加最近连接、状态栏、消息中心、隧道面板、终端覆盖层;设置页换语言时重建主题名表、重写「上次同步」。
+- 主题与 X Server 显示号的下拉索引忽略 -1:换语言重建条目时 ComboBox 会把选中项清成 -1 推回来,原先主题会被当成「回到默认」换掉,显示号会被改回「自动」。
+- 不在此列:调试日志(`Trace.WriteLine`)、匹配远端输出的中文关键词(提示词识别、FTP 回复、诊断原因)、调用方会捕获的内部异常;SSH / X 服务端库的中文诊断文本另有 `feature-plan.md` 条目。
+
+**三、验证**:`LocalizedKeyUsageTests` 新增两条守卫 —— `Xaml_HasNoHardcodedChineseText`(XAML 属性值与元素文本不许写死中文,语言下拉的本名除外)与 `Code_HasNoHardcodedChineseText`(C# 字符串字面量不许写死中文;跳过注释、调试日志、分析器豁免理由与正则特性,匹配远端输出的几个文件列了白名单并附理由)。`ConnectionDiagnosticsViewModelTests` 钉住英文界面下的步骤名、副标题与报告不含中文;`SettingsViewModelTests` 钉住「先换语言再落盘」与「主题索引忽略 -1」;`LanguageChange_RefreshesTextComposedInCode` 补状态栏空闲提示。整个解决方案 0 失败:`VelaShell.Core.Tests` 594 通过 / 20 跳过,`VelaShell.Tests` 1612 通过 / 16 跳过。⚠️ 中间踩了一脚:往 resx 里按字母序插键时,zh-Hans / zh-Hant 文件头的样例注释里有 `<data name="Name1">`,16 个键被插进了注释 —— 编译不报错,是 `AllCultures_HaveIdenticalKeySets` 报「zh-Hans 缺失 16 键」才发现的。

@@ -66,8 +66,10 @@ internal sealed class Region
     /// <summary>一个只知道「落在 <paramref name="bounds" /> 之内」的区域(已经 <see cref="Saturated" />)。</summary>
     public static Region OverLimit(XRect bounds)
     {
-        Region region = new(bounds);
-        region.Saturated = true;
+        Region region = new(bounds)
+        {
+            Saturated = true
+        };
         return region;
     }
 

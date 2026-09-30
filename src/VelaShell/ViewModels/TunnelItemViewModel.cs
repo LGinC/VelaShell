@@ -127,6 +127,15 @@ public class TunnelItemViewModel(TunnelInfo tunnelInfo) : ReactiveObject
     /// <summary>编辑按钮提示:活动隧道不可编辑。</summary>
     public string EditToolTip => Strings.Get(IsActive ? "Tunnel_EditDisabledTip" : "Tunnel_EditTip");
 
+    /// <summary>换语言后让绑定重取 C# 侧拼的文案(端点摘要、统计、编辑提示、状态)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(EndpointSummary));
+        this.RaisePropertyChanged(nameof(StatsText));
+        this.RaisePropertyChanged(nameof(EditToolTip));
+        this.RaisePropertyChanged(nameof(StatusText));
+    }
+
     /// <summary>最近一次转发通道错误(目标拒绝连接等),由服务写入共享 TunnelInfo。</summary>
     public string? LastError => _tunnelInfo.LastError;
 

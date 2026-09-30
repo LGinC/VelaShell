@@ -137,6 +137,13 @@ public sealed class SessionTreeNodeViewModel(
     public string PinToggleText =>
         IsPinned ? Strings.Get("Tree_UnpinSession") : Strings.Get("Tree_PinSession");
 
+    /// <summary>换语言后让绑定重取 C# 侧拼的文案(置顶菜单项、状态标签)。</summary>
+    public void RefreshLocalizedText()
+    {
+        this.RaisePropertyChanged(nameof(PinToggleText));
+        this.RaisePropertyChanged(nameof(StatusTagText));
+    }
+
     /// <summary>
     /// 状态圆点与标签(设计 FrJPu):Connected→绿点+「活跃」,Connecting→黄点+
     /// 「连接中」,Error→红点+「离线」,Disconnected→红点、无标签。

@@ -179,6 +179,11 @@ public partial class SettingsViewModel : ReactiveObject
             this.RaisePropertyChanged(nameof(Sections));
             this.RaisePropertyChanged(nameof(ShortcutGroups));
             this.RaisePropertyChanged(nameof(ShortcutMacNote));
+            // 主题下拉末项「跟随系统」;条目换了之后选中项要重新吆喝一次(同 RebuildXServerChoices)
+            AvailableThemeNames = BuildThemeNames();
+            this.RaisePropertyChanged(nameof(AvailableThemeNames));
+            this.RaisePropertyChanged(nameof(ThemeIndex));
+            Sync?.RefreshLocalizedText();
             RebuildXServerChoices();
             // 分组重建后过滤结果指向旧数组,必须跟着重算,否则快捷键页停在旧语言。
             RefreshShortcutView();
@@ -611,9 +616,11 @@ public partial class SettingsViewModel : ReactiveObject
 
     /// <summary>
     /// 主题下拉显示的名称,与 <see cref="AvailableThemes" /> 一一对应。
-    /// 主题名是品牌名(VelaDark / Tokyo Night…),不本地化;只有末项“跟随系统”跟随语言。
+    /// 主题名是品牌名(VelaDark / Tokyo Night…),不本地化;只有末项“跟随系统”跟随语言(换语言时重建)。
     /// </summary>
-    public string[] AvailableThemeNames { get; } =
+    public string[] AvailableThemeNames { get; private set; } = BuildThemeNames();
+
+    private static string[] BuildThemeNames() =>
         [
             .. UiThemeCatalog.All.Select(theme => theme.Name),
             Strings.Get("SetAppear_ThemeSystem"),
@@ -1116,9 +1123,13 @@ public partial class SettingsViewModel : ReactiveObject
         get => Math.Max(0, Array.IndexOf(AvailableThemes, Theme));
         set
         {
-            Theme = value >= 0 && value < AvailableThemes.Length
-                ? AvailableThemes[value]
-                : UiThemeCatalog.All[0].Id;
+            // -1 是 ComboBox 在换语言重建条目那一下清空的选中项,不是用户选了哪套主题 ——
+            // 当它是「回到默认主题」的话,切一次语言主题就被换掉了
+            if (value < 0)
+            {
+                return;
+            }
+            Theme = value < AvailableThemes.Length ? AvailableThemes[value] : UiThemeCatalog.All[0].Id;
             this.RaisePropertyChanged();
         }
     }
@@ -1713,6 +1724,9 @@ public partial class SettingsViewModel : ReactiveObject
         _loaded.Proxy = Proxy;
         _loaded.Notifications = Notifications;
         _loaded.XServer = XServer;
+        // 语言先于落盘切换:落盘触发的 SettingsSaved 会把设置重新下发到已打开的终端,
+        // 其中行号栏右键菜单等文案是下发时现取的 —— 晚一步换语言,它们就停在旧语言。
+        _localizationService?.SetLanguage(Language);
         await _settingsService.SaveSettingsAsync(_loaded);
 
         // 即时生效 —— 主题、强调色与语言均无需重启即可应用(#2/#3/#4)。
@@ -1725,7 +1739,6 @@ public partial class SettingsViewModel : ReactiveObject
         {
             /* 非法十六进制:保留原先值 */
         }
-        _localizationService?.SetLanguage(Language);
 
         // 已保存:外观预览转正,窗口关闭时不再回滚;基线同步到已保存状态。
         _saved = true;
