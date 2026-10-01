@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using VelaShell.Core.Ssh;
 
@@ -279,6 +280,73 @@ public sealed class ShellIntegrationDockerTests
             history,
             $"注入行留在历史里了:\n{ShellIntegrationHarness.Escape(history)}");
         Assert.DoesNotContain(ShellHistoryScrub.Marker, history, "摘历史那段自己留在历史里了");
+    }
+
+    /// <summary>
+    /// zsh 上注入行不许写进<b>历史文件</b>,而用户自己的 <c>HISTORY_IGNORE</c> 照常生效。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// zsh 没有 <c>history -d</c>,本会话历史表里的那一条摘不掉(见 <see cref="ShellHistoryScrub.ZshCommand" />),
+    /// 所以这里断言的是<b>文件</b>:登出时 zsh 把历史写盘,钩子那条与用户命令那条都不能在里面。
+    /// 不落盘是要紧的那一半 —— 否则每连一次就往 <c>~/.zsh_history</c> 里攒一行,
+    /// <c>Ctrl+R</c> 与 zsh-autosuggestions 从此天天把它推到用户眼前。
+    /// </para>
+    /// <para>
+    /// 账号没配 <c>HISTFILE</c>,所以在注入<b>之后</b>才设 —— 不影响结论:默认配置下历史表要到退出时才写盘,
+    /// <c>HISTORY_IGNORE</c> 也是那时才比对。用户自己的 <c>HISTORY_IGNORE</c> 则必须赶在注入<b>之前</b>设,
+    /// 与它写在 rc 里的真实时序一致。
+    /// </para>
+    /// </remarks>
+    [TestMethod]
+    [Timeout(60_000)]
+    public async Task OnZsh_TheInjectedLines_DoNotReachTheHistoryFile()
+    {
+        const string user = "vela-zsh";
+        string histFile = $"/tmp/vela-zsh-history-{Guid.NewGuid():N}";
+        await using ShellIntegrationHarness harness = await ShellIntegrationHarness.ConnectAsync(user);
+        RemoteShellKind kind = await harness.DetectShellKindAsync();
+        Assert.AreEqual(RemoteShellKind.Zsh, kind);
+        harness.WaitForOutputIdle();
+
+        await harness.TypeAsync("HISTORY_IGNORE='echo secret-*'");
+        harness.WaitForOutputIdle();
+        await harness.InjectShellIntegrationAsync(kind);
+        harness.WaitForWorkingDirectory(HomeOf(user));
+        await harness.InjectUserCommandAsync(kind, "echo post-auth");
+        await harness.TypeAsync("echo secret-1");
+        await harness.TypeAsync("echo kept-1");
+        await harness.TypeAsync($"HISTFILE={histFile}; SAVEHIST=100");
+        await harness.TypeAsync("exit");
+
+        string history = await ReadWhenWrittenAsync(harness, histFile);
+        string dump = ShellIntegrationHarness.Escape(history);
+        Assert.Contains("echo kept-1", history, $"用户自己的命令没写进历史文件:\n{dump}");
+        Assert.DoesNotContain(ShellIntegrationScript.FunctionName, history, $"钩子那条注入行写进历史文件了:\n{dump}");
+        Assert.DoesNotContain("echo post-auth", history, $"用户命令那条注入行写进历史文件了:\n{dump}");
+        Assert.DoesNotContain(ShellHistoryScrub.Marker, history, $"摘历史那段自己写进历史文件了:\n{dump}");
+        Assert.DoesNotContain("echo secret-1", history, $"用户自己的 HISTORY_IGNORE 被顶掉了:\n{dump}");
+    }
+
+    /// <summary>
+    /// 等 zsh 登出时把历史写盘,再走独立 exec 通道读回来(读完即删)。
+    /// </summary>
+    private static async Task<string> ReadWhenWrittenAsync(ShellIntegrationHarness harness, string path)
+    {
+        var sw = Stopwatch.StartNew();
+        string content = string.Empty;
+        while (sw.Elapsed < TimeSpan.FromSeconds(15))
+        {
+            content = await harness.RunAsync($"cat {path} 2>/dev/null");
+            if (content.Contains("exit", StringComparison.Ordinal))
+            {
+                break;
+            }
+            await Task.Delay(200);
+        }
+        await harness.RunAsync($"rm -f {path}");
+        Assert.Contains("exit", content, $"等不到 zsh 登出时写盘的历史文件 {path}");
+        return content;
     }
 
     /// <summary>

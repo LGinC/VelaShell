@@ -2443,8 +2443,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         await FeedJumpChainNoticeAsync(terminalTab, profile);
         FeedShellStreamNotices(terminalTab, shellStream);
         StartSessionLogging(terminalTab, settings);
-        // 探针结论先落到标签上:SendSilentCommand 靠它决定注入行要不要接摘历史前缀
-        // (那段在 fish 里会让整行解析失败,见 ShellHistoryScrub.SupportedBy)。
+        // 探针结论先落到标签上:SendSilentCommand 靠它决定注入行接哪一段摘历史前缀
+        // (zsh 有它自己的一段;bash 那段在 fish 里会让整行解析失败,见 ShellHistoryScrub.For)。
         terminalTab.RemoteShellKind = shellKind;
         SendSessionInjections(terminalTab, settings, shellKind, profile);
 

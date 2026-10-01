@@ -33,8 +33,12 @@ namespace VelaShell.Core.Ssh;
 /// <b>整段仍旧包在 <c>eval '…'</c> 里,由 <c>BASH_VERSION</c> 守卫。</b>理由与目录上报钩子
 /// 逐字相同(见 <see cref="ShellIntegrationScript.Bash" />):shell 先把整行解析完
 /// 再执行,裸写的 <c>case</c>/<c>${var//}</c> 会让 fish 在<b>解析阶段</b>就报错,那时守卫还没
-/// 来得及短路。zsh 没有 <c>history -d</c>,守卫同样把它挡在外面 —— 代价是 zsh 上那一行仍会
-/// 留在历史里,但那一行在 zsh 上本来就是个空操作(该做的是干脆别注入,另说)。
+/// 来得及短路。
+/// </para>
+/// <para>
+/// <b>zsh 另有一段(<see cref="ZshCommand" />)。</b>zsh 没有 <c>history -d</c>,上面这段在它那里
+/// 只是两百多字符的空操作,还原样留在历史里。探针认出是 zsh 时就换成 zsh 自己能做到的那一半 ——
+/// 不让这一行写进历史文件(能做到哪一步、做不到哪一步,见那边)。按种类挑哪段由 <see cref="For" /> 决定。
 /// </para>
 /// </remarks>
 public static class ShellHistoryScrub
@@ -59,31 +63,79 @@ public static class ShellHistoryScrub
         """;
 
     /// <summary>
-    /// 这段前缀能不能安全地接在发往该种 shell 的命令前面。
+    /// zsh 版:让注入行不写进<b>历史文件</b>(zsh 没有 <c>history -d</c>,本会话的历史表里摘不掉)。
     /// </summary>
     /// <remarks>
     /// <para>
-    /// <b>fish 不行,而且是致命的不行。</b>前缀里的 <c>${BASH_VERSION:-}</c> 在 fish 里不是
+    /// <b>本会话里那一条是摘不掉的。</b>zsh 读完一行、执行之前就已把它记进历史表,
+    /// <c>HIST_IGNORE_SPACE</c> 与 <c>zshaddhistory</c> 钩子也都在那一刻判完 ——
+    /// 这一行里再 <c>setopt</c>、再装钩子都来不及,<c>fc</c> 也不会把自己那一行换掉(zsh 5.9 实测)。
+    /// 配了 <c>HIST_IGNORE_SPACE</c> 的人(oh-my-zsh 默认就开)靠注入行的那个前导空格,
+    /// 历史表与历史文件里都不留;其余的人按方向键仍看得见这一行,只到这个会话结束为止。
+    /// </para>
+    /// <para>
+    /// <b>不落盘是做得到的。</b><c>HISTORY_IGNORE</c> 是<b>写历史文件时</b>才逐行比对的,
+    /// 所以这一行跑的时候把模式加上,轮到写盘时它已经生效:默认的退出时写盘
+    /// (macOS 出厂的 <c>/etc/zshrc</c> 就是这种)、<c>APPEND_HISTORY</c>、<c>INC_APPEND_HISTORY_TIME</c>
+    /// 三种都拦得住。漏网的是 <c>INC_APPEND_HISTORY</c> 与 <c>SHARE_HISTORY</c>:它们读完一行就立刻写盘,
+    /// <b>第一条</b>注入行赶在模式生效之前已经写了进去,之后的注入行照样拦得住。
+    /// </para>
+    /// <para>
+    /// <b>追加,不覆盖。</b>用户自己的 <c>HISTORY_IGNORE</c> 作为一个分支包进括号,原来该拦的照拦。
+    /// 模式里已经有记号就不再追加 —— 同一个 shell 里会连着注入好几行(钩子、启动命令、认证后命令)。
+    /// 模式本身就写着 <see cref="Marker" />,所以凡是接了这段前缀的行都会被它自己拦住,不必另埋记号。
+    /// </para>
+    /// <para>
+    /// 守卫与 <c>eval '…'</c> 的写法同 bash 那段:探针认的是<b>登录</b> shell,交互 shell 万一是别的
+    /// (<c>.zshrc</c> 里 <c>exec bash</c>),这段就是空操作,不在别的 shell 里留下一个不认识的变量。
+    /// </para>
+    /// </remarks>
+    public const string ZshCommand =
+        """
+        test -n "${ZSH_VERSION:-}" && eval '[[ ${HISTORY_IGNORE-} == *__vela_hist_scrub* ]] || HISTORY_IGNORE="(${HISTORY_IGNORE:+$HISTORY_IGNORE|}*__vela_hist_scrub*)"'
+        """;
+
+    /// <summary>
+    /// 该种 shell 该接哪一段前缀;空串 = 不接。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>fish 不接,接了是致命的。</b>前缀里的 <c>${BASH_VERSION:-}</c> 在 fish 里不是
     /// "求值得到空串",而是<b>解析期语法错误</b>(<c>Expected a variable name after this $</c>)——
     /// fish 先把整行解析完再执行,于是<b>整行连同后面真正要跑的命令一起死掉</b>。
     /// 也就是说:不挡这一下,fish 会话的目录上报脚本、初始目录 <c>cd</c>、认证后命令
     /// <b>一条都不会执行</b>,而注入窗口还会把那行报错藏起来 —— 表现就是"功能莫名其妙不工作"。
     /// </para>
     /// <para>
-    /// <see cref="RemoteShellKind.NonPosix" />(cmd.exe / PowerShell)一并挡掉:那上面本就
-    /// 不该出现 sh 代码(#305)。其余(bash / zsh / dash / ash / ksh,以及探不出种类的
-    /// <see cref="RemoteShellKind.Unknown" />)都认得 <c>${var:-}</c>,前缀在它们那里
-    /// 要么真的摘历史(bash),要么被守卫短路成空操作 —— 与重构之前的行为一致。
+    /// <see cref="RemoteShellKind.NonPosix" />(cmd.exe / PowerShell)一并不接:那上面本就
+    /// 不该出现 sh 代码(#305)。
+    /// </para>
+    /// <para>
+    /// <b>只有认出是 zsh 才换成 <see cref="ZshCommand" />。</b>dash / ash / ksh(<see cref="RemoteShellKind.PosixSh" />)
+    /// 与探不出种类的 <see cref="RemoteShellKind.Unknown" /> 仍接 bash 那段:登录 shell 是 <c>/bin/sh</c>、
+    /// 在 <c>.profile</c> 里 <c>exec bash</c> 的机器不少见,探针在那里只看得到 sh,
+    /// 这时 bash 那段是唯一真能摘掉历史的东西;对真的 dash / ash 它不过是被守卫短路的空操作。
     /// </para>
     /// </remarks>
-    public static bool SupportedBy(RemoteShellKind kind) =>
-        kind is not (RemoteShellKind.Fish or RemoteShellKind.NonPosix);
+    public static string For(RemoteShellKind kind) =>
+        kind switch
+        {
+            RemoteShellKind.Fish or RemoteShellKind.NonPosix => string.Empty,
+            RemoteShellKind.Zsh => ZshCommand,
+            _ => Command
+        };
+
+    /// <summary>该种 shell 有没有可接的前缀(理由见 <see cref="For" />)。</summary>
+    public static bool SupportedBy(RemoteShellKind kind) => For(kind).Length > 0;
 
     /// <summary>
-    /// 把摘历史那段接在注入命令<b>前面</b>,返回可直接发给 PTY 的一整行。
+    /// 把该种 shell 的那段前缀接在注入命令<b>前面</b>,返回可直接发给 PTY 的一整行。
     /// </summary>
+    /// <param name="kind">对端 shell 种类;决定接哪一段,或者不接(见 <see cref="For" />)。</param>
     /// <param name="command">要静默执行的命令;空白则原样返回(没有命令就没有历史要摘)。</param>
-    /// <returns>带摘历史前缀的整行,或原串。</returns>
-    public static string Prepend(string command) =>
-        string.IsNullOrWhiteSpace(command) ? command : $"{Command}; {command}";
+    /// <returns>带前缀的整行,或原串。</returns>
+    public static string Prepend(RemoteShellKind kind, string command) =>
+        string.IsNullOrWhiteSpace(command) || For(kind) is not { Length: > 0 } scrub
+            ? command
+            : $"{scrub}; {command}";
 }

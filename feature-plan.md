@@ -39,7 +39,7 @@
 
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| 一、欠账 | 4 | 2 | 8 | 9 | **23** |
+| 一、欠账 | 4 | 2 | 7 | 9 | **22** |
 | 二、路线图 | — | 5 | 16 | 12 | **33** |
 | 三、文档待同步 | — | — | — | — | **25** |
 
@@ -90,7 +90,6 @@
 
 | 状态 | 优先级 | 项 | 现状 | 要做什么 |
 | :---: | :---: | --- | --- | --- |
-| ⏳ | 🟡 P2 | **非 bash 的 shell 别注入目录上报钩子** | 钩子由 `test -n "${BASH_VERSION:-}"` 守卫，在 zsh / dash 上是空操作，却照样占一个提示符周期、在历史里留一整行（`plan.md` §66 的摘历史只对 bash 有效，zsh 没有 `history -d`） | 让 `RemoteShellProbe` 顺带报 shell 家族（探针加 `${BASH_VERSION:+-bash}` / `${ZSH_VERSION:+-zsh}`，标记向后兼容），**确认是 zsh 时跳过注入**。⚠️ 只在**正面认出**非 bash 时才跳，免得误伤「登录 shell 是 /bin/sh、交互 shell 是 bash」的机器 |
 | ⏳ | 🟡 P2 | **拆 SSH 库的两个上帝类** | `SshConnection` 约 2,960 行（四个 partial）、`SshChannel` 1,388 行，远过 `src/VelaShell.Ssh/AGENTS.md` 4.4 的 800 行（`plan.md` §117） | 拆成 internal 协作者而不是更多 partial：`SshChannel` 的收发窗口与 stdin 泵、`SshConnection` 的收包分发与全局请求账本。**纯重构，单独开 PR**，`VelaShell.Ssh.Tests` 与互操作用例是安全网 |
 | ⏳ | 🟡 P2 | **SSH 库剩余中文诊断文本的界面本地化** | 英 / 日 / 韩界面仍会看到库的中文原文：认证逐条尝试记录（`SshAuthAttempt.ToString` / `Detail`）、`SshChannelException` 的建议、`KnownHostLookup.CertificateProblem`、带路径 / 指纹 / 端口的私钥与证书消息（`plan.md` §117） | **先在库里补结构化出处**（`Detail` 的种类、证书问题的枚举），宿主 `SshInterop` 再按枚举出五语言文案 —— 不在宿主里解析句子（`AGENTS.md` 4.5） |
 

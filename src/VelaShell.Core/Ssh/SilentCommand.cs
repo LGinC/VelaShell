@@ -86,7 +86,7 @@ public static class SilentCommand
     /// <summary>
     /// 组装一条静默注入。
     /// </summary>
-    /// <param name="kind">对端 shell 种类;决定要不要接摘历史前缀、以及能不能用哨兵。</param>
+    /// <param name="kind">对端 shell 种类;决定接哪一段摘历史前缀、以及能不能用哨兵。</param>
     /// <param name="hidden">要<b>连输出一起藏掉</b>的部分(排在哨兵之前);内置脚本走这里。</param>
     /// <param name="visible">输出<b>必须显示</b>的部分(排在哨兵之后);用户的命令走这里。</param>
     /// <returns>
@@ -118,9 +118,9 @@ public static class SilentCommand
         return new(line, $"\e]633;P;{ShellIntegrationScript.SentinelKey}={token}\a");
     }
 
-    /// <summary>按 shell 决定要不要接摘历史前缀(fish / 非 POSIX 一律不接,理由见那边)。</summary>
+    /// <summary>按 shell 接上对应的摘历史前缀(zsh 换成它自己那段,fish / 非 POSIX 一律不接,理由见那边)。</summary>
     private static string WithScrub(RemoteShellKind kind, string command) =>
-        ShellHistoryScrub.SupportedBy(kind) ? ShellHistoryScrub.Prepend(command) : command;
+        ShellHistoryScrub.Prepend(kind, command);
 
     /// <summary>用 <c>; </c> 接起来,空段不留下多余的分号。</summary>
     private static string Join(string left, string right) =>
