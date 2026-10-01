@@ -46,7 +46,7 @@ public sealed class RecordingPlayerTitleBarUiTests
             try
             {
                 StackPanel actions = Named<StackPanel>(window, "TitleActions");
-                Assert.IsTrue(actions.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")));
+                Assert.Contains(b => b.Classes.Contains("window-titlebar"), actions.GetVisualAncestors().OfType<Border>());
                 Button[] buttons = [.. actions.Children.OfType<Button>()];
                 CollectionAssert.AreEqual(
                     new[] { "导出录制", "刷新", "清理", "自动录制: 已关闭" },
