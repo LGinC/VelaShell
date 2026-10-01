@@ -1468,3 +1468,19 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **三、验证**:新增 `ConnectionProfileSectionsTests`(18 例:各协议有哪几页、换协议落回常规 / 页还在就不动、切到插件协议离开 SSH 专属页、选不进不存在的页、圆点在已存配置 / 新建 / 编辑时的亮灭与通知、预览的六种写法与通知、分段按钮、插件管理器入口);`ConnectionProfileViewModelTests` 里依赖折叠开关的 5 条改写成分页口径,新增最后一个高级字段消失时落回常规;UI 测试新增 `SectionTabIndicator_SlidesToSelectedSection`(取代协议页签那条)与 `OnlyTheSelectedSectionIsShown`,其余按新控件名改;`Todo2PixelRegressionTests` 改为按协议栏 SFTP 项的实际边界采样(原先写死的坐标落到了标题栏上)。两处变异:去掉 `ConnectionType` 变化时的落回 → 切插件协议那条变红(内建协议那条因为清字段也会落回,故另加了插件那条);下划线把「转发」错映射到「常规」→ 指示条用例变红。headless 截了七帧(SSH 四页、证书认证测试失败、明文 FTP、亮色)与设计稿对照。整个解决方案:`VelaShell.Tests` 1646 通过 / 8 跳过,`VelaShell.Core.Tests` 616 通过 / 10 跳过 / 1 失败(即 §144 记下的 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce`,本机测试镜像过旧,与本改动无关),其余全过。
 
 **四、与设计稿的出入**:FTP 的加密方式放在用户名旁(与 SSH 的认证方式同一格,沿用原实现),而不是设计稿里跳板主机旁;插件字段仍是一行一个、说明写在字段下方(字段是插件声明的,宿主不知道哪两项适合并排),没有照设计稿压成双栏 + ⓘ。
+
+## ✅ 146. 2026-10-01 取色器:设置页与连接对话框里挑颜色不再手敲色值(用户需求)
+
+**一、问题**:要人挑颜色的六个地方 —— 设置 → 外观的强调色、终端前景 / 背景 / 光标 / 选区,新建 / 编辑连接「终端」页的标签颜色 —— 都是「色块 + 手敲 `#RRGGBB` 的输入框」。想要一个颜色得先去别处查色号;敲错了,终端四色整套落回出厂色(`TerminalAppearanceMapper` 只认六位),强调色直接不生效。
+
+**二、做法**:
+- **控件库**(`VelaShell.Controls`,无文案、可单测):`ColorSpectrumPad`(饱和度 / 明度面板)与 `HueStrip`(色相条)两个绘制控件,拖动只改值、松手才发 `Committed`,方向键可调(Shift 十倍);`ColorHex` 负责解析(`#RGB` / `#RRGGBB` / `#AARRGGBB`,不认颜色名)与格式化(一律大写 `#RRGGBB`)。HSV 换算用 Avalonia 自带的 `HsvColor` / `Color.ToHsv()`。面板里的白与黑是 HSV 色彩空间本身,不是界面配色,所以不走令牌。
+- **宿主**:`Controls/ColorPickerField`(`Value` 双向绑定的十六进制字符串,外加 `EmptyText` / `ClearText` / `Swatches` / `SwatchesTitle`)。字段长得像输入框:色块 + 色值 + 箭头,没有颜色时空框加一行说明;点开是浮层 —— 面板、色相条、新旧对比色块 + 十六进制框、色板、可选的清除。
+  - **松手才写回**(拖动中只刷浮层预览):强调色一改就要重派生全套主题令牌,终端颜色一改就要重刷所有终端。十六进制框认不出的值不写进设置,框里退回当前颜色。
+  - 色板:终端四色给当前配色方案的 ANSI 16 色(`SettingsViewModel.TerminalSchemeSwatches`,换方案、改调色板时跟着发通知);其余默认用当前主题色板(新增 `ConnectionAccent.PaletteColors()`,即 `VelaAccentPalette0..7`)。与当前颜色相同的一格加粗描边。
+  - 清除只在值允许为空时给:标签颜色的「自动配色」。强调色清回跟随仍走行首的「跟随主题」按钮;终端四色必填,不给。
+  - 状态按 H / S / V 三个数保存,而不是 `HsvColor`:后者把色相 360 折回 0,色相条拖到最右一松手就会跳回最左;灰色色板也保留原来的色相。
+- **替换**:外观页五个输入框(连同旁边的色块)换成 `ColorPickerField`;连接对话框的标签颜色换成它,`Profile_OverrideTabColorPlaceholder` 随之删掉。新增 4 个文案键(`ColorPicker_Tip`、`ColorPicker_ThemePalette`、`ColorPicker_SchemeColors`、`Profile_TabColorAuto`),五份 resx 齐。ANSI 16 色在外观页上仍是只读色块(既有设计),不在此列。
+- DESIGN.md §5.2 补 `ColorPickerField` 一条;两个工程的 README 补上新文件。
+
+**三、验证**:`VelaShell.Controls.Tests` 新增 `ColorPickerPartsTests`(18 例:各种色值写法、拒绝颜色名与残缺值、格式化丢 alpha、面板四角与越界换算、色相条两端的半径余量、属性钳制)。`VelaShell.Tests` 新增 `ColorPickerFieldUiTests`(11 例:字段回显与空态、浮层从当前值起步、点色板写回并标出当前格、没给色板时用主题色板、十六进制框写回 / 回退、键盘调面板写回、拖动只在松手时提交一次(真实鼠标事件)、清除按钮的显隐与清空、连接对话框与外观页确实用上并双向绑定、方案色板随调色板发通知)。变异:拖动过程中也发 `Committed` → 拖动那条变红。headless 截图在深 / 浅两套主题下核对了外观页、连接对话框与浮层。`VelaShell.Controls.Tests` 31 通过,`VelaShell.Tests` 1657 通过 / 8 跳过(含无障碍名字、设置页输入框扫描、颜色字面量、文案键几道门)。
