@@ -302,7 +302,7 @@ public sealed class ConnectionTests
 
         await using SshConnection connection = await SshConnection.ConnectAsync(options);
 
-        Assert.AreSequenceEqual(new[] { "未经授权的访问将被记录。" }, banners);
+        Assert.AreSequenceEqual(["未经授权的访问将被记录。"], banners);
     }
 
     [TestMethod]

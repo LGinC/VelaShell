@@ -153,7 +153,7 @@ public class SshSessionFeaturesIntegrationTests
         await using IShellStreamWrapper shell = await OpenShellAsync(ssh);
 
         string notices = string.Join(" | ", shell.Notices.Select(n => (n.IsWarning ? "!" : "") + n.Text));
-        Assert.AreEqual(1, shell.Notices.Count(n => n.IsWarning), notices);
+        Assert.ContainsSingle(n => n.IsWarning, shell.Notices, notices);
         Assert.Contains(n => !n.IsWarning && n.Text == Strings.Get("Ssh_AgentForwardOn"), shell.Notices, notices);
 
         string output = await RunInShellAsync(

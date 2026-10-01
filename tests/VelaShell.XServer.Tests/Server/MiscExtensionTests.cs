@@ -102,12 +102,12 @@ public sealed class MiscExtensionTests
         await Task.Delay(120);
         XMessage before = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
         Assert.AreEqual(0, before.Bytes[1], "state = Off");
-        Assert.IsTrue(before.U32(16) >= 100, $"空闲 {before.U32(16)} ms");
+        Assert.IsGreaterThanOrEqualTo(100u, before.U32(16), $"空闲 {before.U32(16)} ms");
 
         server.InjectKey(38, true);
         server.InjectKey(38, false);
         XMessage after = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
-        Assert.IsTrue(after.U32(16) < 100, $"输入后空闲应归零,实际 {after.U32(16)} ms");
+        Assert.IsLessThan(100u, after.U32(16), $"输入后空闲应归零,实际 {after.U32(16)} ms");
     }
 
     [TestMethod]

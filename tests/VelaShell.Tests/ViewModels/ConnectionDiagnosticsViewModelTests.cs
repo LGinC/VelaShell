@@ -27,12 +27,12 @@ public class ConnectionDiagnosticsViewModelTests
             var vm = new ConnectionDiagnosticsViewModel(profile, Substitute.For<IConnectionDiagnosticsService>());
 
             Assert.AreEqual("1. DNS Resolution", vm.Steps[0].DisplayName);
-            StringAssert.Contains(vm.TargetSummary, "root@web.example.com:22");
-            StringAssert.StartsWith(vm.SuggestedReportFileName, "diagnostics-web-");
+            Assert.Contains("root@web.example.com:22", vm.TargetSummary);
+            Assert.StartsWith("diagnostics-web-", vm.SuggestedReportFileName);
             string report = vm.BuildReportText();
-            StringAssert.StartsWith(report, "VelaShell Connection Diagnostics Report");
-            StringAssert.Contains(report, "[Not run]");
-            Assert.IsFalse(report.Any(c => c is >= '一' and <= '鿿'), "英文界面下导出的报告里不该有中文:\n" + report);
+            Assert.StartsWith("VelaShell Connection Diagnostics Report", report);
+            Assert.Contains("[Not run]", report);
+            Assert.DoesNotContain(c => c is >= '一' and <= '鿿', report, "英文界面下导出的报告里不该有中文:\n" + report);
         }
         finally
         {

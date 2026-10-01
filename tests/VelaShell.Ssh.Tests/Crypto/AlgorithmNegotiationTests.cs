@@ -198,7 +198,7 @@ public sealed class AlgorithmNegotiationTests
             () => SshAlgorithmNegotiator.Negotiate(SshAlgorithmSet.Default, peer, "SSH-2.0-Ancient_1.0"));
 
         Assert.AreEqual(SshNegotiationCategory.EncryptionClientToServer, ex.Category);
-        Assert.AreSequenceEqual(new[] { SshAlgorithmNames.Aes128Cbc }, [.. ex.OfferedByPeer]);
+        Assert.AreSequenceEqual([SshAlgorithmNames.Aes128Cbc], [.. ex.OfferedByPeer]);
         Assert.IsNotEmpty(ex.OfferedByUs);
         Assert.AreEqual("SSH-2.0-Ancient_1.0", ex.PeerVersion);
         Assert.AreEqual(SshFailureReason.NegotiationFailed, ex.Reason);
@@ -295,7 +295,7 @@ public sealed class AlgorithmNegotiationTests
         };
 
         ArgumentException ex = Assert.ThrowsExactly<ArgumentException>(bad.Validate);
-        StringAssert.Contains(ex.Message, "未实现");
+        Assert.Contains("未实现", ex.Message);
         d.WithLegacyInterop().WithCompression().Validate();
     }
 

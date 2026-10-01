@@ -94,7 +94,7 @@ public sealed class X11Forwarder : IAsyncDisposable
     /// <param name="cancellationToken">取消令牌。</param>
     /// <exception cref="SshForwardException">拿不到本机显示 / cookie，或服务端拒绝。</exception>
     /// <remarks>
-    /// <c>internal</c>：对外的入口是 <see cref="Channels.SshSessionRequestOptions.X11Forwarding"/> ——
+    /// <c>internal</c>：对外的入口是 <see cref="SshSessionRequestOptions.X11Forwarding"/> ——
     /// <c>x11-req</c> 要夹在 <c>pty-req</c> 与 <c>env</c> 之间发（velashell-docs/zh/ssh/spec/07 §7.5.3），
     /// 让调用方自己在一条裸通道上调它，那个时序就交给了调用方。X11 转发默认是关的，而且没有「全局打开」的开关。
     /// </remarks>

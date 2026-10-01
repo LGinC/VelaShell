@@ -172,7 +172,7 @@ public sealed class SshConfigConnectTests
         SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "n");
         var policy = (KnownHostsPolicy)options.HostKeyPolicy;
 
-        using var signer = VelaShell.Ssh.Auth.InMemorySshSigner.GenerateEd25519();
+        using var signer = Ssh.Auth.InMemorySshSigner.GenerateEd25519();
         SshHostKeyContext context = new()
         {
             Host = "n.example.com",
@@ -216,18 +216,18 @@ public sealed class SshConfigConnectTests
                 ProxyJump jump
             """);
 
-        using var agentKey = VelaShell.Ssh.Auth.InMemorySshSigner.GenerateEd25519();
+        using var agentKey = Ssh.Auth.InMemorySshSigner.GenerateEd25519();
         SshConfigConnectOptions settings = new()
         {
-            Credentials = [new VelaShell.Ssh.Auth.PasswordCredential("目标的口令"), new VelaShell.Ssh.Auth.PublicKeyCredential(agentKey)],
+            Credentials = [new Ssh.Auth.PasswordCredential("目标的口令"), new Ssh.Auth.PublicKeyCredential(agentKey)],
         };
 
         SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target", settings);
         SshConnectionOptions jump = ((SshJumpDialer)options.Dialer).JumpHost;
 
-        Assert.IsTrue(options.Credentials.Any(c => c is VelaShell.Ssh.Auth.PasswordCredential), "目标照常拿到口令");
-        Assert.IsFalse(jump.Credentials.Any(c => c is VelaShell.Ssh.Auth.PasswordCredential), "跳板拿不到目标的口令");
-        Assert.IsTrue(jump.Credentials.Any(c => c is VelaShell.Ssh.Auth.PublicKeyCredential), "公钥凭据照常给跳板");
+        Assert.Contains(c => c is Ssh.Auth.PasswordCredential, options.Credentials, "目标照常拿到口令");
+        Assert.DoesNotContain(c => c is Ssh.Auth.PasswordCredential, jump.Credentials, "跳板拿不到目标的口令");
+        Assert.Contains(c => c is Ssh.Auth.PublicKeyCredential, jump.Credentials, "公钥凭据照常给跳板");
     }
 
     [TestMethod]
@@ -250,7 +250,7 @@ public sealed class SshConfigConnectTests
                 blocks, "k", new SshConfigConnectOptions { IdentityFileSkipped = (path, _) => skipped.Add(path) });
 
             Assert.HasCount(1, options.Credentials, "坏的那把跳过，好的那把照常用");
-            Assert.AreSequenceEqual(new[] { bad }, skipped, "跳过要有个说法");
+            Assert.AreSequenceEqual([bad], skipped, "跳过要有个说法");
         }
         finally
         {
@@ -284,8 +284,8 @@ public sealed class SshConfigConnectTests
         SshConnectionOptions jump = ((SshJumpDialer)options.Dialer).JumpHost;
 
         Assert.AreEqual(1, asked, "同一把钥在一次解析里只问一次口令");
-        var targetKey = (VelaShell.Ssh.Auth.PublicKeyCredential)options.Credentials.Single();
-        var jumpKey = (VelaShell.Ssh.Auth.PublicKeyCredential)jump.Credentials.Single();
+        var targetKey = (Ssh.Auth.PublicKeyCredential)options.Credentials.Single();
+        var jumpKey = (Ssh.Auth.PublicKeyCredential)jump.Credentials.Single();
         Assert.AreSame(targetKey.Signer, jumpKey.Signer, "跳板与目标用的是同一个解好的签名器");
     }
 
@@ -342,7 +342,7 @@ public sealed class SshConfigConnectTests
     [DataRow("1w", 604800)]
     [DataRow("1h30m", 5400)]
     [DataRow("0", 0)]
-    public void ssh_config的时间格式按单位相加(string text, int seconds)
+    public void Ssh_config的时间格式按单位相加(string text, int seconds)
     {
         Assert.IsTrue(SshHostConfig.TryParseTimeSpec(text, out TimeSpan value), text);
         Assert.AreEqual(TimeSpan.FromSeconds(seconds), value, text);
@@ -356,7 +356,7 @@ public sealed class SshConfigConnectTests
     [DataRow("1.5h")]
     [DataRow("20 minutes")]
     [DataRow("99999999999999999999w")]
-    public void ssh_config的时间格式写不对就不认(string text) => Assert.IsFalse(SshHostConfig.TryParseTimeSpec(text, out _), text);
+    public void Ssh_config的时间格式写不对就不认(string text) => Assert.IsFalse(SshHostConfig.TryParseTimeSpec(text, out _), text);
 
     [TestMethod]
     public void 会话项落到shell参数上()
@@ -401,7 +401,7 @@ public sealed class SshConfigConnectTests
         Assert.AreEqual(new SshProxyJumpHop("u", "host", 2222), SshConfigFile.ParseJumpSpec("u@host:2222"));
         Assert.AreEqual(new SshProxyJumpHop("u", "::1", 22), SshConfigFile.ParseJumpSpec("u@[::1]:22"));
         Assert.AreEqual(new SshProxyJumpHop("u", "host", 2222), SshConfigFile.ParseJumpSpec("ssh://u@host:2222"));
-        Assert.AreEqual(2, SshConfigFile.ParseProxyJump("a, u@b:2200").Count);
+        Assert.HasCount(2, SshConfigFile.ParseProxyJump("a, u@b:2200"));
         Assert.IsEmpty(SshConfigFile.ParseProxyJump("none"));
     }
 }

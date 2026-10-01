@@ -754,8 +754,8 @@ public sealed class SessionFailureTests
         byte[] payload = new byte[256 * 1024];
         new Random(7).NextBytes(payload);
 
-        await using TestKit.TestSshServerHost host = await TestKit.TestSshServerHost.StartAsync(
-            new TestKit.TestChannelScript { StandardOutput = payload, ExitCode = 0 });
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = payload, ExitCode = 0 });
 
         SshCommandOptions options = new()
         {

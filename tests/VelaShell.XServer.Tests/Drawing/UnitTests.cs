@@ -126,7 +126,7 @@ public sealed class UnitTests
         Assert.AreEqual(8, r.Remaining);
         Assert.AreEqual(1u, r.U32());
         Assert.AreEqual(2u, r.U32());
-        Assert.AreEqual(0, r.Rest().Length, "Rest 不含请求之后的字节");
+        Assert.HasCount(0, r.Rest(), "Rest 不含请求之后的字节");
         XProtocolError error = Assert.ThrowsExactly<XProtocolError>(() => r.U32());
         Assert.AreEqual(XErrorCode.Length, error.Code, "读过请求的长度是 BadLength,不会读到后面的旧字节");
     }

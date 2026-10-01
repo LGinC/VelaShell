@@ -277,7 +277,7 @@ public sealed class GlxTests
         Assert.AreEqual(1u, pixels.U32(4), "一行补齐到 4 字节");
         await RenderAsync(c, glx, tag, new Commands().Add(171, b => b.U32(0x0404)));   // ReadBuffer(FRONT)
         pixels = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
-        CollectionAssert.AreEqual(new byte[] { 0x33, 0x66, 0x99, 0xFF }, pixels.Bytes[32..36]);
+        Assert.AreSequenceEqual(new byte[] { 0x33, 0x66, 0x99, 0xFF }, pixels.Bytes[32..36]);
     }
 
     [TestMethod]
@@ -623,9 +623,9 @@ public sealed class GlxTests
                 .Bytes([0xFF, 0x30, 0x20, 0x10])));
         Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag), "ABGR 是认识的格式");
         XMessage rgba = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
-        CollectionAssert.AreEqual(new byte[] { 0x10, 0x20, 0x30, 0xFF }, rgba.Bytes[32..36]);
+        Assert.AreSequenceEqual(new byte[] { 0x10, 0x20, 0x30, 0xFF }, rgba.Bytes[32..36]);
         XMessage back = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(0).I32(0).I32(1).I32(1).U32(abgr).U32(UnsignedByte).U8(0).U8(0).U16(0));
-        CollectionAssert.AreEqual(new byte[] { 0xFF, 0x30, 0x20, 0x10 }, back.Bytes[32..36]);
+        Assert.AreSequenceEqual(new byte[] { 0xFF, 0x30, 0x20, 0x10 }, back.Bytes[32..36]);
     }
 
     [TestMethod]

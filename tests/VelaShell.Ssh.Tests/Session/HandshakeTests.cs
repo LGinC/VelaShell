@@ -348,7 +348,7 @@ public sealed class HandshakeTests
 
         Assert.AreEqual(SshNegotiationCategory.EncryptionClientToServer, ex.Category);
         Assert.IsNotEmpty(ex.OfferedByPeer);
-        Assert.AreSequenceEqual(new[] { "cipher-that-does-not-exist" }, [.. ex.OfferedByUs]);
+        Assert.AreSequenceEqual(["cipher-that-does-not-exist"], [.. ex.OfferedByUs]);
         Assert.StartsWith("SSH-2.0-", ex.PeerVersion);
     }
 

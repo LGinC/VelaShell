@@ -237,7 +237,7 @@ public sealed class ColorPickerFieldUiTests
             {
                 ColorPickerField field = window.GetVisualDescendants().OfType<ColorPickerField>().Single();
                 Assert.AreEqual("#E05252", field.Value);
-                Assert.IsFalse(window.GetVisualDescendants().OfType<TextBox>().Any(box => box.Text == "#E05252"),
+                Assert.DoesNotContain(box => box.Text == "#E05252", window.GetVisualDescendants().OfType<TextBox>(),
                     "标签颜色不该再有手敲的输入框。");
 
                 field.Value = "#50FA7B";
@@ -273,9 +273,8 @@ public sealed class ColorPickerFieldUiTests
                 Assert.HasCount(5, fields, "强调色 + 前景 / 背景 / 光标 / 选区。");
                 Assert.AreEqual(viewModel.Appearance.TerminalForeground, fields[1].Value);
                 Assert.HasCount(16, fields[1].Swatches!);
-                CollectionAssert.AreEqual(
-                    viewModel.Appearance.AnsiNormal.Concat(viewModel.Appearance.AnsiBright).ToList(),
-                    fields[1].Swatches!.ToList());
+                Assert.AreSequenceEqual(
+                    viewModel.Appearance.AnsiNormal.Concat(viewModel.Appearance.AnsiBright).ToList(), fields[1].Swatches!.ToList());
 
                 fields[2].Value = "#101010";
                 Assert.AreEqual("#101010", viewModel.Appearance.TerminalBackground);

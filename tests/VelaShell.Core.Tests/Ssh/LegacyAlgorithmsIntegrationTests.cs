@@ -36,8 +36,8 @@ public class LegacyAlgorithmsIntegrationTests
         VelaSshConnectionException ex = await Assert.ThrowsExactlyAsync<VelaSshConnectionException>(
             () => ConnectAsync(null));
 
-        StringAssert.Contains(ex.Message, Strings.Get("Ssh_AlgoKindKex"));
-        StringAssert.Contains(ex.Message, Strings.Format("Ssh_AlgoMismatchEnable", "diffie-hellman-group14-sha1"),
+        Assert.Contains(Strings.Get("Ssh_AlgoKindKex"), ex.Message);
+        Assert.Contains(Strings.Format("Ssh_AlgoMismatchEnable", "diffie-hellman-group14-sha1"), ex.Message,
             "对端提供、本版实现了、只是没放开的算法要点名,并指到连接配置里去");
     }
 

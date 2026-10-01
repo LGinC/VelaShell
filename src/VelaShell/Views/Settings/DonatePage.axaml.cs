@@ -37,8 +37,8 @@ public partial class DonatePage : UserControl
         if (sender is Button button && button.Content is string original && original != copied)
         {
             // SetCurrentValue 而不是直接赋值:直接赋值会把 {loc:Localize} 的绑定顶掉,之后换语言这个按钮就不跟了
-            button.SetCurrentValue(ContentControl.ContentProperty, copied);
-            DispatcherTimer.RunOnce(() => button.SetCurrentValue(ContentControl.ContentProperty, original), TimeSpan.FromSeconds(1.5));
+            button.SetCurrentValue(ContentProperty, copied);
+            DispatcherTimer.RunOnce(() => button.SetCurrentValue(ContentProperty, original), TimeSpan.FromSeconds(1.5));
         }
     });
 }

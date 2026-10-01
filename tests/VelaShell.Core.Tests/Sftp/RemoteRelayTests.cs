@@ -42,7 +42,7 @@ public class RemoteRelayTests
         await RemoteRelay.CopyFileAsync(source, SourceSession, "/a/data.bin", target, TargetSession, "/b/data.bin");
 
         Assert.IsNotNull(received, "目标端必须收到一次从流上传(大小与修改时间要原样带过去)。");
-        CollectionAssert.AreEqual(payload, received);
+        Assert.AreSequenceEqual(payload, received);
     }
 
     [TestMethod]
@@ -105,7 +105,7 @@ public class RemoteRelayTests
 
         await service.UploadStreamAsync(TargetSession, source, "/b/y.txt", 4, mtime);
 
-        CollectionAssert.AreEqual(new byte[] { 9, 8, 7, 6 }, written);
+        Assert.AreSequenceEqual(new byte[] { 9, 8, 7, 6 }, written);
         Assert.IsFalse(source.Disposed, "流归调用方(契约),服务不能替它关掉。");
         // 没有设置服务时按默认「保留时间戳」:目标的修改时间对齐源文件。
         await client.Received(1).SetLastWriteTimeAsync("/b/y.txt", Arg.Is<DateTimeOffset>(d => d.UtcDateTime == mtime), Arg.Any<CancellationToken>());

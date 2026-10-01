@@ -220,7 +220,7 @@ public sealed class SshDataReaderTests
         byte[] raw = [0, 0, 0, 9, (byte)'z', (byte)'l', (byte)'i', (byte)'b', (byte)',',
                       (byte)'n', (byte)'o', (byte)'n', (byte)'e'];
         SshDataReader r = new(new ReadOnlySequence<byte>(raw));
-        Assert.AreSequenceEqual(new[] { "zlib", "none" }, r.ReadNameList(1024));
+        Assert.AreSequenceEqual(["zlib", "none"], r.ReadNameList(1024));
     }
 
     [TestMethod]

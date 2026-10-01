@@ -26,12 +26,12 @@ public sealed partial class ResourceMonitorUiTests
                 Border titleBar = Named<Border>(window, "TitleBarStrip");
                 Border badge = Named<Border>(window, "HostBadge");
                 Button pause = Named<Button>(window, "PauseButton");
-                Assert.IsTrue(badge.GetVisualAncestors().Contains(titleBar), "主机标识要在标题栏里");
-                Assert.IsTrue(pause.GetVisualAncestors().Contains(titleBar), "暂停键要在标题栏里");
+                Assert.Contains(titleBar, badge.GetVisualAncestors(), "主机标识要在标题栏里");
+                Assert.Contains(titleBar, pause.GetVisualAncestors(), "暂停键要在标题栏里");
                 Assert.AreEqual(window.FindResource("VelaTitleActionButtonTheme"), pause.Theme,
                     "暂停键与主窗口的全局功能图标同一个主题");
                 Assert.IsGreaterThan(0, pause.Bounds.Width, "按钮被挤成零宽等于没有");
-                Assert.IsTrue(badge.GetVisualDescendants().OfType<TextBlock>().Any(t => t.Text == vm.HostName));
+                Assert.Contains(t => t.Text == vm.HostName, badge.GetVisualDescendants().OfType<TextBlock>());
                 Assert.IsLessThanOrEqualTo(titleBar.Bounds.Height, badge.Bounds.Height, "主机标识不能把 28 的标题栏撑高");
 
                 Assert.AreSame(window.FindResource("Icon.pause"), VisibleIcon(pause).Data);

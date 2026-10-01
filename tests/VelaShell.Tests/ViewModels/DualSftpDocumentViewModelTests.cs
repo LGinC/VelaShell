@@ -198,11 +198,11 @@ public class DualSftpDocumentViewModelTests
     public async Task APluginPane_GetsItsProtocolsRightClickActions()
     {
         (string Action, string Path)? invoked = null;
-        var protocol = new VelaShell.PluginSdk.Protocols.ProtocolDescriptor
+        var protocol = new PluginSdk.Protocols.ProtocolDescriptor
         {
             Id = "acme.s3",
             DisplayName = "S3",
-            Actions = [new("share", "Copy share link", VelaShell.PluginSdk.Protocols.ProtocolActionScope.File)],
+            Actions = [new("share", "Copy share link", PluginSdk.Protocols.ProtocolActionScope.File)],
         };
         var vm = new DualSftpDocumentViewModel(
             new(Profile("alpha", ConnectionType.SSH), Left, null, (_, _) => Task.CompletedTask),
@@ -251,8 +251,8 @@ public class DualSftpDocumentViewModelTests
 
         await Assert.ThrowsExactlyAsync<IOException>(() => vm.CloseAsync());
 
-        CollectionAssert.AreEquivalent(new[] { Left, Right }, disconnected, "一条断开失败不能让另一条留着没人关。");
-        CollectionAssert.AreEqual(new[] { Left, Right }, vm.SessionIds.ToArray());
+        Assert.AreSequenceEqual([Left, Right], disconnected, Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder, "一条断开失败不能让另一条留着没人关。");
+        Assert.AreSequenceEqual([Left, Right], vm.SessionIds.ToArray());
         Assert.AreEqual("alpha ⇄ beta", vm.Title);
     }
 
@@ -304,8 +304,8 @@ public class DualSftpDocumentViewModelTests
 
         await vm.CompareDirectoriesCommand.Execute().FirstAsync();
 
-        CollectionAssert.AreEquivalent(new[] { "only-left.txt", "newer.txt" }, vm.LeftFiles.SelectedFiles.Select(f => f.Name).ToArray());
-        CollectionAssert.AreEquivalent(new[] { "only-right.txt" }, vm.RightFiles.SelectedFiles.Select(f => f.Name).ToArray());
+        Assert.AreSequenceEqual(["only-left.txt", "newer.txt"], vm.LeftFiles.SelectedFiles.Select(f => f.Name).ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder);
+        Assert.AreSequenceEqual(["only-right.txt"], vm.RightFiles.SelectedFiles.Select(f => f.Name).ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder);
         Assert.IsNotNull(vm.CompareSummary);
         await vm.CloseAsync();
     }

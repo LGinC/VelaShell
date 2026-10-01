@@ -191,7 +191,7 @@ public sealed class ConnectionProfileViewModelTests
 
         SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
         Assert.IsNotNull(saved?.Ssh);
-        Assert.AreSequenceEqual(new[] { KeyLine(1, "next-hop") }, [.. saved.Ssh.AgentForwardKeys!]);
+        Assert.AreSequenceEqual([KeyLine(1, "next-hop")], [.. saved.Ssh.AgentForwardKeys!]);
         Assert.IsTrue(saved.Ssh.AgentForwardConfirm);
 
         // 关掉转发:两项附属设置一并不存,免得下次打开转发时悄悄生效
@@ -224,7 +224,7 @@ public sealed class ConnectionProfileViewModelTests
 
         vm.AgentForwardKeyChoices.Single().IsSelected = true;
         SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
-        Assert.AreSequenceEqual(new[] { KeyLine(2) }, [.. saved!.Ssh!.AgentForwardKeys!]);
+        Assert.AreSequenceEqual([KeyLine(2)], [.. saved!.Ssh!.AgentForwardKeys!]);
     }
 
     /// <summary>

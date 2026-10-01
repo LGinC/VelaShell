@@ -48,12 +48,11 @@ public sealed class ConnectionDiagnosticsViewUiTests
             {
                 Border titleBar = view.GetVisualDescendants().OfType<Border>().First(b => b.Classes.Contains("window-titlebar"));
                 StackPanel actions = view.GetVisualDescendants().OfType<StackPanel>().Single(p => p.Name == "TitleActions");
-                Assert.IsTrue(actions.GetVisualAncestors().Contains(titleBar));
+                Assert.Contains(titleBar, actions.GetVisualAncestors());
 
                 Button[] buttons = [.. actions.Children.OfType<Button>()];
-                CollectionAssert.AreEqual(
-                    new[] { Strings.Get("Diag_ExportReport"), Strings.Get("Diag_Rerun") },
-                    buttons.Select(AutomationProperties.GetName).ToArray());
+                Assert.AreSequenceEqual(
+                    [Strings.Get("Diag_ExportReport"), Strings.Get("Diag_Rerun")], buttons.Select(AutomationProperties.GetName).ToArray());
                 object theme = view.FindResource("VelaTitleActionButtonTheme")!;
                 Assert.IsTrue(buttons.All(b => ReferenceEquals(b.Theme, theme)), "与主窗口的全局功能图标同一个主题");
                 Assert.IsFalse(buttons[0].IsEnabled, "还没有报告时不能导出");

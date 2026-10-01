@@ -74,7 +74,7 @@ public sealed class SftpWireTests
         }
 
         Assert.AreSequenceEqual(
-            new[] { SftpMessageType.Stat, SftpMessageType.LStat, SftpMessageType.RealPath }, types);
+            [SftpMessageType.Stat, SftpMessageType.LStat, SftpMessageType.RealPath], types);
         Assert.AreEqual(0, input.Length);
     }
 
@@ -137,7 +137,7 @@ public sealed class SftpWireTests
         Assert.IsTrue(SftpWire.TryReadFrame(ref input, out SftpFrame frame));
         Assert.AreEqual(SftpMessageType.SymLink, frame.Type);
 
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         Assert.AreEqual(42U, reader.ReadUInt32());
         Assert.AreEqual("/real/file", reader.ReadUtf8String(1024), "第一个字段是 targetpath（OpenSSH 顺序）");
         Assert.AreEqual("/the/link", reader.ReadUtf8String(1024), "第二个字段才是 linkpath");
@@ -154,7 +154,7 @@ public sealed class SftpWireTests
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
 
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         reader.ReadUInt32();                  // request-id
         reader.ReadUtf8String(1024);          // path
         reader.ReadUInt32();                  // pflags
@@ -186,7 +186,7 @@ public sealed class SftpWireTests
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
 
         // 跳过 request-id 与路径，剩下的就是 ATTRS。
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         reader.ReadUInt32();
         reader.ReadUtf8String(1024);
 
@@ -219,7 +219,7 @@ public sealed class SftpWireTests
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
 
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         reader.ReadUInt32();
         reader.ReadUtf8String(1024);
 
@@ -243,7 +243,7 @@ public sealed class SftpWireTests
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
 
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         reader.ReadUInt32();
         reader.ReadUtf8String(1024);
 
@@ -309,7 +309,7 @@ public sealed class SftpWireTests
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
 
-        VelaShell.Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
         reader.ReadUInt32();
         reader.ReadUtf8String(1024);
 
@@ -325,7 +325,7 @@ public sealed class SftpWireTests
     {
         // 有些老服务端只给码不给文本。那不是协议违规。
         ArrayBufferWriter<byte> payload = new();
-        VelaShell.Ssh.Protocol.SshDataWriter writer = new(payload);
+        Ssh.Protocol.SshDataWriter writer = new(payload);
         writer.WriteUInt32((uint)SftpStatusCode.NoSuchFile);
 
         (SftpStatusCode code, string message) =
@@ -339,7 +339,7 @@ public sealed class SftpWireTests
     public void 句柄超过256字节时拒绝()
     {
         ArrayBufferWriter<byte> payload = new();
-        VelaShell.Ssh.Protocol.SshDataWriter writer = new(payload);
+        Ssh.Protocol.SshDataWriter writer = new(payload);
         writer.WriteString(new byte[SftpProtocol.MaxHandleLength + 1]);
 
         SshProtocolException error = Assert.ThrowsExactly<SshProtocolException>(
@@ -352,7 +352,7 @@ public sealed class SftpWireTests
     public void NAME里的count与实际项数不符时报协议错()
     {
         ArrayBufferWriter<byte> payload = new();
-        VelaShell.Ssh.Protocol.SshDataWriter writer = new(payload);
+        Ssh.Protocol.SshDataWriter writer = new(payload);
         writer.WriteUInt32(3);                // 声称有 3 项
         writer.WriteUtf8String("only-one");   // 实际只写了 1 项
         writer.WriteUtf8String("longname");
@@ -368,7 +368,7 @@ public sealed class SftpWireTests
     public void DATA比请求的还多时报协议错()
     {
         ArrayBufferWriter<byte> payload = new();
-        VelaShell.Ssh.Protocol.SshDataWriter writer = new(payload);
+        Ssh.Protocol.SshDataWriter writer = new(payload);
         writer.WriteString(new byte[100]);
 
         byte[] destination = new byte[50];
@@ -384,7 +384,7 @@ public sealed class SftpWireTests
     public void VERSION里的扩展被原样收下()
     {
         ArrayBufferWriter<byte> payload = new();
-        VelaShell.Ssh.Protocol.SshDataWriter writer = new(payload);
+        Ssh.Protocol.SshDataWriter writer = new(payload);
         writer.WriteUInt32(3);
         writer.WriteUtf8String(SftpExtensionNames.PosixRename);
         writer.WriteUtf8String("1");

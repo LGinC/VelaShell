@@ -46,12 +46,10 @@ public sealed class RecordingPlayerTitleBarUiTests
             try
             {
                 StackPanel actions = Named<StackPanel>(window, "TitleActions");
-                Assert.IsTrue(actions.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")));
+                Assert.Contains(b => b.Classes.Contains("window-titlebar"), actions.GetVisualAncestors().OfType<Border>());
                 Button[] buttons = [.. actions.Children.OfType<Button>()];
-                CollectionAssert.AreEqual(
-                    new[] { "导出录制", "刷新", "清理", "自动录制: 已关闭" },
-                    buttons.Select(AutomationProperties.GetName).ToArray(),
-                    "四个动作都在,顺序与原先那排文字按钮一致");
+                Assert.AreSequenceEqual(
+                    ["导出录制", "刷新", "清理", "自动录制: 已关闭"], buttons.Select(AutomationProperties.GetName).ToArray(), "四个动作都在,顺序与原先那排文字按钮一致");
                 object theme = window.FindResource("VelaTitleActionButtonTheme")!;
                 foreach (Button button in buttons)
                 {

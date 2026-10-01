@@ -31,8 +31,8 @@ public class SshSessionFeaturesTests
     {
         SshAlgorithmSet algorithms = SshConnectionAssembler.Algorithms(Info(null));
 
-        Assert.AreSequenceEqual(new[] { "none" }, [.. algorithms.CompressionClientToServer]);
-        Assert.AreSequenceEqual(new[] { "none" }, [.. algorithms.CompressionServerToClient]);
+        Assert.AreSequenceEqual(["none"], [.. algorithms.CompressionClientToServer]);
+        Assert.AreSequenceEqual(["none"], [.. algorithms.CompressionServerToClient]);
     }
 
     /// <summary>
@@ -48,9 +48,9 @@ public class SshSessionFeaturesTests
         SshAlgorithmSet algorithms = SshConnectionAssembler.Algorithms(Info(new SshSessionOptions { Compression = true }));
 
         Assert.AreSequenceEqual(
-            new[] { "zlib@openssh.com", "none" }, [.. algorithms.CompressionClientToServer]);
+            ["zlib@openssh.com", "none"], [.. algorithms.CompressionClientToServer]);
         Assert.AreSequenceEqual(
-            new[] { "zlib@openssh.com", "none" }, [.. algorithms.CompressionServerToClient]);
+            ["zlib@openssh.com", "none"], [.. algorithms.CompressionServerToClient]);
     }
 
     /// <summary>只开压缩不影响其余算法 —— 那一套是安全默认值,不该被顺手改掉。</summary>
@@ -226,9 +226,8 @@ public class SshSessionFeaturesTests
             },
             notices)!;
 
-        CollectionAssert.AreEquivalent(
-            new[] { a.PublicKey.Sha256Fingerprint, b.PublicKey.Sha256Fingerprint },
-            policy.AllowedKeys!.Select(k => k.Sha256Fingerprint).ToArray());
+        Assert.AreSequenceEqual(
+            [a.PublicKey.Sha256Fingerprint, b.PublicKey.Sha256Fingerprint], policy.AllowedKeys!.Select(k => k.Sha256Fingerprint).ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder);
         Assert.IsEmpty(notices);
     }
 

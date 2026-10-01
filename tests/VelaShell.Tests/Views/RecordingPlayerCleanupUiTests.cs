@@ -44,7 +44,7 @@ public sealed class RecordingPlayerCleanupUiTests
             Assert.IsGreaterThan(0, cleanup.Bounds.Width, "按钮被挤成零宽等于没有。");
             // 收进标题栏之后是纯图标:名字从读屏名称与悬停提示里给出。
             Assert.AreEqual("清理", AutomationProperties.GetName(cleanup));
-            Assert.IsTrue(cleanup.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")),
+            Assert.Contains(b => b.Classes.Contains("window-titlebar"), cleanup.GetVisualAncestors().OfType<Border>(),
                 "清理入口在标题栏里,与主窗口的全局功能图标同一处。");
             return Task.CompletedTask;
         });

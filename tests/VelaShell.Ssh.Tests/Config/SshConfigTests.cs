@@ -107,7 +107,7 @@ public sealed class SshConfigTests
             "x");
 
         Assert.AreSequenceEqual(
-            new[] { "~/.ssh/id_ed25519", "~/.ssh/id_rsa" }, [.. config.IdentityFiles], "顺序就是尝试顺序，不能重排");
+            ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"], [.. config.IdentityFiles], "顺序就是尝试顺序，不能重排");
     }
 
     [TestMethod]
@@ -131,7 +131,7 @@ public sealed class SshConfigTests
             "x");
 
         Assert.AreEqual("10.0.0.1", config.HostName);
-        Assert.AreSequenceEqual(new[] { @"C:\带 空格\id_ed25519" }, [.. config.IdentityFiles]);
+        Assert.AreSequenceEqual([@"C:\带 空格\id_ed25519"], [.. config.IdentityFiles]);
     }
 
     [TestMethod]

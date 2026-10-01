@@ -25,8 +25,8 @@ public sealed class KeyboardInteractiveResponderTests
         var prompt = new ScriptedPrompt(_ => ["123456"]);
         var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
 
-        CollectionAssert.AreEqual(new[] { "hunter2" }, (await Respond(responder, Round(("Password: ", false)))).ToArray());
-        CollectionAssert.AreEqual(new[] { "123456" }, (await Respond(responder, Round(("Verification code: ", false)))).ToArray());
+        Assert.AreSequenceEqual(["hunter2"], (await Respond(responder, Round(("Password: ", false)))).ToArray());
+        Assert.AreSequenceEqual(["123456"], (await Respond(responder, Round(("Verification code: ", false)))).ToArray());
 
         KeyboardInteractiveRequest asked = prompt.Requests.Single();
         Assert.AreEqual(Target, asked.Target);
@@ -41,7 +41,7 @@ public sealed class KeyboardInteractiveResponderTests
         var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
 
         await Respond(responder, Round(("Password: ", false)));
-        CollectionAssert.AreEqual(new[] { "new-secret" }, (await Respond(responder, Round(("New password: ", false)))).ToArray());
+        Assert.AreSequenceEqual(["new-secret"], (await Respond(responder, Round(("New password: ", false)))).ToArray());
         Assert.HasCount(1, prompt.Requests);
     }
 
@@ -51,7 +51,7 @@ public sealed class KeyboardInteractiveResponderTests
         var prompt = new ScriptedPrompt(_ => ["typed"]);
         var responder = new KeyboardInteractiveResponder(prompt, Target, "");
 
-        CollectionAssert.AreEqual(new[] { "typed" }, (await Respond(responder, Round(("Password: ", false)))).ToArray());
+        Assert.AreSequenceEqual(["typed"], (await Respond(responder, Round(("Password: ", false)))).ToArray());
     }
 
     [TestMethod]
@@ -75,10 +75,10 @@ public sealed class KeyboardInteractiveResponderTests
         var prompt = new ScriptedPrompt(_ => ["654321"]);
         var responder = new KeyboardInteractiveResponder(prompt, Target, password: null);
 
-        CollectionAssert.AreEqual(new[] { "" }, (await Respond(responder, Round(("Password: ", false)))).ToArray());
+        Assert.AreSequenceEqual([""], (await Respond(responder, Round(("Password: ", false)))).ToArray());
         Assert.IsEmpty(prompt.Requests);
 
-        CollectionAssert.AreEqual(new[] { "654321" }, (await Respond(responder, Round(("Verification code: ", false)))).ToArray());
+        Assert.AreSequenceEqual(["654321"], (await Respond(responder, Round(("Verification code: ", false)))).ToArray());
     }
 
     [TestMethod]
@@ -90,7 +90,7 @@ public sealed class KeyboardInteractiveResponderTests
         IReadOnlyList<string> answers = await Respond(responder,
             Round(("Passcode or option (1-3): ", true), ("PIN: ", false)), name: "Duo", instruction: "Choose a method");
 
-        CollectionAssert.AreEqual(new[] { "a0", "a1" }, answers.ToArray());
+        Assert.AreSequenceEqual(["a0", "a1"], answers.ToArray());
         KeyboardInteractiveRequest asked = prompt.Requests.Single();
         Assert.AreEqual("Duo", asked.Name);
         Assert.AreEqual("Choose a method", asked.Instruction);
@@ -159,7 +159,7 @@ public sealed class KeyboardInteractiveResponderTests
         KeyboardInteractiveRequest asked = prompt.Requests.Single();
         Assert.AreEqual("[31mCode:", asked.Fields[0].Prompt, "ESC、BEL 与 RLO 这类控制符要去掉");
         Assert.AreEqual("Bank", asked.Name);
-        StringAssert.StartsWith(asked.Instruction, "line1\nline2 ");
+        Assert.StartsWith("line1\nline2 ", asked.Instruction);
         Assert.AreEqual(2048, asked.Instruction.Length);
         StringAssert.EndsWith(asked.Instruction, "…");
     }
@@ -188,7 +188,7 @@ public sealed class KeyboardInteractiveResponderTests
         IReadOnlyList<string> answers = await credential.RespondAsync(
             Challenge(Round(("Verification code: ", false))), TestContext.CancellationToken);
 
-        CollectionAssert.AreEqual(new[] { "123456" }, answers.ToArray());
+        Assert.AreSequenceEqual(["123456"], answers.ToArray());
         Assert.AreEqual("keyboard-interactive", credential.MethodName);
     }
 

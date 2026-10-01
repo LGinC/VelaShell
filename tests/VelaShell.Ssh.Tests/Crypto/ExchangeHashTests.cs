@@ -76,7 +76,7 @@ public sealed class ExchangeHashTests
         byte[] asString = SshExchangeHash.Compute(HashAlgorithmName.SHA256,
             Sample(secretEncoding: SshKexValueEncoding.ByteString, sharedSecret: highBitSecret));
 
-        CollectionAssert.AreNotEqual(asMpint, asString);
+        Assert.AreNotSequenceEqual(asMpint, asString);
     }
 
     [TestMethod]
@@ -111,7 +111,7 @@ public sealed class ExchangeHashTests
         foreach (Func<SshExchangeHashInput> mutate in Mutations())
         {
             byte[] other = SshExchangeHash.Compute(HashAlgorithmName.SHA256, mutate());
-            CollectionAssert.AreNotEqual(baseline, other);
+            Assert.AreNotSequenceEqual(baseline, other);
         }
 
         static IEnumerable<Func<SshExchangeHashInput>> Mutations()
@@ -245,7 +245,7 @@ public sealed class ExchangeHashTests
 
         byte[] a = SshExchangeHash.DeriveKey(HashAlgorithmName.SHA256, k, SshKexValueEncoding.Mpint, h2, h1, 'A', 32);
         byte[] b = SshExchangeHash.DeriveKey(HashAlgorithmName.SHA256, k, SshKexValueEncoding.Mpint, h2, h2, 'A', 32);
-        CollectionAssert.AreNotEqual(a, b);
+        Assert.AreNotSequenceEqual(a, b);
     }
 
     [TestMethod]
@@ -284,7 +284,7 @@ public sealed class ExchangeHashTests
     /// <summary>测试里手工拼字节用的小工具（与被测代码的编码器独立，免得同错同对）。</summary>
     private readonly struct SshDataWriterShim(ArrayBufferWriter<byte> output)
     {
-        public void Byte(byte b) => output.Write(new byte[] { b });
+        public void Byte(byte b) => output.Write([b]);
 
         public void Raw(ReadOnlySpan<byte> value) => output.Write(value);
 
@@ -306,7 +306,7 @@ public sealed class ExchangeHashTests
             ReadOnlySpan<byte> trimmed = magnitude[start..];
             if (trimmed.IsEmpty)
             {
-                String(ReadOnlySpan<byte>.Empty);
+                String([]);
                 return;
             }
 

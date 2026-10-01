@@ -220,17 +220,17 @@ public sealed class RekeyTests
         Assert.AreEqual(SshPhase.Rekeying, error.Phase);
     }
 
-    private sealed class CountingPolicy : VelaShell.Ssh.HostKeys.IHostKeyPolicy
+    private sealed class CountingPolicy : Ssh.HostKeys.IHostKeyPolicy
     {
         private int _evaluations;
 
         public int Evaluations => Volatile.Read(ref _evaluations);
 
-        public ValueTask<VelaShell.Ssh.HostKeys.SshHostKeyVerdict> EvaluateAsync(
-            VelaShell.Ssh.HostKeys.SshHostKeyContext context, CancellationToken cancellationToken = default)
+        public ValueTask<Ssh.HostKeys.SshHostKeyVerdict> EvaluateAsync(
+            Ssh.HostKeys.SshHostKeyContext context, CancellationToken cancellationToken = default)
         {
             Interlocked.Increment(ref _evaluations);
-            return ValueTask.FromResult(VelaShell.Ssh.HostKeys.SshHostKeyVerdict.Accept);
+            return ValueTask.FromResult(Ssh.HostKeys.SshHostKeyVerdict.Accept);
         }
     }
 

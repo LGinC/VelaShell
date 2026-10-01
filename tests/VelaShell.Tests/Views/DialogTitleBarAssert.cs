@@ -23,7 +23,7 @@ internal static class DialogTitleBarAssert
         Assert.AreEqual(28, bar.Bounds.Height, 0.5, "标题栏统一 28 高");
 
         Button close = bar.GetVisualDescendants().OfType<Button>().Single(b => b.Classes.Contains("caption-close"));
-        Assert.IsFalse(bar.GetVisualDescendants().OfType<PathIcon>().Any(), "标题栏不用实心的 PathIcon");
+        Assert.IsEmpty(bar.GetVisualDescendants().OfType<PathIcon>(), "标题栏不用实心的 PathIcon");
         LucideIcon[] leading = [.. bar.GetVisualDescendants().OfType<LucideIcon>().Where(icon => !close.IsVisualAncestorOf(icon))];
         Assert.HasCount(1, leading, "标题前有一个线条图标(关闭键的 × 不算)");
         Assert.AreEqual(15, leading[0].Bounds.Width, 0.01, "标题前的图标 15px");

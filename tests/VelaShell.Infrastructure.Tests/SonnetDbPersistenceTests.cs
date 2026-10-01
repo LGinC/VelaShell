@@ -451,7 +451,7 @@ public sealed class SonnetDbPersistenceTests : IDisposable
         await service.DeleteOlderThanAsync(now.AddDays(-180));
 
         List<AuditEntry> left = await service.QueryAsync(10);
-        CollectionAssert.AreEquivalent(new[] { "recent", "new-security" }, left.Select(e => e.Detail).ToArray());
+        Assert.AreSequenceEqual(["recent", "new-security"], left.Select(e => e.Detail).ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder);
     }
 
     /// <summary>连接历史与审计日志同一口径:删旧的,「最近连接」照常取得到新的。</summary>

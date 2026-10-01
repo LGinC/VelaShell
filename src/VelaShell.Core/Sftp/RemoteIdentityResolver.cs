@@ -143,7 +143,7 @@ internal sealed class RemoteIdentityResolver(ISshConnectionService connectionSer
     private static (Dictionary<int, string> ById, Dictionary<string, int> ByName) ParseSection(string section)
     {
         Dictionary<int, string> map = [];
-        Dictionary<string, int> byName = new(StringComparer.Ordinal);
+        Dictionary<string, int> byName = [with(StringComparer.Ordinal)];
         foreach (string line in section.Split('\n'))
         {
             string[] parts = line.Split(':');

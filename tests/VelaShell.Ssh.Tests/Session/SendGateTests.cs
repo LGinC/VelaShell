@@ -101,7 +101,7 @@ public sealed class SendGateTests
             order.Add($"{f}:{len}");
         }
 
-        Assert.AreSequenceEqual(new[] { "1:1", "2:2", "3:3" }, order);
+        Assert.AreSequenceEqual(["1:1", "2:2", "3:3"], order);
         Assert.AreEqual(0, gate.StashedBytes, "排空后字节计量必须归零");
     }
 
@@ -199,7 +199,7 @@ public sealed class SendGateTests
 
         IReadOnlyList<string> drained = gate.DrainForAbort();
 
-        Assert.AreSequenceEqual(new[] { "a", "b" }, [.. drained]);
+        Assert.AreSequenceEqual(["a", "b"], [.. drained]);
         Assert.AreEqual(0, gate.StashedCount);
         Assert.AreEqual(0, gate.StashedBytes);
     }

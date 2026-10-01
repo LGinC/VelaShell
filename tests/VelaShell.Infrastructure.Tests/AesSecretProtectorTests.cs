@@ -48,7 +48,7 @@ public sealed class AesSecretProtectorTests
         _ = new AesSecretProtector(keyFile).Protect("x");
 
         string aside = Assert.ContainsSingle(Directory.GetFiles(_root, "secret.key.unreadable-*"));
-        CollectionAssert.AreEqual(unusable, File.ReadAllBytes(aside), "旧密钥应原样保留,找回原账户时还有得恢复。");
+        Assert.AreSequenceEqual(unusable, File.ReadAllBytes(aside), "旧密钥应原样保留,找回原账户时还有得恢复。");
         Assert.IsTrue(File.Exists(keyFile), "新密钥照常生成,应用不因此起不来。");
     }
 }

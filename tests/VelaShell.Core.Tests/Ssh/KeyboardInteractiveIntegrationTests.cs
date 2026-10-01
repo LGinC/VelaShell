@@ -60,7 +60,7 @@ public class KeyboardInteractiveIntegrationTests
         KeyboardInteractiveRequest asked = prompt.Requests.Single();
         Assert.AreEqual($"vela-strict@{TestHost}:{TestPort}", asked.Target);
         KeyboardInteractiveField field = asked.Fields.Single();
-        StringAssert.Contains(field.Prompt, "Verification code", "口令那一轮应该由已有的密码代答,只有动态码才问人");
+        Assert.Contains("Verification code", field.Prompt, "口令那一轮应该由已有的密码代答,只有动态码才问人");
         Assert.IsFalse(field.Echo);
     }
 
@@ -105,7 +105,7 @@ public class KeyboardInteractiveIntegrationTests
         await using VelaSshClientWrapper ssh = await ConnectAsync(info, prompt);
 
         Assert.AreEqual("vela-keyotp", (await ssh.RunCommandAsync("whoami")).Trim());
-        StringAssert.Contains(prompt.Requests.Single().Fields.Single().Prompt, "Verification code");
+        Assert.Contains("Verification code", prompt.Requests.Single().Fields.Single().Prompt);
     }
 
     [TestMethod]

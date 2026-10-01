@@ -161,8 +161,8 @@ public sealed class XInputTests
         XMessage all = await c.RequestAsync(xi, 48, b => b.U16(0).U16(0));
         Assert.AreEqual(6, all.U16(8));
         string names = Encoding.Latin1.GetString(all.Bytes);
-        StringAssert.Contains(names, "second pointer");
-        StringAssert.Contains(names, "second keyboard");
+        Assert.Contains("second pointer", names);
+        Assert.Contains("second keyboard", names);
     }
 
     [TestMethod]

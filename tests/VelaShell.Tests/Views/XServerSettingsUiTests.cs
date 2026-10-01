@@ -51,7 +51,7 @@ public sealed class XServerSettingsUiTests
 
             Assert.AreEqual(XServerWindowModes.Fullscreen, viewModel.XServer.WindowMode);
             Assert.AreEqual(1, viewModel.XServer.DisplayNumber);
-            StringAssert.Contains(Find<SelectableTextBlock>(page, "CommandPreviewText").Text, "-fullscreen");
+            Assert.Contains("-fullscreen", Find<SelectableTextBlock>(page, "CommandPreviewText").Text);
         });
 
     [TestMethod]
@@ -66,12 +66,12 @@ public sealed class XServerSettingsUiTests
             Assert.AreEqual(total, dialog.VisibleSections.Sum(s => s.Rows.Count));
 
             dialog.ApplyFilter("multiwindow");
-            Assert.IsTrue(dialog.VisibleSections.SelectMany(s => s.Rows).Any(r => r.Syntax == "-multiwindow"));
+            Assert.Contains(r => r.Syntax == "-multiwindow", dialog.VisibleSections.SelectMany(s => s.Rows));
             Assert.IsLessThan(total, dialog.VisibleSections.Sum(s => s.Rows.Count));
 
             // 扩展名单也参与匹配:搜 RANDR 落到「扩展」一组。
             dialog.ApplyFilter("randr");
-            Assert.IsTrue(dialog.VisibleSections.Any(s => s.HasExtensions));
+            Assert.Contains(s => s.HasExtensions, dialog.VisibleSections);
 
             dialog.ApplyFilter("zzz-no-such-thing");
             Assert.IsEmpty(dialog.VisibleSections);

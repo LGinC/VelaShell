@@ -119,7 +119,7 @@ public sealed class AuthenticationTests
 
         // 第一条永远是 none —— 那是问出「服务端接受哪些方法」的唯一途径。
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.AuthNone, SshProtocolNames.AuthPassword }, run.Observation.RequestedMethods);
+            [SshProtocolNames.AuthNone, SshProtocolNames.AuthPassword], run.Observation.RequestedMethods);
     }
 
     [TestMethod]
@@ -150,7 +150,7 @@ public sealed class AuthenticationTests
             userName: "张三");
 
         Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
-        Assert.AreSequenceEqual(new[] { "张三" }, run.Observation.UserNames, "用户名是 UTF-8 string，非 ASCII 必须能原样过去");
+        Assert.AreSequenceEqual(["张三"], run.Observation.UserNames, "用户名是 UTF-8 string，非 ASCII 必须能原样过去");
     }
 
     [TestMethod]
@@ -369,7 +369,7 @@ public sealed class AuthenticationTests
 
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.RsaSha256 }, run.Observation.PublicKeySignatureAlgorithms, "我们自己更偏好 SHA-512，但服务端说只认 SHA-256 —— 就得听它的（RFC 8308）");
+            [SshAlgorithmNames.RsaSha256], run.Observation.PublicKeySignatureAlgorithms, "我们自己更偏好 SHA-512，但服务端说只认 SHA-256 —— 就得听它的（RFC 8308）");
         Assert.Contains(
 SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
     }
@@ -391,7 +391,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
 
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.RsaSha512 }, run.Observation.PublicKeySignatureAlgorithms);
+            [SshAlgorithmNames.RsaSha512], run.Observation.PublicKeySignatureAlgorithms);
     }
 
     [TestMethod]
@@ -411,9 +411,8 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
             });
 
         // 无条件跟着服务端降级，就把降级攻击的收益还回去了。
-        CollectionAssert.DoesNotContain(
-            run.Observation.PublicKeySignatureAlgorithms, SshAlgorithmNames.SshRsa,
-            "默认不接受 SHA-1 的 ssh-rsa —— 需要它的人得显式打开 AllowSha1RsaSignatures");
+        Assert.DoesNotContain(
+SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认不接受 SHA-1 的 ssh-rsa —— 需要它的人得显式打开 AllowSha1RsaSignatures");
     }
 
     [TestMethod]
@@ -437,7 +436,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
 
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.SshRsa }, run.Observation.PublicKeySignatureAlgorithms, "开关打开之后才肯用它 —— 为的是还能连上停在 OpenSSH 7.x 的老机器");
+            [SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms, "开关打开之后才肯用它 —— 为的是还能连上停在 OpenSSH 7.x 的老机器");
     }
 
     // ------------------------------------------------------------ 键盘交互
@@ -656,7 +655,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
         // 把 partial_success 当失败处理的库会卡在这里：公钥明明过了，
         // 却被记成失败、跳过后续方法，最后报「认证失败」。
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.AuthPublicKey, SshProtocolNames.AuthKeyboardInteractive }, run.Observation.PassedMethods);
+            [SshProtocolNames.AuthPublicKey, SshProtocolNames.AuthKeyboardInteractive], run.Observation.PassedMethods);
 
         Assert.Contains(
             a => a.Outcome == SshAuthOutcome.PartialSuccess, run.Succeeded.Attempts,
@@ -688,7 +687,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
 
         Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.AuthPublicKey, SshProtocolNames.AuthPassword }, run.Observation.PassedMethods);
+            [SshProtocolNames.AuthPublicKey, SshProtocolNames.AuthPassword], run.Observation.PassedMethods);
     }
 
     [TestMethod]
@@ -826,7 +825,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
 
         SshAuthenticationException error = run.Failed;
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.AuthPassword, SshProtocolNames.AuthPublicKey }, [.. error.ServerOffered], SequenceOrder.InAnyOrder, "none 探测拿回来的方法列表要留在异常里，这是用户唯一能看到的线索");
+            [SshProtocolNames.AuthPassword, SshProtocolNames.AuthPublicKey], [.. error.ServerOffered], SequenceOrder.InAnyOrder, "none 探测拿回来的方法列表要留在异常里，这是用户唯一能看到的线索");
     }
 
     // ------------------------------------------------------------ 横幅
@@ -853,7 +852,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
             });
 
         Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
-        Assert.AreSequenceEqual(new[] { "未经授权的访问将被记录。", "第二条横幅。" }, received);
+        Assert.AreSequenceEqual(["未经授权的访问将被记录。", "第二条横幅。"], received);
         Assert.AreSequenceEqual(received, run.Succeeded.Banner.ToArray());
     }
 
@@ -939,9 +938,8 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
                 ServerSignatureAlgorithms = ["ssh-rsa-cert-v01@openssh.com"],
             });
 
-        CollectionAssert.DoesNotContain(
-            run.Observation.PublicKeySignatureAlgorithms, "ssh-rsa-cert-v01@openssh.com",
-            "默认不用 SHA-1 —— 证书也一样");
+        Assert.DoesNotContain(
+"ssh-rsa-cert-v01@openssh.com", run.Observation.PublicKeySignatureAlgorithms, "默认不用 SHA-1 —— 证书也一样");
     }
 
     /// <summary>证书走的仍然是 publickey，没有第三种认证方法。</summary>
@@ -959,7 +957,7 @@ SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
             });
 
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.AuthNone, SshProtocolNames.AuthPublicKey }, run.Observation.RequestedMethods);
+            [SshProtocolNames.AuthNone, SshProtocolNames.AuthPublicKey], run.Observation.RequestedMethods);
     }
 
     /// <summary>取不到私钥材料的签名器 —— 模拟「私钥文件读不出来」。</summary>

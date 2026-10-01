@@ -77,8 +77,7 @@ public sealed class AvaloniaXServerHostUiTests
         plain[XKeycodes.Q - HostKeymap.FirstKeycode] = ('q', 'Q', '@', 0u);
         HostKeymapResult six = HostKeymap.Assemble(plain);
         Assert.IsTrue(six.HasAltGr);
-        CollectionAssert.AreEqual(new uint[] { 'q', 'Q', 'q', 'Q', '@', '@' },
-            six.Main.AsSpan((XKeycodes.Q - HostKeymap.FirstKeycode) * 6, 6).ToArray(), "第四层缺的照抄第三层");
+        Assert.AreSequenceEqual(['q', 'Q', 'q', 'Q', '@', '@'], six.Main.AsSpan((XKeycodes.Q - HostKeymap.FirstKeycode) * 6, 6).ToArray(), "第四层缺的照抄第三层");
         Assert.IsTrue(six.SameAs(HostKeymap.Assemble(plain)));
         Assert.IsFalse(six.SameAs(two));
     }
@@ -273,7 +272,7 @@ public sealed class AvaloniaXServerHostUiTests
         native.MouseUp(new Point(5, 5), MouseButton.Left);                               // 之后真的松开:不再补一个
         await Task.Delay(100);
         Dispatcher.UIThread.RunJobs();
-        Assert.AreEqual(1, events.Count(e => e == 5), "松开只有一次");
+        Assert.ContainsSingle(e => e == 5, events, "松开只有一次");
 
         native.CloseByHost();
         host.Detach();

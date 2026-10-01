@@ -36,8 +36,8 @@ public class XAuthorityFileTests
         Assert.IsTrue(XAuthorityFile.Add(_path, "box", 10, ours));
         List<XAuthorityFile.Entry> entries = Read();
         Assert.HasCount(2, entries, "显示 0 的留着,显示 10 的旧记录被替换");
-        CollectionAssert.AreEqual(desktop, entries.Single(e => e.Number == "0").Data);
-        CollectionAssert.AreEqual(ours, entries.Single(e => e.Number == "10").Data);
+        Assert.AreSequenceEqual(desktop, entries.Single(e => e.Number == "0").Data);
+        Assert.AreSequenceEqual(ours, entries.Single(e => e.Number == "10").Data);
         if (!OperatingSystem.IsWindows())
         {
             Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_path), "0600");
@@ -57,7 +57,7 @@ public class XAuthorityFileTests
         File.WriteAllBytes(_path, garbage);
 
         Assert.IsFalse(XAuthorityFile.Add(_path, "box", 10, [1, 2, 3]));
-        CollectionAssert.AreEqual(garbage, File.ReadAllBytes(_path), "认不出的文件原样不动");
+        Assert.AreSequenceEqual(garbage, File.ReadAllBytes(_path), "认不出的文件原样不动");
     }
 
     [TestMethod]

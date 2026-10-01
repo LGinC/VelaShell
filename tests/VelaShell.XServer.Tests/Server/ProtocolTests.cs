@@ -23,7 +23,7 @@ public sealed class ProtocolTests
         Assert.AreEqual(X11Server.RootWindowId, client.RootWindow);
         Assert.AreEqual(8, client.SetupReply[34], "min-keycode");
         Assert.AreEqual(255, client.SetupReply[35], "max-keycode");
-        StringAssert.Contains(Encoding.Latin1.GetString(client.SetupReply, 40, 9), "VelaShell");
+        Assert.Contains("VelaShell", Encoding.Latin1.GetString(client.SetupReply, 40, 9));
     }
 
     [TestMethod]
@@ -192,8 +192,8 @@ public sealed class ProtocolTests
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         XMessage reply = await c.RequestAsync(99, 0);
         string names = Encoding.Latin1.GetString(reply.Bytes, 32, reply.Bytes.Length - 32);
-        StringAssert.Contains(names, "BIG-REQUESTS");
-        StringAssert.Contains(names, "XC-MISC");
+        Assert.Contains("BIG-REQUESTS", names);
+        Assert.Contains("XC-MISC", names);
     }
 
     [TestMethod]

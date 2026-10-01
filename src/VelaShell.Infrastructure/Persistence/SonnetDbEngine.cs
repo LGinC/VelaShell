@@ -278,7 +278,7 @@ public sealed class SonnetDbEngine : IDisposable
 
     /// <summary>列出全部 measurement 的 schema 快照。</summary>
     public Task<IReadOnlyList<MeasurementSchema>> ListMeasurementsAsync(CancellationToken cancellationToken = default) =>
-        InLockAsync<IReadOnlyList<MeasurementSchema>>(() =>
+        InLockAsync(() =>
         {
             ThrowIfDisposed();
             return _db.Measurements.Snapshot();

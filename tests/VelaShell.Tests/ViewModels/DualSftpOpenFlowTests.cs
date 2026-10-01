@@ -154,7 +154,7 @@ public class DualSftpOpenFlowTests
             await workflow.ReceivedWithAnyArgs(1).DisconnectAsync(default, default);
             ConnectingDocument placeholder = vm.Layout.AllDocuments().OfType<ConnectingDocument>().Single();
             Assert.IsTrue(placeholder.HasError);
-            StringAssert.Contains(placeholder.ErrorMessage, "Telnet");
+            Assert.Contains("Telnet", placeholder.ErrorMessage);
             return true;
         }, CancellationToken.None).GetAwaiter().GetResult();
     }

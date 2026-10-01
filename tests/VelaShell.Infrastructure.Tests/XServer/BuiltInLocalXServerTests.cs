@@ -51,7 +51,7 @@ public class BuiltInLocalXServerTests
 
         Assert.AreEqual(XServerState.Stopped, server.State);
         Assert.AreEqual(1, host.Detaches);
-        CollectionAssert.AreEqual(new[] { XServerState.Starting, XServerState.Running, XServerState.Stopped }, states);
+        Assert.AreSequenceEqual([XServerState.Starting, XServerState.Running, XServerState.Stopped], states);
     }
 
     /// <summary>设置里选的键盘布局在附着之前交给宿主(空串 = 跟随系统)。</summary>
@@ -88,7 +88,7 @@ public class BuiltInLocalXServerTests
         XServerStartResult result = await server.StartAsync();
 
         Assert.IsFalse(result.Success);
-        StringAssert.Contains(result.Error, "3");
+        Assert.Contains("3", result.Error);
     }
 
     /// <summary>SSH 拿到的连接器接进的是服务端本身:走完 X 的连接建立,拿到 Success。</summary>

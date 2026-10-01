@@ -52,7 +52,7 @@ public class QuickCommandVariablesFlowTests
         Send(vm, "查看日志", "kubectl logs -f {{pod}} -n {{ns=default}}");
 
         Assert.AreEqual("查看日志", askedName);
-        Assert.AreEqual(2, askedTemplate!.Variables.Count);
+        Assert.HasCount(2, askedTemplate!.Variables);
         emulator.Received(1).WriteInput(Arg.Is<byte[]>(bytes =>
             Encoding.UTF8.GetString(bytes) == "kubectl logs -f web-1 -n prod"));
     }

@@ -105,7 +105,7 @@ public class VcXsrvLocalXServerTests
         XServerStartResult result = await server.StartAsync();
 
         Assert.IsFalse(result.Success);
-        StringAssert.Contains(result.Error, missing);
+        Assert.Contains(missing, result.Error);
         Assert.AreEqual(XServerState.Stopped, server.State);
         Assert.IsNull(server.Display);
     }
@@ -127,7 +127,7 @@ public class VcXsrvLocalXServerTests
             XServerStartResult result = await server.StartAsync();
 
             Assert.IsFalse(result.Success);
-            StringAssert.Contains(result.Error, ":4");
+            Assert.Contains(":4", result.Error);
             Assert.AreEqual(XServerState.Stopped, server.State);
         }
         finally

@@ -203,7 +203,7 @@ public sealed class RobustnessTests
 
         await Task.Delay(1100);
         await c.RequestAsync(8, 0, b => b.U32(0x7FFFFF));
-        Assert.IsTrue(lines.Any(l => l.Contains("more log lines were not written", StringComparison.Ordinal)), "补一行没记的有几条");
+        Assert.Contains(l => l.Contains("more log lines were not written", StringComparison.Ordinal), lines, "补一行没记的有几条");
     }
 
     [TestMethod]
@@ -226,7 +226,7 @@ public sealed class RobustnessTests
         (int w, int h) = (0, 0);
         Assert.IsTrue(host.Mapped[top].ReadPixels((_, width, height) => (w, h) = (width, height)));
         Assert.AreEqual(32767, w);
-        Assert.IsLessThanOrEqualTo(VelaShell.XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
+        Assert.IsLessThanOrEqualTo(XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
 
         // 把一个小顶层配置成 32767²:同样削到上限之内。
         uint small = c.NewId();
@@ -236,7 +236,7 @@ public sealed class RobustnessTests
         await c.SendAsync(12, 0, b => b.U32(small).U16(0x0C).U16(0).U32(32767).U32(32767));   // ConfigureWindow 宽、高
         await c.SyncAsync();
         Assert.IsTrue(host.Mapped[small].ReadPixels((_, width, height) => (w, h) = (width, height)));
-        Assert.IsLessThanOrEqualTo(VelaShell.XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
+        Assert.IsLessThanOrEqualTo(XServer.Drawing.PixelBuffer.MaxPixels, (long)w * h, $"缓冲 {w}×{h}");
     }
 
     [TestMethod]

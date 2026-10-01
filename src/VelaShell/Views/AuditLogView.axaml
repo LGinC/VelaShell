@@ -32,16 +32,22 @@
     <Style Selector="Button.caption-close:pointerover /template/ ContentPresenter">
       <Setter Property="Background" Value="{DynamicResource VelaDangerHover}" />
     </Style>
-    <Style Selector="Button.dlg-outline">
-      <Setter Property="Background" Value="Transparent" />
-      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
-      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
-      <Setter Property="BorderThickness" Value="1" />
-      <Setter Property="Height" Value="30" />
-      <Setter Property="Padding" Value="12,0" />
-      <Setter Property="CornerRadius" Value="4" />
-      <Setter Property="Cursor" Value="Hand" />
+    <!-- 筛选条上的下拉与关键字框:28 高,与任务管理器、路由追踪的工具条输入框、以及同一排的描边按钮
+         (VelaOutlineButtonTheme,DESIGN.md §5.1)一致。不写的话吃的是 Fluent 默认的最小高 32 与 14 号字,
+         比别的工具窗口的筛选框高一截。下拉用 12 号字:11 号的比例字体在亮色主题下发糊(同设置页那处说明)。 -->
+    <Style Selector="Border.filter-bar ComboBox">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="10,0,0,0" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize12}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.filter-bar TextBox">
+      <Setter Property="Height" Value="28" />
+      <Setter Property="MinHeight" Value="28" />
+      <Setter Property="Padding" Value="8,0" />
       <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
     <Style Selector="ListBox.audit-list">
       <!-- 右侧留出 16 以上:滚动条是覆盖式的,展开时不该压住详情一栏的末尾。 -->
@@ -120,7 +126,7 @@
       </Border>
 
       <!-- 筛选条:类别 / 只看异常 / 关键字 / 刷新,右边一行摘要。 -->
-      <Border Grid.Row="1" Padding="20,8"
+      <Border Grid.Row="1" Padding="20,8" Classes="filter-bar"
               Background="Transparent"
               BorderBrush="{DynamicResource VelaBorderPrimary}"
               BorderThickness="0,0,0,1">
@@ -141,7 +147,8 @@
             <TextBlock Text="{Binding Status}" VerticalAlignment="Center"
                        Foreground="{DynamicResource VelaTextMuted}"
                        FontSize="{DynamicResource VelaFontSize10}" />
-            <Button Classes="dlg-outline" Content="{loc:Localize Refresh}" Command="{Binding RefreshCommand}" />
+            <Button Theme="{StaticResource VelaOutlineButtonTheme}"
+                    Content="{loc:Localize Refresh}" Command="{Binding RefreshCommand}" />
           </StackPanel>
         </Grid>
       </Border>

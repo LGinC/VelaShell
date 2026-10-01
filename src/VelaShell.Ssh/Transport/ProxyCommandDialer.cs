@@ -271,7 +271,7 @@ internal sealed class ProcessDuplexStream : Stream
         lock (_stderr)
         {
             // stderr 里常常转述着对端的话（nc、connect-proxy 打出来的应答），进消息之前同样先清一遍。
-            stderr = Diagnostics.PeerText.Sanitize(_stderr.ToString().Trim(), MaxStderrChars);
+            stderr = PeerText.Sanitize(_stderr.ToString().Trim(), MaxStderrChars);
         }
 
         throw new IOException(

@@ -57,9 +57,9 @@ public class SshAlgorithmPreferencesTests
         Assert.IsTrue(SshAlgorithmPreferences.TryApply(SshAlgorithmKind.Mac,
             "-*-etm@openssh.com", legacy: false, out IReadOnlyList<string> macs, out _));
 
-        CollectionAssert.DoesNotContain(ciphers.ToArray(), "chacha20-poly1305@openssh.com");
+        Assert.DoesNotContain("chacha20-poly1305@openssh.com", [.. ciphers]);
         Assert.HasCount(SshAlgorithmSet.Default.EncryptionClientToServer.Count - 1, ciphers);
-        Assert.AreSequenceEqual(new[] { "hmac-sha2-256", "hmac-sha2-512" }, [.. macs]);
+        Assert.AreSequenceEqual(["hmac-sha2-256", "hmac-sha2-512"], [.. macs]);
     }
 
     [TestMethod]
@@ -79,7 +79,7 @@ public class SshAlgorithmPreferencesTests
         Assert.IsTrue(SshAlgorithmPreferences.TryApply(SshAlgorithmKind.Cipher,
             " aes256-ctr, aes128-ctr ,aes256-ctr ", legacy: false, out IReadOnlyList<string> ciphers, out _));
 
-        Assert.AreSequenceEqual(new[] { "aes256-ctr", "aes128-ctr" }, [.. ciphers]);
+        Assert.AreSequenceEqual(["aes256-ctr", "aes128-ctr"], [.. ciphers]);
     }
 
     [TestMethod]
@@ -110,7 +110,7 @@ public class SshAlgorithmPreferencesTests
         // 拼错了的删除项什么都删不掉,用户却以为已经关了
         Assert.IsFalse(SshAlgorithmPreferences.TryApply(SshAlgorithmKind.Cipher, spec, legacy: false, out _, out string? error));
 
-        StringAssert.StartsWith(error, Strings.Format("Ssh_AlgoSpecUnknown", spec.TrimStart('-')));
+        Assert.StartsWith(Strings.Format("Ssh_AlgoSpecUnknown", spec.TrimStart('-')), error);
     }
 
     [TestMethod]
@@ -153,12 +153,12 @@ public class SshAlgorithmPreferencesTests
             Macs = "hmac-sha1",
         });
 
-        Assert.AreSequenceEqual(new[] { "curve25519-sha256" }, [.. set.KeyExchange]);
+        Assert.AreSequenceEqual(["curve25519-sha256"], [.. set.KeyExchange]);
         Assert.AreEqual("ssh-rsa", set.HostKey[0]);
-        Assert.AreSequenceEqual(new[] { "aes128-ctr" }, [.. set.EncryptionClientToServer]);
-        Assert.AreSequenceEqual(new[] { "aes128-ctr" }, [.. set.EncryptionServerToClient]);
-        Assert.AreSequenceEqual(new[] { "hmac-sha1" }, [.. set.MacClientToServer]);
-        Assert.AreSequenceEqual(new[] { "hmac-sha1" }, [.. set.MacServerToClient]);
+        Assert.AreSequenceEqual(["aes128-ctr"], [.. set.EncryptionClientToServer]);
+        Assert.AreSequenceEqual(["aes128-ctr"], [.. set.EncryptionServerToClient]);
+        Assert.AreSequenceEqual(["hmac-sha1"], [.. set.MacClientToServer]);
+        Assert.AreSequenceEqual(["hmac-sha1"], [.. set.MacServerToClient]);
         Assert.AreEqual("zlib@openssh.com", set.CompressionClientToServer[0]);
     }
 
@@ -170,8 +170,8 @@ public class SshAlgorithmPreferencesTests
         VelaSshConnectionException ex = Assert.ThrowsExactly<VelaSshConnectionException>(
             () => SshAlgorithmPreferences.Build(options));
 
-        StringAssert.Contains(ex.Message, "3des-cbc");
-        StringAssert.Contains(ex.Message, Strings.Get("Ssh_AlgoKindEncryption"));
+        Assert.Contains("3des-cbc", ex.Message);
+        Assert.Contains(Strings.Get("Ssh_AlgoKindEncryption"), ex.Message);
     }
 
     [TestMethod]

@@ -225,7 +225,7 @@ public partial class ColorPickerField : UserControl
     /// <summary>选定一个具体颜色(色板 / 十六进制框):挪面板、写回值。</summary>
     private void Apply(Color color)
     {
-        Hsv next = Hsv.From(color);
+        var next = Hsv.From(color);
         // 灰色(饱和度 0)与黑色(明度 0)没有色相:保留原来的,色相条不跳回红色。
         if (next.Saturation <= 0 || next.Value <= 0)
         {
@@ -267,7 +267,7 @@ public partial class ColorPickerField : UserControl
 
     private void ShowPreview()
     {
-        Color color = _hsv.ToColor();
+        var color = _hsv.ToColor();
         PreviewChip.Background = new ImmutableSolidColorBrush(color);
         // 用户正在框里敲字时不覆盖他敲到一半的内容。
         if (!HexBox.IsFocused)
@@ -322,7 +322,7 @@ public partial class ColorPickerField : UserControl
     /// <summary>与当前颜色相同的那一格加粗描边,一眼看出现在用的是哪个。</summary>
     private void MarkCurrentSwatch()
     {
-        Color current = _hsv.ToColor();
+        var current = _hsv.ToColor();
         foreach (Button swatch in SwatchPanel.Children.OfType<Button>())
         {
             swatch.Classes.Set("current", swatch.Tag is Color color && color.R == current.R && color.G == current.G && color.B == current.B);

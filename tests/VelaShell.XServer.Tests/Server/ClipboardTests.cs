@@ -140,7 +140,7 @@ public sealed class ClipboardTests
         byte[] data = prop.Bytes[32..(32 + (int)prop.U32(16))];
         string text = Encoding.ASCII.GetString(data);
         int at = text.IndexOf("Xft/DPI", StringComparison.Ordinal);
-        Assert.IsTrue(at > 0);
+        Assert.IsGreaterThan(0, at);
         // 名字(7 字节补到 8)之后是 last-change-serial,再之后才是值。
         Assert.AreEqual(144 * 1024, BitConverter.ToInt32(data, at + 8 + 4));
 

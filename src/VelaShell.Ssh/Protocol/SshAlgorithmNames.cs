@@ -166,7 +166,7 @@ internal static class SshAlgorithmNames
     /// <summary>AES-128-CTR。</summary>
     public const string Aes128Ctr = "aes128-ctr";
 
-    /// <summary>AES-256-CBC。<b>本库未实现</b>：只用来辨认对端清单里的名字，不能放进 <see cref="VelaShell.Ssh.Crypto.SshAlgorithmSet"/>。</summary>
+    /// <summary>AES-256-CBC。<b>本库未实现</b>：只用来辨认对端清单里的名字，不能放进 <see cref="Crypto.SshAlgorithmSet"/>。</summary>
     public const string Aes256Cbc = "aes256-cbc";
 
     /// <summary>AES-128-CBC。<b>本库未实现</b>：同 <see cref="Aes256Cbc"/>。</summary>

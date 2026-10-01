@@ -273,7 +273,7 @@ public sealed class WindowAndDrawingTests
 
         server.CloseTopLevel(host.Mapped[win]);
         XMessage message = await c.NextEventAsync(33);
-        Assert.IsTrue((message.Kind & 0x80) != 0, "SendEvent 合成的事件带 sent 位");
+        Assert.AreNotEqual(0, message.Kind & 0x80, "SendEvent 合成的事件带 sent 位");
         Assert.AreEqual(protocols, message.U32(8));
         Assert.AreEqual(delete, message.U32(12));
     }

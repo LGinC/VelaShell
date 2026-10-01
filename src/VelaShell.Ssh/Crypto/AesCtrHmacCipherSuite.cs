@@ -392,12 +392,12 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
     internal static void Xor(Span<byte> data, ReadOnlySpan<byte> keyStream)
     {
         int i = 0;
-        if (System.Numerics.Vector.IsHardwareAccelerated)
+        if (Vector.IsHardwareAccelerated)
         {
-            int width = System.Numerics.Vector<byte>.Count;
+            int width = Vector<byte>.Count;
             for (; i <= data.Length - width; i += width)
             {
-                Vector<byte> mixed = new System.Numerics.Vector<byte>(data[i..]) ^ new System.Numerics.Vector<byte>(keyStream[i..]);
+                Vector<byte> mixed = new Vector<byte>(data[i..]) ^ new Vector<byte>(keyStream[i..]);
                 mixed.CopyTo(data[i..]);
             }
         }
