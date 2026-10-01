@@ -7,7 +7,8 @@
 > 一件事还没做，就不要在 `plan.md` 里留 TODO。
 >
 > 最近复核：**2026-09-26**。逐条对着 `src/` 核过：四个 P0 开关仍然零消费者、
-> 11 条「怎么改都绿」的用例还是无返回值写法、`SessionProfile.Tags` 仍无人读。
+> `SessionProfile.Tags` 仍无人读。2026-10-01 单独复核了「11 条『怎么改都绿』的 UI 用例」：
+> 早在 `plan.md` §139 就已修完（这里漏删），探针确认后删除，并加了守门测试（§148）。
 > 已完成的条目（✅）一律移出本文件，
 > 它们的来龙去脉在 `plan.md` 对应小节；「SSH 压缩开关」核实已在 `plan.md` §92 接线，一并删除。
 >
@@ -30,17 +31,15 @@
 
 ## 🎯 建议的下一步
 
-按「杠杆 ÷ 成本」排，下面两件最值得先动（内置 X 服务端全库审查的 31 项已在 `plan.md` §124 修完；keyboard-interactive 动态码界面、算法协商可配已在 §133、§134 落地）：
+按「杠杆 ÷ 成本」排，下面这件最值得先动（内置 X 服务端全库审查的 31 项已在 `plan.md` §124 修完；keyboard-interactive 动态码界面、算法协商可配已在 §133、§134 落地；「怎么改都绿」的 UI 用例已在 §139 修完、§148 加了守门）：
 
-1. **11 条「怎么改都绿」的 UI 用例**（🔴 P0）—— 断言失败被整个吞掉，等于这几块界面没有测试。
-   不修，后面每一次改动都在裸奔。
-2. **录制与日志的输出脱敏**（🟠 P1）—— `cat .env`、`kubectl get secret` 的输出正原样落盘，是现实风险。
+1. **录制与日志的输出脱敏**（🟠 P1）—— `cat .env`、`kubectl get secret` 的输出正原样落盘，是现实风险。
 
 ## 📊 待办分布
 
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| 一、欠账 | 5 | 2 | 8 | 9 | **24** |
+| 一、欠账 | 4 | 2 | 8 | 9 | **23** |
 | 二、路线图 | — | 5 | 16 | 12 | **33** |
 | 三、文档待同步 | — | — | — | — | **25** |
 
@@ -61,12 +60,6 @@
 | ⏳ | **自动下载更新** | `AppSettings.AutoDownloadUpdates` | 零消费者、零 UI | 下载调度 + SHA-256 校验 + 静默换版。别和已实现的「启动时检查更新」（`CheckUpdatesOnStartup`）混淆 |
 | ⏳ | **传输失败重试** | `AppSettings.TransferMaxRetries` | 零消费者 | 前提是[传输队列持久化](#c-文件与传输)（重试得知道「重试什么」）。同组的 `AutoResume` 是遗留兼容字段，真开关是 `ResumeEnabled`，**别**给它接线 |
 | ⏳ | **标签栏位置（顶部 / 底部）** | `AppearanceOptions.TabBarPosition` + `SettingsViewModel.TabBarPositionIndex` | 映射都在，停靠层零消费；UI 已从外观页撤下 | VelaDock 的 `DockGroupControl` 改标签条停靠边即可，**低成本**，按需排期 |
-
-### 🧪 测试与工程
-
-| 状态 | 优先级 | 项 | 现状 | 要做什么 |
-| :---: | :---: | --- | --- | --- |
-| ⏳ | 🔴 P0 | **11 条「怎么改都绿」的 UI 用例** | `_session.Dispatch(async () => { … })` 这种**无返回值**的 async lambda 绑到了 `Dispatch<TResult>(Func<TResult>)`，那个 Task 没人 await，断言异常被整个吞掉 —— **往第一行插 `Assert.Fail` 照样通过**。分布：`PluginPanelUiTests` 5、`StandaloneSftpDocumentBehaviorTests` 3、`LocalFilePaneViewUiTests` 2、`PluginThemeTokensTests` 1（`plan.md` §70） | ⚠️ **机械修法不成立**：补 `return true;` 改绑之后 7 条当场超时 —— 它们 await 的东西在无头环境里根本不会完成。要一条一条重做异步流程；同文件里「同步 body + 返回值」的写法可作模板 |
 
 ### 🔒 安全与凭据
 
