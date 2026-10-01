@@ -1641,7 +1641,55 @@
     <value>ポート</value>
   </data>
   <data name="Profile_AdvancedOptions" xml:space="preserve">
-    <value>詳細オプション</value>
+    <value>詳細</value>
+  </data>
+  <data name="Profile_SectionGeneral" xml:space="preserve">
+    <value>一般</value>
+  </data>
+  <data name="Profile_SectionTerminal" xml:space="preserve">
+    <value>端末</value>
+  </data>
+  <data name="Profile_SectionForwarding" xml:space="preserve">
+    <value>転送</value>
+  </data>
+  <data name="Profile_ProtocolsBuiltIn" xml:space="preserve">
+    <value>組み込み</value>
+  </data>
+  <data name="Profile_KindTerminal" xml:space="preserve">
+    <value>端末</value>
+  </data>
+  <data name="Profile_KindFiles" xml:space="preserve">
+    <value>ファイル</value>
+  </data>
+  <data name="Profile_MoreProtocols" xml:space="preserve">
+    <value>プロトコルを追加…</value>
+  </data>
+  <data name="Profile_SecTarget" xml:space="preserve">
+    <value>接続先</value>
+  </data>
+  <data name="Profile_SecAuth" xml:space="preserve">
+    <value>認証</value>
+  </data>
+  <data name="Profile_SecOrganize" xml:space="preserve">
+    <value>整理</value>
+  </data>
+  <data name="Profile_SecAfterLogin" xml:space="preserve">
+    <value>ログイン後</value>
+  </data>
+  <data name="Profile_SecTransport" xml:space="preserve">
+    <value>トランスポート</value>
+  </data>
+  <data name="Profile_SecAlgorithms" xml:space="preserve">
+    <value>アルゴリズム</value>
+  </data>
+  <data name="Profile_SecPluginSettings" xml:space="preserve">
+    <value>{0} の設定</value>
+  </data>
+  <data name="Profile_RiskInsecure" xml:space="preserve">
+    <value>安全ではない</value>
+  </data>
+  <data name="Profile_RiskTrustedHostsOnly" xml:space="preserve">
+    <value>信頼できるホストのみ</value>
   </data>
   <data name="Profile_AesNote" xml:space="preserve">
     <value>(AES-256 で暗号化して保存されます)</value>
@@ -1674,10 +1722,10 @@
     <value>// 先に踏み台へ接続し、そのポート転送経由で本ホストに入ります。踏み台には保存済みの資格情報が必要で、踏み台にさらに踏み台を設定できます(多段チェーン)</value>
   </data>
   <data name="Profile_KeyAuth" xml:space="preserve">
-    <value>鍵認証</value>
+    <value>鍵</value>
   </data>
   <data name="Profile_CertAuth" xml:space="preserve">
-    <value>証明書認証</value>
+    <value>証明書</value>
   </data>
   <data name="Profile_CertificateFile" xml:space="preserve">
     <value>証明書ファイル</value>
@@ -1698,7 +1746,7 @@
     <value>秘密鍵のパスフレーズ(任意)</value>
   </data>
   <data name="Profile_PasswordAuth" xml:space="preserve">
-    <value>パスワード認証</value>
+    <value>パスワード</value>
   </data>
   <data name="Profile_PostAuthCommand" xml:space="preserve">
     <value>認証後にコマンドを実行</value>
@@ -5197,7 +5245,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>サーバーが転送要求を拒否しました。sshd_config の AllowAgentForwarding / AllowTcpForwarding / X11Forwarding を確認してください。</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
-    <value>SSH エージェント</value>
+    <value>エージェント</value>
   </data>
   <data name="Profile_AgentAuthHint" xml:space="preserve">
     <value>ローカルの ssh-agent にある鍵で署名します。このプロファイルには資格情報を保存しません。Windows では「OpenSSH Authentication Agent」サービス(起動してから ssh-add で鍵を読み込みます)、その他の OS では SSH_AUTH_SOCK が指す agent を使います。</value>

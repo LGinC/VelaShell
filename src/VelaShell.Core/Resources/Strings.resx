@@ -1825,7 +1825,55 @@ Paste anyway?</value>
     <value>Type a command or search sessions…</value>
   </data>
   <data name="Profile_AdvancedOptions" xml:space="preserve">
-    <value>Advanced Options</value>
+    <value>Advanced</value>
+  </data>
+  <data name="Profile_SectionGeneral" xml:space="preserve">
+    <value>General</value>
+  </data>
+  <data name="Profile_SectionTerminal" xml:space="preserve">
+    <value>Terminal</value>
+  </data>
+  <data name="Profile_SectionForwarding" xml:space="preserve">
+    <value>Forwarding</value>
+  </data>
+  <data name="Profile_ProtocolsBuiltIn" xml:space="preserve">
+    <value>Built-in</value>
+  </data>
+  <data name="Profile_KindTerminal" xml:space="preserve">
+    <value>Terminal</value>
+  </data>
+  <data name="Profile_KindFiles" xml:space="preserve">
+    <value>Files</value>
+  </data>
+  <data name="Profile_MoreProtocols" xml:space="preserve">
+    <value>Get more protocols…</value>
+  </data>
+  <data name="Profile_SecTarget" xml:space="preserve">
+    <value>Destination</value>
+  </data>
+  <data name="Profile_SecAuth" xml:space="preserve">
+    <value>Authentication</value>
+  </data>
+  <data name="Profile_SecOrganize" xml:space="preserve">
+    <value>Organize</value>
+  </data>
+  <data name="Profile_SecAfterLogin" xml:space="preserve">
+    <value>After login</value>
+  </data>
+  <data name="Profile_SecTransport" xml:space="preserve">
+    <value>Transport</value>
+  </data>
+  <data name="Profile_SecAlgorithms" xml:space="preserve">
+    <value>Algorithms</value>
+  </data>
+  <data name="Profile_SecPluginSettings" xml:space="preserve">
+    <value>{0} settings</value>
+  </data>
+  <data name="Profile_RiskInsecure" xml:space="preserve">
+    <value>Insecure</value>
+  </data>
+  <data name="Profile_RiskTrustedHostsOnly" xml:space="preserve">
+    <value>Trusted hosts only</value>
   </data>
   <data name="Profile_AesNote" xml:space="preserve">
     <value>(stored with AES-256 encryption)</value>
@@ -1858,10 +1906,10 @@ Paste anyway?</value>
     <value>// Connects to the jump host first, then reaches this host via its port forwarding; the jump host must have saved credentials, and a jump host may use another jump host (multi-hop chain)</value>
   </data>
   <data name="Profile_KeyAuth" xml:space="preserve">
-    <value>Key Authentication</value>
+    <value>Key</value>
   </data>
   <data name="Profile_CertAuth" xml:space="preserve">
-    <value>Certificate Authentication</value>
+    <value>Certificate</value>
   </data>
   <data name="Profile_CertificateFile" xml:space="preserve">
     <value>Certificate File</value>
@@ -1882,7 +1930,7 @@ Paste anyway?</value>
     <value>Private Key Passphrase (optional)</value>
   </data>
   <data name="Profile_PasswordAuth" xml:space="preserve">
-    <value>Password Authentication</value>
+    <value>Password</value>
   </data>
   <data name="Profile_PostAuthCommand" xml:space="preserve">
     <value>Run command after authentication</value>
@@ -5202,7 +5250,7 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>The server refused the forwarding request. Check AllowAgentForwarding / AllowTcpForwarding / X11Forwarding in sshd_config.</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
-    <value>SSH Agent</value>
+    <value>Agent</value>
   </data>
   <data name="Profile_AgentAuthHint" xml:space="preserve">
     <value>Signs with the keys held by your local ssh-agent; nothing is stored in this profile. On Windows that is the &quot;OpenSSH Authentication Agent&quot; service (start it, then load keys with ssh-add); elsewhere the agent named by SSH_AUTH_SOCK.</value>

@@ -45,19 +45,20 @@ public sealed class ConnectionProfileViewUiTests
 
             var protocolButtons = window.GetVisualDescendants()
                 .OfType<Button>()
-                .Where(button => button.Classes.Contains("proto-tab"))
+                .Where(button => button.Classes.Contains("proto-item"))
                 .ToList();
-            // SSH / SFTP / FTP 三个内建可点页签;S3、Telnet、串口现在都由插件贡献,
-            // 没装插件(单测宿主就是这种)时不出现。
+            // 协议栏里 SSH / SFTP / FTP 三个内建项;S3、Telnet、串口现在都由插件贡献,
+            // 没装插件(单测宿主就是这种)时不出现,「插件」那一组的标题也跟着不出现。
             Assert.HasCount(3, protocolButtons);
             Assert.IsTrue(protocolButtons.All(button => button.IsTabStop));
             AssertProtocolTabMotion(protocolButtons);
+            Assert.IsFalse(vm.HasPluginProtocols);
 
-            // 禁用的占位页签一个都不该剩下:最后一个(串口)已由 velashell.serial 插件接管,
+            // 禁用的占位项一个都不该剩下:最后一个(串口)已由 velashell.serial 插件接管,
             // 宿主至此不再认识任何一种具体协议。
             var legacyProtocols = window.GetVisualDescendants()
                 .OfType<Border>()
-                .Where(border => border.Classes.Contains("proto-tab"))
+                .Where(border => border.Classes.Contains("proto-item"))
                 .ToList();
             Assert.IsEmpty(legacyProtocols);
 
@@ -132,7 +133,7 @@ public sealed class ConnectionProfileViewUiTests
     }
 
     [TestMethod]
-    public void ProtocolTabIndicator_SlidesToSelectedTab()
+    public void SectionTabIndicator_SlidesToSelectedSection()
     {
         _session.Dispatch(() =>
         {
@@ -147,29 +148,71 @@ public sealed class ConnectionProfileViewUiTests
             Dispatcher.UIThread.RunJobs();
             window.UpdateLayout();
 
-            Border indicator = window.FindControl<Border>("ProtoTabIndicator")
-                ?? throw new AssertFailedException("ProtoTabIndicator not found.");
-            Button sshTab = window.FindControl<Button>("SshTab")!;
-            Button sftpTab = window.FindControl<Button>("SftpTab")!;
+            Border indicator = window.FindControl<Border>("SectionTabIndicator")
+                ?? throw new AssertFailedException("SectionTabIndicator not found.");
+            Button generalTab = window.FindControl<Button>("GeneralTab")!;
+            Button forwardingTab = window.FindControl<Button>("ForwardingTab")!;
 
-            // 初始:下划线对齐 SSH。
+            // 初始:下划线对齐「常规」。
             Assert.IsTrue(indicator.IsVisible);
-            AssertIndicatorAligned(indicator, sshTab);
+            AssertIndicatorAligned(indicator, generalTab);
 
-            // 切到 SFTP:下划线经 180ms 过渡滑到 SFTP(断言读基值,与动画时间解耦)。
-            vm.SelectConnectionTypeCommand.Execute(ConnectionType.SFTP).Subscribe();
+            // 切到「转发」:下划线经 180ms 过渡滑过去(断言读基值,与动画时间解耦)。
+            vm.SelectSectionCommand.Execute(ConnectionProfileSection.Forwarding).Subscribe();
             Dispatcher.UIThread.RunJobs();
-            AssertIndicatorAligned(indicator, sftpTab);
+            AssertIndicatorAligned(indicator, forwardingTab);
 
-            // 切到 FTP:定位逻辑曾是「IsSftpSelected ? SftpTab : SshTab」的二元三目,
-            // 加第三个协议后必须按枚举分派,否则下划线会留在 SFTP 上。
-            Button ftpTab = window.FindControl<Button>("FtpTab")!;
+            // 换成 FTP:「转发」页没了,落回「常规」,下划线也得跟回来 ——
+            // 否则它悬在一个已经收起的页签原来的位置上。
             vm.SelectConnectionTypeCommand.Execute(ConnectionType.FTP).Subscribe();
             Dispatcher.UIThread.RunJobs();
             window.UpdateLayout();
-            AssertIndicatorAligned(indicator, ftpTab);
+            Assert.IsFalse(forwardingTab.IsVisible);
+            AssertIndicatorAligned(indicator, generalTab);
+
+            // FTP 有「高级」页(默认打开路径)。
+            Button advancedTab = window.FindControl<Button>("AdvancedTab")!;
+            Assert.IsTrue(advancedTab.IsVisible);
+            vm.SelectSectionCommand.Execute(ConnectionProfileSection.Advanced).Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            AssertIndicatorAligned(indicator, advancedTab);
 
             window.Close();
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
+    /// 每一页只露出自己的内容:切到「终端」时,「常规」页的主机输入框不该还在,
+    /// 反过来也一样 —— 两页叠着画出来,就是一张两倍长、字段重复的表单。
+    /// </summary>
+    [TestMethod]
+    public void OnlyTheSelectedSectionIsShown()
+    {
+        _session.Dispatch(() =>
+        {
+            var vm = new ConnectionProfileViewModel { Host = "10.0.0.1", Username = "root", PostAuthCommand = "tmux attach" };
+            var window = new ConnectionProfileView { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                TextBox Showing(string text) => window.GetVisualDescendants().OfType<TextBox>()
+                    .Single(box => box.Text == text);
+
+                Assert.IsTrue(Showing("10.0.0.1").IsEffectivelyVisible);
+                Assert.IsFalse(Showing("tmux attach").IsEffectivelyVisible);
+
+                vm.SelectSectionCommand.Execute(ConnectionProfileSection.Terminal).Subscribe();
+                Dispatcher.UIThread.RunJobs();
+
+                Assert.IsFalse(Showing("10.0.0.1").IsEffectivelyVisible);
+                Assert.IsTrue(Showing("tmux attach").IsEffectivelyVisible);
+            }
+            finally
+            {
+                window.Close();
+            }
         }, CancellationToken.None).GetAwaiter().GetResult();
     }
 
@@ -199,13 +242,11 @@ public sealed class ConnectionProfileViewUiTests
 
             Assert.IsLessThanOrEqualTo(320.5, window.Bounds.Height, "窗口高度不得越过上限。");
 
-            ScrollViewer form = window.GetVisualDescendants().OfType<ScrollViewer>()
-                .First(scroll => scroll.GetVisualParent() is Grid);
+            ScrollViewer form = window.FindControl<ScrollViewer>("FormScroll")!;
             Assert.IsGreaterThan(form.Viewport.Height, form.Extent.Height, "表单放不下时必须可滚动。");
 
             // 页脚是定高行,不参与滚动:连接按钮永远落在窗口里。
-            Button connect = window.GetVisualDescendants().OfType<Button>()
-                .Single(button => button.Classes.Contains("dlg-primary"));
+            Button connect = window.FindControl<Button>("ConnectButton")!;
             Point origin = connect.TranslatePoint(default, window) ?? default;
             Assert.IsLessThanOrEqualTo(window.Bounds.Height + 0.5, origin.Y + connect.Bounds.Height,
                 "「连接」按钮必须留在窗口可视区域内。");
@@ -238,8 +279,7 @@ public sealed class ConnectionProfileViewUiTests
             Dispatcher.UIThread.RunJobs();
             window.UpdateLayout();
 
-            ScrollViewer form = window.GetVisualDescendants().OfType<ScrollViewer>()
-                .First(scroll => scroll.GetVisualParent() is Grid);
+            ScrollViewer form = window.FindControl<ScrollViewer>("FormScroll")!;
             Assert.IsGreaterThan(form.Viewport.Height, form.Extent.Height, "前提:表单确实放不下。");
             Assert.IsTrue(form.AllowAutoHide, "表单不该按住 AllowAutoHide —— 那等于让滚动条常驻展开。");
 
@@ -346,7 +386,7 @@ public sealed class ConnectionProfileViewUiTests
     {
         _session.Dispatch(() =>
         {
-            var vm = new ConnectionProfileViewModel { IsAdvancedVisible = true, SshX11Forwarding = true };
+            var vm = new ConnectionProfileViewModel { SshX11Forwarding = true, SelectedSection = ConnectionProfileSection.Forwarding };
             var window = new ConnectionProfileView { DataContext = vm, Height = 900 };
             window.Show();
             Dispatcher.UIThread.RunJobs();

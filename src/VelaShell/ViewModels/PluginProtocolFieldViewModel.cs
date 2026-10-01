@@ -169,12 +169,12 @@ public sealed class PluginProtocolFieldViewModel : ReactiveObject
     /// <summary>是否为机密字段(随口令一起加密落盘)。</summary>
     public bool IsSecret => Field.IsSecret;
 
-    /// <summary>是否属于「高级选项」(折叠时不显示)。</summary>
+    /// <summary>是否属于「高级」页(不在「常规」页上显示)。</summary>
     public bool IsAdvanced => Field.IsAdvanced;
 
     /// <summary>
-    /// 这一行当前显不显示。由 <see cref="ConnectionProfileViewModel" /> 按
-    /// 「高级选项」的展开状态统一下发 —— 做成字段自己的状态,是因为模板里没有
+    /// 这一行当前显不显示。由 <see cref="ConnectionProfileViewModel" /> 按当前分页与
+    /// 显示条件统一下发 —— 做成字段自己的状态,是因为模板里没有
     /// 现成的路子去比对父视图模型的属性(同 <see cref="PluginProtocolTabViewModel.IsSelected" />)。
     /// </summary>
     public bool IsRowVisible
