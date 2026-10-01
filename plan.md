@@ -1449,3 +1449,22 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 不递归、不批量(与 chmod 一致);符号链接改的是它指向的对象。
 
 **三、验证**:`SftpServiceTests` 新增 9 条(名称翻译、只改属组、无查表时的数字 id、名字像数字时名字优先、别名、未知名称不发请求、空操作、候选排序、无查表时给空名单而非 null);`FileBrowserViewModelTests` 新增 5 条(候选透传、候选取不到退回只读、先 chown 再 chmod、chown 被拒不动权限、chmod 被拒仍刷新且保留错误),原有 3 条改用新委托;`SerializedSftpServiceTests` 的透传清单补两项。新增 `SftpOwnerIntegrationTests`(DockerIntegration)对真实 OpenSSH:只改属组时属主原样写回,把属主交给 root 冒出 `VelaSftpPermissionDeniedException` 且文件不动。把「沿用当前值」临时改成写 0 后,该用例报服务端 Permission denied 失败,确认它真跑过、不是早退记为通过。另用 headless 截图核对了弹窗(深 / 浅主题,可编辑 / 只读 / 下拉展开)。整个解决方案:`VelaShell.Core.Tests` 616 通过 / 10 跳过 / 1 失败,`VelaShell.Tests` 1626 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 569 通过 / 4 跳过,其余全过。唯一的失败 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 与本改动无关:本机的 `velashell-test-shells` 镜像建于 09-22,早于 Dockerfile 里给 `vela-dash` 关 X11 的 `Match` 段(09-23),靶机没按预期拒绝 X11;重建该镜像即可。
+
+## ✅ 145. 2026-09-30 新建连接对话框改为「左侧协议栏 + 右侧分页表单」(用户需求,设计稿 `VelaShell-zh.pen`「新建连接 v2」)
+
+**一、问题**:对话框是 508 宽的一列到底表单,页脚一个「高级选项」开关管着其余一切。SSH 展开后有三十来行(标签、跳板、认证后命令、六项终端覆盖、压缩、两项算法、agent 转发及其两道收紧、X11),窗口被钳在 768 高里只能一路滚;跳板主机这种决定连不连得上的项也藏在折叠区里。协议是横排页签,插件协议一多就挤出窗口。「连接」按钮是实心强调色,与 DESIGN.md §5.1(主操作用半透明强调药丸)不符。
+
+**二、做法**:
+- **布局**:卡片 760×664 定高(XAML 按 Windows 口径 792×696),标题栏 / 主体 / 反馈条 / 页脚四行;主体左边 188 宽的协议栏,右边是分页页签 + 表单,只有表单区滚动。矮屏上照旧按 `min(768, 工作区 − 48)` 钳高。
+- **协议栏**:「内置」SSH / SFTP / FTP(右侧小字标终端 / 文件)+「插件」一组(数量 + 各插件清单声明的协议,不装载程序集;清单不写形态,所以插件项不标小字、一律插头图标)。底部「获取更多协议…」调主窗口注入的 `ConnectionProfileViewModel.OpenPluginManager` 打开插件管理器(非模态,在那边启用的协议经注册表 `Changed` 当场补进协议栏);没注入时不出现。
+- **分页**:新增 `ConnectionProfileSection`(常规 / 终端 / SSH 选项 / 转发 / 高级)与 `SelectedSection`、`SelectSectionCommand`、`Show*Section`。终端与转发只对 SSH,SSH 选项对 SSH 与 SFTP,高级对 FTP(默认打开路径)与声明了 `IsAdvanced` 字段的插件协议。换协议后当前页不存在就落回常规(`RefreshSectionAvailability`,在 `ConnectionType` 变化与插件字段增减两处调用 —— 切到插件协议那条路不清字段,只靠前者)。选中下划线沿用原先协议页签的滑动实现,改为跟分页页签走。
+- **「高级选项」开关删除**:`IsAdvancedVisible` / `ToggleAdvancedCommand` 去掉。插件字段的行可见性改为「属于当前页且显示条件成立」,「常规」与「高级」两页各用同一个 `PluginFieldRow` 模板画一份。`AdvancedBadge` 改为页签上的字段数(只数眼下适用的,不再是「折叠了几项」的 `+N`)。原先「编辑时有非默认值就自动展开」改为页签旁的圆点:`Is{Terminal,SshOptions,Forwarding,Advanced}SectionModified`,派生通知集中在 `OnOwnPropertyChanged` 按属性名转发。
+- **常规页**分连接目标(Host/Port、跳板 —— 说明收进 ⓘ 悬停)、身份验证(认证方式由下拉改为分段按钮,新增 `SelectAuthMethodCommand`;FTP 在那一格放加密方式)、插件常用字段(节标题「<协议名> 设置」)、整理(显示名称 / 分组 / 标签三栏)。标签颜色输入框左侧加色块预览(`StringToBrushConverter`)。允许老算法、agent 转发标题旁加警示标签。说明文字从 `TextMuted` 换成 `TextTertiary`(前者在 `VelaBgSurface` 上对比度不够读整段)。
+- **页脚**:左边新增连接目标预览 `EndpointPreview`(`user@host:port`,SFTP / FTP 带 scheme,IPv6 加方括号,匿名 FTP 不带用户名);右边测试 / 保存改用 `VelaOutlineButtonTheme`,连接改用 `VelaAccentPillButtonTheme`,同高 28。
+- **样式**:协议项、分页页签、认证分段各用一个窗口内的 `ControlTheme`(自带模板,焦点只在 `:focus-visible` 时画),原先给协议页签手工挂焦点装饰器的那段代码后置删掉。
+- **文案**:新增 16 个键(五份 resx 齐);`Profile_AdvancedOptions`、`Profile_SshFeatures` 改短作页签名(高级 / SSH 选项);四个认证方式键改短作分段按钮(密码 / 密钥 / 证书 / Agent,只有这里用)。
+- DESIGN.md §6.1 那条「SSH/SFTP protocol tabs」改为协议栏与分页页签的动效与焦点口径。
+
+**三、验证**:新增 `ConnectionProfileSectionsTests`(18 例:各协议有哪几页、换协议落回常规 / 页还在就不动、切到插件协议离开 SSH 专属页、选不进不存在的页、圆点在已存配置 / 新建 / 编辑时的亮灭与通知、预览的六种写法与通知、分段按钮、插件管理器入口);`ConnectionProfileViewModelTests` 里依赖折叠开关的 5 条改写成分页口径,新增最后一个高级字段消失时落回常规;UI 测试新增 `SectionTabIndicator_SlidesToSelectedSection`(取代协议页签那条)与 `OnlyTheSelectedSectionIsShown`,其余按新控件名改;`Todo2PixelRegressionTests` 改为按协议栏 SFTP 项的实际边界采样(原先写死的坐标落到了标题栏上)。两处变异:去掉 `ConnectionType` 变化时的落回 → 切插件协议那条变红(内建协议那条因为清字段也会落回,故另加了插件那条);下划线把「转发」错映射到「常规」→ 指示条用例变红。headless 截了七帧(SSH 四页、证书认证测试失败、明文 FTP、亮色)与设计稿对照。整个解决方案:`VelaShell.Tests` 1646 通过 / 8 跳过,`VelaShell.Core.Tests` 616 通过 / 10 跳过 / 1 失败(即 §144 记下的 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce`,本机测试镜像过旧,与本改动无关),其余全过。
+
+**四、与设计稿的出入**:FTP 的加密方式放在用户名旁(与 SSH 的认证方式同一格,沿用原实现),而不是设计稿里跳板主机旁;插件字段仍是一行一个、说明写在字段下方(字段是插件声明的,宿主不知道哪两项适合并排),没有照设计稿压成双栏 + ⓘ。

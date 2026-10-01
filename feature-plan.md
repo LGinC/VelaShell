@@ -258,6 +258,7 @@
 | `plan.md` §138 / §140 对话框标题栏 | `{zh,en}/host/交互与界面规格.md` 导入会话与新建连接两个对话框：标题栏与回放中心等独立窗口同一个样子（标题靠左、13px，前面一个 15px 线条图标；27×27 关闭键贴住右上角，悬停的红底随卡片圆角裁掉；仍是固定尺寸的模态框，不放最大化）；新建连接高级选项的 X11 一行改为标签单占一行、显示输入框与「受信任（-Y）」同在第二行各自居中 | [velashell-docs#76](https://github.com/VelaShellLabs/velashell-docs/pull/76) 已开（宿主 #531 已合，#532 待合） |
 | `plan.md` §144 远端文件 chown | `{zh,en}/host/SFTP双栏与WinSCP差距分析.md` 3.2 的 chown 一行改成已实现（仅 SFTP、不递归不批量），第五节路线图第 13 条划掉 chown；`{zh,en}/host/交互与界面规格.md` 文件浏览器右键菜单的「权限 chmod」改为「属性」，并补属性弹窗一条（属主 / 属组可编辑下拉、候选来源、数字 id、清空即不改、先 chown 再 chmod、FTP 与插件协议只读） | [velashell-docs#78](https://github.com/VelaShellLabs/velashell-docs/pull/78) 已开，与宿主 #539 一起合 |
 | `plan.md` §141 界面语言跟随系统 | `{zh,en}/host/settings-audit.md` §9.2「常规 · 语言」一行：`Language` 出厂为空 = 跟随系统，系统语言对不上五种界面语言时用英文，设置里选过的语言优先；下拉首项为「跟随系统」 | [velashell-docs#77](https://github.com/VelaShellLabs/velashell-docs/pull/77) 已开，与宿主 #537 一起合 |
+| `plan.md` §145 新建连接对话框改版 | `{zh,en}/host/交互与界面规格.md` §13.1 重写结构部分（协议栏、分页页签与出现条件表、页签圆点与字段数、常规页分节、认证分段按钮、反馈条、页脚目标预览；「高级选项」相关各条改指到对应页）；`{zh,en}/host/design-specs.md` 新建连接宽 500 → 760；`zh/host/架构设计.md` 与 `en/host/architecture-design.md` 设计稿对照表那一行；`zh/host/S3协议插件化设计.md`、`zh/host/Redis客户端插件化调研与设计.md`、`zh/templates/dev-guide.md` 三处「收进高级选项折叠」改为「放到高级页」。⚠️ `en/templates/dev-guide.md` 本来就没有 `IsAdvanced` 那一段（旧漂移），没补 | velashell-docs 的 `feat/connection-dialog-redesign` 分支，**待开 PR** |
 | `en/` 树 | `zh/` 有 **8 篇** `en/` 里没有：Redis 调研、S3 两篇、系统密钥链调研、凭据管理器集成设计、三份 `release-process.md`。缺口已在 `en/host/README.md` 与根 README 逐篇列出（不再是静默漂移），翻译本身仍欠着 | 未开始 |
 
 ---
