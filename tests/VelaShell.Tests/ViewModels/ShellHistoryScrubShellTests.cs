@@ -34,7 +34,7 @@ public sealed partial class ShellHistoryScrubShellTests
 
     /// <summary>宿主真正会注入的那一行:目录上报钩子 + 摘历史前缀,与 SendSilentCommand 一字不差。</summary>
     private static string InjectedLine =>
-        ShellHistoryScrub.Prepend(ShellIntegrationScript.Bash);
+        ShellHistoryScrub.Prepend(RemoteShellKind.Bash, ShellIntegrationScript.Bash);
 
     [TestMethod]
     public void TheInjectedLine_DoesNotStayInHistory()
@@ -62,7 +62,7 @@ public sealed partial class ShellHistoryScrubShellTests
     {
         string[] output = RunInteractiveRaw(
             null,
-            " " + ShellHistoryScrub.Prepend("sh -c 'exit 3'"),
+            " " + ShellHistoryScrub.Prepend(RemoteShellKind.Bash, "sh -c 'exit 3'"),
             "printf 'STATUS<%s>\n' \"$?\"");
 
         Assert.Contains("STATUS<3>", string.Join('\n', output), "退出码被收尾动作吃掉了。");

@@ -1504,3 +1504,14 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - `feature-plan.md` 删掉这一条(连同只剩它一行的「测试与工程」小节),「建议的下一步」与待办分布的计数随之更新。
 
 **三、验证**:守门测试 10 例通过;变异:把 `PluginThemeTokensTests` 里那句 `return true;` 删掉,守门报 `VelaShell.Tests/Views/PluginThemeTokensTests.cs:20  Dispatch(async …) 的用例体没有返回值`,还原后通过。
+
+## ✅ 149. 2026-10-01 zsh 上的注入行不再写进历史文件(`feature-plan.md` 🟡 P2 项)
+
+**一、问题**:`feature-plan.md` 挂着「非 bash 的 shell 别注入目录上报钩子」:钩子由 `BASH_VERSION` 守卫,在 zsh / dash 上是空操作,却照样占一个提示符周期、在历史里留一整行(§66 的摘历史只对 bash 有效)。复核:这条写于 09-10,前提已被 `0c5ef1aa`(09-16,按 shell 分派重构「跟随终端目录」)推翻 —— 探针早已带回种类(`RemoteShellKind`,就是条目建议的 `${BASH_VERSION:+…}` / `${ZSH_VERSION:+…}` 那一手),zsh 走 `precmd_functions`、dash / ash 走 `PS1`,钩子在它们上面是真的在工作;多出来的提示符也已由 #448 收回。条目建议的「认出 zsh 就跳过注入」如今等于把 zsh 的目录跟随关掉,不做。还成立的只剩历史:zsh 上注入行接的仍是 bash 那段 `history -d` 前缀 —— 两百多字符的空操作,连同钩子整行留在历史里,并随退出写进 `~/.zsh_history`,每连一次攒一行。
+
+**二、做法**:
+- **zsh 能做到哪一步,先在测试容器的 zsh 5.9 上实测**:本会话历史表里的那一条摘不掉 —— zsh 没有 `history -d`,`HIST_IGNORE_SPACE` 与 `zshaddhistory` 在读完一行、执行之前就判完了,同一行里 `setopt` / 装钩子都来不及,`fc` 也不会换掉自己那一行。但 `HISTORY_IGNORE` 是**写盘时**才逐行比对的:默认的退出时写盘(macOS 出厂 `/etc/zshrc` 就是这种)、`APPEND_HISTORY`、`INC_APPEND_HISTORY_TIME` 下注入行都不会写进文件;`INC_APPEND_HISTORY` / `SHARE_HISTORY` 读完一行就写,只漏第一条注入行。配了 `HIST_IGNORE_SPACE`(oh-my-zsh 默认开)的,靠注入行的前导空格,内存与文件都不留。
+- `ShellHistoryScrub` 新增 `ZshCommand`:`ZSH_VERSION` 守卫、`eval '…'` 包裹,把 `*__vela_hist_scrub*` 追加进 `HISTORY_IGNORE` —— 用户原有的模式作为一个分支包进括号照常生效,已含记号就不再追加(一个 shell 里会连着注入好几行)。模式本身写着记号,所以每一条接了这段的注入行都被它自己拦住。
+- 按种类挑前缀收进 `ShellHistoryScrub.For`:zsh → `ZshCommand`;bash / dash / ash / 探不出 → 原 bash 那段(登录 shell 是 sh、`.profile` 里 `exec bash` 的机器上,探针只看得到 sh,这时 bash 那段是唯一真能摘历史的东西 —— 条目里那条「只在正面认出非 bash 时才跳」);fish / 非 POSIX 不接。`Prepend` 改为带种类的 `Prepend(kind, command)`,`SupportedBy` 改由 `For` 推出,`SilentCommand` 直接走它。
+
+**三、验证**:Docker 端到端新增 `OnZsh_TheInjectedLines_DoNotReachTheHistoryFile`(真 sshd + 真 zsh:注入前先设用户自己的 `HISTORY_IGNORE`,注入钩子与一条用户命令后登出,读回历史文件 —— 两条注入行与记号都不在,用户的 `echo kept-1` 在,用户自己忽略的 `echo secret-1` 仍被忽略);变异:zsh 改回接 bash 那段 → 该例红(「钩子那条注入行写进历史文件了」)。`ShellIntegration.Tests` 33 例全部真跑通过。Core 单测补按种类挑前缀(6 例)、zsh 那段的守卫与追加写法、`SilentCommand` 给 zsh 接的是 zsh 那段。`-warnaserror` 全解决方案零警告;`VelaShell.Tests` 1641 通过 / 35 跳过(真 bash 那几条在本机 PATH 上找不到 bash,按环境早退);`VelaShell.Core.Tests` 625 通过 / 1 失败 / 10 跳过,失败的是 X11 靶机用例(本机 `ssh-shells` 镜像旧、缺 `vela-dash` 的 `Match` 段,未改动的代码上同样失败,同基线里记的那条)。velashell-docs 没有写到注入行与命令历史的地方,不涉及文档同步。

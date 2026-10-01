@@ -168,6 +168,19 @@ public class SilentCommandTests
         Assert.AreEqual(expected, injection.CommandLine.TrimStart().StartsWith("test -n", StringComparison.Ordinal));
     }
 
+    /// <summary>
+    /// 认出是 zsh 时接的是 zsh 自己那段,而不是 bash 那段 —— 后者在 zsh 上是两百多字符的空操作,
+    /// 摘不掉任何东西,还原样留在历史里。
+    /// </summary>
+    [TestMethod]
+    public void Build_ForZsh_PrependsTheZshScrubInsteadOfTheBashOne()
+    {
+        ShellIntegrationInjection injection = SilentCommand.Build(RemoteShellKind.Zsh, "install_me", "report_now");
+
+        Assert.StartsWith(ShellHistoryScrub.ZshCommand + "; install_me; ", injection.CommandLine);
+        Assert.DoesNotContain(ShellHistoryScrub.Command, injection.CommandLine);
+    }
+
     /// <summary>两段都空 = 什么都不发(空串在 SendSilentCommand 里被直接丢弃,连回车都不会多出来)。</summary>
     [TestMethod]
     public void Build_WithNothingToRun_IsNone()

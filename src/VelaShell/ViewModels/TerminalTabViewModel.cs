@@ -401,8 +401,8 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     /// 本地终端、以及探不出来的会话都是 <see cref="RemoteShellKind.Unknown" />。
     /// </summary>
     /// <remarks>
-    /// <see cref="SendSilentCommand" /> 靠它决定要不要给注入行接上那段摘历史前缀 ——
-    /// 那段前缀在 fish 里会让**整行**解析失败,理由见 <see cref="ShellHistoryScrub.SupportedBy" />。
+    /// <see cref="SendSilentCommand" /> 靠它决定给注入行接哪一段摘历史前缀,或者不接 ——
+    /// zsh 有它自己的一段,bash 那段在 fish 里会让**整行**解析失败,理由见 <see cref="ShellHistoryScrub.For" />。
     /// </remarks>
     public RemoteShellKind RemoteShellKind { get; set; }
 
@@ -706,7 +706,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     /// 一并发出(见那边的 <c>PromptReclaim</c>),调用方不必操心。
     /// <para>
     /// 「静默」还包括**不留在命令历史里**:整行前面接一段 <see cref="ShellHistoryScrub" />,
-    /// 由 bash 自己把这一条从历史里摘掉。屏幕上隐形、方向键一按却整行冒出来 ——
+    /// 由 bash 自己把这一条从历史里摘掉(zsh 摘不掉,退一步让它不写进历史文件)。屏幕上隐形、方向键一按却整行冒出来 ——
     /// 那不是用户敲的,他也不知道那是什么,第一反应是「谁往我服务器上注了东西」(用户反馈)。
     /// 前导空格只对配了 <c>HISTCONTROL=ignorespace</c> 的人有效,而它默认是空的,拦不住。
     /// </para>
