@@ -2,10 +2,10 @@ using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
+using Avalonia.Input;
 using Avalonia.Media.Imaging;
 using Avalonia.Styling;
 using Avalonia.Threading;
-using Avalonia.VisualTree;
 using ReactiveUI.Primitives;
 using VelaShell.Core.Models;
 using VelaShell.Security;
@@ -45,16 +45,21 @@ public sealed class Todo2PixelRegressionTests
                 window.Show();
                 Dispatcher.UIThread.RunJobs();
                 window.UpdateLayout();
-                Button sftp = window.GetVisualDescendants()
-                    .OfType<Button>()
-                    .Single(button => button.Classes.Contains("proto-tab")
-                        && button.Content is TextBlock { Text: "SFTP" });
-                Assert.IsTrue(sftp.Focus());
+                Button sftp = window.FindControl<Button>("SftpTab")
+                    ?? throw new AssertFailedException("SftpTab not found.");
+                Assert.IsTrue(sftp.Classes.Contains("proto-item"));
+                Assert.IsTrue(sftp.Focus(NavigationMethod.Tab));
                 Dispatcher.UIThread.RunJobs();
                 Assert.IsTrue(sftp.IsFocused);
                 using WriteableBitmap bitmap = window.CaptureRenderedFrame()
                     ?? throw new AssertFailedException("Headless renderer did not produce a focused frame.");
-                InspectFocusedProtocolStrip(bitmap);
+                // 采样窗取协议栏里 SFTP 那一项的实际边界,而不是写死坐标:
+                // 协议从横排页签改成左侧竖排之后,写死的那块区域落到了标题栏与表单上。
+                Point origin = sftp.TranslatePoint(default, window)
+                    ?? throw new AssertFailedException("SftpTab is not in the window.");
+                InspectFocusedProtocolItem(bitmap, new PixelRect(
+                    (int)Math.Floor(origin.X), (int)Math.Floor(origin.Y),
+                    (int)Math.Ceiling(sftp.Bounds.Width), (int)Math.Ceiling(sftp.Bounds.Height)));
                 SaveOptionalFocusCapture(bitmap, "connection-profile-sftp-keyboard-focused-dark.png");
                 window.Close();
             }
@@ -65,7 +70,7 @@ public sealed class Todo2PixelRegressionTests
         });
     }
 
-    private static void InspectFocusedProtocolStrip(WriteableBitmap bitmap)
+    private static void InspectFocusedProtocolItem(WriteableBitmap bitmap, PixelRect sample)
     {
         int width = bitmap.PixelSize.Width;
         int height = bitmap.PixelSize.Height;
@@ -83,12 +88,11 @@ public sealed class Todo2PixelRegressionTests
             int maxY = -1;
             var limeColors = new Dictionary<string, int>();
             var purpleColors = new Dictionary<string, int>();
-            // Fixed protocol strip sample excludes tab text and the selected underline.
-            // 坐标是从窗口左上角量的,故随卡片外边距整体平移:外边距 12 → 16(#171 投影画布)
-            // 之后条带右移下移各 4px,采样窗口不跟着挪就会取到卡片外的空白,一个强调色像素都数不到。
-            for (int y = 56; y < 82 && y < height; y++)
+            // 选中项的图标与名字是强调色,键盘焦点的描边也是:这一块里必须数得到紫色,
+            // 而一个 Fluent 系统强调色(黄绿)像素都不能有。headless 渲染是 1:1 缩放,DIP 即像素。
+            for (int y = Math.Max(0, sample.Y); y < sample.Bottom && y < height; y++)
             {
-                for (int x = 76; x < 178 && x < width; x++)
+                for (int x = Math.Max(0, sample.X); x < sample.Right && x < width; x++)
                 {
                     int offset = (y * width + x) * stride;
                     byte blue = Marshal.ReadByte(buffer, offset);

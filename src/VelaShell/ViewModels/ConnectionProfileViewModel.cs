@@ -1,3 +1,4 @@
+using System.Collections.Frozen;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Diagnostics.CodeAnalysis;
@@ -282,13 +283,21 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         RefreshHostChoicesCommand = ReactiveCommand.CreateFromTask(
             RefreshHostChoicesAsync,
             this.WhenAnyValue(x => x.IsHostRefreshing, refreshing => !refreshing));
-        // 表单是插件异步装载出来的,字段进集合的那一刻就得带上当前的折叠状态 ——
-        // 只在切换「高级选项」时下发是不够的(先渲染后展开,首屏会把高级字段全画出来)。
+        // 表单是插件异步装载出来的,字段进集合的那一刻就得带上当前所在的分页 ——
+        // 只在切换分页时下发是不够的(先渲染后切页,「常规」页会把高级字段全画出来)。
         // 必须在下面那句可能触发装载的 SelectPluginProtocolAsync 之前接线。
         // 订阅也挂在这里,而不是只在 SelectPluginProtocolAsync 的建行处:字段进集合有
         // 两条路(插件装载后成批加,以及测试/将来的代码直接 Add),漏掉任一条就会出现
         // "改了部署形态,主节点名不出现"这种只在一条路上复现的怪毛病。
         PluginFields.CollectionChanged += OnPluginFieldsChanged;
+        PluginProtocols.CollectionChanged += (_, _) =>
+        {
+            this.RaisePropertyChanged(nameof(HasPluginProtocols));
+            this.RaisePropertyChanged(nameof(PluginSectionTitle));
+        };
+        // 页签上的「有非默认值」圆点、页脚的连接目标预览都是从别的属性推出来的:
+        // 逐个 setter 补发通知会漏(已经漏过一回标签),统一在这里按属性名转发。
+        PropertyChanged += OnOwnPropertyChanged;
         LoadPluginProtocols();
         // 页签不是一次性快照:插件发现跑在后台线程,对话框可能先于它打开;
         // 插件管理器又是非模态的,开着对话框也能启用/禁用插件。
@@ -298,16 +307,11 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             // 编辑既有插件协议配置:进对话框就把表单渲染出来(会触发该插件的惰性激活)。
             _ = SelectPluginProtocolAsync(existingProtocol);
         }
-        // 与插件高级字段同一条纪律:编辑既有配置时,用户填过的东西不能藏在折叠区里。
-        // 「认证后执行命令」/「默认打开路径」不展开的话,重开对话框看到的是一片空白 ——
-        // 用户会当成配置丢了,然后再配一遍。
-        if (existing?.PostAuthCommand is { Length: > 0 } || existing?.Ftp?.InitialRemotePath is { Length: > 0 })
-        {
-            IsAdvancedVisible = true;
-        }
         BrowseKeyFileCommand = ReactiveCommand.Create(() => { });
         BrowseCertificateFileCommand = ReactiveCommand.Create(() => { });
-        ToggleAdvancedCommand = ReactiveCommand.Create(() => { IsAdvancedVisible = !IsAdvancedVisible; });
+        SelectSectionCommand = ReactiveCommand.Create<ConnectionProfileSection>(section => SelectedSection = section);
+        SelectAuthMethodCommand = ReactiveCommand.Create<AuthMethod>(method => AuthMethod = method);
+        OpenPluginManagerCommand = ReactiveCommand.Create(() => OpenPluginManager?.Invoke());
         TogglePasswordVisibilityCommand = ReactiveCommand.Create(() => { ShowPassword = !ShowPassword; });
     }
 
@@ -604,9 +608,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         }
     }
 
-    /// <summary>认证方式下拉的索引(0=密码认证,1=密钥认证,2=证书认证)。</summary>
+    /// <summary>认证方式的序号(0=密码,1=私钥,2=证书,3=Agent),即枚举值本身。</summary>
     /// <remarks>
-    /// 下拉项的顺序与 <see cref="Core.Models.AuthMethod" /> 的枚举值一一对应,所以这里就是一次强转。
+    /// 序号与 <see cref="Core.Models.AuthMethod" /> 的枚举值一一对应,所以这里就是一次强转。
     /// 越界值(手改过的配置文件)落回密码认证 —— 与从前那句"非 1 即 0"的兜底口径一致。
     /// </remarks>
     public int AuthMethodIndex
@@ -854,35 +858,263 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         set => this.RaiseAndSetIfChanged(ref field, value);
     }
 
-    /// <summary>高级选项区域是否展开。插件协议里标了 <c>IsAdvanced</c> 的字段跟着它折叠。</summary>
-    public bool IsAdvancedVisible
+    // ---- 分页 ----
+    //
+    // 原先是一列到底的表单加一个「高级选项」折叠开关:SSH 展开后有三十来行,
+    // 窗口被钳在 768 高里只能一路滚;插件协议的调优字段也收在同一个开关后面。
+    // 现在按主题分页,哪几页出现由协议决定,「常规」恒在。
+
+    /// <summary>右侧当前显示的分页。设成当前协议没有的那一页时落回「常规」。</summary>
+    public ConnectionProfileSection SelectedSection
     {
         get;
         set
         {
-            this.RaiseAndSetIfChanged(ref field, value);
+            ConnectionProfileSection section = IsSectionAvailable(value) ? value : ConnectionProfileSection.General;
+            if (field == section)
+            {
+                return;
+            }
+            this.RaiseAndSetIfChanged(ref field, section);
+            this.RaisePropertyChanged(nameof(IsGeneralSection));
+            this.RaisePropertyChanged(nameof(IsTerminalSection));
+            this.RaisePropertyChanged(nameof(IsSshOptionsSection));
+            this.RaisePropertyChanged(nameof(IsForwardingSection));
+            this.RaisePropertyChanged(nameof(IsAdvancedSection));
+            // 插件字段按分页分两拨:常用的在「常规」,标了 IsAdvanced 的在「高级」。
             ApplyPluginFieldVisibility();
         }
     }
 
+    /// <summary>当前是否在「常规」页。</summary>
+    public bool IsGeneralSection => SelectedSection == ConnectionProfileSection.General;
+
+    /// <summary>当前是否在「终端」页。</summary>
+    public bool IsTerminalSection => SelectedSection == ConnectionProfileSection.Terminal;
+
+    /// <summary>当前是否在「SSH 选项」页。</summary>
+    public bool IsSshOptionsSection => SelectedSection == ConnectionProfileSection.SshOptions;
+
+    /// <summary>当前是否在「转发」页。</summary>
+    public bool IsForwardingSection => SelectedSection == ConnectionProfileSection.Forwarding;
+
+    /// <summary>当前是否在「高级」页。</summary>
+    public bool IsAdvancedSection => SelectedSection == ConnectionProfileSection.Advanced;
+
+    /// <summary>「终端」页:认证后命令与会话级终端覆盖都只对有 shell 的 SSH 成立。</summary>
+    public bool ShowTerminalSection => SupportsPostAuthCommand;
+
+    /// <summary>「SSH 选项」页:压缩与算法协商对 SSH 与 SFTP 都有意义(同一条 SSH 连接)。</summary>
+    public bool ShowSshOptionsSection => RequiresSshAuth;
+
+    /// <summary>「转发」页:两个转发只挂在交互式 shell 上,只对 SSH 出现。</summary>
+    public bool ShowForwardingSection => SupportsPostAuthCommand;
+
+    /// <summary>「高级」页:FTP 的默认打开路径,或插件声明了标 <c>IsAdvanced</c> 的字段。</summary>
+    public bool ShowAdvancedSection => IsFtpSelected || AdvancedPluginFieldCount > 0;
+
+    /// <summary>切换分页。</summary>
+    public ReactiveCommand<ConnectionProfileSection, RxVoid> SelectSectionCommand { get; }
+
     /// <summary>
-    /// 折叠状态下被「高级选项」收走的插件字段数,形如 <c>+6</c>;没有则为空串。
+    /// 「高级」页签上的字段数,如 <c>6</c>;没有插件高级字段(FTP、内建协议)时为空串。
     /// <para>
-    /// 没有这个提示,S3 这类协议展开后才有的六七个字段在用户眼里就是"设置项没了" ——
-    /// 折叠本身省下的高度,不该用"找不到东西"来换。
+    /// 没有这个数,S3 这类协议的六七个调优字段在用户眼里就是"设置项没了" ——
+    /// 分页省下的高度,不该用"找不到东西"来换。
     /// </para>
     /// </summary>
-    public string AdvancedBadge => HiddenAdvancedFieldCount is var count and > 0
-        ? string.Create(CultureInfo.InvariantCulture, $"+{count}")
+    public string AdvancedBadge => AdvancedPluginFieldCount is var count and > 0
+        ? count.ToString(CultureInfo.InvariantCulture)
         : string.Empty;
 
     /// <summary>是否要显示 <see cref="AdvancedBadge" />。</summary>
-    public bool HasAdvancedBadge => HiddenAdvancedFieldCount > 0;
+    public bool HasAdvancedBadge => AdvancedPluginFieldCount > 0;
 
-    private int HiddenAdvancedFieldCount =>
-        IsAdvancedVisible ? 0 : PluginFields.Count(f => f.IsAdvanced);
+    /// <summary>当前适用的插件高级字段数(显示条件不成立的不算:点进去也看不到它)。</summary>
+    private int AdvancedPluginFieldCount => PluginFields.Count(f => f.IsAdvanced && IsApplicable(f));
 
-    /// <summary>标签,逗号分隔(高级选项)。</summary>
+    /// <summary>「常规」页上有没有插件字段要画(没有时连带那一节的标题一起收起)。</summary>
+    public bool ShowPluginGeneralFields =>
+        IsPluginSelected && (IsPluginLoading || PluginFields.Any(f => !f.IsAdvanced && IsApplicable(f)));
+
+    /// <summary>「常规」页上插件字段那一节的标题,如「S3 设置」。</summary>
+    public string PluginSectionTitle =>
+        Strings.Format("Profile_SecPluginSettings",
+            PluginProtocols.FirstOrDefault(p => p.Id == PluginProtocolId)?.DisplayName ?? string.Empty);
+
+    // 页签旁的圆点:这一页有没有改过默认值。编辑既有配置时,填过的东西不能藏在别的页签后面
+    // 让人以为配置丢了 —— 原先的做法是把折叠区自动展开,分页之后改成在页签上点一个点。
+
+    /// <summary>「终端」页是否有非默认值。</summary>
+    public bool IsTerminalSectionModified =>
+        !string.IsNullOrWhiteSpace(_postAuthCommand)
+        || _overrideEncoding is not null
+        || _overrideTerminalType is not null
+        || !string.IsNullOrWhiteSpace(_overrideTabColor)
+        || !string.IsNullOrWhiteSpace(_overrideStartupDirectory)
+        || _overrideKeepAliveSeconds >= 0
+        || _antiIdleSeconds > 0;
+
+    /// <summary>「SSH 选项」页是否有非默认值。</summary>
+    public bool IsSshOptionsSectionModified => _sshCompression || _sshLegacyAlgorithms || _sshCustomAlgorithms;
+
+    /// <summary>「转发」页是否有非默认值。</summary>
+    public bool IsForwardingSectionModified => _sshAgentForwarding || _sshX11Forwarding;
+
+    /// <summary>「高级」页是否有非默认值。</summary>
+    public bool IsAdvancedSectionModified =>
+        IsFtpSelected
+            ? !string.IsNullOrWhiteSpace(_ftpInitialRemotePath)
+            : PluginFields.Any(f => f.IsAdvanced
+                                    && !string.Equals(f.Text, f.Field.DefaultValue ?? string.Empty, StringComparison.Ordinal));
+
+    private bool IsSectionAvailable(ConnectionProfileSection section) => section switch
+    {
+        ConnectionProfileSection.Terminal => ShowTerminalSection,
+        ConnectionProfileSection.SshOptions => ShowSshOptionsSection,
+        ConnectionProfileSection.Forwarding => ShowForwardingSection,
+        ConnectionProfileSection.Advanced => ShowAdvancedSection,
+        _ => true
+    };
+
+    /// <summary>
+    /// 协议或插件字段一变,哪几页出现就可能跟着变:补发通知,当前页没了就回到「常规」——
+    /// 否则从 SSH 的「转发」页切到 FTP,右边是一片空白、页签上又没有一个是选中的。
+    /// </summary>
+    private void RefreshSectionAvailability()
+    {
+        this.RaisePropertyChanged(nameof(ShowTerminalSection));
+        this.RaisePropertyChanged(nameof(ShowSshOptionsSection));
+        this.RaisePropertyChanged(nameof(ShowForwardingSection));
+        this.RaisePropertyChanged(nameof(ShowAdvancedSection));
+        if (!IsSectionAvailable(SelectedSection))
+        {
+            SelectedSection = ConnectionProfileSection.General;
+        }
+    }
+
+    // ---- 页脚 ----
+
+    /// <summary>
+    /// 页脚左侧的连接目标预览:SSH 是 <c>user@host:port</c>,SFTP / FTP 带上 scheme;
+    /// 主机还空着时为空串(整块收起)。随输入实时更新,填完一眼就能核对要连的是哪。
+    /// </summary>
+    public string EndpointPreview
+    {
+        get
+        {
+            string host = _host.Trim();
+            if (host.Length == 0)
+            {
+                return string.Empty;
+            }
+            bool showsUser = ShowCredentialFields && !(IsFtpSelected && _ftpAnonymous);
+            string user = showsUser ? _username.Trim() : string.Empty;
+            // IPv6 字面量带端口要加方括号,否则 ::1:22 读不出哪段是端口。
+            if (ShowPortField && host.Contains(':', StringComparison.Ordinal) && !host.StartsWith('['))
+            {
+                host = $"[{host}]";
+            }
+            string target = user.Length > 0 ? $"{user}@{host}" : host;
+            if (ShowPortField)
+            {
+                target = string.Create(CultureInfo.InvariantCulture, $"{target}:{_port}");
+            }
+            return ConnectionType switch
+            {
+                ConnectionType.SFTP => "sftp://" + target,
+                ConnectionType.FTP => (_ftpEncryption is FtpEncryptionMode.Explicit or FtpEncryptionMode.Implicit ? "ftps://" : "ftp://") + target,
+                _ => target
+            };
+        }
+    }
+
+    /// <summary>是否有已安装的插件协议(协议栏里「插件」那一组的标题据此出现)。</summary>
+    public bool HasPluginProtocols => PluginProtocols.Count > 0;
+
+    /// <summary>
+    /// 打开插件管理器。由主窗口注入(对话框层够不着它);没注入(单测、独立打开)时
+    /// 协议栏底部那一行链接不出现。插件管理器是非模态的,在那边启用了新协议,
+    /// 这边的协议栏经注册表的 <c>Changed</c> 事件当场补上。
+    /// </summary>
+    public Action? OpenPluginManager
+    {
+        get;
+        set
+        {
+            field = value;
+            this.RaisePropertyChanged(nameof(CanOpenPluginManager));
+        }
+    }
+
+    /// <summary>协议栏底部「获取更多协议…」是否出现。</summary>
+    public bool CanOpenPluginManager => OpenPluginManager is not null;
+
+    /// <summary>打开插件管理器。</summary>
+    public ReactiveCommand<RxVoid, RxVoid> OpenPluginManagerCommand { get; }
+
+    /// <summary>这些属性一变,页签上的圆点要重算。</summary>
+    private static readonly FrozenSet<string> TerminalSectionInputs = new[]
+    {
+        nameof(PostAuthCommand), nameof(OverrideEncoding), nameof(OverrideTerminalType), nameof(OverrideTabColor),
+        nameof(OverrideStartupDirectory), nameof(OverrideKeepAliveSeconds), nameof(AntiIdleSeconds)
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string> SshOptionsSectionInputs =
+        new[] { nameof(SshCompression), nameof(SshLegacyAlgorithms), nameof(SshCustomAlgorithms) }.ToFrozenSet(StringComparer.Ordinal);
+
+    private static readonly FrozenSet<string> ForwardingSectionInputs =
+        new[] { nameof(SshAgentForwarding), nameof(SshX11Forwarding) }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>这些属性一变,页脚的连接目标预览要重算。</summary>
+    private static readonly FrozenSet<string> EndpointInputs = new[]
+    {
+        nameof(Host), nameof(Port), nameof(Username), nameof(ConnectionType), nameof(FtpEncryption),
+        nameof(FtpAnonymous), nameof(ShowPortField), nameof(ShowCredentialFields)
+    }.ToFrozenSet(StringComparer.Ordinal);
+
+    /// <summary>把派生属性的通知集中转发(见构造函数里的说明)。</summary>
+    private void OnOwnPropertyChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        string? name = e.PropertyName;
+        if (name is null)
+        {
+            return;
+        }
+        if (TerminalSectionInputs.Contains(name))
+        {
+            this.RaisePropertyChanged(nameof(IsTerminalSectionModified));
+        }
+        else if (SshOptionsSectionInputs.Contains(name))
+        {
+            this.RaisePropertyChanged(nameof(IsSshOptionsSectionModified));
+        }
+        else if (ForwardingSectionInputs.Contains(name))
+        {
+            this.RaisePropertyChanged(nameof(IsForwardingSectionModified));
+        }
+        else if (name == nameof(FtpInitialRemotePath))
+        {
+            this.RaisePropertyChanged(nameof(IsAdvancedSectionModified));
+        }
+        if (EndpointInputs.Contains(name))
+        {
+            this.RaisePropertyChanged(nameof(EndpointPreview));
+        }
+        if (name == nameof(ConnectionType))
+        {
+            this.RaisePropertyChanged(nameof(IsAdvancedSectionModified));
+            this.RaisePropertyChanged(nameof(ShowPluginGeneralFields));
+            RefreshSectionAvailability();
+        }
+        else if (name is nameof(IsPluginLoading) or nameof(PluginProtocolId))
+        {
+            this.RaisePropertyChanged(nameof(ShowPluginGeneralFields));
+            this.RaisePropertyChanged(nameof(PluginSectionTitle));
+        }
+    }
+
+    /// <summary>标签,逗号分隔。</summary>
     public string TagsText
     {
         get => _tagsText;
@@ -890,7 +1122,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     }
 
     /// <summary>
-    /// 本条配置专属的「认证后执行命令」(高级选项);留空 = 不执行。
+    /// 本条配置专属的「认证后执行命令」(「终端」页);留空 = 不执行。
     /// 与设置里那条全局的「连接后执行命令」互不影响,两处都配就都执行(先全局后本条)。
     /// </summary>
     public string? PostAuthCommand
@@ -929,6 +1161,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
 
     /// <summary>当前是否选了 SSH Agent 认证;控制那一行说明的可见性。</summary>
     public bool IsAgentAuth => AuthMethod == AuthMethod.Agent;
+
+    /// <summary>认证方式分段按钮:点哪段切到哪种认证。</summary>
+    public ReactiveCommand<AuthMethod, RxVoid> SelectAuthMethodCommand { get; }
 
     /// <summary>启用压缩(高延迟 / 低带宽链路)。</summary>
     public bool SshCompression
@@ -1335,7 +1570,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         string.IsNullOrWhiteSpace(value) || value == FollowGlobalOption ? null : value;
 
     /// <summary>
-    /// FTP / FTPS 连上后远程面板默认打开的目录(高级选项);留空 = 沿用登录工作目录。
+    /// FTP / FTPS 连上后远程面板默认打开的目录(「高级」页);留空 = 沿用登录工作目录。
     /// 上传目标常年是同一个 <c>/var/www/html</c>,而 FTP 给的登录目录往往就是根,
     /// 每连一次手点四五层纯属重复劳动。
     /// </summary>
@@ -1394,9 +1629,6 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
 
     /// <summary>浏览证书文件命令;由视图层挂接文件选择对话框。</summary>
     public ReactiveCommand<RxVoid, RxVoid> BrowseCertificateFileCommand { get; }
-
-    /// <summary>切换高级选项区域展开/收起的命令。</summary>
-    public ReactiveCommand<RxVoid, RxVoid> ToggleAdvancedCommand { get; }
 
     /// <summary>切换密码明文/掩码显示的命令。</summary>
     public ReactiveCommand<RxVoid, RxVoid> TogglePasswordVisibilityCommand { get; }
@@ -1721,28 +1953,40 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     }
 
     /// <summary>
-    /// 按「高级选项」的展开状态**与字段自己声明的显示条件**下发插件字段的行可见性,
-    /// 并刷新页脚的 <see cref="AdvancedBadge" />。
+    /// 按当前分页**与字段自己声明的显示条件**下发插件字段的行可见性,
+    /// 并刷新「高级」页签上的字段数与圆点。
     /// <para>
-    /// 折叠的是**行**而不是整个列表:行本身早就渲染好了,只是 IsVisible 变化 ——
+    /// 插件字段在两页上各画一份 —— 「常规」画常用的,「高级」画标了 <c>IsAdvanced</c> 的 ——
+    /// 两份绑的是同一批行。两页同一时刻只显示一页,所以每一行只要一个可见性:
+    /// 属于当前这一页,且显示条件成立。
+    /// </para>
+    /// <para>
+    /// 藏的是**行**而不是整个列表:行本身早就渲染好了,只是 IsVisible 变化 ——
     /// 若改成往一个隐藏容器里灌行,那些行会占着高度却画不出来(踩过)。
     /// </para>
     /// <para>
-    /// 两个条件是**与**关系,而且顺序上"条件不成立"优先:一个当前不适用的字段
-    /// (哨兵专用的主节点名,而形态选的是独立)即便展开高级选项也不该出现。
+    /// 两个条件是**与**关系:一个当前不适用的字段(哨兵专用的主节点名,而形态选的是独立)
+    /// 切到「高级」页也不该出现。
     /// </para>
     /// </summary>
     private void ApplyPluginFieldVisibility()
     {
+        bool advancedPage = SelectedSection == ConnectionProfileSection.Advanced;
         foreach (PluginProtocolFieldViewModel field in PluginFields)
         {
-            bool applicable = field.Field.VisibleWhen is not { } condition
-                              || condition.IsSatisfiedBy(PluginFieldValue);
-            field.IsRowVisible = applicable && (!field.IsAdvanced || IsAdvancedVisible);
+            field.IsRowVisible = IsApplicable(field) && field.IsAdvanced == advancedPage;
         }
         this.RaisePropertyChanged(nameof(AdvancedBadge));
         this.RaisePropertyChanged(nameof(HasAdvancedBadge));
+        this.RaisePropertyChanged(nameof(IsAdvancedSectionModified));
+        this.RaisePropertyChanged(nameof(ShowPluginGeneralFields));
+        // 字段进出会改变「高级」页在不在:最后一个高级字段没了,停在那一页就是一片空白。
+        RefreshSectionAvailability();
     }
+
+    /// <summary>字段声明的显示条件此刻是否成立(没声明条件即恒成立)。</summary>
+    private bool IsApplicable(PluginProtocolFieldViewModel field) =>
+        field.Field.VisibleWhen is not { } condition || condition.IsSatisfiedBy(PluginFieldValue);
 
     /// <summary>
     /// 字段进出集合时接线/退订,并重算一次可见性。
@@ -1933,17 +2177,12 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
                     field.Kind == ProtocolSettingKind.SshSession ? EnsureSshSessionChoices() : null,
                     field.Kind == ProtocolSettingKind.DynamicChoice ? ReloadFieldChoicesAsync : null));
             }
-            // 编辑既有配置时,高级字段里只要有一处不是默认值就自动展开:
-            // 用户填过的东西不能藏起来(否则"我明明设过分片大小"变成一次静默丢失的错觉),
-            // 而全默认的新建配置照旧保持折叠。
-            if (PluginFields.Any(f => f.IsAdvanced
-                                      && !string.Equals(f.Text, f.Field.DefaultValue ?? string.Empty, StringComparison.Ordinal)))
-            {
-                IsAdvancedVisible = true;
-            }
-            // 显式下发一次:上面那个自动展开只在有非默认高级字段时才会经 setter 触发,
-            // 而显示条件对**新建**配置(全默认)也必须一开始就生效 ——
-            // 少了这句,「主节点名」会在独立形态下先露出来,直到用户碰一下别的字段才消失。
+            // 编辑既有配置时高级字段里有非默认值,「高级」页签上会点一个圆点
+            // (IsAdvancedSectionModified,由下面这次下发一并刷新):用户填过的东西不能藏得看不出来,
+            // 否则"我明明设过分片大小"会变成一次静默丢失的错觉。
+            // 显式下发一次:集合事件逐行触发时后面的字段还没进来,显示条件对**新建**配置(全默认)
+            // 也必须在表单成形后生效一次 —— 少了这句,「主节点名」会在独立形态下先露出来,
+            // 直到用户碰一下别的字段才消失。
             ApplyPluginFieldVisibility();
             // 动态候选项现取一次。放在最后:它可能真的去枚举硬件(串口),
             // 而表单的其余部分不该等它 —— 取不到也只是下拉是空的,手输照旧可用。

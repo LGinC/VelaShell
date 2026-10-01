@@ -42,7 +42,7 @@ public sealed class ConnectionProfileViewModelTests
         Assert.IsTrue(vm.SupportsPostAuthCommand, "SSH 才有 shell 通道,这一栏也只对它出现。");
         Assert.AreEqual("sudo su -", vm.PostAuthCommand);
         Assert.AreEqual(3, vm.PostAuthCommandDelaySeconds);
-        Assert.IsTrue(vm.IsAdvancedVisible, "填过的命令不能藏在折叠区里,否则用户会当成配置丢了。");
+        Assert.IsTrue(vm.IsTerminalSectionModified, "填过的命令不能藏得看不出来:「终端」页签上要有圆点,否则用户会当成配置丢了。");
 
         SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
         Assert.IsNotNull(saved);
@@ -321,7 +321,7 @@ public sealed class ConnectionProfileViewModelTests
 
     /// <summary>
     /// FTP / FTPS 的「默认打开路径」:保存时经 <c>FtpSettings</c> 的 setter 归一化,
-    /// 重新打开配置要回显,且不能藏在折叠的「高级选项」里(否则用户会当成配置丢了)。
+    /// 重新打开配置要回显,且「高级」页签上要点出圆点(否则用户会当成配置丢了)。
     /// </summary>
     [TestMethod]
     public async Task FtpInitialRemotePath_IsNormalizedOnSave_AndRestoredOnEdit()
@@ -337,7 +337,8 @@ public sealed class ConnectionProfileViewModelTests
 
         var reopened = new ConnectionProfileViewModel(saved);
         Assert.AreEqual("/var/www/html", reopened.FtpInitialRemotePath);
-        Assert.IsTrue(reopened.IsAdvancedVisible, "填过的路径不能藏在折叠区里。");
+        Assert.IsTrue(reopened.ShowAdvancedSection);
+        Assert.IsTrue(reopened.IsAdvancedSectionModified, "填过的路径不能藏得看不出来。");
     }
 
     /// <summary>这块设置只属于 FTP;换成别的协议时整个 <c>Ftp</c> 块不落盘,路径自然一起走。</summary>
@@ -356,29 +357,51 @@ public sealed class ConnectionProfileViewModelTests
     }
 
     [TestMethod]
-    public void PluginFields_MarkedAdvanced_StayCollapsedUntilAdvancedIsExpanded()
+    public void PluginFields_MarkedAdvanced_LiveOnTheAdvancedPage()
     {
-        // S3 这类协议一口气声明十来个字段,全铺开会把连接对话框顶出屏幕。
-        // 标了 IsAdvanced 的调优项默认收进「高级选项」,页脚报出被收走的数量。
+        // S3 这类协议一口气声明十来个字段,全铺在「常规」页会把表单拉得很长。
+        // 标了 IsAdvanced 的调优项放到「高级」页,页签上报出字段数。
         var vm = new ConnectionProfileViewModel();
         vm.PluginFields.Add(new(new() { Key = "region", Label = "区域" }, null));
         vm.PluginFields.Add(new(new() { Key = "partSize", Label = "分片大小", IsAdvanced = true }, null));
         vm.PluginFields.Add(new(new() { Key = "concurrency", Label = "并发分片数", IsAdvanced = true }, null));
 
-        Assert.IsTrue(vm.PluginFields[0].IsRowVisible, "连得上连不上取决于它的字段必须一直可见。");
+        Assert.IsTrue(vm.IsGeneralSection);
+        Assert.IsTrue(vm.PluginFields[0].IsRowVisible, "连得上连不上取决于它的字段必须在「常规」页上。");
         Assert.IsFalse(vm.PluginFields[1].IsRowVisible);
         Assert.IsFalse(vm.PluginFields[2].IsRowVisible);
+        Assert.IsTrue(vm.ShowAdvancedSection);
         Assert.IsTrue(vm.HasAdvancedBadge);
-        Assert.AreEqual("+2", vm.AdvancedBadge);
+        Assert.AreEqual("2", vm.AdvancedBadge);
 
-        vm.ToggleAdvancedCommand.Execute().Subscribe();
-        Assert.IsTrue(vm.PluginFields.All(field => field.IsRowVisible));
-        // 展开后徽标要消失:字段都在眼前了,再报"+2"就是误导。
-        Assert.IsFalse(vm.HasAdvancedBadge);
-        Assert.AreEqual(string.Empty, vm.AdvancedBadge);
+        vm.SelectSectionCommand.Execute(ConnectionProfileSection.Advanced).Subscribe();
+        Assert.IsTrue(vm.IsAdvancedSection);
+        Assert.IsFalse(vm.PluginFields[0].IsRowVisible, "常用字段在「常规」页,不在「高级」页上重复出现。");
+        Assert.IsTrue(vm.PluginFields[1].IsRowVisible);
+        Assert.IsTrue(vm.PluginFields[2].IsRowVisible);
+        // 页签上的数字不随切页变:它说的是「这一页有几项」,不是「还有几项没看见」。
+        Assert.AreEqual("2", vm.AdvancedBadge);
 
-        vm.ToggleAdvancedCommand.Execute().Subscribe();
+        vm.SelectSectionCommand.Execute(ConnectionProfileSection.General).Subscribe();
         Assert.HasCount(2, vm.PluginFields.Where(field => !field.IsRowVisible));
+    }
+
+    /// <summary>
+    /// 最后一个高级字段没了(切去别的协议、换了一个没有调优项的插件),停在「高级」页就是一片空白
+    /// 而且页签上没有一个是选中的 —— 必须落回「常规」。
+    /// </summary>
+    [TestMethod]
+    public void AdvancedPage_FallsBackToGeneral_WhenItsLastFieldGoes()
+    {
+        var vm = new ConnectionProfileViewModel();
+        vm.PluginFields.Add(new(new() { Key = "partSize", Label = "分片大小", IsAdvanced = true }, null));
+        vm.SelectedSection = ConnectionProfileSection.Advanced;
+        Assert.IsTrue(vm.IsAdvancedSection);
+
+        vm.PluginFields.RemoveAt(0);
+
+        Assert.IsFalse(vm.ShowAdvancedSection);
+        Assert.IsTrue(vm.IsGeneralSection);
     }
 
     /// <summary>没有协议级凭据的终端协议(Telnet)替身:只用来把描述符送进视图模型。</summary>
@@ -682,9 +705,9 @@ public sealed class ConnectionProfileViewModelTests
             "看不见 ≠ 被清掉:值必须原样带回。");
     }
 
-    /// <summary>「高级选项」展开也不该把当前不适用的字段翻出来 —— 两个条件是与关系。</summary>
+    /// <summary>切到「高级」页也不该把当前不适用的字段翻出来 —— 两个条件是与关系。</summary>
     [TestMethod]
-    public void PluginFields_VisibleWhen_BeatsAdvancedExpansion()
+    public void PluginFields_VisibleWhen_BeatsTheAdvancedPage()
     {
         var vm = new ConnectionProfileViewModel();
         vm.PluginFields.Add(new(new() { Key = "mode", Label = "形态", DefaultValue = "standalone" }, null));
@@ -695,20 +718,24 @@ public sealed class ConnectionProfileViewModelTests
             IsAdvanced = true,
             VisibleWhen = new("mode", "sentinel")
         }, null));
+        vm.PluginFields.Add(new(new() { Key = "timeout", Label = "超时", IsAdvanced = true }, null));
 
-        vm.ToggleAdvancedCommand.Execute().Subscribe();
-        Assert.IsTrue(vm.IsAdvancedVisible);
-        Assert.IsFalse(vm.PluginFields[1].IsRowVisible, "不适用的字段,展开高级选项也不该出现。");
+        vm.SelectSectionCommand.Execute(ConnectionProfileSection.Advanced).Subscribe();
+        Assert.IsTrue(vm.IsAdvancedSection);
+        Assert.IsFalse(vm.PluginFields[1].IsRowVisible, "不适用的字段,切到「高级」页也不该出现。");
+        // 页签上的数字只数眼下适用的:点进去看不到的那一项不该算进去。
+        Assert.AreEqual("1", vm.AdvancedBadge);
 
         vm.PluginFields[0].Text = "sentinel";
         Assert.IsTrue(vm.PluginFields[1].IsRowVisible);
+        Assert.AreEqual("2", vm.AdvancedBadge);
     }
 
     [TestMethod]
     public async Task PluginFields_CollapsedAdvancedValues_StillGetSaved()
     {
-        // 折叠只是显示层面的事:落盘必须把高级字段一并带上,
-        // 否则用户填过一次分片大小、收起「高级选项」再保存,值就静默丢了。
+        // 分页只是显示层面的事:落盘必须把高级字段一并带上,
+        // 否则用户填过一次分片大小、切回「常规」页再保存,值就静默丢了。
         var vm = new ConnectionProfileViewModel
         {
             Host = "s3.example.com",
@@ -716,7 +743,8 @@ public sealed class ConnectionProfileViewModelTests
         };
         await vm.SelectPluginProtocolCommand.Execute("velashell.s3").FirstAsync();
         vm.PluginFields.Add(new(new() { Key = "partSize", Label = "分片大小", IsAdvanced = true }, "16777216"));
-        Assert.IsFalse(vm.PluginFields[0].IsRowVisible, "默认折叠。");
+        Assert.IsFalse(vm.PluginFields[0].IsRowVisible, "在「高级」页上,「常规」页看不到它。");
+        Assert.IsTrue(vm.IsAdvancedSectionModified, "填过的高级字段要在页签上点出来。");
 
         SessionProfile? profile = await vm.SaveCommand.Execute().FirstAsync();
         Assert.IsNotNull(profile);

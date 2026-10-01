@@ -1934,7 +1934,55 @@
     <value>输入命令或搜索会话…</value>
   </data>
   <data name="Profile_AdvancedOptions" xml:space="preserve">
-    <value>高级选项</value>
+    <value>高级</value>
+  </data>
+  <data name="Profile_SectionGeneral" xml:space="preserve">
+    <value>常规</value>
+  </data>
+  <data name="Profile_SectionTerminal" xml:space="preserve">
+    <value>终端</value>
+  </data>
+  <data name="Profile_SectionForwarding" xml:space="preserve">
+    <value>转发</value>
+  </data>
+  <data name="Profile_ProtocolsBuiltIn" xml:space="preserve">
+    <value>内置</value>
+  </data>
+  <data name="Profile_KindTerminal" xml:space="preserve">
+    <value>终端</value>
+  </data>
+  <data name="Profile_KindFiles" xml:space="preserve">
+    <value>文件</value>
+  </data>
+  <data name="Profile_MoreProtocols" xml:space="preserve">
+    <value>获取更多协议…</value>
+  </data>
+  <data name="Profile_SecTarget" xml:space="preserve">
+    <value>连接目标</value>
+  </data>
+  <data name="Profile_SecAuth" xml:space="preserve">
+    <value>身份验证</value>
+  </data>
+  <data name="Profile_SecOrganize" xml:space="preserve">
+    <value>整理</value>
+  </data>
+  <data name="Profile_SecAfterLogin" xml:space="preserve">
+    <value>登录后</value>
+  </data>
+  <data name="Profile_SecTransport" xml:space="preserve">
+    <value>传输</value>
+  </data>
+  <data name="Profile_SecAlgorithms" xml:space="preserve">
+    <value>算法</value>
+  </data>
+  <data name="Profile_SecPluginSettings" xml:space="preserve">
+    <value>{0} 设置</value>
+  </data>
+  <data name="Profile_RiskInsecure" xml:space="preserve">
+    <value>不安全</value>
+  </data>
+  <data name="Profile_RiskTrustedHostsOnly" xml:space="preserve">
+    <value>仅限可信主机</value>
   </data>
   <data name="Profile_AesNote" xml:space="preserve">
     <value>(将使用 AES-256 加密存储)</value>
@@ -1967,10 +2015,10 @@
     <value>// 先连跳板、经其端口转发进入本机;跳板配置需已保存凭据,跳板还可再配跳板(链式多段)</value>
   </data>
   <data name="Profile_KeyAuth" xml:space="preserve">
-    <value>密钥认证</value>
+    <value>密钥</value>
   </data>
   <data name="Profile_CertAuth" xml:space="preserve">
-    <value>证书认证</value>
+    <value>证书</value>
   </data>
   <data name="Profile_CertificateFile" xml:space="preserve">
     <value>证书文件</value>
@@ -1991,7 +2039,7 @@
     <value>私钥口令(可选)</value>
   </data>
   <data name="Profile_PasswordAuth" xml:space="preserve">
-    <value>密码认证</value>
+    <value>密码</value>
   </data>
   <data name="Profile_PostAuthCommand" xml:space="preserve">
     <value>认证后执行命令</value>
@@ -5656,13 +5704,13 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>服务器拒绝了转发请求。检查 sshd_config 里的 AllowAgentForwarding / AllowTcpForwarding / X11Forwarding。</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
-    <value>SSH Agent</value>
+    <value>Agent</value>
   </data>
   <data name="Profile_AgentAuthHint" xml:space="preserve">
     <value>用本机 ssh-agent 里的密钥签名,配置里不存任何凭据。Windows 上是「OpenSSH Authentication Agent」服务(先启动它,再用 ssh-add 加载密钥);其它系统用 SSH_AUTH_SOCK 指向的 agent。</value>
   </data>
   <data name="Profile_SshFeatures" xml:space="preserve">
-    <value>SSH 连接选项</value>
+    <value>SSH 选项</value>
   </data>
   <data name="Profile_SshLegacyAlgorithms" xml:space="preserve">
     <value>允许老算法(连老设备用)</value>

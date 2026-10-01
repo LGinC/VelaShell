@@ -1183,6 +1183,9 @@ public partial class MainWindow : Window
             // 「只转发指定密钥」的候选:本机 agent 里的钥与 ~/.ssh 下的公钥。
             app.Services.GetService<Core.Ssh.ISshKeyService>()
         );
+        // 协议栏底部「获取更多协议…」:插件管理器是非模态的,在那边启用的协议经注册表的
+        // Changed 事件当场补进这边的协议栏,不必关掉对话框重开。
+        connectionProfileViewModel.OpenPluginManager = OpenPluginManager;
         var dialog = new ConnectionProfileView { DataContext = connectionProfileViewModel };
         SessionProfile? profile = await dialog.ShowDialog<SessionProfile?>(this);
         if (profile is null)
