@@ -159,9 +159,9 @@ public sealed class RenderTests
             .I16(0).I16(0).I16(0).I16(0).I16(0).I16(0).U16(40).U16(20));
         await c.SyncAsync();
         uint left = s.Pixel(0, 10) & 0xFF, mid = s.Pixel(20, 10) & 0xFF, right = s.Pixel(39, 10) & 0xFF;
-        Assert.IsLessThan(8, left, $"左端接近黑:{left}");
+        Assert.IsLessThan(8u, left, $"左端接近黑:{left}");
         Assert.IsTrue(mid is > 120 and < 140, $"中间接近灰:{mid}");
-        Assert.IsGreaterThan(248, right, $"右端接近白:{right}");
+        Assert.IsGreaterThan(248u, right, $"右端接近白:{right}");
     }
 
     [TestMethod]

@@ -201,7 +201,7 @@ public sealed class HostApiTests
         await c.SendAsync(104, 100);                                // 100 → 100
         await c.SendAsync(104, unchecked((byte)(sbyte)-50));        // −50 → 50 − 25
         await host.WaitForAsync(() => host.Log.Count(e => e.StartsWith("bell", StringComparison.Ordinal)) == 3);
-        Assert.AreSequenceEqual((string[])["bell 50", "bell 100", "bell 25"], host.Log.Where(e => e.StartsWith("bell", StringComparison.Ordinal)).ToArray());
+        Assert.AreSequenceEqual(["bell 50", "bell 100", "bell 25"], host.Log.Where(e => e.StartsWith("bell", StringComparison.Ordinal)).ToArray());
 
         XMessage error = await c.RequestAsync(104, 101);
         Assert.IsTrue(error.IsError, "−100…100 以外是 BadValue");
