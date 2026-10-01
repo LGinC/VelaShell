@@ -1492,3 +1492,15 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **二、做法**:`AuditLogView` 的筛选条挂 `filter-bar` 类,下拉与关键字框按任务管理器 / 路由追踪的口径定为 28 高(输入框 11 号字、`Padding 8,0`;下拉 12 号字,11 号比例字体在亮色主题下发糊,同设置页那处说明);刷新按钮从窗口内自定义的 30 高 `dlg-outline` 换成 `VelaOutlineButtonTheme`(DESIGN.md §5.1,28 高),本地那条样式删掉。
 
 **三、验证**:新增 `AuditLogViewUiTests.FilterBar_ControlsShareTheToolbarHeight`(下拉、关键字框、刷新按钮都是 28;改之前实测下拉 32,用例红)。headless 截图核对了深 / 浅主题。
+
+## ✅ 148. 2026-10-01 「怎么改都绿」的 UI 用例:复核已修,加守门测试(`feature-plan.md` 🔴 P0 项)
+
+**一、问题**:`feature-plan.md` 还挂着「11 条『怎么改都绿』的 UI 用例」(🔴 P0,出处 §70):无返回值的 async lambda 绑到 `Dispatch<Task>(Func<Task>)`,外层任务在第一个 `await` 就完成,断言异常没人接。实际上 §139 已经把这些全部改完(补 `return true;`,或改用 `TestSupport/HeadlessUi.cs` 的 `RunOnUiAsync`),只是那一条没从 `feature-plan.md` 删掉,复核结论也停在 09-26 的「还是无返回值写法」。另一个问题是:AGENTS.md 早就写着这条约束,却没拦住它长出 11 处 —— 没有东西在机器上守着。
+
+**二、做法**:
+- **复核**:全部测试工程里的 `Dispatch(async` 逐处看 lambda 有没有顶层 `return` 与外层怎么等 —— 32 处全部带返回值并 `GetAwaiter().GetResult()`(另有一处只是 `FtpConnectionFlowTests` 注释里的字样,实际代码走 `Task.Run`);没有「在 async 用例里 `await …Dispatch(…)`」的写法;也没有「非 async lambda 直接返回 `Task`」或传 `…Async` 方法组的变体。
+- **探针**:在点名的四个文件(`PluginPanelUiTests` 5、`PluginThemeTokensTests` 1、`StandaloneSftpDocumentBehaviorTests` 4、`LocalFilePaneViewUiTests` 2)每个异步用例体的最末尾、所有 `await` 之后插 `Assert.Fail("PROBE")`:12 条全红,失败原因都是 PROBE —— 用例体确实跑到底了。探针随后还原。
+- **守门**:新增 `Design/HeadlessDispatchUsageTests`,扫 `tests/` 下全部 `.cs`:`Dispatch(async …)` 的用例体必须有顶层的带值 `return`;不许出现 `await …Dispatch(…)`。扫描前先把注释与字符串字面量抹成空白(行号不变),说明文字里引用这两种写法不算违规,字符串里的大括号也不进配对。扫描器本身带 9 条正反样例(只有内层 lambda 有 `return`、字符串里的 `}`、插值串、注释等),免得守门测试自己也「怎么改都绿」。AGENTS.md 那条 headless 约束补一句由它守门。
+- `feature-plan.md` 删掉这一条(连同只剩它一行的「测试与工程」小节),「建议的下一步」与待办分布的计数随之更新。
+
+**三、验证**:守门测试 10 例通过;变异:把 `PluginThemeTokensTests` 里那句 `return true;` 删掉,守门报 `VelaShell.Tests/Views/PluginThemeTokensTests.cs:20  Dispatch(async …) 的用例体没有返回值`,还原后通过。
