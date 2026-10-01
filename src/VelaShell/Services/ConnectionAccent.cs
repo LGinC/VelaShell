@@ -91,7 +91,7 @@ public static class ConnectionAccent
     /// <returns>按序号排列的 8 个颜色。</returns>
     public static IReadOnlyList<Color> PaletteColors()
     {
-        Color[] colors = new Color[PaletteSize];
+        var colors = new Color[PaletteSize];
         for (int slot = 0; slot < PaletteSize; slot++)
         {
             colors[slot] = BrushForIndex(slot) is ISolidColorBrush solid ? solid.Color : Fallback[slot];
