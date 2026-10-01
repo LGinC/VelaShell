@@ -14,6 +14,8 @@
 | `Controls/TimeSeriesChart.cs` | 时序图：定长滚动窗口（默认 60 采样点）的「面积 + 折线」，支持多曲线叠加与上下行镜像；每条曲线是 `ChartSeries` 子元素（必须进可视树，否则 DataContext 与 DynamicResource 都解析不到）。 |
 | `Controls/UsageHeatGrid.cs` | 逻辑处理器热力网格：一次 Render 画完全部格子（128 核以上不逐格建控件），五级色阶、自适应列数、可点选；高度随行数增长，外套 ScrollViewer 即得滚动。 |
 | `Controls/MeterBar.cs` | 容量 / 占用条：圆角轨道 + 填充，按 >70% / >90% 阈值自动转警告与危险色。 |
+| `Controls/ColorSpectrumPad.cs` `Controls/HueStrip.cs` | 取色器的两个绘制零件：饱和度 / 明度面板与色相条。拖动只改值、松手才发 `Committed`；方向键可调。宿主的 `ColorPickerField` 把它们组装成浮层。 |
+| `Controls/ColorHex.cs` | 十六进制色值与 `Color` 互转：读入认 `#RGB` / `#RRGGBB` / `#AARRGGBB`（不认颜色名），写出一律大写 `#RRGGBB`。 |
 | `Themes/VelaTokens.axaml` `VelaShellTokens.axaml` | **设计 Token 定义**：颜色、间距、圆角、字体等语义化资源，主题切换的单一真源。 |
 | `Themes/Icons.axaml` | 图标几何路径资源字典（Lucide，stroke 2 / 24×24 viewBox）。 |
 | `Assets/Fonts/` | **内置字体**（随程序分发，三平台一致渲染，SIL OFL 1.1）：Cascadia Mono 四静态字重，终端默认字体。刻意不用连字版 —— 本终端按格钉排，连字无法正确呈现；CJK 走系统回退。由 `Program.BuildAvaloniaApp` 以 `fonts:VelaShell` 键注册为 `EmbeddedFontCollection`。 |

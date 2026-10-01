@@ -1691,6 +1691,18 @@
   <data name="Profile_RiskTrustedHostsOnly" xml:space="preserve">
     <value>信頼できるホストのみ</value>
   </data>
+  <data name="ColorPicker_Tip" xml:space="preserve">
+    <value>色を選択</value>
+  </data>
+  <data name="ColorPicker_ThemePalette" xml:space="preserve">
+    <value>テーマのパレット</value>
+  </data>
+  <data name="ColorPicker_SchemeColors" xml:space="preserve">
+    <value>このカラースキームの色</value>
+  </data>
+  <data name="Profile_TabColorAuto" xml:space="preserve">
+    <value>自動配色</value>
+  </data>
   <data name="Profile_AesNote" xml:space="preserve">
     <value>(AES-256 で暗号化して保存されます)</value>
   </data>
@@ -1771,9 +1783,6 @@
   </data>
   <data name="Profile_OverrideTabColor" xml:space="preserve">
     <value>タブの色</value>
-  </data>
-  <data name="Profile_OverrideTabColorPlaceholder" xml:space="preserve">
-    <value>#E05252 — 空欄で自動配色</value>
   </data>
   <data name="Profile_OverrideStartupDirectory" xml:space="preserve">
     <value>初期ディレクトリ</value>

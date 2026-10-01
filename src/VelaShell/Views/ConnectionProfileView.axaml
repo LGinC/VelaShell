@@ -4,7 +4,7 @@
         xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
         xmlns:vm="using:VelaShell.ViewModels"
         xmlns:behaviors="using:VelaShell.Behaviors"
-        xmlns:conv="using:VelaShell.Converters"
+        xmlns:ctl="using:VelaShell.Controls"
         xmlns:models="clr-namespace:VelaShell.Core.Models;assembly=VelaShell.Core"
         xmlns:loc="using:VelaShell.Localization"
         xmlns:pc="using:VelaShell.Controls.Controls"
@@ -1009,15 +1009,11 @@
                     </StackPanel>
                     <StackPanel Grid.Row="2" Grid.Column="0">
                       <TextBlock Classes="field-label" Text="{loc:Localize Profile_OverrideTabColor}" />
-                      <!-- 色块预览:填的是十六进制,看一眼色块比读数字快;填不出颜色时是空框(= 自动配色)。 -->
-                      <TextBox Text="{Binding OverrideTabColor}"
-                               PlaceholderText="{loc:Localize Profile_OverrideTabColorPlaceholder}">
-                        <TextBox.InnerLeftContent>
-                          <Border Width="14" Height="14" Margin="10,0,0,0" CornerRadius="3"
-                                  BorderThickness="1" BorderBrush="{DynamicResource VelaBorderSecondary}"
-                                  Background="{Binding OverrideTabColor, Converter={x:Static conv:StringToBrushConverter.Instance}}" />
-                        </TextBox.InnerLeftContent>
-                      </TextBox>
+                      <!-- 取色器:点开挑颜色(色板默认是当前主题的色板,与自动配色同一家族),
+                           不再手敲十六进制。没有颜色时字段上写「自动配色」,浮层底部一键清回自动。 -->
+                      <ctl:ColorPickerField Value="{Binding OverrideTabColor}"
+                                            EmptyText="{loc:Localize Profile_TabColorAuto}"
+                                            ClearText="{loc:Localize Profile_TabColorAuto}" />
                     </StackPanel>
                     <StackPanel Grid.Row="2" Grid.Column="2">
                       <TextBlock Classes="field-label" Text="{loc:Localize Profile_OverrideStartupDirectory}" />
