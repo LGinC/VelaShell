@@ -580,6 +580,63 @@ public class SidebarQuickCommandsUiTests
         });
     }
 
+    // ———————————————————— 底部栏的身份名称不许压到右侧按钮(#545) ————————————————————
+
+    /// <summary>
+    /// 「用户@主机」超长时在按钮前截成省略号,完整名称留在悬停提示里。默认宽度与最窄宽度各量一次:
+    /// 原先那一行是横向 StackPanel,文字拿到的是无限宽、只靠 MaxWidth=150 兜底,
+    /// 260px 下超过十七八个字符就压到铃铛上,180px 下几乎什么名字都压。
+    /// </summary>
+    [TestMethod]
+    [DataRow(260d)]
+    [DataRow(180d)]
+    public void LongActiveIdentity_TrimsBeforeFooterButtons(double width)
+    {
+        OnUi(() =>
+        {
+            const string identity = "root@PVE-SyncClipboard.example.internal";
+            (Window window, SidebarView view) = ShowSidebarWithIdentity(identity, width);
+            TextBlock text = view.FindControl<TextBlock>("ActiveIdentityText")!;
+            StackPanel actions = view.FindControl<StackPanel>("SidebarFooterActions")!;
+            Rect textBounds = Bounds(text, view);
+            Rect actionsBounds = Bounds(actions, view);
+
+            Assert.IsGreaterThan(0, textBounds.Width, "身份名称被压成了零宽。");
+            Assert.IsLessThanOrEqualTo(
+                actionsBounds.Left + 0.5,
+                textBounds.Right + 8,
+                $"身份名称画到了 {textBounds.Right:F0},而按钮从 {actionsBounds.Left:F0} 开始 —— 两者之间至少要留 8px。");
+            Assert.Contains(
+                line => line.HasCollapsed, text.TextLayout.TextLines,
+                "超长的身份名称应当被截成省略号。");
+            Assert.AreEqual(identity, ToolTip.GetTip((Control)text.Parent!), "完整名称应当留在悬停提示里。");
+            window.Close();
+        });
+    }
+
+    /// <summary>放得下的名称原样显示,不因为修了超长的情况而被提前截断。</summary>
+    [TestMethod]
+    public void ShortActiveIdentity_IsNotTrimmed()
+    {
+        OnUi(() =>
+        {
+            (Window window, SidebarView view) = ShowSidebarWithIdentity("root@srv", 260);
+            TextBlock text = view.FindControl<TextBlock>("ActiveIdentityText")!;
+
+            Assert.DoesNotContain(line => line.HasCollapsed, text.TextLayout.TextLines);
+            window.Close();
+        });
+    }
+
+    private static (Window Window, SidebarView View) ShowSidebarWithIdentity(string identity, double width)
+    {
+        var view = new SidebarView { DataContext = new SidebarViewModel { ActiveIdentity = identity } };
+        var window = new Window { Width = width, Height = 464, Content = view };
+        window.Show();
+        Relayout(window);
+        return (window, view);
+    }
+
     /// <summary>造一个两块可选区域都展开、且高度不够用的侧栏。</summary>
     private static (Window Window, SidebarView View) ShowShortSidebar() => ShowSidebar(360);
 

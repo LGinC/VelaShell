@@ -1515,3 +1515,11 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 按种类挑前缀收进 `ShellHistoryScrub.For`:zsh → `ZshCommand`;bash / dash / ash / 探不出 → 原 bash 那段(登录 shell 是 sh、`.profile` 里 `exec bash` 的机器上,探针只看得到 sh,这时 bash 那段是唯一真能摘历史的东西 —— 条目里那条「只在正面认出非 bash 时才跳」);fish / 非 POSIX 不接。`Prepend` 改为带种类的 `Prepend(kind, command)`,`SupportedBy` 改由 `For` 推出,`SilentCommand` 直接走它。
 
 **三、验证**:Docker 端到端新增 `OnZsh_TheInjectedLines_DoNotReachTheHistoryFile`(真 sshd + 真 zsh:注入前先设用户自己的 `HISTORY_IGNORE`,注入钩子与一条用户命令后登出,读回历史文件 —— 两条注入行与记号都不在,用户的 `echo kept-1` 在,用户自己忽略的 `echo secret-1` 仍被忽略);变异:zsh 改回接 bash 那段 → 该例红(「钩子那条注入行写进历史文件了」)。`ShellIntegration.Tests` 33 例全部真跑通过。Core 单测补按种类挑前缀(6 例)、zsh 那段的守卫与追加写法、`SilentCommand` 给 zsh 接的是 zsh 那段。`-warnaserror` 全解决方案零警告;`VelaShell.Tests` 1641 通过 / 35 跳过(真 bash 那几条在本机 PATH 上找不到 bash,按环境早退);`VelaShell.Core.Tests` 625 通过 / 1 失败 / 10 跳过,失败的是 X11 靶机用例(本机 `ssh-shells` 镜像旧、缺 `vela-dash` 的 `Match` 段,未改动的代码上同样失败,同基线里记的那条)。velashell-docs 没有写到注入行与命令历史的地方,不涉及文档同步。
+
+## ✅ 150. 2026-10-01 侧栏底部的身份名称不再压到右侧按钮(#545)
+
+**一、问题**:侧栏底部栏左侧的「用户@主机」名称一长,就画到右侧的铃铛和插件按钮上(#545 附图:`root@PVE-SyncClipboard`)。那一行是横向 `StackPanel`:它沿排列方向给子元素无限宽,`TextTrimming` 等不到触发,只靠文字上的 `MaxWidth="150"` 兜底;而侧栏默认 260px 时按钮左侧只剩约 114px 给文字,超过十七八个字符就压上去,拖到最窄的 180px 时几乎什么名字都压。
+
+**二、做法**:列了四种处理(尾部省略、中间省略、主机 / 用户双行、身份独占一行)给用户挑,定为尾部省略。那一行改成 `Grid`(`Auto,*`),文字放进 `*` 列、去掉 `MaxWidth`,只拿按钮左边剩下的宽度,放不下就截成尾部省略号;外层网格加 `ColumnSpacing="8"`,名称与按钮之间始终留 8px。完整名称照旧在悬停提示里。
+
+**三、验证**:`SidebarQuickCommandsUiTests` 新增 `LongActiveIdentity_TrimsBeforeFooterButtons`(260 / 180 两种宽度:名称右沿 + 8 不越过按钮左沿、确实截成了省略号、悬停提示是完整名称;改之前实测 260px 下名称画到 191、按钮从 164 开始,180px 下按钮从 84 开始,两例都红)与 `ShortActiveIdentity_IsNotTrimmed`(放得下的名称不截)。velashell-docs `交互与界面规格.md` / `interaction-and-ui-specs.md` §4 底部用户栏原先还写着「头像 + `root`」,一并改成当前身份的实际行为与截断规则。
