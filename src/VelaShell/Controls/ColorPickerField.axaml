@@ -1,0 +1,146 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:loc="using:VelaShell.Localization"
+             xmlns:pc="using:VelaShell.Controls.Controls"
+             x:Class="VelaShell.Controls.ColorPickerField">
+  <UserControl.Resources>
+    <!-- 字段本身:长得像一个输入框(底色、描边、圆角与 TextBox 一致),里面是色块 + 色值 + 下拉箭头。
+         自带模板:Fluent 按钮的悬停层画在 Background 之上,会把输入框底色换成按钮的灰。 -->
+    <ControlTheme x:Key="ColorFieldTheme" TargetType="Button">
+      <Setter Property="Background" Value="{DynamicResource VelaBgInput}" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderPrimary}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="MinHeight" Value="32" />
+      <Setter Property="Padding" Value="10,0" />
+      <Setter Property="HorizontalAlignment" Value="Stretch" />
+      <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}">
+            <ContentPresenter Content="{TemplateBinding Content}"
+                              Foreground="{TemplateBinding Foreground}"
+                              HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+      <Style Selector="^:pointerover">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
+      </Style>
+      <!-- 浮层开着、或键盘聚焦时描边转强调色:与输入框聚焦时同一个记号。 -->
+      <Style Selector="^:flyout-open">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaAccent}" />
+      </Style>
+      <Style Selector="^:focus-visible">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaAccent}" />
+      </Style>
+    </ControlTheme>
+
+    <!-- 色板里的一格:就是那个颜色本身,悬停 / 聚焦只换描边。 -->
+    <ControlTheme x:Key="ColorSwatchTheme" TargetType="Button">
+      <Setter Property="Width" Value="22" />
+      <Setter Property="Height" Value="22" />
+      <Setter Property="Margin" Value="0,0,6,6" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="4" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}" />
+        </ControlTemplate>
+      </Setter>
+      <Style Selector="^:pointerover">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaTextSecondary}" />
+      </Style>
+      <Style Selector="^.current">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaTextPrimary}" />
+        <Setter Property="BorderThickness" Value="2" />
+      </Style>
+      <Style Selector="^:focus-visible">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaAccent}" />
+        <Setter Property="BorderThickness" Value="2" />
+      </Style>
+    </ControlTheme>
+  </UserControl.Resources>
+
+  <UserControl.Styles>
+    <!-- 没有颜色时字段上那行字(「跟随主题」「自动配色」)是说明,不是值:用弱一档的前景、换回界面字体。 -->
+    <Style Selector="TextBlock.value-text">
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+    </Style>
+    <Style Selector="TextBlock.value-text.empty">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextMuted}" />
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiFont}" />
+    </Style>
+  </UserControl.Styles>
+
+  <Button x:Name="FieldButton" Theme="{StaticResource ColorFieldTheme}"
+          ToolTip.Tip="{loc:Localize ColorPicker_Tip}">
+    <Grid ColumnDefinitions="Auto,*,Auto">
+      <!-- 色块:当前颜色;没有颜色(跟随主题 / 自动配色)时是一个空框。 -->
+      <Border x:Name="Chip" Width="14" Height="14" CornerRadius="3" VerticalAlignment="Center"
+              BorderThickness="1" BorderBrush="{DynamicResource VelaBorderSecondary}" />
+      <TextBlock x:Name="ValueText" Grid.Column="1" Classes="value-text" Margin="8,0" VerticalAlignment="Center"
+                 TextTrimming="CharacterEllipsis" />
+      <pc:LucideIcon Grid.Column="2" Width="12" Height="12" VerticalAlignment="Center"
+                     Data="{StaticResource Icon.chevron-down}"
+                     Foreground="{DynamicResource VelaTextTertiary}" />
+    </Grid>
+    <Button.Flyout>
+      <!-- 浮层外框用全局 FlyoutPresenter 样式(DESIGN.md §5.2「Bare content」):bg-surface、描边、圆角 6。 -->
+      <Flyout Placement="BottomEdgeAlignedLeft">
+        <StackPanel Width="236" Spacing="10">
+          <pc:ColorSpectrumPad x:Name="Pad" Height="148" Cursor="Hand"
+                               BorderBrush="{DynamicResource VelaBorderSecondary}"
+                               FocusBrush="{DynamicResource VelaAccent}" />
+          <pc:HueStrip x:Name="HueBar" Height="14" Cursor="Hand"
+                       FocusBrush="{DynamicResource VelaAccent}" />
+          <Grid ColumnDefinitions="Auto,8,*">
+            <!-- 新旧对比:左半是打开浮层时的颜色,右半是现在的颜色。 -->
+            <Border Width="40" Height="30" CornerRadius="4" ClipToBounds="True"
+                    BorderThickness="1" BorderBrush="{DynamicResource VelaBorderSecondary}">
+              <Grid ColumnDefinitions="*,*">
+                <Border x:Name="OriginalChip" Grid.Column="0" />
+                <Border x:Name="PreviewChip" Grid.Column="1" />
+              </Grid>
+            </Border>
+            <!-- 十六进制留着给要精确值的人(从设计稿、别的终端配置里抄一个色号):回车或离开输入框即生效。 -->
+            <TextBox x:Name="HexBox" Grid.Column="2" MinHeight="30" MaxLength="9"
+                     PlaceholderText="#RRGGBB"
+                     Background="{DynamicResource VelaBgInput}"
+                     Foreground="{DynamicResource VelaTextPrimary}"
+                     BorderBrush="{DynamicResource VelaBorderPrimary}"
+                     CornerRadius="4"
+                     FontFamily="{DynamicResource VelaUiMonoFont}"
+                     FontSize="{DynamicResource VelaFontSize11}"
+                     VerticalContentAlignment="Center" />
+          </Grid>
+          <StackPanel x:Name="SwatchSection" Spacing="6">
+            <TextBlock x:Name="SwatchTitle"
+                       Foreground="{DynamicResource VelaTextTertiary}"
+                       FontSize="{DynamicResource VelaFontSize10}" FontWeight="SemiBold" />
+            <WrapPanel x:Name="SwatchPanel" Margin="0,0,-6,-6" />
+          </StackPanel>
+          <!-- 只有值允许为空的地方才有这一键(强调色 = 跟随主题,标签颜色 = 自动配色)。 -->
+          <Button x:Name="ClearButton" Theme="{StaticResource VelaOutlineButtonTheme}"
+                  HorizontalAlignment="Stretch" IsVisible="False" />
+        </StackPanel>
+      </Flyout>
+    </Button.Flyout>
+  </Button>
+</UserControl>

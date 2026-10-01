@@ -19,7 +19,7 @@
 | `Services/Plugins/` | 插件系统的**应用侧**能力落地：`PluginUiApi`（面板宿主）、`PluginPanel`、`HostTerminal`/`HostClipboard`（终端与剪贴板能力）、`DialogPermissionPrompt`（权限授权弹窗）、`PluginThemeTokens`（下发给隔离进程的令牌快照）。运行时与权限闸门本身在 `Infrastructure/Plugins/`。 |
 | `Services/Syntax/` | 远程文件编辑器的语法高亮：`FileTypeDetector`（按扩展名/内容判定类型）+ `SyntaxHighlightingService`（供 AvaloniaEdit 使用）。 |
 | `Themes/` | `DarkTheme`/`LightTheme`/`InputStyles`/`DockStyles`：应用级主题与样式覆盖。 |
-| `Converters/` `Behaviors/` `Controls/` | XAML 值转换器、输入行为（`SecurePasswordBox`、`EnglishInputLocale`）、`ReparentingHost` 宿主控件。 |
+| `Converters/` `Behaviors/` `Controls/` | XAML 值转换器、输入行为（`SecurePasswordBox`、`EnglishInputLocale`）、`ReparentingHost` 宿主控件、`ColorPickerField` 颜色字段（设置页与连接对话框里所有挑颜色的地方）。 |
 | `Security/` `Localization/` | `SecureStringConvert` 安全字符串互转、`LocalizeExtension` XAML 本地化标记扩展。 |
 | `Assets/` | 图标、捐赠二维码等资源。 |
 | `app.manifest` `Info.plist` `*.desktop` | Windows / macOS / Linux 平台清单与桌面集成。 |

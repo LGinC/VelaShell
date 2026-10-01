@@ -317,6 +317,23 @@ Guarded by `DialogButtonStyleTests`.
 - Properties: `Data="{StaticResource Icon.xxx}"`, `Width`, `Height`, `Foreground`
 - Icon geometries defined in `Icons.axaml` as `StreamGeometry` with key pattern `Icon.<name>`
 
+#### ColorPickerField (`ctl:ColorPickerField`, `src/VelaShell/Controls`)
+- **Every place a user picks a color uses it** — Settings → Appearance (accent, terminal foreground / background /
+  cursor / selection) and the connection dialog's tab color. Never a bare `TextBox` for `#RRGGBB`.
+- The field looks like an input (`VelaBgInput`, 1px `VelaBorderPrimary`, `CornerRadius:4`, min height 32): a 14px chip,
+  the hex value in `VelaUiMonoFont` 11, a chevron. With no color it shows an empty chip frame and `EmptyText` in
+  `VelaTextMuted` / `VelaUiFont` ("Follow theme", "Automatic"). Border turns `VelaAccent` while the flyout is open or on
+  `:focus-visible`.
+- Flyout (bare content on the global `FlyoutPresenter` chrome, 236 wide): saturation / value pad (`pc:ColorSpectrumPad`,
+  148 high) → hue strip (`pc:HueStrip`, 14 high) → old | new comparison chip + hex box → swatches (22px, current one
+  outlined in `VelaTextPrimary` 2px) → optional clear button (`VelaOutlineButtonTheme`, only when the value may be empty).
+- Swatches: what the caller passes (`Swatches` + `SwatchesTitle`; terminal colors pass the scheme's 16 ANSI colors),
+  otherwise the theme palette `VelaAccentPalette0..7`.
+- **Writes back on release, not while dragging** — pad / strip release, a keyboard step, a swatch click, Enter or blur
+  in the hex box. The accent re-derives the whole token set and terminal colors repaint every terminal; a write per
+  pixel of mouse movement is wasted work. Output is always uppercase `#RRGGBB`; an unparsable hex is never written.
+- The white / black in the pad and the thumb rings are the HSV color space itself, not UI colors, so they are not tokens.
+
 #### StatusDot (`Ellipse`)
 - 7x7 circle, fill driven by connection state
 - Classes: `.dot` (default=disconnected), `.dot.connected` (`VelaStatusConnected`), `.dot.connecting` (`VelaStatusConnecting`)

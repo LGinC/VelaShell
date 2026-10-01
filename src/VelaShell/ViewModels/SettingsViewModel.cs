@@ -210,6 +210,8 @@ public partial class SettingsViewModel : ReactiveObject
             .Subscribe(appearance =>
             {
                 HookAppearance(appearance);
+                // 套用配色方案走的是"整体替换 Appearance"那条路:取色器的色板要换成新方案的 16 色。
+                this.RaisePropertyChanged(nameof(TerminalSchemeSwatches));
                 BroadcastPreview();
             });
 
@@ -897,6 +899,12 @@ public partial class SettingsViewModel : ReactiveObject
     /// <summary>外观页强调色色板(设计 ZAbb9)。</summary>
     public string[] AccentSwatches { get; } =
     ["#00D4AA", "#3498DB", "#9B59B6", "#E74C3C", "#F39C12", "#1ABC9C", "#E91E63"];
+
+    /// <summary>
+    /// 终端前景 / 背景 / 光标 / 选区四个取色器的色板:当前配色方案的 ANSI 16 色(标准 8 + 高亮 8)。
+    /// 从方案自己的颜色里挑,改出来的前景、选区与这套方案是协调的。
+    /// </summary>
+    public IReadOnlyList<string> TerminalSchemeSwatches => [.. Appearance.AnsiNormal, .. Appearance.AnsiBright];
 
     // ———— 终端配色方案预设(§12.5) ————
 
@@ -1600,6 +1608,10 @@ public partial class SettingsViewModel : ReactiveObject
         {
             Appearance.TerminalColorsFollowTheme = false;
             RefreshColorSchemeDisplay();
+        }
+        if (e.PropertyName is nameof(AppearanceOptions.AnsiNormal) or nameof(AppearanceOptions.AnsiBright))
+        {
+            this.RaisePropertyChanged(nameof(TerminalSchemeSwatches));
         }
         if (e.PropertyName == nameof(AppearanceOptions.WindowOpacityPercent))
         {

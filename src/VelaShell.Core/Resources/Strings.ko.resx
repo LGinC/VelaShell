@@ -1691,6 +1691,18 @@
   <data name="Profile_RiskTrustedHostsOnly" xml:space="preserve">
     <value>신뢰할 수 있는 호스트만</value>
   </data>
+  <data name="ColorPicker_Tip" xml:space="preserve">
+    <value>색 선택</value>
+  </data>
+  <data name="ColorPicker_ThemePalette" xml:space="preserve">
+    <value>테마 팔레트</value>
+  </data>
+  <data name="ColorPicker_SchemeColors" xml:space="preserve">
+    <value>현재 색 구성표의 색</value>
+  </data>
+  <data name="Profile_TabColorAuto" xml:space="preserve">
+    <value>자동 배색</value>
+  </data>
   <data name="Profile_AesNote" xml:space="preserve">
     <value>(AES-256으로 암호화되어 저장됩니다)</value>
   </data>
@@ -1771,9 +1783,6 @@
   </data>
   <data name="Profile_OverrideTabColor" xml:space="preserve">
     <value>탭 색상</value>
-  </data>
-  <data name="Profile_OverrideTabColorPlaceholder" xml:space="preserve">
-    <value>#E05252 — 비워 두면 자동 배색</value>
   </data>
   <data name="Profile_OverrideStartupDirectory" xml:space="preserve">
     <value>시작 디렉터리</value>

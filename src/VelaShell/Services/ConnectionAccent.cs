@@ -84,6 +84,21 @@ public static class ConnectionAccent
         return (int)(hash % PaletteSize);
     }
 
+    /// <summary>
+    /// 当前主题的整张色板(8 色)。取色器没给专用色板时用它 —— 挑出来的颜色与自动配色同一家族,
+    /// 换主题后挑过的颜色虽然不跟着变,但挑的那一刻是协调的。
+    /// </summary>
+    /// <returns>按序号排列的 8 个颜色。</returns>
+    public static IReadOnlyList<Color> PaletteColors()
+    {
+        Color[] colors = new Color[PaletteSize];
+        for (int slot = 0; slot < PaletteSize; slot++)
+        {
+            colors[slot] = BrushForIndex(slot) is ISolidColorBrush solid ? solid.Color : Fallback[slot];
+        }
+        return colors;
+    }
+
     /// <summary>按色板序号取画刷(序号越界时按模回绕)。</summary>
     /// <param name="index">色板序号。</param>
     /// <returns>对应的强调色画刷。</returns>
