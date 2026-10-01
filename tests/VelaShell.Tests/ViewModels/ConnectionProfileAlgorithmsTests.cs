@@ -112,14 +112,14 @@ public sealed class ConnectionProfileAlgorithmsTests
         var vm = new ConnectionProfileViewModel { Host = "h", Username = "u" };
         var changed = new List<string?>();
         vm.PropertyChanged += (_, e) => changed.Add(e.PropertyName);
-        StringAssert.Contains(vm.SshKexAlgorithmsTip,
-            Strings.Format("Profile_SshAlgoTipMore", "diffie-hellman-group14-sha1"));
+        Assert.Contains(Strings.Format("Profile_SshAlgoTipMore", "diffie-hellman-group14-sha1"),
+vm.SshKexAlgorithmsTip);
 
         vm.SshLegacyAlgorithms = true;
 
         CollectionAssert.Contains(changed, nameof(ConnectionProfileViewModel.SshKexAlgorithmsTip));
-        StringAssert.Contains(vm.SshKexAlgorithmsTip,
-            string.Join(", ", SshAlgorithmPreferences.Defaults(SshAlgorithmKind.KeyExchange, legacy: true)),
+        Assert.Contains(string.Join(", ", SshAlgorithmPreferences.Defaults(SshAlgorithmKind.KeyExchange, legacy: true)),
+vm.SshKexAlgorithmsTip,
             "放开之后 group14-sha1 已经在默认里了");
         Assert.DoesNotContain("\n", vm.SshKexAlgorithmsTip, "没有另可加的了,第二行不出现");
     }

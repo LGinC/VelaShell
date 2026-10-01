@@ -36,11 +36,11 @@ public sealed class TcpDialerTests
     public void 地址按族交替排从第一个族开始()
     {
         Assert.AreSequenceEqual(
-            new[] { V6, V4, V6b, V4b },
+            [V6, V4, V6b, V4b],
             TcpTransportDialer.Interleave([V6, V6b, V4, V4b]));
 
         Assert.AreSequenceEqual(
-            new[] { V4, V6, V4b },
+            [V4, V6, V4b],
             TcpTransportDialer.Interleave([V4, V4b, V6]));
     }
 

@@ -174,7 +174,7 @@ public sealed class SshInteropTests
 
         string message = SshInterop.Translate(original)!.Message;
 
-        StringAssert.Contains(message, Strings.Format("Ssh_AlgoMismatchEnable", "hmac-sha1"),
+        Assert.Contains(Strings.Format("Ssh_AlgoMismatchEnable", "hmac-sha1"), message,
             "hmac-md5 本版没实现,不该出现在「可以放开」里");
     }
 
@@ -190,7 +190,7 @@ public sealed class SshInteropTests
 
         string message = SshInterop.Translate(original)!.Message;
 
-        StringAssert.Contains(message, Strings.Get("Ssh_AlgoMismatchUnsupported"));
+        Assert.Contains(Strings.Get("Ssh_AlgoMismatchUnsupported"), message);
     }
 
     // ------------------------------------------------------------ SFTP 的分流

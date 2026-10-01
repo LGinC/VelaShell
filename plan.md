@@ -1484,3 +1484,11 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - DESIGN.md §5.2 补 `ColorPickerField` 一条;两个工程的 README 补上新文件。
 
 **三、验证**:`VelaShell.Controls.Tests` 新增 `ColorPickerPartsTests`(18 例:各种色值写法、拒绝颜色名与残缺值、格式化丢 alpha、面板四角与越界换算、色相条两端的半径余量、属性钳制)。`VelaShell.Tests` 新增 `ColorPickerFieldUiTests`(11 例:字段回显与空态、浮层从当前值起步、点色板写回并标出当前格、没给色板时用主题色板、十六进制框写回 / 回退、键盘调面板写回、拖动只在松手时提交一次(真实鼠标事件)、清除按钮的显隐与清空、连接对话框与外观页确实用上并双向绑定、方案色板随调色板发通知)。变异:拖动过程中也发 `Committed` → 拖动那条变红。headless 截图在深 / 浅两套主题下核对了外观页、连接对话框与浮层。`VelaShell.Controls.Tests` 31 通过,`VelaShell.Tests` 1657 通过 / 8 跳过(含无障碍名字、设置页输入框扫描、颜色字面量、文案键几道门)。
+
+## ✅ 147. 2026-10-01 审计日志窗口的筛选条高度与别的工具窗口对齐(用户反馈)
+
+**一、问题**:审计日志窗口筛选条上的类别下拉与关键字框没写尺寸,吃的是 Fluent 默认值(最小高 32、14 号字),比同一排 30 高的刷新按钮还高一截,也比任务管理器、路由追踪工具条上 28 高的筛选框高 —— 看起来「更高一点」。
+
+**二、做法**:`AuditLogView` 的筛选条挂 `filter-bar` 类,下拉与关键字框按任务管理器 / 路由追踪的口径定为 28 高(输入框 11 号字、`Padding 8,0`;下拉 12 号字,11 号比例字体在亮色主题下发糊,同设置页那处说明);刷新按钮从窗口内自定义的 30 高 `dlg-outline` 换成 `VelaOutlineButtonTheme`(DESIGN.md §5.1,28 高),本地那条样式删掉。
+
+**三、验证**:新增 `AuditLogViewUiTests.FilterBar_ControlsShareTheToolbarHeight`(下拉、关键字框、刷新按钮都是 28;改之前实测下拉 32,用例红)。headless 截图核对了深 / 浅主题。

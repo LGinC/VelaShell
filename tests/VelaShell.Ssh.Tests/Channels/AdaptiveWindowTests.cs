@@ -286,7 +286,7 @@ public sealed class AdaptiveWindowTests
         await delayed.DisposeAsync();
 
         byte[] received = await ReadExactlyAsync(b, 3);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, received);
+        Assert.AreSequenceEqual(new byte[] { 1, 2, 3 }, received);
 
         byte[] tail = new byte[1];
         Assert.AreEqual(0, await b.ReadAsync(tail), "送达之后另一端应当看到流结束");

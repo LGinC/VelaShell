@@ -280,7 +280,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         TestKexResponse response = TestKexResponder.Respond(negotiated.KeyExchange, clientPublic);
 
         // ④ 算交换哈希并签名。
-        using VelaShell.Ssh.Crypto.Kex.ISshKeyExchange shape =
+        using Ssh.Crypto.Kex.ISshKeyExchange shape =
             Ssh.Crypto.Kex.SshKeyExchangeFactory.Create(negotiated.KeyExchange);
 
         byte[] hostKeyBlob = KeyFor(isInitial).PublicKeyBlob;

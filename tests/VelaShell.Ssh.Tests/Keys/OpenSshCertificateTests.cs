@@ -41,7 +41,7 @@ public sealed class OpenSshCertificateTests
         Assert.AreEqual(SshCertificateType.User, cert.CertificateType);
         Assert.AreEqual("joe@velashell", cert.KeyId);
         Assert.AreEqual(4242UL, cert.Serial);
-        Assert.AreSequenceEqual(new[] { "joe", "deploy" }, [.. cert.ValidPrincipals]);
+        Assert.AreSequenceEqual(["joe", "deploy"], [.. cert.ValidPrincipals]);
         Assert.IsEmpty(cert.CriticalOptions);
         Assert.Contains("permit-pty", [.. cert.Extensions]);
         Assert.Contains("permit-agent-forwarding", [.. cert.Extensions]);
@@ -83,7 +83,7 @@ public sealed class OpenSshCertificateTests
         Assert.AreSequenceEqual(signer.Certificate.Blob.ToArray(), signer.PublicKey.Blob.ToArray());
         Assert.IsTrue(signer.PublicKey.IsCertificate);
         Assert.AreSequenceEqual(
-            new[] { "ssh-ed25519-cert-v01@openssh.com" }, [.. signer.SignatureAlgorithms]);
+            ["ssh-ed25519-cert-v01@openssh.com"], [.. signer.SignatureAlgorithms]);
     }
 
     /// <summary>RSA 证书要把三个签名算法各带一次后缀，顺序仍是 SHA-512 优先。</summary>
@@ -93,12 +93,11 @@ public sealed class OpenSshCertificateTests
         SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-rsa");
 
         Assert.AreSequenceEqual(
-            new[]
-            {
+            [
                 "rsa-sha2-512-cert-v01@openssh.com",
                 "rsa-sha2-256-cert-v01@openssh.com",
                 "ssh-rsa-cert-v01@openssh.com",
-            }, [.. signer.SignatureAlgorithms]);
+            ], [.. signer.SignatureAlgorithms]);
     }
 
     /// <summary>

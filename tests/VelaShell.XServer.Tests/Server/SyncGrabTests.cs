@@ -187,7 +187,7 @@ public sealed class SyncGrabTests
     }
 
     private static void AssertTrace(string[] expected, List<string> actual) =>
-        CollectionAssert.AreEqual(expected, actual, string.Join(" | ", actual));
+        Assert.AreSequenceEqual(expected, actual, string.Join(" | ", actual));
 
     [TestMethod]
     public async Task 焦点事件按上下级关系给detail_中间的窗口发虚拟事件_FocusIn之后跟KeymapNotify()
@@ -210,22 +210,22 @@ public sealed class SyncGrabTests
         // PointerRoot → G。指针在 (0, 0),落在最后映射的 O 里:旧焦点是 PointerRoot 时,从指针所在的窗口往上(连根)先发 Pointer;
         // 然后 G 的根往下到 G 之前是 NonlinearVirtual,G 本身 Nonlinear。
         await SetFocusAsync(grandchild);
-        AssertTrace(new[] { "out O Pointer", "in T NonlinearVirtual", "in C NonlinearVirtual", "in G Nonlinear", "keymap" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out O Pointer", "in T NonlinearVirtual", "in C NonlinearVirtual", "in G Nonlinear", "keymap"], await FocusTraceAsync(c, names));
 
         await SetFocusAsync(child);        // G 是 C 的下级
-        AssertTrace(new[] { "out G Ancestor", "in C Inferior" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out G Ancestor", "in C Inferior"], await FocusTraceAsync(c, names));
 
         await SetFocusAsync(grandchild);   // G 是 C 的下级,反过来
-        AssertTrace(new[] { "out C Inferior", "in G Ancestor", "keymap" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out C Inferior", "in G Ancestor", "keymap"], await FocusTraceAsync(c, names));
 
         await SetFocusAsync(other);        // 共同祖先是根:两边的中间窗口都是 NonlinearVirtual
-        AssertTrace(new[] { "out G Nonlinear", "out C NonlinearVirtual", "out T NonlinearVirtual", "in O Nonlinear" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out G Nonlinear", "out C NonlinearVirtual", "out T NonlinearVirtual", "in O Nonlinear"], await FocusTraceAsync(c, names));
 
         // 键盘抓取激活 / 解除:就像焦点从 O 移到抓取窗口 C、再移回来,mode 是 Grab(1)/ Ungrab(2)。
         await c.RequestAsync(31, 0, b => b.U32(child).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));
-        AssertTrace(new[] { "out O Nonlinear mode1", "in T NonlinearVirtual mode1", "in C Nonlinear mode1" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out O Nonlinear mode1", "in T NonlinearVirtual mode1", "in C Nonlinear mode1"], await FocusTraceAsync(c, names));
         await c.SendAsync(32, 0, b => b.U32(0));   // UngrabKeyboard
-        AssertTrace(new[] { "out C Nonlinear mode2", "out T NonlinearVirtual mode2", "in O Nonlinear mode2" }, await FocusTraceAsync(c, names));
+        AssertTrace(["out C Nonlinear mode2", "out T NonlinearVirtual mode2", "in O Nonlinear mode2"], await FocusTraceAsync(c, names));
     }
 
     [TestMethod]
@@ -246,8 +246,7 @@ public sealed class SyncGrabTests
 
         await c.SendAsync(35, 6, b => b.U32(0));   // AllowEvents AsyncBoth
         List<XMessage> events = await DrainAsync(c, KeyPress, KeyRelease, MotionNotify);
-        CollectionAssert.AreEqual(new byte[] { KeyPress, MotionNotify, KeyRelease }, events.Select(e => e.EventCode).ToArray(),
-            "按键、移动、松开:按到达的先后,不是两个设备各走各的");
+        Assert.AreSequenceEqual([KeyPress, MotionNotify, KeyRelease], events.Select(e => e.EventCode).ToArray(), "按键、移动、松开:按到达的先后,不是两个设备各走各的");
 
         // 再冻上,宿主不停地移动:排着的事件有上限。
         await c.RequestAsync(26, 0, b => b.U32(top).U16(0x40).U8(Synchronous).U8(Asynchronous).U32(0).U32(0).U32(0));

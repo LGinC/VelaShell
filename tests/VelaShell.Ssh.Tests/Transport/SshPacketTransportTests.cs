@@ -387,7 +387,7 @@ public sealed class SshPacketTransportTests
         await using SshPacketTransport transport = new(new NeverWritableStream());
 
         using CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(100));
-        transport.WritePacket(new byte[] { 2, 1, 2, 3 });
+        transport.WritePacket([2, 1, 2, 3]);
         await Assert.ThrowsAsync<OperationCanceledException>(async () => await transport.FlushAsync(cancel.Token));
 
         await transport.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));

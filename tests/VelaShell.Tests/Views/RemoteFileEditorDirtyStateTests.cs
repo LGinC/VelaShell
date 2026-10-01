@@ -136,7 +136,7 @@ public sealed class RemoteFileEditorDirtyStateTests
         {
             using var fixture = Fixture.Open("original");
             Button save = fixture.View.GetVisualDescendants().OfType<Button>().Single(b => b.Name == "SaveButton");
-            Assert.IsTrue(save.GetVisualAncestors().OfType<Border>().Any(b => b.Classes.Contains("window-titlebar")),
+            Assert.Contains(b => b.Classes.Contains("window-titlebar"), save.GetVisualAncestors().OfType<Border>(),
                 "保存在标题栏里,与主窗口的全局功能图标同一处");
             Assert.AreEqual(fixture.View.FindResource("VelaTitleActionButtonTheme"), save.Theme);
             Assert.IsFalse(save.Classes.Contains("dirty"), "刚打开时是干净的");

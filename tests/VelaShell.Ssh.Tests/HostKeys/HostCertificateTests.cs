@@ -271,14 +271,14 @@ public sealed class HostCertificateTests
         // 钉住的是证书时，普通算法 ssh-ed25519 去掉后缀也「支持」—— 留着它，重协商可能谈成普通算法，
         // 服务端出示的就是那把钥而不是证书，钉住的比对失败，被当成换了主机密钥断开。
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.SshEd25519CertV01 },
-            SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-key-cert.pub")).HostKey.ToArray());
+            [SshAlgorithmNames.SshEd25519CertV01],
+            [.. SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-key-cert.pub")).HostKey]);
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.RsaSha512CertV01, SshAlgorithmNames.RsaSha256CertV01 },
-            SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-rsa-cert.pub")).HostKey.ToArray());
+            [SshAlgorithmNames.RsaSha512CertV01, SshAlgorithmNames.RsaSha256CertV01],
+            [.. SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-rsa-cert.pub")).HostKey]);
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.SshEd25519 },
-            SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-key.pub")).HostKey.ToArray());
+            [SshAlgorithmNames.SshEd25519],
+            [.. SshConnection.RestrictToPinnedHostKey(SshAlgorithmSet.Default, LoadKey("hostcert-key.pub")).HostKey]);
     }
 
     [TestMethod]

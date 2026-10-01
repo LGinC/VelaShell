@@ -51,14 +51,14 @@ public sealed class HostApiTests
     {
         await using X11Server server = new();
         await using XTestClient c = await XTestClient.ConnectAsync(server);
-        StringAssert.Contains(await RootStringAsync(c, "RESOURCE_MANAGER"), "Xft.dpi:\t96");
+        Assert.Contains("Xft.dpi:\t96", await RootStringAsync(c, "RESOURCE_MANAGER"));
         await c.SendAsync(2, 0, b => b.U32(c.RootWindow).U32(0x800).U32(0x400000));   // PropertyChange
         await c.SyncAsync();
 
         server.SetDisplayScale(192, 2);
         XMessage notify = await c.NextEventAsync(28);
         Assert.AreEqual(c.RootWindow, notify.U32(4));
-        StringAssert.Contains(await RootStringAsync(c, "RESOURCE_MANAGER"), "Xft.dpi:\t192");
+        Assert.Contains("Xft.dpi:\t192", await RootStringAsync(c, "RESOURCE_MANAGER"));
 
         uint selection = await InternAsync(c, "_XSETTINGS_S0");
         uint settings = await InternAsync(c, "_XSETTINGS_SETTINGS");
@@ -66,7 +66,7 @@ public sealed class HostApiTests
         XMessage prop = await c.RequestAsync(20, 0, b => b.U32(manager).U32(settings).U32(0).U32(0).U32(1000));
         byte[] data = prop.Bytes[32..(32 + (int)prop.U32(16))];
         int at = Encoding.ASCII.GetString(data).IndexOf("Gdk/WindowScalingFactor", StringComparison.Ordinal);
-        Assert.IsTrue(at > 0);
+        Assert.IsGreaterThan(0, at);
         Assert.AreEqual(2, BitConverter.ToInt32(data, at + 24 + 4), "名字 23 字节补到 24,再跳过 last-change-serial");
     }
 
@@ -84,7 +84,7 @@ public sealed class HostApiTests
 
         XMessage keys = await c.RequestAsync(101, 0, b => b.U8(29).U8(1).U16(0));   // GetKeyboardMapping
         Assert.AreEqual('z', keys.U32(32));
-        StringAssert.Contains(await RootStringAsync(c, "_XKB_RULES_NAMES"), "\0de\0", "布局名跟着键位表一起到");
+        Assert.Contains("\0de\0", await RootStringAsync(c, "_XKB_RULES_NAMES"), "布局名跟着键位表一起到");
         await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(34, timeoutMs: 300),
             "修饰键表没变:不该再有第二轮 MappingNotify");
     }
@@ -160,7 +160,7 @@ public sealed class HostApiTests
         await c.SendAsync(12, 0, b => b.U32(top).U16(0xC).U16(0).U32(80).U32(50));   // ConfigureWindow 宽高
         await host.WaitForAsync(() => window.Snapshot.Width == 80);
         Assert.AreEqual(XTopLevelChanges.Geometry, host.LastChanges);
-        Assert.AreEqual(1, host.Log.Count(e => e.Contains(" Title ", StringComparison.Ordinal)), "同样的标题再设一遍不算变化");
+        Assert.ContainsSingle(e => e.Contains(" Title ", StringComparison.Ordinal), host.Log, "同样的标题再设一遍不算变化");
     }
 
     [TestMethod]
@@ -201,7 +201,7 @@ public sealed class HostApiTests
         await c.SendAsync(104, 100);                                // 100 → 100
         await c.SendAsync(104, unchecked((byte)(sbyte)-50));        // −50 → 50 − 25
         await host.WaitForAsync(() => host.Log.Count(e => e.StartsWith("bell", StringComparison.Ordinal)) == 3);
-        CollectionAssert.AreEqual((string[])["bell 50", "bell 100", "bell 25"], host.Log.Where(e => e.StartsWith("bell", StringComparison.Ordinal)).ToArray());
+        Assert.AreSequenceEqual((string[])["bell 50", "bell 100", "bell 25"], host.Log.Where(e => e.StartsWith("bell", StringComparison.Ordinal)).ToArray());
 
         XMessage error = await c.RequestAsync(104, 101);
         Assert.IsTrue(error.IsError, "−100…100 以外是 BadValue");

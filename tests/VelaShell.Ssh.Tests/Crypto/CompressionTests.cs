@@ -181,7 +181,7 @@ SshAlgorithmNames.None, [.. withCompression.CompressionClientToServer], "none �
         // 默认**不开**压缩：交互式会话上它几乎没有收益（终端输出本来就小），
         // 而 OpenSSH 的默认也是 none。
         Assert.AreSequenceEqual(
-            new[] { SshAlgorithmNames.None }, [.. SshAlgorithmSet.Default.CompressionClientToServer]);
+            [SshAlgorithmNames.None], [.. SshAlgorithmSet.Default.CompressionClientToServer]);
     }
 
     // ------------------------------------------------------------ 接进传输层
@@ -305,7 +305,7 @@ SshAlgorithmNames.None, [.. withCompression.CompressionClientToServer], "none �
             SshAlgorithmNames.ZlibOpenSsh,
             host.Connection.Algorithms.CompressionServerToClient);
 
-        VelaShell.Ssh.Channels.SshCommandResult output =
+        Ssh.Channels.SshCommandResult output =
             await Ssh.Session.SshConnectionExtensions.RunAsync(host.Connection, "压", cancellationToken: host.Token);
 
         Assert.AreSequenceEqual(

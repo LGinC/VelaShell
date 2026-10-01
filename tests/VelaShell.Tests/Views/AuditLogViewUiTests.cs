@@ -54,8 +54,47 @@ public class AuditLogViewUiTests
                 vm.SearchText = "no-such-host";
                 Dispatcher.UIThread.RunJobs();
                 Assert.IsFalse(list.IsVisible);
-                Assert.IsTrue(window.GetVisualDescendants().OfType<TextBlock>()
-                    .Any(t => t.IsEffectivelyVisible && t.Text == Core.Resources.Strings.Get("AuditLog_Empty")));
+                Assert.Contains(t => t.IsEffectivelyVisible && t.Text == Core.Resources.Strings.Get("AuditLog_Empty"), window.GetVisualDescendants().OfType<TextBlock>());
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    /// <summary>
+    /// 筛选条上的类别下拉、关键字框与刷新按钮同一个高度:28,与任务管理器、路由追踪的工具条输入框
+    /// 以及 DESIGN.md §5.1 的描边按钮一致。
+    /// </summary>
+    /// <remarks>
+    /// 原先下拉与输入框没写尺寸,吃的是 Fluent 的默认值(最小高 32、14 号字),比同一排 30 高的刷新按钮
+    /// 还高一截,也比别的工具窗口的筛选框高。
+    /// </remarks>
+    [TestMethod]
+    public void FilterBar_ControlsShareTheToolbarHeight()
+    {
+        OnUi(() =>
+        {
+            IAuditLogService audit = Substitute.For<IAuditLogService>();
+            audit.QueryAsync(Arg.Any<int>(), Arg.Any<string?>(), Arg.Any<CancellationToken>())
+                 .Returns(_ => [new AuditEntry { Category = "connection", Action = "connect", Detail = "root@10.0.0.2:22" }]);
+            var vm = new AuditLogViewModel(audit);
+            vm.LoadAsync().GetAwaiter().GetResult();
+            var window = new AuditLogView { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                ComboBox category = window.GetVisualDescendants().OfType<ComboBox>().Single();
+                TextBox search = window.GetVisualDescendants().OfType<TextBox>()
+                    .Single(box => box.PlaceholderText == Core.Resources.Strings.Get("AuditLog_SearchPlaceholder"));
+                Button refresh = window.GetVisualDescendants().OfType<Button>()
+                    .Single(button => button.Content as string == Core.Resources.Strings.Get("Refresh"));
+
+                Assert.AreEqual(28, category.Bounds.Height, 0.5, "类别下拉");
+                Assert.AreEqual(28, search.Bounds.Height, 0.5, "关键字框");
+                Assert.AreEqual(28, refresh.Bounds.Height, 0.5, "刷新按钮");
             }
             finally
             {

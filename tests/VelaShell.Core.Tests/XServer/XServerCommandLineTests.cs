@@ -42,7 +42,7 @@ public class XServerCommandLineTests
 
         Assert.AreEqual(":3", args[0]);
         Assert.AreEqual("-clipboard", args[1]);
-        CollectionAssert.DoesNotContain(args.ToList(), "-multiwindow");
+        Assert.DoesNotContain("-multiwindow", args.ToList());
     }
 
     /// <summary>剪贴板关着时 PRIMARY 没有意义,命令行里不出现一个看着像生效了的开关。</summary>
@@ -53,8 +53,8 @@ public class XServerCommandLineTests
             new XServerOptions { Clipboard = false, CopyOnSelection = true }, 0);
 
         CollectionAssert.Contains(args.ToList(), "-noclipboard");
-        CollectionAssert.DoesNotContain(args.ToList(), "-primary");
-        CollectionAssert.DoesNotContain(args.ToList(), "-noprimary");
+        Assert.DoesNotContain("-primary", args.ToList());
+        Assert.DoesNotContain("-noprimary", args.ToList());
     }
 
     [TestMethod]
@@ -84,7 +84,7 @@ public class XServerCommandLineTests
         List<string> auto = [.. XServerCommandLine.Build(new XServerOptions { KeyboardLayout = "" }, 0)];
         List<string> de = [.. XServerCommandLine.Build(new XServerOptions { KeyboardLayout = " de " }, 0)];
 
-        CollectionAssert.DoesNotContain(auto, "-xkblayout");
+        Assert.DoesNotContain("-xkblayout", auto);
         int at = de.IndexOf("-xkblayout");
         Assert.IsGreaterThanOrEqualTo(0, at);
         Assert.AreEqual("de", de[at + 1]);

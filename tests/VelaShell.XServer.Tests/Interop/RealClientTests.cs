@@ -98,8 +98,8 @@ public sealed class RealClientTests
             (int exit, string output) = await RunClientAsync(cookie, "xdpyinfo");
             TestContext.WriteLine(output);
             Assert.AreEqual(0, exit, output);
-            StringAssert.Contains(output, "vendor string:    VelaShell");
-            StringAssert.Contains(output, "TrueColor");
+            Assert.Contains("vendor string:    VelaShell", output);
+            Assert.Contains("TrueColor", output);
             Assert.IsEmpty(errors, string.Join('\n', errors));
         }
     }
@@ -119,9 +119,9 @@ public sealed class RealClientTests
             (int exit, string output) = await RunClientAsync(cookie, "glxinfo -B && echo ==== && LIBGL_ALWAYS_INDIRECT=1 glxinfo -B");
             TestContext.WriteLine(output);
             Assert.AreEqual(0, exit, output);
-            StringAssert.Contains(output, "direct rendering: Yes");
-            StringAssert.Contains(output, "OpenGL renderer string: VelaShell.XServer software rasterizer");
-            StringAssert.Contains(output, "OpenGL version string: 1.1");
+            Assert.Contains("direct rendering: Yes", output);
+            Assert.Contains("OpenGL renderer string: VelaShell.XServer software rasterizer", output);
+            Assert.Contains("OpenGL version string: 1.1", output);
             Assert.IsEmpty(errors, string.Join('\n', errors));
         }
     }

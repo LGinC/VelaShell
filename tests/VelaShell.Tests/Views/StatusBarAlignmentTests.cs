@@ -42,8 +42,8 @@ public sealed class StatusBarAlignmentTests
         {
             (StatusBarView bar, Window window) = Show();
             CapCenteredTextBlock[] texts = [.. bar.GetVisualDescendants().OfType<CapCenteredTextBlock>().Where(t => t.IsEffectivelyVisible)];
-            Assert.IsTrue(texts.Any(t => ContainsCjk(TextOf(t))), "用例得有混了中文的文字块,否则守不住回退字体那一类偏移。");
-            Assert.IsTrue(texts.Any(t => !ContainsCjk(TextOf(t))), "用例得有纯英文的文字块作对照。");
+            Assert.Contains(t => ContainsCjk(TextOf(t)), texts, "用例得有混了中文的文字块,否则守不住回退字体那一类偏移。");
+            Assert.Contains(t => !ContainsCjk(TextOf(t)), texts, "用例得有纯英文的文字块作对照。");
             Assert.IsEmpty(
                 bar.GetVisualDescendants().OfType<TextBlock>().Where(t => t.IsEffectivelyVisible && t is not CapCenteredTextBlock),
                 "状态栏上的文字都应走 CapCenteredTextBlock;普通 TextBlock 的基线会随回退字体漂移。");
@@ -80,7 +80,7 @@ public sealed class StatusBarAlignmentTests
                 .. bar.GetVisualDescendants().OfType<CircularProgressRing>(),
             ];
             items = [.. items.Where(c => c.IsEffectivelyVisible)];
-            Assert.IsTrue(items.OfType<CircularProgressRing>().Any(), "用例得让后台活动圆环露出来。");
+            Assert.IsNotEmpty(items.OfType<CircularProgressRing>(), "用例得让后台活动圆环露出来。");
 
             foreach (Control item in items)
             {

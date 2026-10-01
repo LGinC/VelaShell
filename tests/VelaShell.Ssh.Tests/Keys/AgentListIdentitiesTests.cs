@@ -72,7 +72,7 @@ public sealed class AgentListIdentitiesTests
         IReadOnlyList<SshAgentIdentity> identities = await rig.Client.ListIdentitiesAsync(rig.Token);
 
         SshAgentIdentity only = identities.Single();
-        CollectionAssert.AreEqual(key.PublicKey.Blob.ToArray(), only.PublicKey.Blob.ToArray());
+        Assert.AreSequenceEqual(key.PublicKey.Blob.ToArray(), only.PublicKey.Blob.ToArray());
         Assert.AreEqual("id_ed25519", only.Comment);
     }
 

@@ -1143,6 +1143,6 @@ public sealed class SftpTests
         SftpDirectoryEntry link = entries.Single(e => e.Name == "l");
         Assert.IsTrue(link.IsSymbolicLink);
         Assert.IsNull(link.LinkTarget, "目标读不出来就是没有，不是整个列表失败");
-        Assert.IsTrue(entries.Any(e => e.Name == "f.txt"));
+        Assert.Contains(e => e.Name == "f.txt", entries);
     }
 }

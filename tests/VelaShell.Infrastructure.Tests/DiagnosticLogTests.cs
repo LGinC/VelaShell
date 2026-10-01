@@ -60,7 +60,7 @@ public sealed class DiagnosticLogTests : IDisposable
         string[] lines = File.ReadAllLines(path);
         Assert.IsLessThan(12, lines.Length, "到了上限就不再写");
         Assert.Contains("log size limit", lines[^1], StringComparison.Ordinal);
-        Assert.AreEqual(1, lines.Count(l => l.Contains("log size limit", StringComparison.Ordinal)), "说明只写一行");
+        Assert.ContainsSingle(l => l.Contains("log size limit", StringComparison.Ordinal), lines, "说明只写一行");
         Assert.IsLessThan(600L, new FileInfo(path).Length);
 
         // 换一个监听器(应用重启)接着写同一天的文件:额度按文件现有的大小算。

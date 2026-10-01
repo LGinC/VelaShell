@@ -214,7 +214,7 @@ public sealed class PuttyKeyTests
 
     private static (byte[] Public, byte[] Private, InMemorySshSigner Signer) MakeEd25519()
     {
-        Org.BouncyCastle.Crypto.Parameters.Ed25519PrivateKeyParameters key =
+        Ed25519PrivateKeyParameters key =
             new(new Org.BouncyCastle.Security.SecureRandom());
 
         byte[] publicKey = key.GeneratePublicKey().GetEncoded();

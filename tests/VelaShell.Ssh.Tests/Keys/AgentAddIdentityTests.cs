@@ -79,7 +79,7 @@ public sealed class AgentAddIdentityTests
 
         IReadOnlyList<SshAgentIdentity> identities = await rig.Client.ListIdentitiesAsync(rig.Token);
         SshAgentIdentity only = identities.Single();
-        CollectionAssert.AreEqual(key.PublicKey.Blob.ToArray(), only.PublicKey.Blob.ToArray());
+        Assert.AreSequenceEqual(key.PublicKey.Blob.ToArray(), only.PublicKey.Blob.ToArray());
         Assert.AreEqual("C:/Users/joe/.ssh/id_" + kind, only.Comment);
 
         string algorithm = key.SignatureAlgorithms[0];
@@ -114,7 +114,7 @@ public sealed class AgentAddIdentityTests
             rig.Token);
 
         Assert.AreEqual((byte)25, rig.Agent.LastAddMessageType);
-        CollectionAssert.AreEqual(new byte[] { 1, 2 }, rig.Agent.LastConstraints.ToArray());
+        Assert.AreSequenceEqual(new byte[] { 1, 2 }, rig.Agent.LastConstraints.ToArray());
         Assert.AreEqual(91u, rig.Agent.LastLifetimeSeconds, "不足一秒向上取整，不能把有效期截短");
     }
 
@@ -128,7 +128,7 @@ public sealed class AgentAddIdentityTests
         SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
             async () => await rig.Client.AddIdentityAsync(key, "k", cancellationToken: rig.Token));
 
-        StringAssert.Contains(error.Message, "锁定");
+        Assert.Contains("锁定", error.Message);
         Assert.AreEqual(1, rig.Agent.AddRequests);
         Assert.IsEmpty(rig.Agent.Keys);
     }

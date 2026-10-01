@@ -52,7 +52,7 @@ public sealed class X11ForwardTests
         // 而且它确实是个合法的十六进制 cookie（不是原始字节被当成文本）。
         byte[] sent = Convert.FromHexString(request.AuthCookieHex);
         Assert.HasCount(16, sent);
-        CollectionAssert.AreNotEqual(_realCookie, sent);
+        Assert.AreNotSequenceEqual(_realCookie, sent);
     }
 
     [TestMethod]
@@ -271,8 +271,8 @@ public sealed class X11ForwardTests
 
         byte[] header = new byte[X11SetupMessage.HeaderLength];
         header[0] = (byte)'B';
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(6), 1000);   // 授权名长度
-        System.Buffers.Binary.BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(8), 16);     // 授权数据长度
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(6), 1000);   // 授权名长度
+        BinaryPrimitives.WriteUInt16BigEndian(header.AsSpan(8), 16);     // 授权数据长度
         await remote.WriteAsync(header, fixture.Harness.Token);
         await remote.FlushAsync(fixture.Harness.Token);
 
@@ -390,7 +390,7 @@ public sealed class X11ForwardTests
 
         byte[] firstCookie = Convert.FromHexString(fixture.Harness.Channels.Observation.X11Requests[0].AuthCookieHex);
         byte[] secondCookie = Convert.FromHexString(fixture.Harness.Channels.Observation.X11Requests[1].AuthCookieHex);
-        CollectionAssert.AreNotEqual(firstCookie, secondCookie, "两个会话的假 cookie 必须各不相同");
+        Assert.AreNotSequenceEqual(firstCookie, secondCookie, "两个会话的假 cookie 必须各不相同");
 
         // 两个 cookie 都能过。
         await using Stream a = await OpenX11Async(fixture);
@@ -511,7 +511,7 @@ public sealed class X11ForwardTests
 
         string[] order = [.. fixture.Harness.Channels.Observation.Requests
             .Where(static r => r is "pty-req" or "x11-req" or "env" or "shell")];
-        Assert.AreSequenceEqual(new[] { "pty-req", "x11-req", "env", "shell" }, order);
+        Assert.AreSequenceEqual(["pty-req", "x11-req", "env", "shell"], order);
     }
 
     /// <summary>§7.5.8：连接级开关打开的 X11，服务端拒绝时记下原因、shell 照常启动。</summary>
@@ -530,7 +530,7 @@ public sealed class X11ForwardTests
 
         string[] order = [.. fixture.Harness.Channels.Observation.Requests
             .Where(static r => r is "pty-req" or "x11-req" or "shell")];
-        Assert.AreSequenceEqual(new[] { "pty-req", "x11-req", "shell" }, order);
+        Assert.AreSequenceEqual(["pty-req", "x11-req", "shell"], order);
 
         // 吞掉的失败不能在连接上留下半挂的转发 —— 否则服务端之后开的 x11 通道会被接走。
         Stream? channel = await fixture.Harness.Channels.OpenChannelToClientAsync(
@@ -602,7 +602,7 @@ public sealed class X11ForwardTests
         Assert.AreEqual("-f", arguments[0]);
         Assert.AreEqual("/tmp/velashell-x11-abc/xauthfile", arguments[1]);
         Assert.AreSequenceEqual(
-            new[] { "generate", ":3", XAuthority.MitMagicCookie1, "untrusted", "timeout", "1200" }, [.. arguments.Skip(2)]);
+            ["generate", ":3", XAuthority.MitMagicCookie1, "untrusted", "timeout", "1200"], [.. arguments.Skip(2)]);
     }
 
     [TestMethod]

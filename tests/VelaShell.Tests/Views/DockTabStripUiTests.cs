@@ -67,7 +67,7 @@ public sealed class DockTabStripUiTests
             Assert.AreEqual(shrunk, Container(group, docs[2]).Bounds.Width, 0.5, "长标签削到同一宽度");
             Assert.AreEqual(shrunk, Container(group, docs[3]).Bounds.Width, 0.5);
             TextBlock title = Title(group, docs[1]);
-            Assert.IsTrue(title.TextLayout.TextLines.Any(line => line.HasCollapsed), "被削的是标题,出省略号");
+            Assert.Contains(line => line.HasCollapsed, title.TextLayout.TextLines, "被削的是标题,出省略号");
             Assert.IsTrue(CloseButton(group, docs[1]).IsEffectivelyVisible, "关闭钮不能被挤掉");
             SaveOptionalFrame(window, "dock-tabs-shrunk.png");
 

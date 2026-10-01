@@ -66,7 +66,7 @@ public sealed class KnownHostsTests
         // 真实的 known_hosts 里什么都有。为其中一行报错，
         // 等于让用户所有已知主机一起失效。
         Assert.HasCount(1, entries);
-        Assert.AreSequenceEqual(new[] { "good.example.com" }, [.. entries[0].Patterns]);
+        Assert.AreSequenceEqual(["good.example.com"], [.. entries[0].Patterns]);
     }
 
     [TestMethod]
@@ -386,8 +386,8 @@ public sealed class KnownHostsTests
         // 中间人只要出示一种没记过的类型：当成「没见过」的话，「变了」的检查就被绕过去了。
         Assert.AreEqual(KnownHostStatus.OtherKeyTypesKnown, lookup.Status);
         Assert.HasCount(1, lookup.ConflictingEntries);
-        CollectionAssert.AreEqual(
-            new[] { "ssh-ed25519" }, KnownHostsFile.KnownKeyTypes(entries, "example.com", 22).ToArray());
+        Assert.AreSequenceEqual(
+            ["ssh-ed25519"], KnownHostsFile.KnownKeyTypes(entries, "example.com", 22).ToArray());
     }
 
     [TestMethod]
@@ -419,10 +419,9 @@ public sealed class KnownHostsTests
         SshAlgorithmSet preferred = SshAlgorithmSet.Default.PreferHostKeyTypes(["ssh-rsa"]);
 
         // 协商以客户端顺序为准：已知类型排在前面，正常的服务端就谈成它。
-        CollectionAssert.AreEquivalent(
-            new[] { VelaShell.Ssh.Protocol.SshAlgorithmNames.RsaSha512, VelaShell.Ssh.Protocol.SshAlgorithmNames.RsaSha256 },
-            preferred.HostKey.Take(2).ToArray());
-        CollectionAssert.AreEquivalent(SshAlgorithmSet.Default.HostKey.ToArray(), preferred.HostKey.ToArray(), "只调顺序，不增删");
+        Assert.AreSequenceEqual(
+            [Ssh.Protocol.SshAlgorithmNames.RsaSha512, Ssh.Protocol.SshAlgorithmNames.RsaSha256], preferred.HostKey.Take(2).ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder);
+        Assert.AreSequenceEqual(SshAlgorithmSet.Default.HostKey.ToArray(), preferred.HostKey.ToArray(), Microsoft.VisualStudio.TestTools.UnitTesting.SequenceOrder.InAnyOrder, "只调顺序，不增删");
     }
 
     // ------------------------------------------------------------ 取反与追加

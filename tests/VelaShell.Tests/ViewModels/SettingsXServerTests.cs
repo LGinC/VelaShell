@@ -88,11 +88,11 @@ public class SettingsXServerTests
 
         vm.XServer.ExecutablePath = @"D:\x\vcxsrv.exe";
         Assert.IsTrue(vm.XServerExecutableFound);
-        StringAssert.Contains(vm.XServerDetectionText, @"D:\x\vcxsrv.exe");
+        Assert.Contains(@"D:\x\vcxsrv.exe", vm.XServerDetectionText);
 
         vm.XServer.ExecutablePath = @"D:\nope.exe";
         Assert.IsFalse(vm.XServerExecutableFound);
-        StringAssert.Contains(vm.XServerDetectionText, @"D:\nope.exe");
+        Assert.Contains(@"D:\nope.exe", vm.XServerDetectionText);
     }
 
     /// <summary>引擎默认内置;选了 VcXsrv 之后 VcXsrv 专属的几节才出现(只在 Windows 上能选)。</summary>
@@ -124,13 +124,13 @@ public class SettingsXServerTests
         List<string?> raised = [];
         vm.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
 
-        StringAssert.StartsWith(vm.XServerCommandPreview, "vcxsrv.exe :" + VelaShell.Core.Resources.Strings.Get("SetXServer_DisplayAuto") + " ");
+        Assert.StartsWith("vcxsrv.exe :" + Core.Resources.Strings.Get("SetXServer_DisplayAuto") + " ", vm.XServerCommandPreview);
         vm.XServer.KeyHook = true;
 
         CollectionAssert.Contains(raised, nameof(SettingsViewModel.XServerCommandPreview));
-        StringAssert.Contains(vm.XServerCommandPreview, "-keyhook");
+        Assert.Contains("-keyhook", vm.XServerCommandPreview);
 
         vm.XServer.ExtraArguments = "-logfile \"C:\\my logs\\x.log\"";
-        StringAssert.Contains(vm.XServerCommandPreview, "\"C:\\my logs\\x.log\"");
+        Assert.Contains("\"C:\\my logs\\x.log\"", vm.XServerCommandPreview);
     }
 }

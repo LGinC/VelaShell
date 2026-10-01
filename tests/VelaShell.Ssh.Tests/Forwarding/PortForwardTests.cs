@@ -170,7 +170,7 @@ public sealed class PortForwardTests
         int read = await ReadAllAsync(client, buffer, harness.Token);
 
         Assert.AreEqual("HELLO TUNNEL", Encoding.UTF8.GetString(buffer, 0, read));
-        Assert.AreSequenceEqual(new[] { "10.0.0.9:80" }, harness.Observed.TunnelTargets, "目标要如实传给服务端");
+        Assert.AreSequenceEqual(["10.0.0.9:80"], harness.Observed.TunnelTargets, "目标要如实传给服务端");
     }
 
     [TestMethod]
@@ -296,7 +296,7 @@ public sealed class PortForwardTests
         int read = await ReadAllAsync(client, buffer, harness.Token);
 
         Assert.AreEqual("VIA SOCKS", Encoding.UTF8.GetString(buffer, 0, read));
-        Assert.AreSequenceEqual(new[] { "db.internal:5201" }, harness.Observed.TunnelTargets, "域名要原样送到服务端 —— 本地解析会让内网域名直接失效，而且泄漏访问目标");
+        Assert.AreSequenceEqual(["db.internal:5201"], harness.Observed.TunnelTargets, "域名要原样送到服务端 —— 本地解析会让内网域名直接失效，而且泄漏访问目标");
     }
 
     [TestMethod]
@@ -356,7 +356,7 @@ public sealed class PortForwardTests
         Assert.AreEqual("localhost", forwarder.BindAddress);
 
         Assert.AreSequenceEqual(
-            new[] { ("localhost", 0) }, harness.Observed.RemoteForwardBinds, "绑定地址要原样传，不做规范化");
+            [("localhost", 0)], harness.Observed.RemoteForwardBinds, "绑定地址要原样传，不做规范化");
     }
 
     [TestMethod]
@@ -398,7 +398,7 @@ public sealed class PortForwardTests
         byte[] received = await ReadAllPipeAsync(tunnel.StandardOutput, harness.Token);
 
         Assert.AreEqual("NO LISTENER HERE", Encoding.UTF8.GetString(received));
-        Assert.AreSequenceEqual(new[] { "127.0.0.1:8080" }, harness.Observed.TunnelTargets);
+        Assert.AreSequenceEqual(["127.0.0.1:8080"], harness.Observed.TunnelTargets);
     }
 
     [TestMethod]
@@ -418,7 +418,7 @@ public sealed class PortForwardTests
         byte[] received = await ReadAllPipeAsync(tunnel.StandardOutput, harness.Token);
 
         Assert.AreEqual("DOCKER", Encoding.UTF8.GetString(received));
-        Assert.AreSequenceEqual(new[] { "/var/run/docker.sock" }, harness.Observed.TunnelTargets);
+        Assert.AreSequenceEqual(["/var/run/docker.sock"], harness.Observed.TunnelTargets);
     }
 
     // ------------------------------------------------------------ 出错收尾
@@ -733,7 +733,7 @@ public sealed class PortForwardTests
 
         Assert.Contains(
 SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
-        Assert.AreSequenceEqual(new[] { remotePath }, harness.Observed.StreamLocalForwardBinds);
+        Assert.AreSequenceEqual([remotePath], harness.Observed.StreamLocalForwardBinds);
     }
 
     [TestMethod]

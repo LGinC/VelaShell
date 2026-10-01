@@ -155,7 +155,7 @@ public sealed class ChannelTests
         Assert.AreEqual("", stderr);
         Assert.AreEqual(0, result.ExitCode);
         Assert.IsTrue(result.IsSuccess);
-        Assert.AreSequenceEqual(new[] { "echo hello" }, harness.ChannelServer.Observation.Commands);
+        Assert.AreSequenceEqual(["echo hello"], harness.ChannelServer.Observation.Commands);
     }
 
     /// <summary>
@@ -701,7 +701,7 @@ public sealed class ChannelTests
         Assert.HasCount(1 + 4 + 1 + 4 + 1, modes, "两个模式各 5 字节，外加一个结束字节");
 
         Assert.AreSequenceEqual(
-            new[] { SshProtocolNames.RequestPty, SshProtocolNames.RequestShell }, [.. observed.Requests.Where(r => r is SshProtocolNames.RequestPty or SshProtocolNames.RequestShell)]);
+            [SshProtocolNames.RequestPty, SshProtocolNames.RequestShell], [.. observed.Requests.Where(r => r is SshProtocolNames.RequestPty or SshProtocolNames.RequestShell)]);
     }
 
     [TestMethod]
@@ -795,7 +795,7 @@ public sealed class ChannelTests
         await command.SendSignalAsync("TERM", harness.Token);
         await WaitUntilAsync(() => harness.ChannelServer.Observation.Signals.Count > 0, harness.Token);
 
-        Assert.AreSequenceEqual(new[] { "TERM" }, harness.ChannelServer.Observation.Signals);
+        Assert.AreSequenceEqual(["TERM"], harness.ChannelServer.Observation.Signals);
 
         // 传 "SIGTERM" 要在本地就被挡住 —— 发过去服务端只会静默忽略，
         // 而 signal 请求的 want_reply 必为假，调用方永远收不到任何反馈。
@@ -942,7 +942,7 @@ public sealed class ChannelTests
             await harness.Connection.OpenSubsystemAsync("sftp", cancellationToken: harness.Token);
 
         Assert.AreEqual(SshChannelState.Open, channel.State);
-        Assert.AreSequenceEqual(new[] { "sftp" }, harness.ChannelServer.Observation.Subsystems);
+        Assert.AreSequenceEqual(["sftp"], harness.ChannelServer.Observation.Subsystems);
     }
 
     [TestMethod]
@@ -1087,8 +1087,8 @@ public sealed class ChannelTests
 
         // 服务端按顺序处理：保活的应答回来时，排在它前面的报文都已经处理过了。
         Assert.IsTrue(await harness.Connection.SendKeepAliveAsync(harness.Token));
-        CollectionAssert.DoesNotContain(harness.ChannelServer.Observation.Requests, "window-change");
-        CollectionAssert.DoesNotContain(harness.ChannelServer.Observation.Requests, "x@velashell.test");
+        Assert.DoesNotContain("window-change", harness.ChannelServer.Observation.Requests);
+        Assert.DoesNotContain("x@velashell.test", harness.ChannelServer.Observation.Requests);
         Assert.IsFalse(harness.ChannelServer.Observation.ReceivedEof);
 
         await channel.DisposeAsync();

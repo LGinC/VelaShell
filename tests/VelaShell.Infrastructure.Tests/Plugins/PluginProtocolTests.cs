@@ -308,7 +308,7 @@ public sealed class PluginProtocolTests
 
         Assert.AreEqual("/bucket/a.bin", fileSystem.LastPath);
         Assert.AreEqual(4L, fileSystem.LastLength);
-        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4 }, fileSystem.Received);
+        Assert.AreSequenceEqual(new byte[] { 1, 2, 3, 4 }, fileSystem.Received);
         Assert.IsNotEmpty(reports, "插件报的进度要经桥交到宿主。");
     }
 

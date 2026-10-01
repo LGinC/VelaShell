@@ -200,7 +200,7 @@ internal sealed class ZlibCompressor : ISshCompressor
         public override void Write(byte[] buffer, int offset, int count) =>
             Write(buffer.AsSpan(offset, count));
 
-        /// <summary>zlib 的 flush 由 <see cref="ZlibCompressor.Compress"/> 驱动，这里没事可做。</summary>
+        /// <summary>zlib 的 flush 由 <see cref="Compress"/> 驱动，这里没事可做。</summary>
         public override void Flush()
         {
         }

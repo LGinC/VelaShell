@@ -55,7 +55,7 @@ public class SessionTreeDualSelectionTests
 
         _vm.ToggleDualSelection(Node(_beta));
 
-        CollectionAssert.AreEqual(new[] { Node(_alpha), Node(_beta) }, _vm.DualSelection.ToArray());
+        Assert.AreSequenceEqual([Node(_alpha), Node(_beta)], _vm.DualSelection.ToArray());
         Assert.AreEqual(1, Node(_alpha).DualSelectionOrder);
         Assert.AreEqual(2, Node(_beta).DualSelectionOrder);
         Assert.AreSame(Node(_beta), _vm.SelectedNode, "选中项落在最后点的那条上。");
@@ -70,7 +70,7 @@ public class SessionTreeDualSelectionTests
 
         _vm.ToggleDualSelection(Node(_gamma));
 
-        CollectionAssert.AreEqual(new[] { Node(_beta), Node(_gamma) }, _vm.DualSelection.ToArray());
+        Assert.AreSequenceEqual([Node(_beta), Node(_gamma)], _vm.DualSelection.ToArray());
         Assert.AreEqual(0, Node(_alpha).DualSelectionOrder, "被顶掉的那条要取消选中。");
         Assert.AreEqual(1, Node(_beta).DualSelectionOrder);
         Assert.AreEqual(2, Node(_gamma).DualSelectionOrder);

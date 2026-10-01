@@ -65,7 +65,7 @@ public class SessionTreeDualSelectionUiTests
             // 右键双选之外的行:双选结束,那一行弹它自己的原菜单;双选里那行也换回原菜单。
             Click(window, gamma, MouseButton.Right, RawInputModifiers.None);
             Assert.IsEmpty(viewModel.DualSelection);
-            Assert.IsFalse(gamma.ContextMenu!.Items.OfType<MenuItem>().Any(item => ReferenceEquals(item.Command, viewModel.OpenDualSftpCommand)));
+            Assert.DoesNotContain(item => ReferenceEquals(item.Command, viewModel.OpenDualSftpCommand), gamma.ContextMenu!.Items.OfType<MenuItem>());
             Click(window, beta, MouseButton.Right, RawInputModifiers.None);
             Assert.AreSame(ownMenu, beta.ContextMenu);
 

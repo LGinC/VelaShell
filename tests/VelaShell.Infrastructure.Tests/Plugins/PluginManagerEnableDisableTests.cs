@@ -107,7 +107,7 @@ public class PluginManagerEnableDisableTests
 
         await restarted.EnableAsync(TestFixturePlugin.Id);
         Assert.AreEqual(PluginState.Active, restarted.Plugins.Single().State, restarted.Plugins.Single().Error);
-        CollectionAssert.DoesNotContain(File.ReadAllLines(stateFile), TestFixturePlugin.Id);
+        Assert.DoesNotContain(TestFixturePlugin.Id, File.ReadAllLines(stateFile));
         await restarted.DisposeAsync();
     }
 
