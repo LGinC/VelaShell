@@ -1838,30 +1838,6 @@
   <data name="Profile_TestSuccess" xml:space="preserve">
     <value>연결 테스트 성공</value>
   </data>
-  <data name="Profile_TestFailed" xml:space="preserve">
-    <value>연결 테스트에 실패했습니다</value>
-  </data>
-  <data name="Profile_ProbeTunnel" xml:space="preserve">
-    <value>SSH 터널</value>
-  </data>
-  <data name="Profile_NoSshSessions" xml:space="preserve">
-    <value>저장된 SSH 연결이 없습니다. 먼저 하나 만든 뒤 여기서 점프 호스트로 선택하세요.</value>
-  </data>
-  <data name="Profile_SecBasic" xml:space="preserve">
-    <value>기본</value>
-  </data>
-  <data name="Profile_TestResults" xml:space="preserve">
-    <value>테스트 결과</value>
-  </data>
-  <data name="Profile_TestResultsHint" xml:space="preserve">
-    <value>「테스트」를 누르면 연결을 단계별로 확인합니다.</value>
-  </data>
-  <data name="Profile_AddHost" xml:space="preserve">
-    <value>호스트 추가</value>
-  </data>
-  <data name="Profile_RemoveHost" xml:space="preserve">
-    <value>제거</value>
-  </data>
   <data name="Profile_CopyErrorTip" xml:space="preserve">
     <value>오류 메시지 복사</value>
   </data>

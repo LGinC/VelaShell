@@ -5,7 +5,6 @@ using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
-using Avalonia.VisualTree;
 using ReactiveUI.Primitives;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
@@ -44,24 +43,6 @@ public partial class ConnectionProfileView : Window
         SizeChanged += (_, _) => ClampToWorkingArea();
         // 滑动下划线跟随布局(字体加载、DPI 变化、换协议后页签增减都会改按钮位置);几何未变时短路。
         LayoutUpdated += (_, _) => UpdateSectionTabIndicator();
-        // 挂在表单内容上而不是 ScrollViewer 上:请求冒泡时先到 ScrollContentPresenter,挂在外面就拦晚了。
-        if (FormScroll.Content is Control formContent)
-        {
-            formContent.AddHandler(RequestBringIntoViewEvent, OnFormRequestBringIntoView);
-        }
-    }
-
-    /// <summary>
-    /// 只让有焦点的文本框滚动表单。文本框被程序赋值(编辑已存的连接时回填口令、插件字段回填)时光标跟着挪,
-    /// <c>TextPresenter</c> 随后发一次 BringIntoView —— 不管有没有焦点;口令框落在首屏以下时,
-    /// 表单一打开就被它拽下去,连接名那一栏看不见。Tab / 点击进去的那一个照常带进视野。
-    /// </summary>
-    private static void OnFormRequestBringIntoView(object? sender, RequestBringIntoViewEventArgs e)
-    {
-        if (e.TargetObject?.FindAncestorOfType<TextBox>(includeSelf: true) is { IsKeyboardFocusWithin: false })
-        {
-            e.Handled = true;
-        }
     }
 
     /// <summary>

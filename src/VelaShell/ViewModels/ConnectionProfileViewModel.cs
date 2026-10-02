@@ -27,7 +27,7 @@ public sealed record GroupOption(Guid? Id, string Name)
 }
 
 /// <summary>新建/编辑连接配置对话框的视图模型:承载表单字段、认证方式切换、分组与跳板主机选择,并提供保存、连接、测试等命令。</summary>
-public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
+public class ConnectionProfileViewModel : ReactiveObject, IDisposable
 {
     /// <summary>
     /// “未分组”选项/输入的显示名;输入等于该名或留空即保存为未分组。
@@ -931,11 +931,11 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
     public bool HasAdvancedBadge => AdvancedPluginFieldCount > 0;
 
     /// <summary>当前适用的插件高级字段数(显示条件不成立的不算:点进去也看不到它)。</summary>
-    private int AdvancedPluginFieldCount => PluginFields.Count(f => f.IsAdvanced && !f.IsAside && IsApplicable(f));
+    private int AdvancedPluginFieldCount => PluginFields.Count(f => f.IsAdvanced && IsApplicable(f));
 
     /// <summary>「常规」页上有没有插件字段要画(没有时连带那一节的标题一起收起)。</summary>
     public bool ShowPluginGeneralFields =>
-        IsPluginSelected && (IsPluginLoading || PluginFields.Any(f => !f.IsAdvanced && !f.IsAside && IsApplicable(f)));
+        IsPluginSelected && (IsPluginLoading || PluginFields.Any(f => !f.IsAdvanced && IsApplicable(f)));
 
     /// <summary>「常规」页上插件字段那一节的标题,如「S3 设置」。</summary>
     public string PluginSectionTitle =>
@@ -1003,12 +1003,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
     {
         get
         {
-            // 有连接检查的插件连接:页脚就显示它给的连接串(副本集多台主机、SRV、URI 都说得清),
-            // 而不是一个只装得下第一台主机的 user@host:port。
-            if (IsPluginSelected && Inspector.HasPreview)
-            {
-                return Inspector.PreviewText;
-            }
             string host = _host.Trim();
             if (host.Length == 0)
             {
@@ -1107,23 +1101,11 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
         {
             this.RaisePropertyChanged(nameof(EndpointPreview));
         }
-        if (name is nameof(Host) or nameof(Port) or nameof(Username) or nameof(Name))
-        {
-            // 主机 / 端口 / 用户名 / 显示名都进得了连接串(appName 之类):改了就重新预览。
-            SchedulePreview();
-        }
-        if (name is nameof(IsPasswordAuth) or nameof(FtpAnonymous))
-        {
-            this.RaisePropertyChanged(nameof(CredentialsSideBySide));
-            this.RaisePropertyChanged(nameof(CredentialsStacked));
-            this.RaisePropertyChanged(nameof(ShowStackedPassword));
-        }
         if (name == nameof(ConnectionType))
         {
             this.RaisePropertyChanged(nameof(IsAdvancedSectionModified));
             this.RaisePropertyChanged(nameof(ShowPluginGeneralFields));
             RefreshSectionAvailability();
-            RaiseLayoutChanged();
         }
         else if (name is nameof(IsPluginLoading) or nameof(PluginProtocolId))
         {
@@ -1640,8 +1622,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
     public ReactiveCommand<RxVoid, RxVoid> CopyErrorCommand { get; }
 
     /// <summary>写系统剪贴板的回调;由视图注入(视图模型层拿不到 TopLevel)。</summary>
-    [SuppressMessage("ReactiveUI.SourceGenerators.CodeFixers.PropertyToReactiveFieldAnalyzer", "RXUISG0016:Property can be a [Reactive] property",
-        Justification = "视图注入的回调,不是可绑定状态,不需要变更通知。")]
     public Func<string, Task>? CopyToClipboard { get; set; }
 
     /// <summary>浏览私钥文件命令;由视图层挂接文件选择对话框。</summary>
@@ -1801,12 +1781,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
         {
             BeginBusy();
             ErrorMessage = null;
-            if (IsPluginSelected && _pluginBaseForm?.Inspector is not null)
-            {
-                // 有连接检查:逐步进度画进右侧栏,结论与失败原因照旧落在反馈条上。
-                await TestWithInspectorAsync(_connectionWorkflowService);
-                return;
-            }
             ConnectionTestResult result = await _connectionWorkflowService.TestConnectionAsync(BuildProfile());
             LastTestSucceeded = result.Success;
             ErrorMessage = result.ErrorMessage;
@@ -2000,10 +1974,8 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
         bool advancedPage = SelectedSection == ConnectionProfileSection.Advanced;
         foreach (PluginProtocolFieldViewModel field in PluginFields)
         {
-            // 右侧栏里的字段不分页:那一栏两页都在。
-            field.IsRowVisible = IsApplicable(field) && (field.IsAside || field.IsAdvanced == advancedPage);
+            field.IsRowVisible = IsApplicable(field) && field.IsAdvanced == advancedPage;
         }
-        RefreshSectionVisibility();
         this.RaisePropertyChanged(nameof(AdvancedBadge));
         this.RaisePropertyChanged(nameof(HasAdvancedBadge));
         this.RaisePropertyChanged(nameof(IsAdvancedSectionModified));
@@ -2052,11 +2024,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
         // 主机下拉的候选项同属上一个协议:留着的话,从串口切回 SSH 再切到别的插件协议时,
         // 那个下拉里还挂着一串 COM 口。
         HostChoices.Clear();
-        // 右侧栏同理:上一个连接类型的连接串与测试结果不能挂在下一个的表单旁边。
-        CancelProbe();
-        Inspector.Reset();
-        ClearRoleBadges();
-        RebuildPluginLayout();
     }
 
     /// <summary>被依赖字段的值一变就重算所有行的可见性(只关心值,不关心可见性自身的变化)。</summary>
@@ -2067,10 +2034,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
                            or nameof(PluginProtocolFieldViewModel.SelectedChoice))
         {
             ApplyPluginFieldVisibility();
-        }
-        if (e.PropertyName == nameof(PluginProtocolFieldViewModel.Text) && sender is PluginProtocolFieldViewModel field)
-        {
-            OnPluginFieldValueChanged(field);
         }
     }
 
@@ -2147,7 +2110,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
             // 表单还是旧协议的样子,此时保存会把 A 的键值写进 B 的配置。
             ClearPluginFields();
             _pluginForm = null;
-            _pluginBaseForm = null;
             _pluginStored = null;
             _pluginStoredSecrets = null;
         }
@@ -2177,8 +2139,7 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
             // 归一成 PluginConnectionForm,后面的表单渲染只有一条路。
             PluginConnectionForm? form = registry.KindOf(protocolId) == PluginConnectionKind.Workspace
                 ? await registry.ResolveWorkspaceAsync(protocolId).ConfigureAwait(true) is { } workspace
-                    // 提供方一起带上:它实现了连接检查时,对话框多出右侧栏(连接串预览、逐步测试)。
-                    ? PluginConnectionForm.From(workspace.Descriptor, workspace.Provider)
+                    ? PluginConnectionForm.From(workspace.Descriptor)
                     : null
                 : await registry.ResolveAsync(protocolId).ConfigureAwait(true) is { } protocol
                     // 实现体一起带上:动态下拉的候选项由它现给(它兼实现 IProtocolChoiceSource
@@ -2195,7 +2156,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
                 return;
             }
             applied = true;
-            _pluginBaseForm = form;
             _pluginForm = form;
             _loadedProtocolId = protocolId;
             // 插件被禁用/装载失败:表单是空的,而 AllowsAnonymous 随之为 false,
@@ -2223,12 +2183,7 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
             // 显式下发一次:集合事件逐行触发时后面的字段还没进来,显示条件对**新建**配置(全默认)
             // 也必须在表单成形后生效一次 —— 少了这句,「主节点名」会在独立形态下先露出来,
             // 直到用户碰一下别的字段才消失。
-            // 变体按刚读入的取值套一次(编辑一条 SRV 配置:端口栏一打开就该是收起的),
-            // 端口不跟 —— 那是用户存下来的值。
-            ApplyVariantShape(followPort: false);
-            RebuildPluginLayout();
             ApplyPluginFieldVisibility();
-            RefreshPreview();
             // 动态候选项现取一次。放在最后:它可能真的去枚举硬件(串口),
             // 而表单的其余部分不该等它 —— 取不到也只是下拉是空的,手输照旧可用。
             await LoadDynamicChoicesAsync().ConfigureAwait(true);
@@ -2426,8 +2381,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
     {
         _protocolRegistry?.Changed -= OnProtocolsChanged;
         _copyFeedbackReset?.Dispose();
-        // 关掉对话框时还在跑的连接检查要停下:它握着一条到数据库的连接,还可能握着一条隧道。
-        CancelProbe();
         GC.SuppressFinalize(this);
     }
 
@@ -2462,7 +2415,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
             // 描述符也必须清:三格标签只看它、不看 ConnectionType,不清的话
             // 「S3 → SSH」之后主机那格会一直写着「服务端点」、用户名写着「Access Key ID」。
             _pluginForm = null;
-            _pluginBaseForm = null;
             ClearPluginFields();
             PluginUnavailable = false;
             RaisePluginLabelsChanged();
@@ -2507,9 +2459,6 @@ public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
         this.RaisePropertyChanged(nameof(PasswordLabel));
         this.RaisePropertyChanged(nameof(ShowCredentialFields));
         this.RaisePropertyChanged(nameof(ShowPasswordField));
-        this.RaisePropertyChanged(nameof(CredentialsSideBySide));
-        this.RaisePropertyChanged(nameof(CredentialsStacked));
-        this.RaisePropertyChanged(nameof(ShowStackedPassword));
         // 主机那一栏的形态与端口栏的显隐同样只看描述符 —— 漏发的表现是
         // 「已经切回 SSH,主机那格还是个串口下拉」。
         this.RaisePropertyChanged(nameof(ShowPortField));
