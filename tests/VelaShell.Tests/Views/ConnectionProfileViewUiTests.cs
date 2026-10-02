@@ -293,6 +293,48 @@ public sealed class ConnectionProfileViewUiTests
     }
 
     /// <summary>
+    /// 编辑一条存了口令的连接:对话框一打开,表单停在最上面,不被口令框拽下去。
+    /// </summary>
+    /// <remarks>
+    /// 文本框被程序赋值时光标跟着挪,<c>TextPresenter</c> 随后发一次 BringIntoView ——
+    /// 不管它有没有焦点。口令框落在首屏以下时(矮屏,或插件字段多的协议),
+    /// 外层的表单区就被它滚下去一百来像素,连接名一栏打开就看不见。
+    /// </remarks>
+    [TestMethod]
+    public void OpeningWithASavedPassword_LeavesTheFormAtTheTop()
+    {
+        _session.Dispatch(() =>
+        {
+            var vm = new ConnectionProfileViewModel
+            {
+                Host = "db.example.com",
+                Username = "ops",
+                Password = SecureStringConvert.FromPlaintext("secret"),
+            };
+            var window = new ConnectionProfileView { DataContext = vm };
+            window.Show();
+            window.MaxHeight = 320;
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+
+            ScrollViewer form = window.FindControl<ScrollViewer>("FormScroll")!;
+            TextBox password = window.GetVisualDescendants().OfType<TextBox>()
+                .Single(box => SecurePasswordBox.GetEnabled(box) && box.IsEffectivelyVisible);
+            Point top = password.TranslatePoint(default, form) ?? default;
+            Assert.IsGreaterThan(form.Viewport.Height, top.Y + form.Offset.Y, "前提:口令框在首屏以下。");
+            Assert.AreEqual(0d, form.Offset.Y, "没获得焦点的文本框不该把表单滚走。");
+
+            // 用户自己把焦点放进去(Tab 或点击)时照常滚到它。
+            password.Focus();
+            Dispatcher.UIThread.RunJobs();
+            window.UpdateLayout();
+            Assert.IsGreaterThan(0d, form.Offset.Y, "获得焦点的文本框仍然要被带进视野。");
+
+            window.Close();
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// 可编辑下拉在用户选中一项之后,文本框里必须是**落盘值**。
     /// <para>
     /// 串口的端口下拉整个设计都压在这一条上:列表里显示的是

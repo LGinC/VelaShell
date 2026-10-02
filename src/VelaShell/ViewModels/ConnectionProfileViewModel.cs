@@ -1622,6 +1622,8 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     public ReactiveCommand<RxVoid, RxVoid> CopyErrorCommand { get; }
 
     /// <summary>写系统剪贴板的回调;由视图注入(视图模型层拿不到 TopLevel)。</summary>
+    [SuppressMessage("ReactiveUI.SourceGenerators.CodeFixers.PropertyToReactiveFieldAnalyzer", "RXUISG0016:Property can be a [Reactive] property",
+        Justification = "视图注入的回调,不是可绑定状态,不需要变更通知。")]
     public Func<string, Task>? CopyToClipboard { get; set; }
 
     /// <summary>浏览私钥文件命令;由视图层挂接文件选择对话框。</summary>

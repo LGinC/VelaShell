@@ -1523,3 +1523,14 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **二、做法**:列了四种处理(尾部省略、中间省略、主机 / 用户双行、身份独占一行)给用户挑,定为尾部省略。那一行改成 `Grid`(`Auto,*`),文字放进 `*` 列、去掉 `MaxWidth`,只拿按钮左边剩下的宽度,放不下就截成尾部省略号;外层网格加 `ColumnSpacing="8"`,名称与按钮之间始终留 8px。完整名称照旧在悬停提示里。
 
 **三、验证**:`SidebarQuickCommandsUiTests` 新增 `LongActiveIdentity_TrimsBeforeFooterButtons`(260 / 180 两种宽度:名称右沿 + 8 不越过按钮左沿、确实截成了省略号、悬停提示是完整名称;改之前实测 260px 下名称画到 191、按钮从 164 开始,180px 下按钮从 84 开始,两例都红)与 `ShortActiveIdentity_IsNotTrimmed`(放得下的名称不截)。velashell-docs `交互与界面规格.md` / `interaction-and-ui-specs.md` §4 底部用户栏原先还写着「头像 + `root`」,一并改成当前身份的实际行为与截断规则。
+
+## ✅ 151. 2026-10-03 连接对话框只让有焦点的文本框滚动表单(插件连接表单那次改动撤回后保留的两处修复)
+
+**一、问题**:编辑一条存了口令的连接,口令框落在首屏以下时(矮屏,或插件字段多的协议),对话框一打开表单就被拽下去一百来像素,连接名一栏看不见。根因:文本框被程序赋值时光标跟着挪,`TextPresenter` 随后发一次 BringIntoView —— 不管它有没有焦点 —— 外层的表单区照单全收。
+
+**二、做法**:
+- `ConnectionProfileView` 在表单内容(而不是 `ScrollViewer` 本身 —— 请求冒泡时先到 `ScrollContentPresenter`,挂在外面就拦晚了)上处理 `RequestBringIntoViewEvent`:来自没有键盘焦点的文本框的请求一律吞掉。Tab / 点击进去的那一个照常带进视野。
+- `ConnectionProfileViewModel.CopyToClipboard` 是视图注入的回调,对 ReactiveUI 分析器 RXUISG0016(建议改 `[Reactive]`)按本文件 CA1822 那几处的写法加 `SuppressMessage` 并写明理由。
+- 来历:这两处原是 `7769181d`(插件工作台的连接表单照版式声明排、右侧栏给连接串预览与逐步测试,PR #548)的一部分。MongoDB 插件随后改为像 Docker 面板一样从命令面板打开、自己管理连接,那次改动连同 SDK 2.0.7 的连接对话框契约一并撤回(`f4e6b470`;SDK 侧 velashell-plugin-sdk `06f5800`),`VelaShell.PluginSdk*` 回到 2.0.6;与契约无关的这两处单独留下。
+
+**三、验证**:UI 测试新增 `OpeningWithASavedPassword_LeavesTheFormAtTheTop`(压一块 320 高的矮屏,口令框在首屏以下时表单停在顶上;焦点放进口令框后照常滚过去),修之前红。
