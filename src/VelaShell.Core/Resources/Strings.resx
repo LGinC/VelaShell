@@ -2022,6 +2022,30 @@ Paste anyway?</value>
   <data name="Profile_TestSuccess" xml:space="preserve">
     <value>Connection test succeeded</value>
   </data>
+  <data name="Profile_TestFailed" xml:space="preserve">
+    <value>Connection test failed</value>
+  </data>
+  <data name="Profile_ProbeTunnel" xml:space="preserve">
+    <value>SSH tunnel</value>
+  </data>
+  <data name="Profile_NoSshSessions" xml:space="preserve">
+    <value>No saved SSH connections yet — save one first, then pick it here as the jump host.</value>
+  </data>
+  <data name="Profile_SecBasic" xml:space="preserve">
+    <value>Basics</value>
+  </data>
+  <data name="Profile_TestResults" xml:space="preserve">
+    <value>Test results</value>
+  </data>
+  <data name="Profile_TestResultsHint" xml:space="preserve">
+    <value>Click Test to check this connection step by step.</value>
+  </data>
+  <data name="Profile_AddHost" xml:space="preserve">
+    <value>Add host</value>
+  </data>
+  <data name="Profile_RemoveHost" xml:space="preserve">
+    <value>Remove</value>
+  </data>
   <data name="Profile_CopyErrorTip" xml:space="preserve">
     <value>Copy error message</value>
   </data>

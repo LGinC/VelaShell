@@ -118,26 +118,9 @@ public sealed class PluginWorkspaceLauncher(PluginProtocolRegistry registry) : I
         WorkspaceEndpoint? endpoint,
         CancellationToken cancellationToken)
     {
-        string? typeId = profile.PluginProtocolId;
-        PluginWorkspaceRegistration? registration = await registry.ResolveWorkspaceAsync(typeId).ConfigureAwait(false) ?? throw new PluginProtocolUnavailableException(typeId,
-                string.IsNullOrWhiteSpace(typeId)
-                    ? "This session profile does not name a plugin connection type."
-                    : $"Connection type '{typeId}' is not available. Install or enable the plugin that provides it.");
+        PluginWorkspaceRegistration registration = await ResolveAsync(profile.PluginProtocolId).ConfigureAwait(false);
         var sessionId = Guid.NewGuid();
-        var request = new WorkspaceConnectRequest
-        {
-            SessionId = sessionId.ToString("N"),
-            // 走隧道时递给插件的是**本地转发端点**;真实目标只进 Tunnel 供界面显示来路。
-            Host = endpoint?.Host ?? profile.Host,
-            Port = endpoint?.Port ?? profile.Port,
-            Username = profile.Username,
-            Password = profile.Password ?? string.Empty,
-            Settings = BuildSettings(registration.Descriptor, profile),
-            DisplayName = profile.Name,
-            Tunnel = endpoint is null
-                ? null
-                : new(endpoint.TargetHost, endpoint.TargetPort, endpoint.JumpDisplayName)
-        };
+        WorkspaceConnectRequest request = BuildRequest(registration.Descriptor, profile, endpoint, sessionId);
 
         IWorkspaceDocument document;
         try
@@ -157,6 +140,124 @@ public sealed class PluginWorkspaceLauncher(PluginProtocolRegistry registry) : I
         RaiseSurfacesChanged();
         return new(sessionId, registration.Descriptor.DisplayName, document);
     }
+
+    /// <summary>
+    /// 连接对话框的「测试连接」:连接类型实现了 <see cref="IWorkspaceConnectionInspector" /> 时,
+    /// 交给它逐步检查并返回报告;没实现时返回 <see langword="null" />,调用方退回"打开再关掉"的老探测。
+    /// <para>
+    /// 请求与 <see cref="OpenAsync" /> 组装的完全一样(同一套设置口径、同样的隧道端点替换)——
+    /// 测的必须就是"点连接时会发生的那件事",否则测试通过、连接失败的局面就会出现。
+    /// 插件抛出的非取消异常收成一份失败报告:测试连接的结论只该有一种呈现方式。
+    /// </para>
+    /// </summary>
+    /// <param name="profile">要测的连接配置(凭据已解密)。</param>
+    /// <param name="endpoint">宿主建好的隧道端点;不走隧道为 <see langword="null" />。</param>
+    /// <param name="progress">逐步进度;可为 <see langword="null" />。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>报告;连接类型没有连接检查时为 <see langword="null" />。</returns>
+    /// <exception cref="PluginProtocolUnavailableException">插件未安装/被禁用/激活失败。</exception>
+    public async Task<WorkspaceProbeReport?> ProbeAsync(
+        SessionProfile profile,
+        WorkspaceEndpoint? endpoint,
+        IProgress<WorkspaceProbeStep>? progress,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(profile);
+        var probing = Guid.NewGuid();
+        // 测试期间同样算"正在打开":空闲回收不能在检查跑到一半时把插件卸掉。
+        _opening[probing] = profile.PluginProtocolId ?? string.Empty;
+        try
+        {
+            PluginWorkspaceRegistration registration = await ResolveAsync(profile.PluginProtocolId).ConfigureAwait(false);
+            if (registration.Provider is not IWorkspaceConnectionInspector inspector)
+            {
+                return null;
+            }
+            WorkspaceConnectRequest request = BuildRequest(registration.Descriptor, profile, endpoint, probing);
+            try
+            {
+                return await inspector.ProbeAsync(request, progress, cancellationToken).ConfigureAwait(false)
+                       ?? new WorkspaceProbeReport { Succeeded = false };
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Trace.WriteLine($"[PluginWorkspace] Probe for '{registration.Descriptor.Id}' threw: {ex.Message}");
+                return new WorkspaceProbeReport { Succeeded = false, Summary = ex.Message };
+            }
+        }
+        finally
+        {
+            _opening.TryRemove(probing, out _);
+        }
+    }
+
+    /// <summary>
+    /// 连接对话框的连接串预览:连接类型实现了 <see cref="IWorkspaceConnectionInspector" /> 时转交给它。
+    /// 草稿里**没有口令、没有机密字段**(见 <see cref="IWorkspaceConnectionInspector.Preview" /> 的约定)。
+    /// 插件抛异常时当作"没有可预览的",不让一个写坏的预览把对话框带崩。
+    /// </summary>
+    /// <param name="inspector">连接检查。</param>
+    /// <param name="descriptor">连接类型描述(补齐缺省值用)。</param>
+    /// <param name="draft">对话框当前内容(口令与机密字段由调用方剔除)。</param>
+    /// <returns>预览;没有为 <see langword="null" />。</returns>
+    public static WorkspaceConnectionPreview? Preview(
+        IWorkspaceConnectionInspector inspector,
+        WorkspaceDescriptor descriptor,
+        SessionProfile draft)
+    {
+        ArgumentNullException.ThrowIfNull(inspector);
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ArgumentNullException.ThrowIfNull(draft);
+        Dictionary<string, string> settings = BuildSettings(descriptor, draft.PluginSettings, secrets: null);
+        foreach (ProtocolSettingField secret in descriptor.Fields.Where(static f => f.IsSecret))
+        {
+            settings.Remove(secret.Key);
+        }
+        try
+        {
+            return inspector.Preview(new WorkspaceConnectRequest
+            {
+                SessionId = "preview",
+                Host = draft.Host ?? string.Empty,
+                Port = draft.Port,
+                Username = draft.Username ?? string.Empty,
+                Password = string.Empty,
+                Settings = settings,
+                DisplayName = draft.Name ?? string.Empty
+            });
+        }
+        catch (Exception ex)
+        {
+            Trace.WriteLine($"[PluginWorkspace] Preview for '{descriptor.Id}' threw: {ex.Message}");
+            return null;
+        }
+    }
+
+    private async Task<PluginWorkspaceRegistration> ResolveAsync(string? typeId) =>
+        await registry.ResolveWorkspaceAsync(typeId).ConfigureAwait(false)
+        ?? throw new PluginProtocolUnavailableException(typeId,
+            string.IsNullOrWhiteSpace(typeId)
+                ? "This session profile does not name a plugin connection type."
+                : $"Connection type '{typeId}' is not available. Install or enable the plugin that provides it.");
+
+    private static WorkspaceConnectRequest BuildRequest(
+        WorkspaceDescriptor descriptor,
+        SessionProfile profile,
+        WorkspaceEndpoint? endpoint,
+        Guid sessionId) => new()
+        {
+            SessionId = sessionId.ToString("N"),
+            // 走隧道时递给插件的是**本地转发端点**;真实目标只进 Tunnel 供界面显示来路。
+            Host = endpoint?.Host ?? profile.Host,
+            Port = endpoint?.Port ?? profile.Port,
+            Username = profile.Username,
+            Password = profile.Password ?? string.Empty,
+            Settings = BuildSettings(descriptor, profile.PluginSettings, profile.PluginSecrets),
+            DisplayName = profile.Name,
+            Tunnel = endpoint is null
+            ? null
+            : new(endpoint.TargetHost, endpoint.TargetPort, endpoint.JumpDisplayName)
+        };
 
     /// <summary>把一条会话从登记表里摘掉(界面关闭标签页后调用;文档本身由界面释放)。</summary>
     /// <param name="sessionId">会话 id。</param>
@@ -202,7 +303,10 @@ public sealed class PluginWorkspaceLauncher(PluginProtocolRegistry registry) : I
     /// 与协议侧共用同一套口径(见 <see cref="PluginProtocolFileService" />):
     /// 缺失字段补默认值,这样插件加了新字段之后老配置照旧能连。
     /// </summary>
-    private static Dictionary<string, string> BuildSettings(WorkspaceDescriptor descriptor, SessionProfile profile)
+    private static Dictionary<string, string> BuildSettings(
+        WorkspaceDescriptor descriptor,
+        IReadOnlyDictionary<string, string>? stored,
+        IReadOnlyDictionary<string, string>? secrets)
     {
         var settings = new Dictionary<string, string>(StringComparer.Ordinal);
         foreach (ProtocolSettingField field in descriptor.Fields)
@@ -212,14 +316,14 @@ public sealed class PluginWorkspaceLauncher(PluginProtocolRegistry registry) : I
                 settings[field.Key] = value;
             }
         }
-        if (profile.PluginSettings is { } stored)
+        if (stored is not null)
         {
             foreach (KeyValuePair<string, string> entry in stored)
             {
                 settings[entry.Key] = entry.Value;
             }
         }
-        if (profile.PluginSecrets is { } secrets)
+        if (secrets is not null)
         {
             foreach (KeyValuePair<string, string> entry in secrets)
             {

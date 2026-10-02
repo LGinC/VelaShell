@@ -2131,6 +2131,30 @@
   <data name="Profile_TestSuccess" xml:space="preserve">
     <value>連線測試成功</value>
   </data>
+  <data name="Profile_TestFailed" xml:space="preserve">
+    <value>連線測試失敗</value>
+  </data>
+  <data name="Profile_ProbeTunnel" xml:space="preserve">
+    <value>SSH 通道</value>
+  </data>
+  <data name="Profile_NoSshSessions" xml:space="preserve">
+    <value>還沒有儲存的 SSH 連線:先新建一條,再回來選它做跳板。</value>
+  </data>
+  <data name="Profile_SecBasic" xml:space="preserve">
+    <value>基本</value>
+  </data>
+  <data name="Profile_TestResults" xml:space="preserve">
+    <value>測試結果</value>
+  </data>
+  <data name="Profile_TestResultsHint" xml:space="preserve">
+    <value>按「測試」逐步檢查這條連線。</value>
+  </data>
+  <data name="Profile_AddHost" xml:space="preserve">
+    <value>新增主機</value>
+  </data>
+  <data name="Profile_RemoveHost" xml:space="preserve">
+    <value>移除</value>
+  </data>
   <data name="Profile_CopyErrorTip" xml:space="preserve">
     <value>複製錯誤訊息</value>
   </data>

@@ -11,7 +11,7 @@ namespace VelaShell.Presentation.Services;
 /// <summary>
 /// 连接诊断中心的执行引擎(设计 RGXg1):按 DNS 解析 → TCP 建链 → SSH 握手 →
 /// 用户认证 四步逐项检测。配了跳板的会话,前三步针对链路第一跳(本机实际直连的主机),
-/// 认证步骤经 <see cref="IConnectionWorkflowService.TestConnectionAsync" /> 走完整跳板链。
+/// 认证步骤经 <see cref="IConnectionWorkflowService.TestConnectionAsync(VelaShell.Core.Models.SessionProfile, CancellationToken)" /> 走完整跳板链。
 /// </summary>
 public sealed class ConnectionDiagnosticsService(
     ISessionRepository sessionRepository,
