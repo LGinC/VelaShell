@@ -12,11 +12,12 @@
         x:Class="VelaShell.Views.ConnectionProfileView"
         x:DataType="vm:ConnectionProfileViewModel"
         Title="{loc:Localize Profile_Title}"
-        Width="792"
+        Width="{Binding DialogWidth}"
         Height="696"
         CanResize="False"
         WindowStartupLocation="CenterOwner">
   <!-- 尺寸按 Windows 口径写(含卡片外 16px 的透明边距):卡片可见 760×664。
+       插件连接类型有右侧栏(连接检查 / 声明在右侧的字段)时加宽一栏到 1080,表单区宽度不变(DialogWidth)。
        定高而不是随内容:切页签时窗口不再忽高忽低;放不下的由表单区自己滚(S3、Redis 的字段多)。
        矮屏上由代码后置按工作区钳住(见 ApplyScreenBounds)。 -->
   <Window.Resources>
@@ -194,12 +195,192 @@
       </Style>
     </ControlTheme>
 
+    <!-- 小标签(环境标记):24px 高、3px 圆角,未选中描边 + 三级字;选中按语气色描边着字(危险色另铺淡底)。 -->
+    <ControlTheme x:Key="ChipTheme" TargetType="Button">
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextTertiary}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderPrimary}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="Height" Value="24" />
+      <Setter Property="Padding" Value="8,0" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="FontWeight" Value="Medium" />
+      <Setter Property="VerticalContentAlignment" Value="Center" />
+      <Setter Property="Cursor" Value="Hand" />
+      <Setter Property="FocusAdorner" Value="{x:Null}" />
+      <Setter Property="Template">
+        <ControlTemplate>
+          <Border Background="{TemplateBinding Background}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Padding="{TemplateBinding Padding}">
+            <ContentPresenter Content="{TemplateBinding Content}"
+                              Foreground="{TemplateBinding Foreground}"
+                              VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}" />
+          </Border>
+        </ControlTemplate>
+      </Setter>
+      <Style Selector="^:pointerover">
+        <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
+        <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
+      </Style>
+      <Style Selector="^:focus-visible">
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaAccent}" />
+      </Style>
+      <Style Selector="^.selected">
+        <Setter Property="Background" Value="{DynamicResource VelaBgActive}" />
+        <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
+      </Style>
+      <Style Selector="^.selected.accent">
+        <Setter Property="Foreground" Value="{DynamicResource VelaAccent}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaAccent}" />
+        <Setter Property="Background" Value="{DynamicResource VelaAccentDim}" />
+      </Style>
+      <Style Selector="^.selected.success">
+        <Setter Property="Foreground" Value="{DynamicResource VelaStatusConnected}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaStatusConnected}" />
+      </Style>
+      <Style Selector="^.selected.info">
+        <Setter Property="Foreground" Value="{DynamicResource VelaInfo}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaInfo}" />
+      </Style>
+      <Style Selector="^.selected.warning">
+        <Setter Property="Foreground" Value="{DynamicResource VelaWarning}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaWarning}" />
+      </Style>
+      <Style Selector="^.selected.danger">
+        <Setter Property="Foreground" Value="{DynamicResource VelaError}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource VelaError}" />
+        <Setter Property="Background" Value="{DynamicResource VelaErrorSurface}" />
+      </Style>
+    </ControlTheme>
+
     <!-- 插件协议的一行设置。字段声明来自插件的 ProtocolDescriptor,宿主按 Kind 渲染 ——
          插件因此不需要写一行界面代码,而连接对话框的布局、主题与校验仍归宿主统一负责。
-         「常规」页与「高级」页各用它画一份,绑的是同一批行(可见性由 VM 按分页下发)。 -->
+         「常规」页、「高级」页与右侧栏都用它画,绑的是同一批行(可见性由 VM 按分页下发)。 -->
+    <!-- 插件字段的版式(SDK 的 Section / Width / Presentation / Placement)只改长相不改取值:
+         分段按钮、带语气色的小标签、开关卡片、一行一台的主机列表都是这一个模板的分支。
+         行与行、列与列的间距由外面的 FieldFlowPanel 管,模板自己不留外边距。 -->
     <DataTemplate x:Key="PluginFieldRow" x:DataType="vm:PluginProtocolFieldViewModel">
-      <StackPanel Margin="0,0,0,12" Spacing="4" IsVisible="{Binding IsRowVisible}">
-        <TextBlock Classes="field-label" Margin="0" Text="{Binding Label}" IsVisible="{Binding !IsToggle}" />
+      <StackPanel Spacing="4" IsVisible="{Binding IsRowVisible}">
+        <TextBlock Classes="field-label" Margin="0" Text="{Binding Label}" IsVisible="{Binding ShowsLabel}" />
+        <!-- 分段按钮:「主机列表 / SRV 记录 / 连接字符串」这类两到四个互斥形态。 -->
+        <Border Height="32" Padding="3" HorizontalAlignment="Left" IsVisible="{Binding IsSegmented}"
+                Background="{DynamicResource VelaBgInput}" BorderBrush="{DynamicResource VelaBorderPrimary}"
+                BorderThickness="1" CornerRadius="4">
+          <ItemsControl ItemsSource="{Binding Options}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Orientation="Horizontal" Spacing="2" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:PluginOptionViewModel">
+                <Button Theme="{StaticResource AuthSegmentTheme}" Padding="14,0" Classes.selected="{Binding IsSelected}"
+                        Command="{Binding SelectCommand}" Content="{Binding Label}" />
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+        </Border>
+        <!-- 小标签:选中的那个按语气色着色(环境标记:生产 = 危险色)。 -->
+        <ItemsControl ItemsSource="{Binding Options}" IsVisible="{Binding IsChips}">
+          <ItemsControl.ItemsPanel>
+            <ItemsPanelTemplate>
+              <StackPanel Orientation="Horizontal" Spacing="6" />
+            </ItemsPanelTemplate>
+          </ItemsControl.ItemsPanel>
+          <ItemsControl.ItemTemplate>
+            <DataTemplate x:DataType="vm:PluginOptionViewModel">
+              <Button Theme="{StaticResource ChipTheme}" Classes="chip" Classes.selected="{Binding IsSelected}"
+                      Classes.danger="{Binding IsDanger}" Classes.warning="{Binding IsWarning}"
+                      Classes.success="{Binding IsSuccess}" Classes.info="{Binding IsInfo}" Classes.accent="{Binding IsAccent}"
+                      Command="{Binding SelectCommand}">
+                <StackPanel Orientation="Horizontal" Spacing="5">
+                  <Ellipse Classes="chip-dot" />
+                  <TextBlock Text="{Binding Label}" VerticalAlignment="Center" />
+                </StackPanel>
+              </Button>
+            </DataTemplate>
+          </ItemsControl.ItemTemplate>
+        </ItemsControl>
+        <!-- 开关卡片:标题 + 开关 + 说明;SSH 跳板开着时卡片里多一个会话下拉。 -->
+        <Border Classes="field-card" IsVisible="{Binding IsCard}">
+          <StackPanel Spacing="6">
+            <Grid ColumnDefinitions="*,Auto">
+              <TextBlock Classes="card-title" Text="{Binding Label}" />
+              <ToggleSwitch Grid.Column="1" Classes="card-switch" IsChecked="{Binding Toggle}" IsVisible="{Binding IsToggleCard}" />
+              <!-- 没有可选的 SSH 配置时禁用(开了也选不出跳板);已经开着的(配置后来被删了)仍然能关掉。 -->
+              <ToggleSwitch Grid.Column="1" Classes="card-switch" IsChecked="{Binding SshEnabled}" IsVisible="{Binding IsSshCard}">
+                <ToggleSwitch.IsEnabled>
+                  <MultiBinding Converter="{x:Static BoolConverters.Or}">
+                    <Binding Path="HasSshCardSessions" />
+                    <Binding Path="SshEnabled" />
+                  </MultiBinding>
+                </ToggleSwitch.IsEnabled>
+              </ToggleSwitch>
+            </Grid>
+            <TextBlock Classes="field-hint" Text="{Binding Hint}" IsVisible="{Binding HasHint}" />
+            <TextBlock Classes="field-hint" Text="{loc:Localize Profile_NoSshSessions}" IsVisible="{Binding ShowNoSshSessions}" />
+            <ComboBox ItemsSource="{Binding SshCardSessions}" SelectedItem="{Binding SelectedSshSession}"
+                      HorizontalAlignment="Stretch" Margin="0,2,0,0">
+              <ComboBox.IsVisible>
+                <MultiBinding Converter="{x:Static BoolConverters.And}">
+                  <Binding Path="IsSshCard" />
+                  <Binding Path="SshEnabled" />
+                </MultiBinding>
+              </ComboBox.IsVisible>
+              <ComboBox.ItemTemplate>
+                <DataTemplate x:DataType="vm:PluginSessionChoice">
+                  <TextBlock Text="{Binding Display}" />
+                </DataTemplate>
+              </ComboBox.ItemTemplate>
+            </ComboBox>
+          </StackPanel>
+        </Border>
+        <!-- 主机列表:一行一台(主机 + 端口 + 测试后发现的角色 + 删除),底下「添加主机」。 -->
+        <StackPanel Spacing="6" IsVisible="{Binding IsHostList}">
+          <ItemsControl ItemsSource="{Binding HostList.Rows, FallbackValue={x:Null}}">
+            <ItemsControl.ItemsPanel>
+              <ItemsPanelTemplate>
+                <StackPanel Spacing="6" />
+              </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+              <DataTemplate x:DataType="vm:PluginHostRowViewModel">
+                <Grid ColumnDefinitions="*,12,88,Auto,Auto">
+                  <TextBox Grid.Column="0" Text="{Binding Host}" PlaceholderText="10.0.0.2" />
+                  <NumericUpDown Grid.Column="2" Value="{Binding Port}" Minimum="0" Maximum="65535"
+                                 Increment="1" FormatString="0" ShowButtonSpinner="False" />
+                  <Border Grid.Column="3" Classes="role-badge" Margin="8,0,0,0" IsVisible="{Binding HasBadge}"
+                          Classes.success="{Binding IsBadgeSuccess}" Classes.info="{Binding IsBadgeInfo}"
+                          Classes.warning="{Binding IsBadgeWarning}" Classes.danger="{Binding IsBadgeDanger}">
+                    <TextBlock Text="{Binding Badge}" />
+                  </Border>
+                  <Button Grid.Column="4" Width="28" Height="28" Margin="4,0,0,0" Padding="0"
+                          Background="Transparent" CornerRadius="3" Cursor="Hand"
+                          Command="{Binding RemoveCommand}" ToolTip.Tip="{loc:Localize Profile_RemoveHost}">
+                    <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.x}"
+                                   Foreground="{DynamicResource VelaTextTertiary}" />
+                  </Button>
+                </Grid>
+              </DataTemplate>
+            </ItemsControl.ItemTemplate>
+          </ItemsControl>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Theme="{StaticResource RailLinkTheme}" Height="26" Padding="6,0" HorizontalAlignment="Left"
+                    Command="{Binding HostList.AddCommand, FallbackValue={x:Null}}">
+              <StackPanel Orientation="Horizontal" Spacing="6">
+                <pc:LucideIcon Width="12" Height="12" Data="{StaticResource Icon.plus}"
+                               Foreground="{DynamicResource VelaAccent}" />
+                <TextBlock Text="{loc:Localize Profile_AddHost}" Foreground="{DynamicResource VelaAccent}" VerticalAlignment="Center" />
+              </StackPanel>
+            </Button>
+            <TextBlock Classes="field-hint" VerticalAlignment="Center" Text="{Binding Hint}" IsVisible="{Binding HasHint}" />
+          </StackPanel>
+        </StackPanel>
         <TextBox Text="{Binding Text}" PlaceholderText="{Binding Placeholder}" IsVisible="{Binding IsText}" />
         <TextBox Text="{Binding Text}" PasswordChar="•" IsVisible="{Binding IsPassword}" />
         <ComboBox ItemsSource="{Binding Choices}" SelectedItem="{Binding SelectedChoice}"
@@ -248,9 +429,19 @@
         <CheckBox IsChecked="{Binding Toggle}" IsVisible="{Binding IsToggle}">
           <TextBlock Classes="check-title" Text="{Binding Label}" />
         </CheckBox>
-        <TextBlock Classes="field-hint" Text="{Binding Hint}" IsVisible="{Binding HasHint}" />
+        <!-- 说明:卡片与主机列表把说明画在自己里面,这里只给其余形态。复选框的说明缩进到标题左缘。 -->
+        <TextBlock Classes="field-hint" Text="{Binding Hint}" Classes.under-check="{Binding IsToggle}">
+          <TextBlock.IsVisible>
+            <MultiBinding Converter="{x:Static BoolConverters.And}">
+              <Binding Path="HasHint" />
+              <Binding Path="!IsCard" />
+              <Binding Path="!IsHostList" />
+            </MultiBinding>
+          </TextBlock.IsVisible>
+        </TextBlock>
       </StackPanel>
     </DataTemplate>
+
   </Window.Resources>
 
   <Window.Styles>
@@ -398,6 +589,147 @@
       <Setter Property="FontWeight" Value="Normal" />
     </Style>
 
+    <!-- ===== 插件字段的几种画法(卡片、角色徽章、复选框说明) ===== -->
+    <Style Selector="Border.field-card">
+      <Setter Property="Background" Value="{DynamicResource VelaBgInput}" />
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderPrimary}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="6" />
+      <Setter Property="Padding" Value="12,10" />
+    </Style>
+    <Style Selector="TextBlock.card-title">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize12}" />
+      <Setter Property="FontWeight" Value="Medium" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="ToggleSwitch.card-switch">
+      <Setter Property="MinWidth" Value="0" />
+      <Setter Property="OnContent" Value="{x:Null}" />
+      <Setter Property="OffContent" Value="{x:Null}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="TextBlock.field-hint.under-check">
+      <Setter Property="Margin" Value="26,0,0,0" />
+    </Style>
+    <!-- 小标签里的语气色圆点。ControlTheme 里不许写后代选择器,所以这几条放在窗口样式里,
+         凭 ChipTheme 按钮上的 chip 类找到它们。 -->
+    <Style Selector="Button.chip Ellipse.chip-dot">
+      <Setter Property="Width" Value="6" />
+      <Setter Property="Height" Value="6" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+      <Setter Property="Fill" Value="{DynamicResource VelaTextMuted}" />
+    </Style>
+    <Style Selector="Button.chip.selected.accent Ellipse.chip-dot">
+      <Setter Property="Fill" Value="{DynamicResource VelaAccent}" />
+    </Style>
+    <Style Selector="Button.chip.success Ellipse.chip-dot">
+      <Setter Property="Fill" Value="{DynamicResource VelaStatusConnected}" />
+    </Style>
+    <Style Selector="Button.chip.info Ellipse.chip-dot">
+      <Setter Property="Fill" Value="{DynamicResource VelaInfo}" />
+    </Style>
+    <Style Selector="Button.chip.warning Ellipse.chip-dot">
+      <Setter Property="Fill" Value="{DynamicResource VelaWarning}" />
+    </Style>
+    <Style Selector="Button.chip.danger Ellipse.chip-dot">
+      <Setter Property="Fill" Value="{DynamicResource VelaError}" />
+    </Style>
+    <!-- 角色徽章(PRIMARY / SECONDARY):10px 等宽大写,按语气色描边着字。 -->
+    <Style Selector="Border.role-badge">
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaBorderSecondary}" />
+      <Setter Property="BorderThickness" Value="1" />
+      <Setter Property="CornerRadius" Value="3" />
+      <Setter Property="Padding" Value="6,1" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <Style Selector="Border.role-badge TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize10}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+    </Style>
+    <Style Selector="Border.role-badge.success">
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaStatusConnected}" />
+    </Style>
+    <Style Selector="Border.role-badge.success TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VelaStatusConnected}" />
+    </Style>
+    <Style Selector="Border.role-badge.info">
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaInfo}" />
+    </Style>
+    <Style Selector="Border.role-badge.info TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VelaInfo}" />
+    </Style>
+    <Style Selector="Border.role-badge.warning">
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaWarning}" />
+    </Style>
+    <Style Selector="Border.role-badge.warning TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VelaWarning}" />
+    </Style>
+    <Style Selector="Border.role-badge.danger">
+      <Setter Property="BorderBrush" Value="{DynamicResource VelaError}" />
+    </Style>
+    <Style Selector="Border.role-badge.danger TextBlock">
+      <Setter Property="Foreground" Value="{DynamicResource VelaError}" />
+    </Style>
+
+    <!-- ===== 右侧栏:连接检查(设计稿 Mongo 10 的 Side,320 宽) ===== -->
+    <Style Selector="TextBlock.aside-title">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="FontWeight" Value="SemiBold" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+    <!-- 连接串:按片段角色着色,颜色全取宿主令牌(插件只说"这是主机""这是参数值")。 -->
+    <Style Selector="TextBlock.span">
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+      <Setter Property="LineHeight" Value="18" />
+    </Style>
+    <Style Selector="TextBlock.span.muted">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextTertiary}" />
+    </Style>
+    <Style Selector="TextBlock.span.secret">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextMuted}" />
+    </Style>
+    <Style Selector="TextBlock.span.user">
+      <Setter Property="Foreground" Value="{DynamicResource VelaShellCyan}" />
+    </Style>
+    <Style Selector="TextBlock.span.host">
+      <Setter Property="Foreground" Value="{DynamicResource VelaShellGreen}" />
+    </Style>
+    <Style Selector="TextBlock.span.path">
+      <Setter Property="Foreground" Value="{DynamicResource VelaShellYellow}" />
+    </Style>
+    <Style Selector="TextBlock.span.value">
+      <Setter Property="Foreground" Value="{DynamicResource VelaShellMagenta}" />
+    </Style>
+    <Style Selector="TextBlock.step-title">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize11}" />
+      <Setter Property="FontWeight" Value="Medium" />
+    </Style>
+    <Style Selector="TextBlock.step-detail">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextTertiary}" />
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize10}" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+    </Style>
+    <Style Selector="TextBlock.step-detail.failed">
+      <Setter Property="Foreground" Value="{DynamicResource VelaError}" />
+    </Style>
+    <Style Selector="TextBlock.step-detail.warning">
+      <Setter Property="Foreground" Value="{DynamicResource VelaWarning}" />
+    </Style>
+    <Style Selector="TextBlock.mono-small">
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="FontSize" Value="{DynamicResource VelaFontSize10}" />
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextTertiary}" />
+      <Setter Property="VerticalAlignment" Value="Center" />
+    </Style>
+
     <Style Selector="TextBox">
       <Setter Property="Background" Value="{DynamicResource VelaBgInput}" />
       <Setter Property="Foreground" Value="{DynamicResource VelaTextPrimary}" />
@@ -483,7 +815,7 @@
         </Grid>
       </Border>
 
-      <Grid Grid.Row="1" ColumnDefinitions="188,*">
+      <Grid Grid.Row="1" ColumnDefinitions="188,*,Auto">
 
         <!-- 协议栏:内建 SSH / SFTP / FTP + 插件协议(动态)。竖排只会往下长 ——
              原先横排在 508 宽的窗口里,插件一多就挤出窗口。 -->
@@ -667,6 +999,41 @@
               <!-- ============================== 常规 ============================== -->
               <StackPanel Spacing="24" IsVisible="{Binding IsGeneralSection}">
 
+                <!-- 基本:插件把字段并进这一节(环境标记之类,ProtocolSettingSection.Basic)时,
+                     「整理」挪到最上面改叫「基本」—— 这条连接是什么,应该在填参数之前就说清。 -->
+                <StackPanel Spacing="12" IsVisible="{Binding ShowBasicOnTop}">
+                  <Grid ColumnDefinitions="Auto,*">
+                    <TextBlock Classes="section-title" Text="{loc:Localize Profile_SecBasic}" />
+                    <Border Grid.Column="1" Classes="section-rule" />
+                  </Grid>
+                  <!-- 插件那一列按内容定宽(一排语气色小标签不能被三等分挤断),名称与分组分剩下的。 -->
+                  <Grid ColumnDefinitions="*,12,*,12,Auto" RowDefinitions="Auto,12,Auto">
+                    <StackPanel Grid.Column="0">
+                      <TextBlock Classes="field-label" Text="{loc:Localize Profile_DisplayName}" />
+                      <TextBox Text="{Binding Name}" PlaceholderText="web-prod-03" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <TextBlock Classes="field-label" Text="{loc:Localize Profile_SessionGroup}" />
+                      <ComboBox IsEditable="True"
+                                ItemsSource="{Binding Groups}"
+                                SelectedItem="{Binding SelectedGroup}"
+                                Text="{Binding GroupText}"
+                                PlaceholderText="{loc:Localize Profile_GroupPlaceholder}" />
+                    </StackPanel>
+                    <ItemsControl Grid.Column="4" MinWidth="160" ItemsSource="{Binding PluginBasicFields}" ItemTemplate="{StaticResource PluginFieldRow}">
+                      <ItemsControl.ItemsPanel>
+                        <ItemsPanelTemplate>
+                          <StackPanel Spacing="12" />
+                        </ItemsPanelTemplate>
+                      </ItemsControl.ItemsPanel>
+                    </ItemsControl>
+                    <StackPanel Grid.Row="2" Grid.Column="0">
+                      <TextBlock Classes="field-label" Text="{loc:Localize Profile_TagsLabel}" TextTrimming="CharacterEllipsis" />
+                      <TextBox Text="{Binding TagsText}" PlaceholderText="{loc:Localize Profile_TagsPlaceholder}" />
+                    </StackPanel>
+                  </Grid>
+                </StackPanel>
+
                 <!-- 连接目标 -->
                 <StackPanel Spacing="12">
                   <Grid ColumnDefinitions="Auto,*">
@@ -674,11 +1041,22 @@
                     <Border Grid.Column="1" Classes="section-rule" />
                   </Grid>
 
+                  <!-- 连接类型的变体键(MongoDB 的「主机列表 / SRV / 连接字符串」)排在主机那一行之上:
+                       它决定主机那一行长什么样(标签、要不要端口)。 -->
+                  <ItemsControl ItemsSource="{Binding PluginTargetLeadFields}" ItemTemplate="{StaticResource PluginFieldRow}"
+                                IsVisible="{Binding HasPluginTargetLeadFields}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <ctl:FieldFlowPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                  </ItemsControl>
+
                   <!-- 主机名/IP + 端口。插件协议可以改写这一格的标签与占位(S3 的「服务端点」),
                        也可以改写它的**形态** —— 串口把它变成一个可刷新、可手输的设备下拉。
                        端口那一格在协议声明 NoEndpoint 时整格收起(串口是一根线,SQLite 是一个文件,
                        端口填什么都不会被用上)。 -->
-                  <Grid ColumnDefinitions="*,12,Auto">
+                  <Grid ColumnDefinitions="*,Auto,Auto">
                     <StackPanel Grid.Column="0">
                       <TextBlock Classes="field-label" Text="{Binding HostLabel}" />
                       <TextBox Text="{Binding Host}" PlaceholderText="{Binding HostPlaceholder}"
@@ -722,17 +1100,33 @@
                       <TextBlock Classes="field-error" Text="{Binding HostError}"
                                  IsVisible="{Binding HostError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                     </StackPanel>
-                    <StackPanel Grid.Column="2" Width="88" IsVisible="{Binding ShowPortField}">
+                    <StackPanel Grid.Column="1" Width="88" Margin="12,0,0,0" IsVisible="{Binding ShowPortField}">
                       <TextBlock Classes="field-label" Text="{loc:Localize Port}" />
                       <NumericUpDown Value="{Binding Port}" Minimum="1" Maximum="65535"
                                      Increment="1" FormatString="0" ShowButtonSpinner="False" />
                       <TextBlock Classes="field-error" Text="{Binding PortError}"
                                  IsVisible="{Binding PortError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                     </StackPanel>
+                    <!-- 测试连接后由连接检查给出的角色(PRIMARY / SECONDARY),与主机列表各行同一套徽章。 -->
+                    <Border Grid.Column="2" Classes="role-badge" Margin="8,0,0,0" VerticalAlignment="Bottom"
+                            Height="20" IsVisible="{Binding HasHostRoleBadge}" Classes.success="{Binding IsHostRoleSuccess}">
+                      <TextBlock Text="{Binding HostRoleBadge}" />
+                    </Border>
                   </Grid>
 
-                  <!-- 跳板主机:决定连不连得上,留在「常规」页而不是藏进哪一页。长说明收进 ⓘ。 -->
-                  <StackPanel>
+                  <!-- 并进「连接目标」的其余插件字段(副本集的其余成员、副本集名、默认库、读偏好…)。 -->
+                  <ItemsControl ItemsSource="{Binding PluginTargetFields}" ItemTemplate="{StaticResource PluginFieldRow}"
+                                IsVisible="{Binding HasPluginTargetFields}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <ctl:FieldFlowPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                  </ItemsControl>
+
+                  <!-- 跳板主机:决定连不连得上,留在「常规」页而不是藏进哪一页。长说明收进 ⓘ。
+                       插件自己声明了 SSH 隧道字段时收起(工作台连接走那个字段,两个"跳板"只会让人不知道填哪个)。 -->
+                  <StackPanel IsVisible="{Binding ShowJumpHost}">
                     <StackPanel Orientation="Horizontal" Spacing="5" Margin="0,0,0,5">
                       <TextBlock Classes="field-label" Margin="0" Text="{loc:Localize Profile_JumpHost}" />
                       <Border Classes="help" ToolTip.Tip="{loc:Localize Profile_JumpHostHint}">
@@ -752,9 +1146,53 @@
                     <Border Grid.Column="1" Classes="section-rule" />
                   </Grid>
 
+                  <!-- 并进「身份验证」的插件字段(认证机制、认证库)排在账号之前:先选机制,再填账号。 -->
+                  <ItemsControl ItemsSource="{Binding PluginAuthFields}" ItemTemplate="{StaticResource PluginFieldRow}"
+                                IsVisible="{Binding HasPluginAuthFields}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <ctl:FieldFlowPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                  </ItemsControl>
+
+                  <!-- 插件协议:用户名与口令并排 —— 它们旁边没有 SSH 那一组认证方式要摆。 -->
+                  <Grid ColumnDefinitions="*,12,*" IsVisible="{Binding CredentialsSideBySide}">
+                    <StackPanel Grid.Column="0">
+                      <TextBlock Classes="field-label" Text="{Binding UsernameLabel}" />
+                      <TextBox Text="{Binding Username}" PlaceholderText="root" />
+                      <TextBlock Classes="field-error" Text="{Binding UsernameError}"
+                                 IsVisible="{Binding UsernameError, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="2">
+                      <TextBlock Classes="field-label" Text="{Binding PasswordLabel}" />
+                      <Border Classes="input-affix">
+                        <Grid ColumnDefinitions="*,Auto">
+                          <TextBox Grid.Column="0"
+                                   behaviors:SecurePasswordBox.Enabled="True"
+                                   behaviors:EnglishInputLocale.Enabled="True"
+                                   behaviors:SecurePasswordBox.Password="{Binding Password}"
+                                   behaviors:SecurePasswordBox.Reveal="{Binding ShowPassword}"
+                                   Padding="10,0,0,0"
+                                   VerticalAlignment="Center" />
+                          <Button Grid.Column="1" Width="28" Height="28"
+                                  Margin="0,0,2,0" Padding="0"
+                                  Background="Transparent" CornerRadius="3" Cursor="Hand"
+                                  Command="{Binding TogglePasswordVisibilityCommand}"
+                                  ToolTip.Tip="{loc:Localize Profile_ShowHidePassword}"
+                                  VerticalAlignment="Center">
+                            <pc:LucideIcon Width="13" Height="13"
+                                           Data="{StaticResource Icon.eye}"
+                                           Foreground="{DynamicResource VelaTextTertiary}" />
+                          </Button>
+                        </Grid>
+                      </Border>
+                    </StackPanel>
+                  </Grid>
+
                   <!-- 用户名 + 认证方式(插件协议可改写用户名标签,如 Access Key ID)。
                        FTP 没有私钥认证,右边那一格换成加密方式;插件协议两样都没有,那一格空着。 -->
-                  <Grid ColumnDefinitions="*,12,Auto">
+                  <Grid ColumnDefinitions="*,12,Auto" IsVisible="{Binding CredentialsStacked}">
                     <StackPanel Grid.Column="0">
                       <TextBlock Classes="field-label" Text="{Binding UsernameLabel}" />
                       <TextBox Text="{Binding Username}" PlaceholderText="root" />
@@ -831,8 +1269,9 @@
                     </Grid>
                   </Border>
 
-                  <!-- 密码(密码认证;匿名 FTP 不需要。插件协议下标签由协议给,如 Secret Access Key) -->
-                  <StackPanel IsVisible="{Binding ShowPasswordField}">
+                  <!-- 密码(密码认证;匿名 FTP 不需要。插件协议下标签由协议给,如 Secret Access Key;
+                       插件协议的口令与用户名并排,画在上面那一行里) -->
+                  <StackPanel IsVisible="{Binding ShowStackedPassword}">
                     <TextBlock Classes="field-label" Text="{Binding PasswordLabel}" />
                     <Border Classes="input-affix">
                       <Grid ColumnDefinitions="*,Auto">
@@ -922,20 +1361,44 @@
                   </StackPanel>
                 </StackPanel>
 
-                <!-- 插件协议的常用字段(标了 IsAdvanced 的在「高级」页) -->
-                <StackPanel Spacing="12" IsVisible="{Binding ShowPluginGeneralFields}">
+                <!-- 插件协议的常用字段(标了 IsAdvanced 的在「高级」页):插件自己的各节(「安全通道」之类),
+                     没声明节的字段归在最后的「<连接类型> 设置」。装载插件期间先挂一个省略号。 -->
+                <StackPanel Spacing="12" IsVisible="{Binding IsPluginLoading}">
                   <Grid ColumnDefinitions="Auto,*">
                     <TextBlock Classes="section-title" Text="{Binding PluginSectionTitle}" />
                     <Border Grid.Column="1" Classes="section-rule" />
                   </Grid>
-                  <TextBlock Text="…" IsVisible="{Binding IsPluginLoading}"
+                  <TextBlock Text="…"
                              Foreground="{DynamicResource VelaTextMuted}"
                              FontSize="{DynamicResource VelaFontSize11}" />
-                  <ItemsControl ItemsSource="{Binding PluginFields}" ItemTemplate="{StaticResource PluginFieldRow}" />
                 </StackPanel>
+                <ItemsControl ItemsSource="{Binding PluginFieldSections}" IsVisible="{Binding IsPluginSelected}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Spacing="24" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:PluginFieldSectionViewModel">
+                      <StackPanel Spacing="12" IsVisible="{Binding HasVisibleFields}">
+                        <Grid ColumnDefinitions="Auto,*">
+                          <TextBlock Classes="section-title" Text="{Binding Title}" />
+                          <Border Grid.Column="1" Classes="section-rule" />
+                        </Grid>
+                        <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource PluginFieldRow}">
+                          <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                              <ctl:FieldFlowPanel />
+                            </ItemsPanelTemplate>
+                          </ItemsControl.ItemsPanel>
+                        </ItemsControl>
+                      </StackPanel>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
 
-                <!-- 整理:显示名称 + 会话分组 + 标签 -->
-                <StackPanel Spacing="12">
+                <!-- 整理:显示名称 + 会话分组 + 标签(插件把字段并进「基本」时,这一节挪到了最上面) -->
+                <StackPanel Spacing="12" IsVisible="{Binding ShowOrganizeAtBottom}">
                   <Grid ColumnDefinitions="Auto,*">
                     <TextBlock Classes="section-title" Text="{loc:Localize Profile_SecOrganize}" />
                     <Border Grid.Column="1" Classes="section-rule" />
@@ -1231,11 +1694,150 @@
                 <!-- 插件标了 IsAdvanced 的调优字段(分片大小、并发数之类):S3 一口气声明了十来个字段,
                      全铺在「常规」页上就长到屏幕外了。 -->
                 <ItemsControl IsVisible="{Binding IsPluginSelected}"
-                              ItemsSource="{Binding PluginFields}" ItemTemplate="{StaticResource PluginFieldRow}" />
+                              ItemsSource="{Binding PluginAdvancedFields}" ItemTemplate="{StaticResource PluginFieldRow}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <ctl:FieldFlowPanel />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                </ItemsControl>
               </StackPanel>
             </Panel>
           </ScrollViewer>
         </Grid>
+
+        <!-- 右侧栏(320):插件连接类型的连接检查 —— 连接串预览、逐步的测试结果、测试时发现的成员 ——
+             以及插件声明在右侧的字段(MongoDB 的安全策略)。内容全来自插件的结构化数据,长相归宿主;
+             两页都在、独立滚动,填表时眼睛不用离开它就能核对"拼出来的连接串对不对"。 -->
+        <Border Grid.Column="2" Width="320" IsVisible="{Binding HasPluginAside}"
+                Background="{DynamicResource VelaBgSidebar}"
+                BorderThickness="1,0,0,0" BorderBrush="{DynamicResource VelaBorderPrimary}">
+          <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+            <StackPanel Margin="14,14,14,16" Spacing="20">
+
+              <!-- 连接串 -->
+              <StackPanel Spacing="8" IsVisible="{Binding Inspector.HasPreview}">
+                <Grid ColumnDefinitions="*,Auto">
+                  <TextBlock Classes="aside-title" Text="{Binding Inspector.PreviewTitle}" />
+                  <Button Grid.Column="1" Classes="copy-chip" Command="{Binding CopyPreviewCommand}"
+                          ToolTip.Tip="{loc:Localize Copy}">
+                    <StackPanel Orientation="Horizontal" Spacing="5">
+                      <pc:LucideIcon Width="11" Height="11" Data="{StaticResource Icon.copy}"
+                                     Foreground="{DynamicResource VelaTextSecondary}" />
+                      <TextBlock Text="{loc:Localize Copy}" VerticalAlignment="Center" />
+                    </StackPanel>
+                  </Button>
+                </Grid>
+                <Border Background="{DynamicResource VelaBgInput}" BorderBrush="{DynamicResource VelaBorderPrimary}"
+                        BorderThickness="1" CornerRadius="4" Padding="10,8">
+                  <ItemsControl ItemsSource="{Binding Inspector.PreviewSpans}">
+                    <ItemsControl.ItemsPanel>
+                      <ItemsPanelTemplate>
+                        <WrapPanel />
+                      </ItemsPanelTemplate>
+                    </ItemsControl.ItemsPanel>
+                    <ItemsControl.ItemTemplate>
+                      <DataTemplate x:DataType="vm:PreviewSpanViewModel">
+                        <TextBlock Classes="span" Text="{Binding Text}" Classes.muted="{Binding IsMuted}"
+                                   Classes.secret="{Binding IsSecret}" Classes.user="{Binding IsUser}"
+                                   Classes.host="{Binding IsHost}" Classes.path="{Binding IsPath}" Classes.value="{Binding IsValue}" />
+                      </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                  </ItemsControl>
+                </Border>
+                <TextBlock Classes="field-hint" Text="{Binding Inspector.PreviewNote}" IsVisible="{Binding Inspector.HasPreviewNote}" />
+              </StackPanel>
+
+              <!-- 测试结果:点「测试」后逐行点亮(进度按步骤的键原地更新) -->
+              <StackPanel Spacing="10" IsVisible="{Binding Inspector.IsAvailable}">
+                <TextBlock Classes="aside-title" Text="{loc:Localize Profile_TestResults}" />
+                <TextBlock Classes="field-hint" Text="{loc:Localize Profile_TestResultsHint}"
+                           IsVisible="{Binding Inspector.ShowStepsPlaceholder}" />
+                <ItemsControl ItemsSource="{Binding Inspector.Steps}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Spacing="10" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ProbeStepViewModel">
+                      <Grid ColumnDefinitions="Auto,*,Auto">
+                        <Panel Grid.Column="0" Width="14" Height="14" Margin="0,1,10,0" VerticalAlignment="Top">
+                          <pc:LucideIcon Width="14" Height="14" Data="{StaticResource Icon.circle-check}"
+                                         Foreground="{DynamicResource VelaStatusConnected}" IsVisible="{Binding IsPassed}" />
+                          <pc:LucideIcon Width="14" Height="14" Data="{StaticResource Icon.triangle-alert}"
+                                         Foreground="{DynamicResource VelaWarning}" IsVisible="{Binding IsWarning}" />
+                          <pc:LucideIcon Width="14" Height="14" Data="{StaticResource Icon.circle-alert}"
+                                         Foreground="{DynamicResource VelaError}" IsVisible="{Binding IsFailed}" />
+                          <pc:LucideIcon Width="14" Height="14" Data="{StaticResource Icon.refresh-cw}"
+                                         Foreground="{DynamicResource VelaAccent}" IsVisible="{Binding IsRunning}" />
+                          <Ellipse Width="8" Height="8" HorizontalAlignment="Center" VerticalAlignment="Center"
+                                   Fill="{DynamicResource VelaTextMuted}" IsVisible="{Binding IsIdle}" />
+                        </Panel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                          <TextBlock Classes="step-title" Text="{Binding Title}" />
+                          <TextBlock Classes="step-detail" Classes.failed="{Binding IsFailed}" Classes.warning="{Binding IsWarning}"
+                                     Text="{Binding Detail}" IsVisible="{Binding HasDetail}" />
+                        </StackPanel>
+                        <TextBlock Grid.Column="2" Classes="mono-small" Margin="8,1,0,0" VerticalAlignment="Top"
+                                   Text="{Binding Elapsed}" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- 发现的成员 -->
+              <StackPanel Spacing="8" IsVisible="{Binding Inspector.HasEndpoints}">
+                <TextBlock Classes="aside-title" Text="{Binding Inspector.EndpointsTitle}" />
+                <ItemsControl ItemsSource="{Binding Inspector.Endpoints}">
+                  <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                      <StackPanel Spacing="8" />
+                    </ItemsPanelTemplate>
+                  </ItemsControl.ItemsPanel>
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="vm:ProbeEndpointViewModel">
+                      <Grid ColumnDefinitions="*,Auto,Auto">
+                        <TextBlock Grid.Column="0" Classes="span" Text="{Binding Address}" VerticalAlignment="Center"
+                                   TextTrimming="CharacterEllipsis" />
+                        <Border Grid.Column="1" Classes="role-badge" Margin="8,0,0,0" IsVisible="{Binding HasRole}"
+                                Classes.success="{Binding IsSuccess}" Classes.info="{Binding IsInfo}"
+                                Classes.warning="{Binding IsWarning}" Classes.danger="{Binding IsDanger}">
+                          <TextBlock Text="{Binding Role}" />
+                        </Border>
+                        <TextBlock Grid.Column="2" Classes="mono-small" Margin="8,0,0,0" Text="{Binding Detail}" />
+                      </Grid>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+
+              <!-- 插件声明在右侧栏的字段(按节) -->
+              <ItemsControl ItemsSource="{Binding PluginAsideSections}">
+                <ItemsControl.ItemsPanel>
+                  <ItemsPanelTemplate>
+                    <StackPanel Spacing="20" />
+                  </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                  <DataTemplate x:DataType="vm:PluginFieldSectionViewModel">
+                    <StackPanel Spacing="10" IsVisible="{Binding HasVisibleFields}">
+                      <TextBlock Classes="aside-title" Text="{Binding Title}" />
+                      <ItemsControl ItemsSource="{Binding Fields}" ItemTemplate="{StaticResource PluginFieldRow}">
+                        <ItemsControl.ItemsPanel>
+                          <ItemsPanelTemplate>
+                            <ctl:FieldFlowPanel RowSpacing="10" />
+                          </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                      </ItemsControl>
+                    </StackPanel>
+                  </DataTemplate>
+                </ItemsControl.ItemTemplate>
+              </ItemsControl>
+            </StackPanel>
+          </ScrollViewer>
+        </Border>
       </Grid>
 
       <!-- 测试/保存反馈:**钉在滚动区外面**,紧贴按钮那一行。
@@ -1285,7 +1887,7 @@
             <pc:LucideIcon Width="13" Height="13" VerticalAlignment="Center"
                            Data="{StaticResource Icon.circle-check}"
                            Foreground="{DynamicResource VelaAccent}" />
-            <TextBlock Text="{loc:Localize Profile_TestSuccess}" VerticalAlignment="Center"
+            <TextBlock Text="{Binding TestSuccessText}" VerticalAlignment="Center"
                        Foreground="{DynamicResource VelaAccent}" FontSize="{DynamicResource VelaFontSize11}" />
           </StackPanel>
         </StackPanel>
