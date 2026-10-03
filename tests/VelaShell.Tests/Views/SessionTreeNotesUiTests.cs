@@ -1,7 +1,6 @@
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Headless;
-using Avalonia.Input;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using NSubstitute;
@@ -48,7 +47,7 @@ public class SessionTreeNotesUiTests
             window.UpdateLayout();
             try
             {
-                Dictionary<string, Border> rows = view.GetVisualDescendants()
+                var rows = view.GetVisualDescendants()
                     .OfType<Border>()
                     .Where(border => border.Classes.Contains("session") && border.IsVisible)
                     .ToDictionary(border => ((SessionTreeNodeViewModel)border.DataContext!).Name);

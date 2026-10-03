@@ -108,7 +108,6 @@ public class ShortcutCatalogTests
         Assert.IsEmpty(missing, "以下固定键位在快捷键页里找不到同名的固定行:\n  " + string.Join("\n  ", missing));
     }
 
-
     /// <summary>
     /// 同一分组里不得出现「动作名 + 键位」完全相同的两行 —— 那只会是复制粘贴的残留。
     /// 跨分组重名是允许的(Esc 在多处都关东西),同名不同键也是允许的

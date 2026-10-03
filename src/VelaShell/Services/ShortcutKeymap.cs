@@ -131,8 +131,8 @@ public enum ShortcutRejection
 /// </remarks>
 public sealed class ShortcutKeymap
 {
-    private readonly Dictionary<string, KeyGesture?> _gestures = new(StringComparer.Ordinal);
-    private readonly HashSet<string> _customized = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, KeyGesture?> _gestures = [with(StringComparer.Ordinal)];
+    private readonly HashSet<string> _customized = [with(StringComparer.Ordinal)];
 
     /// <summary>全部出厂键位。</summary>
     public static ShortcutKeymap Default { get; } = new(null);
