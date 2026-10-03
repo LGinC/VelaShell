@@ -1832,6 +1832,15 @@
   <data name="Profile_TagsPlaceholder" xml:space="preserve">
     <value>web, 프로덕션</value>
   </data>
+  <data name="Profile_Notes" xml:space="preserve">
+    <value>메모</value>
+  </data>
+  <data name="Profile_NotesPlaceholder" xml:space="preserve">
+    <value>용도, 담당자, 주의 사항 등 (Enter로 줄바꿈)</value>
+  </data>
+  <data name="Profile_NotesHint" xml:space="preserve">
+    <value>탐색기에서 이 연결에 마우스를 올리면 표시됩니다. 메모는 평문으로 저장되고 클라우드 동기화 시에도 업로드되므로, 비밀번호는 인증 항목에 입력하세요.</value>
+  </data>
   <data name="Profile_Test" xml:space="preserve">
     <value>테스트</value>
   </data>

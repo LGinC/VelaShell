@@ -508,6 +508,7 @@ public sealed class SessionTreeViewModel : ReactiveObject
         var sessionNode = new SessionTreeNodeViewModel(session.Id, session.Name, false, session.ConnectionType)
         {
             IsPinned = session.IsPinned,
+            Notes = session.Notes,
         };
         if (session.GroupId is null)
         {
@@ -916,6 +917,7 @@ public sealed class SessionTreeViewModel : ReactiveObject
         {
             IsRootLevel = isRootLevel,
             IsPinned = session.IsPinned,
+            Notes = session.Notes,
         };
         if (_statusCache.TryGetValue(session.Id, out SessionStatus status))
         {

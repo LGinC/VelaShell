@@ -1534,3 +1534,23 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 来历:这两处原是 `7769181d`(插件工作台的连接表单照版式声明排、右侧栏给连接串预览与逐步测试,PR #548)的一部分。MongoDB 插件随后改为像 Docker 面板一样从命令面板打开、自己管理连接,那次改动连同 SDK 2.0.7 的连接对话框契约一并撤回(`f4e6b470`;SDK 侧 velashell-plugin-sdk `06f5800`),`VelaShell.PluginSdk*` 回到 2.0.6;与契约无关的这两处单独留下。
 
 **三、验证**:UI 测试新增 `OpeningWithASavedPassword_LeavesTheFormAtTheTop`(压一块 320 高的矮屏,口令框在首屏以下时表单停在顶上;焦点放进口令框后照常滚过去),修之前红。
+
+## ✅ 152. 2026-10-03 连接配置加备注,资源管理器悬停显示(#549)
+
+**一、问题**:#549 要在连接配置里加备注,最好是能换行的文本域,记用途、负责人、注意事项之类。配置上原本只有名称与标签(单行、逗号分隔),一段说明无处可放。用户另要求在资源管理器里悬停一条连接时把备注弹出来。
+
+**二、做法**:
+- `SessionProfile.Notes`(`string?`,null = 没有备注)。仓储与 Gist 同步都是整对象序列化,不用改;`Clone` 补一行(`SessionProfileCloneTests` 的反射比对守着,`FullyPopulated` 一并补上)。明文、不经 `ISecretProtector`:它不是凭据,而且要在悬停提示里直接显示。导入器只新建配置、插件的 `sessions` 能力只读,两边都不会把已有的备注冲掉。
+- 连接对话框「常规」页「整理」一节,三栏下面加一整行备注:`AcceptsReturn` 多行框,`MinHeight` 64 / `MaxHeight` 96(最多约五行,再长在框里滚,不把整页撑高)。对话框没有默认按钮,回车只换行。不分协议。保存时去首尾空白,只剩空白的存 null。框下一行提示:悬停时显示;明文保存、也随云同步上传,口令放在身份验证里。
+- 资源管理器:`SessionTreeNodeViewModel.Notes` / `NotesTip`,建树(`CreateSessionNode`)与 `AddSession` 时从配置带上;会话行整行挂 `ToolTip.Tip="{Binding NotesTip}"`。没写备注是 null,不弹空浮层;超过 12 行或 500 个字符的截断补 `…`,不在代理对中间切 —— 提示框只限宽不限高,一大段粘贴进来的备注会弹出比侧栏还高的浮层。
+- 文案:新增 `Profile_Notes` / `Profile_NotesPlaceholder` / `Profile_NotesHint`,五份 resx 齐。
+
+**三、验证**:`SonnetDbPersistenceTests` 补备注带换行原样落盘、旧文档读回 null;`ConnectionProfileViewModelTests` 补 SSH / SFTP / FTP 三种协议的回显与保存(去首尾空白、保留行内换行)、只剩空白存 null;新增 `SessionTreeNotesTests`(11 例:建树与 `AddSession` 带上备注、分组行与无备注不弹、去首尾空行、按行数 / 字符数截断并补省略号、正好 12 行不截、不切开 emoji、改备注刷新提示);UI 测试 `NotesBox_EnterStartsANewLine_AndDoesNotSubmitTheDialog`(回车在框里换行、不保存不连接;变异:去掉 `AcceptsReturn` → 红)与 `SessionTreeNotesUiTests`(真把指针移上去,有备注的行弹、移开收起、无备注的行不弹)。headless 截图核过对话框里的备注框与截断后的悬停提示。全解决方案零警告零错误;`VelaShell.Tests` 1664 通过 / 35 跳过,`VelaShell.Infrastructure.Tests` 570 通过 / 4 跳过,`VelaShell.Presentation.Tests` 69 通过,`VelaShell.Core.Tests` 625 通过 / 10 跳过 / 1 失败(X11 靶机用例,§144 / §149 记过的那条,本机 `ssh-shells` 镜像旧)。
+
+## ✅ 153. 2026-10-03 编辑连接不再把置顶与最近连接时间清掉
+
+**一、问题**:做 §152 时读 `ConnectionProfileViewModel.BuildProfile` 发现的。保存是按界面字段**新建**一条配置、再由 `SaveProfileAsync` 整条覆盖落盘,而对话框里没有的三项状态没被带回:`IsPinned`(资源管理器右键置顶,#474)、`LastConnectedAt`(「最近连接」按它倒序排)、`AutoStartTunnelIds`。于是编辑一条置顶的连接,哪怕只改个端口,保存后置顶就没了;这条连接在最近连接里也掉到最后。不报任何错。
+
+**二、做法**:视图模型在编辑模式下记下这三项(只读字段),`BuildProfile` 原样带回;隧道 id 列表存副本,不与传进来的配置共享。新建连接三项都是默认值(不置顶、没连过、null)。至此 `SessionProfile` 的每个属性在 `BuildProfile` 里都有着落。
+
+**三、验证**:`ConnectionProfileViewModelTests` 新增 `EditingAProfile_KeepsStateTheDialogDoesNotShow`(置顶 + 最近连接时间 + 两条隧道 id 的配置改端口后保存,三项原样带回、列表是副本),修之前在 `IsPinned` 上红;`NewProfile_IsNotPinnedAndHasNeverConnected`。连接对话框与资源管理器相关用例 217 例通过。velashell-docs 的 §4 本来就写着置顶「只改显示位置、不改数据」,这是缺陷修复,不涉及文档同步。

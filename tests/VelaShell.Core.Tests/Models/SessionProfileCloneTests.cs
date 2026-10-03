@@ -40,6 +40,7 @@ public sealed class SessionProfileCloneTests
             GroupId = Guid.NewGuid(),
             LastConnectedAt = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc),
             Tags = ["prod", "bastion"],
+            Notes = "跳板机\n值班:运维二组",
             JumpHostProfileId = Guid.NewGuid(),
             PostAuthCommand = "sudo su -",
             PostAuthCommandDelaySeconds = 3,

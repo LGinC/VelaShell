@@ -934,7 +934,7 @@
                   <ItemsControl ItemsSource="{Binding PluginFields}" ItemTemplate="{StaticResource PluginFieldRow}" />
                 </StackPanel>
 
-                <!-- 整理:显示名称 + 会话分组 + 标签 -->
+                <!-- 整理:显示名称 + 会话分组 + 标签,下面一整行备注 -->
                 <StackPanel Spacing="12">
                   <Grid ColumnDefinitions="Auto,*">
                     <TextBlock Classes="section-title" Text="{loc:Localize Profile_SecOrganize}" />
@@ -959,6 +959,20 @@
                       <TextBox Text="{Binding TagsText}" PlaceholderText="{loc:Localize Profile_TagsPlaceholder}" />
                     </StackPanel>
                   </Grid>
+                  <!-- 备注(#549):回车换行 —— 对话框没有默认按钮,回车不会误触保存。
+                       最多约五行高,再长就在框里滚,不把整页撑高;资源管理器里悬停这条连接时显示。 -->
+                  <StackPanel>
+                    <TextBlock Classes="field-label" Text="{loc:Localize Profile_Notes}" />
+                    <TextBox x:Name="NotesBox"
+                             Text="{Binding Notes}"
+                             AcceptsReturn="True"
+                             TextWrapping="Wrap"
+                             MinHeight="64"
+                             MaxHeight="96"
+                             VerticalContentAlignment="Top"
+                             PlaceholderText="{loc:Localize Profile_NotesPlaceholder}" />
+                    <TextBlock Classes="field-hint" Margin="0,6,0,0" Text="{loc:Localize Profile_NotesHint}" />
+                  </StackPanel>
                 </StackPanel>
               </StackPanel>
 

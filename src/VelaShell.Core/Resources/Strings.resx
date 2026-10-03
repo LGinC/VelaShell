@@ -2016,6 +2016,15 @@ Paste anyway?</value>
   <data name="Profile_TagsPlaceholder" xml:space="preserve">
     <value>web, production</value>
   </data>
+  <data name="Profile_Notes" xml:space="preserve">
+    <value>Notes</value>
+  </data>
+  <data name="Profile_NotesPlaceholder" xml:space="preserve">
+    <value>Purpose, owner, things to watch out for… (Enter for a new line)</value>
+  </data>
+  <data name="Profile_NotesHint" xml:space="preserve">
+    <value>Shown when you hover this connection in the explorer. Stored as plain text and uploaded with cloud sync, so keep passwords in Authentication.</value>
+  </data>
   <data name="Profile_Test" xml:space="preserve">
     <value>Test</value>
   </data>

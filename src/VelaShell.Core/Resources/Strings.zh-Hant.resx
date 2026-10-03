@@ -2125,6 +2125,15 @@
   <data name="Profile_TagsPlaceholder" xml:space="preserve">
     <value>web, 生產</value>
   </data>
+  <data name="Profile_Notes" xml:space="preserve">
+    <value>備註</value>
+  </data>
+  <data name="Profile_NotesPlaceholder" xml:space="preserve">
+    <value>用途、負責人、注意事項……(Enter 換行)</value>
+  </data>
+  <data name="Profile_NotesHint" xml:space="preserve">
+    <value>在資源總管裡懸停這條連線時顯示。備註以明文儲存,也會隨雲端同步上傳,密碼請填在身分驗證裡。</value>
+  </data>
   <data name="Profile_Test" xml:space="preserve">
     <value>測試</value>
   </data>
