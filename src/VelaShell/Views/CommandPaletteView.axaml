@@ -27,7 +27,7 @@
       <Setter Property="FontWeight" Value="Medium" />
       <Setter Property="Margin" Value="16,6,0,2" />
     </Style>
-    <!-- 键帽徽章(Ctrl+K / ↑↓ / ↵ / Esc):统一固定高度并让文字双向居中,
+    <!-- 键帽徽章(Ctrl+P / ↑↓ / ↵ / Esc):统一固定高度并让文字双向居中,
          避免随字形基线上下漂移显得不居中。 -->
     <Style Selector="Border.kbd">
       <Setter Property="Background" Value="{DynamicResource VelaBgSurface}" />
@@ -98,7 +98,7 @@
                    VerticalContentAlignment="Center"
                    PlaceholderText="{loc:Localize Palette_SearchPlaceholder}" />
           <Border Grid.Column="2" Classes="kbd">
-            <TextBlock Text="Ctrl+K" FontFamily="{DynamicResource VelaUiMonoFont}" />
+            <TextBlock Text="Ctrl+P" FontFamily="{DynamicResource VelaUiMonoFont}" />
           </Border>
         </Grid>
       </Border>

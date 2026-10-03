@@ -87,8 +87,7 @@ public static class ShortcutCatalog
                     Item("Sc_NewTabAlias", [Ctrl, "T"]),
                     Item("Sc_CloneSession", [Ctrl, Shift, "N"]),
                     Item("Cmd_OpenSettings", [Ctrl, ","]),
-                    Item("Cmd_CommandPalette", [Ctrl, "K"]),
-                    Item("Sc_PaletteAlt", [Ctrl, "P"]),
+                    Item("Cmd_CommandPalette", [Ctrl, "P"]),
                 ]
             ),
             Group("Sc_GroupTabsAndPanels",

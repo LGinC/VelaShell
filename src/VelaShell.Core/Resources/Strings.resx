@@ -3297,9 +3297,6 @@ Paste anyway?</value>
   <data name="Sc_NextTab" xml:space="preserve">
     <value>Next Tab</value>
   </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>Command Palette (alternate)</value>
-  </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>Previous Tab</value>
   </data>

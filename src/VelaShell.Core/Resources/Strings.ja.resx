@@ -3180,9 +3180,6 @@
   <data name="Sc_NextTab" xml:space="preserve">
     <value>次のタブ</value>
   </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>コマンドパレット(同等)</value>
-  </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>前のタブ</value>
   </data>

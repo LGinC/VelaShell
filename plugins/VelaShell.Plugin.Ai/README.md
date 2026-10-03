@@ -551,7 +551,7 @@ SVG 目前只对 `data:` URI 和本地路径生效;要放开就把 `ConfigureMar
 
 依赖随插件目录分发,由插件 ALC 按 deps.json 隔离解析,与宿主互不干扰。
 
-## 命令(Ctrl+P / Ctrl+K)
+## 命令(Ctrl+P)
 
 | 命令 | 说明 |
 | --- | --- |

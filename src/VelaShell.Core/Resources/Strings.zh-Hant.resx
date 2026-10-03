@@ -3406,9 +3406,6 @@
   <data name="Sc_NextTab" xml:space="preserve">
     <value>下一個標籤頁</value>
   </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>命令面板(等效)</value>
-  </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>上一個標籤頁</value>
   </data>

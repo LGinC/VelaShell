@@ -495,7 +495,7 @@ Windows Explorer semantics, both orientations, application-wide (ScrollViewer, l
 ### 6.3 Focus & Keyboard
 
 - **Tab navigation**: Standard Avalonia focus traversal
-- **Command palette**: `Ctrl+P`/`Ctrl+K` global, `Up/Down` navigate, `Enter` executes, `Esc` closes
+- **Command palette**: `Ctrl+P` global (`Ctrl+K` is deliberately unbound — it is `^K` in the terminal, #551), `Up/Down` navigate, `Enter` executes, `Esc` closes
 - **Session tree**: `Enter`/double-click connects, right-click opens context menu
 - **File browser**: Double-click enters directory or opens file, `Ctrl`/`Shift` multi-select
 - **Column resize**: Pointer drag on splitter borders between column headers

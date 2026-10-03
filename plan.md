@@ -189,7 +189,7 @@ graph RL
   `BorderOnly` 还丢 `WS_CAPTION`（issue #21160 / #21212）。另一个坑：`VisualRoot as Window` 恒为 null，取窗口要走 `FindLogicalAncestorOfType<Window>()`。
   **以上只管 Win32**：2026-09-26 起 macOS 与 Linux 按平台走原生机制，统一入口 `Views/WindowChrome.cs`，见 §118。
 - 文字菜单栏已整体移除（与命令面板重复，用户决策）；标题栏右侧是功能图标组，全部走命令注册表。
-- **命令面板**（`Ctrl+P` / `Ctrl+K`）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
+- **命令面板**（`Ctrl+P`；`Ctrl+K` 不绑，见 §154）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
 - **状态栏跟随激活标签**：连接串 / 状态 / 终端类型 / 编码 / 尺寸 / 延迟。
 - **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键参考（纯展示）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
   逐项审计见 velashell-docs `zh/host/settings-audit.md`。
@@ -1554,3 +1554,14 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **二、做法**:视图模型在编辑模式下记下这三项(只读字段),`BuildProfile` 原样带回;隧道 id 列表存副本,不与传进来的配置共享。新建连接三项都是默认值(不置顶、没连过、null)。至此 `SessionProfile` 的每个属性在 `BuildProfile` 里都有着落。
 
 **三、验证**:`ConnectionProfileViewModelTests` 新增 `EditingAProfile_KeepsStateTheDialogDoesNotShow`(置顶 + 最近连接时间 + 两条隧道 id 的配置改端口后保存,三项原样带回、列表是副本),修之前在 `IsPinned` 上红;`NewProfile_IsNotPinnedAndHasNeverConnected`。连接对话框与资源管理器相关用例 217 例通过。velashell-docs 的 §4 本来就写着置顶「只改显示位置、不改数据」,这是缺陷修复,不涉及文档同步。
+
+## ✅ 154. 2026-10-03 命令面板不再占 `Ctrl+K`(#551)
+
+**一、问题**:#551:在 nano 里按 `Ctrl+K` 剪切当前行,弹出来的却是命令面板。`Ctrl+K` 是命令面板的别名(另一个是 `Ctrl+P`),登记在 `Window.KeyBindings`。Avalonia 的 `KeyboardDevice` 在分发路由事件**之前**就从焦点元素往上匹配 KeyBindings,命中即 Handled —— 隧道阶段的处理器与终端控件的 `OnKeyDown` 都收不到(headless 实测:按 `Ctrl+K` 只有 KeyBinding 触发;按 `Ctrl+J` 依次走窗口隧道 → 控件 `OnKeyDown`)。于是 `^K` 永远到不了远端:nano 剪切行、bash / zsh 删到行尾、emacs kill-line 一并失灵。
+⚠️ 同样被窗口级键位占掉的还有 `Ctrl+T` / `Ctrl+N` / `Ctrl+W` / `Ctrl+P` / `Ctrl+B` / `Ctrl+-`,`TerminalTabView` 隧道阶段另占 `Ctrl+F`。它们是正经功能的键位,改默认值要动用户的肌肉记忆,这次不动,交给可配置键位。
+
+**二、做法**:
+- 删掉 `MainWindow.axaml` 的 `Ctrl+K` 绑定;`ShortcutCatalog` 全局组只留「命令面板 `Ctrl+P`」一行,`Sc_PaletteAlt` 五份 resx 一起删;命令面板搜索框右侧的键帽徽章改成 `Ctrl+P`;注释、`DESIGN.md` §6.3 与仓库首页、Presentation、AI 插件几份 README 里的「Ctrl+P / Ctrl+K」一并改掉。
+- 守门:`ShortcutCatalogTests.MainWindowKeyBindings_DoNotTakeNewControlCharacters` 扫 `MainWindow.axaml` 的每条 `KeyBinding`:只按 Ctrl、经 `InputEncoder` 编码成单个 C0 控制字节、且这个字节不是键本身就会发的(`Ctrl+Tab` 的 `^I` 单按 Tab 也发),一律报红。判定直接问编码器,与真正发往远端的字节同源。带 Shift 的不算 —— 编码器对 `Ctrl+Shift+字母` 发同一个字节,但不带 Shift 的那一按还在。上面那六条历史遗留列在名单里,**名单只减不增**。
+
+**三、验证**:新用例把 `Ctrl+K` 加回去时红、删掉后绿;`ShortcutCatalogTests`(含与改过的文档逐条比对)与本地化键的几条守卫通过;`VelaShell.Tests` 1694 通过 / 8 跳过。文档同步见 `feature-plan.md`「文档待同步」。

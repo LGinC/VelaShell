@@ -74,6 +74,57 @@ public partial class ShortcutCatalogTests
     }
 
     /// <summary>
+    /// 窗口级键位不许再新占会编码成 C0 控制字符的组合(#551)。
+    /// </summary>
+    /// <remarks>
+    /// <c>Window.KeyBindings</c> 由 KeyboardDevice 在分发路由事件之前就匹配掉,终端控件根本收不到。
+    /// <c>Ctrl+K</c> 当年只是命令面板的一个别名,却让 nano 的剪切行、bash 的删到行尾整条失灵。
+    /// 判定直接问终端的编码器,与真正发往远端的字节同源。名单里是历史遗留的几条 ——
+    /// 改它们要动用户的肌肉记忆,另行决定;<b>名单只减不增</b>。
+    /// </remarks>
+    [TestMethod]
+    public void MainWindowKeyBindings_DoNotTakeNewControlCharacters()
+    {
+        HashSet<string> legacy = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Ctrl+T", "Ctrl+N", "Ctrl+W", "Ctrl+P", "Ctrl+B", "Ctrl+OemMinus",
+        };
+        string axaml = File.ReadAllText(Path.Combine(SourceRoot(), "VelaShell", "Views", "MainWindow.axaml"));
+        List<string> taken = [.. KeyBindingGesture.Matches(axaml)
+            .Select(match => match.Groups[1].Value)
+            .Where(gesture => !legacy.Contains(gesture) && EncodesToControlCharacter(gesture))
+            .Order(StringComparer.Ordinal)];
+
+        Assert.IsEmpty(taken,
+                       "以下全局键位会把一个控制字符从终端手里抢走(远端程序的对应键位从此失灵),"
+                       + "请改用 Ctrl+Shift / Ctrl+Alt 组合:\n"
+                       + string.Join("\n", taken.Select(gesture => $"  {gesture}")));
+    }
+
+    /// <summary>
+    /// 该手势是否是远端拿到某个 C0 控制字符(^@ … ^_)的那一按:只按 Ctrl、编码成单个控制字节,
+    /// 且这个字节不是键本身就会发的(Ctrl+Tab 发的 ^I 单按 Tab 也发,占了不丢东西)。
+    /// </summary>
+    /// <remarks>
+    /// 带 Shift 的不算:编码器对 Ctrl+Shift+字母 也发同一个控制字节,但不带 Shift 的那一按还在,
+    /// 远端照样收得到 —— Ctrl+Shift 本来就是终端留给宿主的地盘。
+    /// </remarks>
+    private static bool EncodesToControlCharacter(string gesture)
+    {
+        Avalonia.Input.KeyGesture parsed = Avalonia.Input.KeyGesture.Parse(gesture);
+        if (parsed.KeyModifiers != Avalonia.Input.KeyModifiers.Control)
+        {
+            return false;
+        }
+        byte[]? withCtrl = Encode(parsed.Key, parsed.KeyModifiers);
+        byte[]? plain = Encode(parsed.Key, Avalonia.Input.KeyModifiers.None);
+        return withCtrl is [< 0x20] && !(plain is [var own] && own == withCtrl[0]);
+
+        static byte[]? Encode(Avalonia.Input.Key key, Avalonia.Input.KeyModifiers modifiers) =>
+            VelaShell.Terminal.Emulation.InputEncoder.Encode(key, modifiers, new(), VelaShell.Terminal.Emulation.TerminalType.Xterm);
+    }
+
+    /// <summary>
     /// 同一分组里不得出现「动作名 + 键位」完全相同的两行 —— 那只会是复制粘贴的残留。
     /// 跨分组重名是允许的(Esc 在多处都关东西),同名不同键也是允许的
     /// (翻页有 PageUp 与 Shift+PageUp 两行,条件不同)。

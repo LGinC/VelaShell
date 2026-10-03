@@ -541,10 +541,10 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     private VelaTerminalControl? ActiveTerminalControl =>
         ActiveTerminalTab?.TerminalEmulator.Control as VelaTerminalControl;
 
-    /// <summary>Ctrl+P / Ctrl+K 命令面板浮层。</summary>
+    /// <summary>Ctrl+P 命令面板浮层。</summary>
     public CommandPaletteViewModel CommandPalette { get; }
 
-    /// <summary>打开命令面板(Ctrl+P / Ctrl+K)的命令。</summary>
+    /// <summary>打开命令面板(Ctrl+P)的命令。</summary>
     public ReactiveCommand<RxVoid, RxVoid> OpenCommandPaletteCommand { get; }
 
     /// <summary>显示或隐藏当前 SSH 会话的远程文件面板。</summary>

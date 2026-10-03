@@ -3180,9 +3180,6 @@
   <data name="Sc_NextTab" xml:space="preserve">
     <value>다음 탭</value>
   </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>명령 팔레트(동일 기능)</value>
-  </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>이전 탭</value>
   </data>

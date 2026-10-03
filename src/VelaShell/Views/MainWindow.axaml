@@ -31,8 +31,9 @@
     <KeyBinding Gesture="Ctrl+Tab" Command="{Binding NextTabCommand}" />
     <KeyBinding Gesture="Ctrl+Shift+Tab" Command="{Binding PreviousTabCommand}" />
     <KeyBinding Gesture="Ctrl+OemComma" Command="{Binding OpenSettingsCommand}" />
+    <!-- 命令面板只绑 Ctrl+P。曾经的别名 Ctrl+K 已删(#551):这里的绑定先于终端控件吃键,
+         而 ^K 是 bash/zsh 的删到行尾、nano 的剪切行 —— 一个多余的别名换来远端整条键位失灵。 -->
     <KeyBinding Gesture="Ctrl+P" Command="{Binding OpenCommandPaletteCommand}" />
-    <KeyBinding Gesture="Ctrl+K" Command="{Binding OpenCommandPaletteCommand}" />
     <KeyBinding Gesture="Ctrl+Shift+N" Command="{Binding RunCommand}" CommandParameter="session.clone" />
     <KeyBinding Gesture="Ctrl+Shift+T" Command="{Binding RunCommand}" CommandParameter="tools.tunnel" />
     <KeyBinding Gesture="Ctrl+Shift+F" Command="{Binding RunCommand}" CommandParameter="tools.files" />
@@ -176,7 +177,7 @@
     <views:StatusBarView Grid.Row="1"
                          DataContext="{Binding StatusBar}" />
 
-    <!-- 命令面板覆盖层(Ctrl+P / Ctrl+K)。点击遮罩或按 Esc 关闭。 -->
+    <!-- 命令面板覆盖层(Ctrl+P)。点击遮罩或按 Esc 关闭。 -->
     <Grid Grid.Row="0" Grid.RowSpan="2"
           IsVisible="{Binding CommandPalette.IsOpen}">
       <Grid.Styles>
