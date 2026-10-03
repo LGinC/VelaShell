@@ -87,6 +87,9 @@ public class AppSettings
     /// <summary>「X Server」页的分组选项(本机 X 服务端的启动参数)。</summary>
     public XServerOptions XServer { get; set; } = new();
 
+    /// <summary>「快捷键」页改过的键位(没改过的一律用出厂键位)。</summary>
+    public ShortcutOptions Shortcuts { get; set; } = new();
+
     /// <summary>
     /// 载入后的规整(由设置服务在反序列化后调用):把旧字段迁移到唯一权威字段,
     /// 保证每个行为只有一个数据来源(设置审计 C-01/M-01)。
@@ -157,6 +160,16 @@ public class AppSettings
         if (!XServerWindowModes.All.Contains(XServer.WindowMode))
         {
             XServer.WindowMode = XServerWindowModes.MultiWindow;
+        }
+
+        // 老配置没有 Shortcuts 这一节(或写着 null)时补一个空的;值为 null 的条目是手改出来的,
+        // 既不是「解绑」(空串)也不是手势,丢掉,回到出厂键位。手势本身认不认得由宿主
+        // 解析时判断(这一层不认识按键),认不出的同样回到出厂键位。
+        Shortcuts ??= new();
+        Shortcuts.Overrides ??= [];
+        foreach (string id in Shortcuts.Overrides.Where(pair => pair.Value is null).Select(pair => pair.Key).ToList())
+        {
+            Shortcuts.Overrides.Remove(id);
         }
 
         ClampNumbers();
@@ -1539,4 +1552,23 @@ public class XServerOptions : ObservableOptions
         get;
         set => Set(ref field, value);
     } = true;
+}
+
+/// <summary>
+/// 「快捷键」页的自定义键位。只存**改过的**那几条,没出现在这里的一律用出厂键位 ——
+/// 出厂键位以后调整时,没改过的人自动跟上,改过的人保持自己的选择。
+/// </summary>
+/// <remarks>
+/// 键是绑定 id(宿主 <c>ShortcutBindings</c> 里那张表的 <c>Id</c>,如 <c>palette.open</c>),
+/// 值是 Avalonia 的手势写法(如 <c>Ctrl+Shift+P</c>);<b>空串 = 解绑</b>,那一按原样交给终端。
+/// 认不出的 id 原样保留(可能是更新版本写的),认不出的手势按出厂键位处理。
+/// </remarks>
+public class ShortcutOptions : ObservableOptions
+{
+    /// <summary>绑定 id → 手势;空串表示解绑。整表替换才会触发变更通知。</summary>
+    public Dictionary<string, string> Overrides
+    {
+        get;
+        set => Set(ref field, value ?? []);
+    } = [];
 }

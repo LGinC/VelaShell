@@ -35,28 +35,6 @@ public class KeyboardShortcutServiceTests
 
     [TestMethod]
     [TestCategory("Keyboard")]
-    public void Resolve_CtrlT_InGlobal_ReturnsNewTab()
-    {
-        var service = new KeyboardShortcutService(isMacOS: false);
-
-        ShortcutAction action = service.Resolve(KeyModifiers.Ctrl, KeyCode.T, ShortcutContext.Global);
-
-        Assert.AreEqual(ShortcutAction.NewTab, action);
-    }
-
-    [TestMethod]
-    [TestCategory("Keyboard")]
-    public void Resolve_CtrlW_InGlobal_ReturnsCloseTab()
-    {
-        var service = new KeyboardShortcutService(isMacOS: false);
-
-        ShortcutAction action = service.Resolve(KeyModifiers.Ctrl, KeyCode.W, ShortcutContext.Global);
-
-        Assert.AreEqual(ShortcutAction.CloseTab, action);
-    }
-
-    [TestMethod]
-    [TestCategory("Keyboard")]
     public void Resolve_CtrlC_InTerminal_ReturnsSendInterrupt()
     {
         var service = new KeyboardShortcutService(isMacOS: false);
@@ -112,42 +90,6 @@ public class KeyboardShortcutServiceTests
 
     [TestMethod]
     [TestCategory("Keyboard")]
-    public void Resolve_CtrlTab_InGlobal_ReturnsNextTab()
-    {
-        var service = new KeyboardShortcutService(isMacOS: false);
-
-        ShortcutAction action = service.Resolve(KeyModifiers.Ctrl, KeyCode.Tab, ShortcutContext.Global);
-
-        Assert.AreEqual(ShortcutAction.NextTab, action);
-    }
-
-    [TestMethod]
-    [TestCategory("Keyboard")]
-    public void Resolve_CtrlShiftTab_InGlobal_ReturnsPreviousTab()
-    {
-        var service = new KeyboardShortcutService(isMacOS: false);
-
-        ShortcutAction action = service.Resolve(
-            KeyModifiers.Ctrl | KeyModifiers.Shift,
-            KeyCode.Tab,
-            ShortcutContext.Global);
-
-        Assert.AreEqual(ShortcutAction.PreviousTab, action);
-    }
-
-    [TestMethod]
-    [TestCategory("Keyboard")]
-    public void Resolve_CtrlComma_InGlobal_ReturnsOpenSettings()
-    {
-        var service = new KeyboardShortcutService(isMacOS: false);
-
-        ShortcutAction action = service.Resolve(KeyModifiers.Ctrl, KeyCode.Comma, ShortcutContext.Global);
-
-        Assert.AreEqual(ShortcutAction.OpenSettings, action);
-    }
-
-    [TestMethod]
-    [TestCategory("Keyboard")]
     public void Resolve_MacOS_CmdComma_InGlobal_ReturnsOpenSettings()
     {
         var service = new KeyboardShortcutService(isMacOS: true);
@@ -179,16 +121,41 @@ public class KeyboardShortcutServiceTests
         Assert.IsFalse(winService.IsMacOS);
     }
 
+    /// <summary>
+    /// Ctrl 版本的全局键位(新建 / 关闭 / 切换标签、打开设置)归键位表管,这里一条都不映射:
+    /// 否则用户在设置里把 Ctrl+W 解绑之后,焦点落在标签视图上时它照样关标签(#551)。
+    /// </summary>
     [TestMethod]
     [TestCategory("Keyboard")]
-    public void Resolve_GlobalShortcuts_AlsoWorkInTerminalContext()
+    public void Resolve_CtrlGlobalShortcuts_AreLeftToTheKeymap()
     {
         var service = new KeyboardShortcutService(isMacOS: false);
+        (KeyModifiers Modifiers, KeyCode Key)[] globals =
+        [
+            (KeyModifiers.Ctrl, KeyCode.T),
+            (KeyModifiers.Ctrl, KeyCode.W),
+            (KeyModifiers.Ctrl, KeyCode.Comma),
+            (KeyModifiers.Ctrl, KeyCode.Tab),
+            (KeyModifiers.Ctrl | KeyModifiers.Shift, KeyCode.Tab),
+        ];
 
-        ShortcutAction newTab = service.Resolve(KeyModifiers.Ctrl, KeyCode.T, ShortcutContext.Terminal);
-        ShortcutAction closeTab = service.Resolve(KeyModifiers.Ctrl, KeyCode.W, ShortcutContext.Terminal);
+        foreach ((KeyModifiers modifiers, KeyCode key) in globals)
+        {
+            Assert.AreEqual(ShortcutAction.None, service.Resolve(modifiers, key, ShortcutContext.Global), $"{modifiers}+{key}");
+            Assert.AreEqual(ShortcutAction.None, service.Resolve(modifiers, key, ShortcutContext.Terminal), $"{modifiers}+{key}");
+        }
+    }
 
-        Assert.AreEqual(ShortcutAction.NewTab, newTab);
-        Assert.AreEqual(ShortcutAction.CloseTab, closeTab);
+    /// <summary>macOS 的 Command 别名是固定的,终端上下文里同样生效(回落到全局映射)。</summary>
+    [TestMethod]
+    [TestCategory("Keyboard")]
+    public void Resolve_MacOS_CmdAliases_AlsoWorkInTerminalContext()
+    {
+        var service = new KeyboardShortcutService(isMacOS: true);
+
+        Assert.AreEqual(ShortcutAction.NewTab, service.Resolve(KeyModifiers.Meta, KeyCode.T, ShortcutContext.Terminal));
+        Assert.AreEqual(ShortcutAction.CloseTab, service.Resolve(KeyModifiers.Meta, KeyCode.W, ShortcutContext.Terminal));
+        Assert.AreEqual(ShortcutAction.None, service.Resolve(KeyModifiers.Ctrl, KeyCode.W, ShortcutContext.Terminal),
+                        "Ctrl+W 在 macOS 上同样归键位表管。");
     }
 }

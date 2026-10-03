@@ -68,6 +68,9 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
 
     private readonly IAppDataStore? _appDataStore;
     private readonly PaletteRecency _paletteRecency;
+
+    /// <summary>生效中的键位表(命令面板右侧的键位提示跟着它走);没有时按出厂键位。</summary>
+    private readonly ShortcutKeymapService? _shortcutKeymap;
     private readonly ISessionRepository? _sessionRepository;
     private readonly ISettingsService? _settingsService;
     private readonly ISftpService? _sftpService;
@@ -229,11 +232,13 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         IThemeService? themeService = null,
         IConnectivityMonitor? connectivityMonitor = null,
         ILocalXServer? localXServer = null,
-        ILocalizationService? localization = null
+        ILocalizationService? localization = null,
+        ShortcutKeymapService? shortcutKeymap = null
     )
     {
         // 注册表可注入(DI 里与插件命令桥共享同一单例);无 UI 单测传 null 时自己创建一个。
         Commands = commandRegistry ?? new CommandRegistry();
+        _shortcutKeymap = shortcutKeymap;
         _remoteProcessService = remoteProcessService;
         TraceRouteService = traceRouteService;
         _appDataStore = appDataStore;
@@ -471,6 +476,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         CloseActiveTabCommand = ReactiveCommand.Create(CloseActiveTab);
         RegisterCommands();
         RunCommand = ReactiveCommand.Create<string>(id => Commands.Execute(id));
+        ShortcutCommand = ReactiveCommand.Create<string>(id => ExecuteShortcut(id));
         localization?.LanguageChanged += _ => RefreshLocalizedText();
     }
 
@@ -508,6 +514,31 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
 
     /// <summary>通过 id 执行一条注册命令(菜单项通过 CommandParameter 使用)。</summary>
     public ReactiveCommand<string, RxVoid>? RunCommand { get; private set; }
+
+    /// <summary>
+    /// 键位绑定执行的命令(主窗口按键位表登记的 KeyBindings 都指向它),参数是绑定的命令 id。
+    /// </summary>
+    public ReactiveCommand<string, RxVoid> ShortcutCommand { get; }
+
+    /// <summary>
+    /// 执行一条键位绑定:命令注册表里的直接执行;标签循环(<c>tab.next</c> / <c>tab.prev</c>)
+    /// 不进命令面板,在这里单独接。
+    /// </summary>
+    /// <returns>命令是否真的执行了(不存在或当前不可用时为 false)。</returns>
+    public bool ExecuteShortcut(string commandId)
+    {
+        switch (commandId)
+        {
+            case "tab.next":
+                NextTabCommand.Execute().Subscribe();
+                return true;
+            case "tab.prev":
+                PreviousTabCommand.Execute().Subscribe();
+                return true;
+            default:
+                return Commands.Execute(commandId);
+        }
+    }
 
     /// <summary>活动会话的隧道管理面板(设计 fuXS7,规范 §10)。</summary>
     public TunnelPanelViewModel? TunnelPanel
@@ -849,7 +880,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_NewSshConnection"),
                 Strings.Get("CmdCat_Session"),
                 () => NewConnectionRequested?.Invoke(this, EventArgs.Empty),
-                Shortcut: "Ctrl+N",
                 Icon: "Icon.plus"
             )
         );
@@ -859,8 +889,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_CloseCurrentSession"),
                 Strings.Get("CmdCat_Session"),
                 () => CloseActiveTabCommand.Execute().Subscribe(),
-                () => Layout.ActiveDocument is not null,
-                "Ctrl+W"
+                () => Layout.ActiveDocument is not null
             )
         );
         Commands.Register(
@@ -892,8 +921,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     }
                 },
                 () => ActiveTerminalTab?.Profile is not null,
-                "Ctrl+Shift+N",
-                "Icon.copy"
+                Icon: "Icon.copy"
             )
         );
         Commands.Register(
@@ -946,8 +974,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("CmdCat_Search"),
                 () => TerminalSearchRequested?.Invoke(this, EventArgs.Empty),
                 () => ActiveTerminalTab is not null,
-                "Ctrl+F",
-                "Icon.search"
+                Icon: "Icon.search"
             )
         );
         // 隧道独立于终端会话(后台自动连接),无活动标签也可用。
@@ -957,7 +984,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_TunnelManager"),
                 Strings.Get("CmdCat_Tools"),
                 ToggleTunnelPanel,
-                Shortcut: "Ctrl+Shift+T",
                 Icon: "Icon.route"
             )
         );
@@ -968,8 +994,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("CmdCat_Tools"),
                 () => ToggleFileBrowserCommand.Execute().Subscribe(),
                 () => CanToggleFileBrowser,
-                "Ctrl+Shift+F",
-                "Icon.folder"
+                Icon: "Icon.folder"
             )
         );
         Commands.Register(
@@ -1019,8 +1044,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_ClearScreen"),
                 Strings.Get("CmdCat_Edit"),
                 () => ActiveTerminalTab?.TerminalEmulator.WriteInput([0x0C]),
-                () => ActiveTerminalTab?.ConnectionStatus == SessionStatus.Connected,
-                "Ctrl+Shift+K"
+                () => ActiveTerminalTab?.ConnectionStatus == SessionStatus.Connected
             )
         );
 
@@ -1032,8 +1056,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_ZoomIn"),
                 Strings.Get("CmdCat_Edit"),
                 () => ActiveTerminalControl?.AdjustFontSize(1),
-                () => ActiveTerminalControl is not null,
-                "Ctrl+="
+                () => ActiveTerminalControl is not null
             )
         );
         Commands.Register(
@@ -1042,8 +1065,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_ZoomOut"),
                 Strings.Get("CmdCat_Edit"),
                 () => ActiveTerminalControl?.AdjustFontSize(-1),
-                () => ActiveTerminalControl is not null,
-                "Ctrl+-"
+                () => ActiveTerminalControl is not null
             )
         );
         Commands.Register(
@@ -1052,8 +1074,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_ZoomReset"),
                 Strings.Get("CmdCat_Edit"),
                 () => ActiveTerminalControl?.ResetFontSize(_latestSettings?.TerminalFontSize ?? 14),
-                () => ActiveTerminalControl is not null,
-                "Ctrl+0"
+                () => ActiveTerminalControl is not null
             )
         );
 
@@ -1068,8 +1089,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     Strings.Format("Cmd_GotoTab", slot),
                     Strings.Get("CmdCat_Session"),
                     () => GotoTab(captured - 1),
-                    () => Layout.AllDocuments().Any(),
-                    $"Ctrl+Alt+{slot}"
+                    () => Layout.AllDocuments().Any()
                 )
             );
         }
@@ -1079,8 +1099,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_GotoLastTab"),
                 Strings.Get("CmdCat_Session"),
                 () => GotoTab(-1),
-                () => Layout.AllDocuments().Any(),
-                "Ctrl+Alt+9"
+                () => Layout.AllDocuments().Any()
             )
         );
 
@@ -1097,8 +1116,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_CloseAllTabs"),
                 Strings.Get("CmdCat_Session"),
                 CloseAllTabs,
-                () => Layout.AllDocuments().Any(),
-                "Ctrl+Shift+W"
+                () => Layout.AllDocuments().Any()
             )
         );
         Commands.Register(
@@ -1106,8 +1124,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 "terminal.linegutter",
                 Strings.Get("Cmd_ToggleLineGutter"),
                 Strings.Get("CmdCat_Edit"),
-                ToggleLineGutter,
-                Shortcut: "Ctrl+Shift+L"
+                ToggleLineGutter
             )
         );
         Commands.Register(
@@ -1116,7 +1133,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_ToggleSidebar"),
                 Strings.Get("CmdCat_Actions"),
                 ToggleSidebar,
-                Shortcut: "Ctrl+B",
                 Icon: "Icon.panel-left"
             )
         );
@@ -1126,7 +1142,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_OpenSettings"),
                 Strings.Get("CmdCat_Edit"),
                 () => OpenSettingsCommand.Execute().Subscribe(),
-                Shortcut: "Ctrl+,",
                 Icon: "Icon.settings"
             )
         );
@@ -1154,7 +1169,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("Cmd_CommandPalette"),
                 Strings.Get("CmdCat_Search"),
                 CommandPalette.Open,
-                Shortcut: "Ctrl+P",
                 Icon: "Icon.zap"
             )
         );
@@ -1173,7 +1187,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     }
                 },
                 () => Layout.ActiveDocument is not null,
-                "Ctrl+Shift+D",
                 Icon: "Icon.columns-2"
             )
         );
@@ -1190,7 +1203,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     }
                 },
                 () => Layout.ActiveDocument is not null,
-                "Ctrl+Shift+S",
                 Icon: "Icon.rows-2"
             )
         );
@@ -1209,7 +1221,6 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     }
                 },
                 () => Layout.HasMultipleGroups,
-                "Ctrl+Shift+X",
                 Icon: "Icon.maximize"
             )
         );
@@ -2276,13 +2287,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             );
         }
 
-        // 全局操作来自共享命令注册表(菜单/面板/快捷键一致)。
+        // 全局操作来自共享命令注册表(菜单/面板/快捷键一致)。右侧的键位提示归键位表管的
+        // 取当前生效的那一个(改过键、解绑都跟着变),其余用命令注册时自带的提示。
+        ShortcutKeymap keymap = _shortcutKeymap?.Current ?? ShortcutKeymap.Default;
         items.AddRange(
             Commands.All.Select(captured => new CommandPaletteItem(
                 Strings.Get("Command"),
                 captured.Title,
                 () => Commands.Execute(captured.Id),
-                captured.Shortcut,
+                keymap.HintFor(captured.Id, captured.Shortcut),
                 id: captured.Id
             ))
         );

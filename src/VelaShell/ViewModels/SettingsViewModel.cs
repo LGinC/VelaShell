@@ -164,20 +164,9 @@ public partial class SettingsViewModel : ReactiveObject
         {
             int selectedSection = SelectedSectionIndex;
             Sections = BuildSections();
-            // 分组标题要跟着换语言,只能整表重建;折叠态挂在分组对象上,按稳定 id 搬到新表,
-            // 否则切一次语言就把用户收起来的分组全打开了。
-            Dictionary<string, bool> expansion = ShortcutGroups.ToDictionary(
-                group => group.Id,
-                group => group.IsExpanded,
-                StringComparer.Ordinal
-            );
-            ShortcutGroups = ShortcutCatalog.Build();
-            foreach (ShortcutGroup group in ShortcutGroups)
-            {
-                group.IsExpanded = expansion.GetValueOrDefault(group.Id, true);
-            }
+            // 分组标题要跟着换语言,只能整表重建(折叠态随之搬过去,见 RebuildShortcutGroups)。
+            RebuildShortcutGroups();
             this.RaisePropertyChanged(nameof(Sections));
-            this.RaisePropertyChanged(nameof(ShortcutGroups));
             this.RaisePropertyChanged(nameof(ShortcutMacNote));
             // 主题下拉末项「跟随系统」;条目换了之后选中项要重新吆喝一次(同 RebuildXServerChoices)
             AvailableThemeNames = BuildThemeNames();
@@ -185,8 +174,6 @@ public partial class SettingsViewModel : ReactiveObject
             this.RaisePropertyChanged(nameof(ThemeIndex));
             Sync?.RefreshLocalizedText();
             RebuildXServerChoices();
-            // 分组重建后过滤结果指向旧数组,必须跟着重算,否则快捷键页停在旧语言。
-            RefreshShortcutView();
             SelectedSectionIndex = selectedSection;
         };
 
@@ -446,6 +433,13 @@ public partial class SettingsViewModel : ReactiveObject
 
     /// <summary>X Server 页选项(POCO,直接 TwoWay 绑定);改动在下次启动 X Server 时生效。</summary>
     public XServerOptions XServer
+    {
+        get;
+        private set => this.RaiseAndSetIfChanged(ref field, value);
+    } = new();
+
+    /// <summary>快捷键页改过的键位(暂存,保存设置后生效)。</summary>
+    public ShortcutOptions Shortcuts
     {
         get;
         private set => this.RaiseAndSetIfChanged(ref field, value);
@@ -1021,11 +1015,204 @@ public partial class SettingsViewModel : ReactiveObject
     }
 
     /// <summary>
-    /// 快捷键参考页的完整分组(只读展示),取自 <see cref="ShortcutCatalog" /> ——
-    /// 该表是全应用快捷键的唯一事实来源,与 <c>docs/快捷键参考.md</c> 同源。
+    /// 快捷键页的完整分组,取自 <see cref="ShortcutCatalog" /> —— 该表是全应用快捷键的唯一事实来源,
+    /// 与 velashell-docs 的快捷键参考同源。可自定义的那几条按暂存的改动(<see cref="Shortcuts" />)显示。
     /// 本属性保留全量,过滤后的展示用 <see cref="FilteredShortcutGroups" />。
     /// </summary>
     public ShortcutGroup[] ShortcutGroups { get; private set; } = ShortcutCatalog.Build();
+
+    /// <summary>按暂存改动算出的键位表(改一次键就作废重算)。</summary>
+    private ShortcutKeymap? _stagedKeymap;
+
+    /// <summary>快捷键页当前显示的键位表:出厂表 + 暂存的改动。</summary>
+    public ShortcutKeymap StagedKeymap => _stagedKeymap ??= new(Shortcuts.Overrides);
+
+    /// <summary>是否有改过的键位(为 true 时显示「全部恢复默认」)。</summary>
+    public bool HasCustomShortcuts => StagedKeymap.HasCustomizations;
+
+    /// <summary>
+    /// 按当前界面语言与暂存改动整表重建分组(换语言、载入设置时)。折叠态挂在分组对象上,按稳定 id 搬到新表,
+    /// 否则切一次语言、开一次设置就把用户收起来的分组全打开了。
+    /// </summary>
+    private void RebuildShortcutGroups()
+    {
+        Dictionary<string, bool> expansion = ShortcutGroups.ToDictionary(
+            group => group.Id,
+            group => group.IsExpanded,
+            StringComparer.Ordinal
+        );
+        _stagedKeymap = null;
+        ShortcutGroups = ShortcutCatalog.Build(StagedKeymap);
+        foreach (ShortcutGroup group in ShortcutGroups)
+        {
+            group.IsExpanded = expansion.GetValueOrDefault(group.Id, true);
+        }
+        this.RaisePropertyChanged(nameof(ShortcutGroups));
+        this.RaisePropertyChanged(nameof(HasCustomShortcuts));
+        // 分组重建后过滤结果指向旧数组,必须跟着重算,否则快捷键页停在旧语言。
+        RefreshShortcutView();
+    }
+
+    /// <summary>可自定义键位的全部行。</summary>
+    private IEnumerable<ShortcutItem> EditableShortcutItems =>
+        ShortcutCatalog.Flatten(ShortcutGroups).Where(item => item.IsEditable);
+
+    /// <summary>开始给这一行录键:同一时间只有一行在录,别的行收起录键框与待确认的替换。</summary>
+    public void BeginShortcutRecording(ShortcutItem item)
+    {
+        if (!item.IsEditable)
+        {
+            return;
+        }
+        foreach (ShortcutItem other in EditableShortcutItems)
+        {
+            ClearShortcutFeedback(other);
+        }
+        item.IsRecording = true;
+    }
+
+    /// <summary>放弃录键(Esc、录键框失焦、点「取消」)。</summary>
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1822:将成员标记为 static",
+        Justification = "视图经视图模型实例调用,与同组的改键操作保持同一个入口。")]
+    public void CancelShortcutRecording(ShortcutItem item) => ClearShortcutFeedback(item);
+
+    /// <summary>
+    /// 录到一个手势。带不带修饰键、是不是固定键位当场判定,不合格就留在录键状态并说明原因;
+    /// 已经绑给别的动作时先问一句,确认替换才改(<see cref="ConfirmShortcutReplace" />)。
+    /// </summary>
+    public void ApplyRecordedShortcut(ShortcutItem item, Avalonia.Input.KeyGesture gesture)
+    {
+        if (item.BindingId is not { } id)
+        {
+            return;
+        }
+        ShortcutKeymap keymap = StagedKeymap;
+        ShortcutCheck check = ShortcutGestures.Check(gesture, keymap.IsMacOS);
+        switch (check.Rejection)
+        {
+            case ShortcutRejection.NeedsModifier:
+                item.Message = Strings.Get("Sc_ErrNeedsModifier");
+                return;
+            case ShortcutRejection.Reserved:
+                item.Message = Strings.Format("Sc_ErrReserved", Strings.Get(check.ReservedLabelKey!));
+                return;
+        }
+        ClearShortcutFeedback(item);
+        if (keymap.GestureFor(id) is { } current && ShortcutGestures.AreSame(current, gesture))
+        {
+            return;
+        }
+        if (keymap.Owner(gesture) is { } owner && owner.Id != id)
+        {
+            item.PendingGesture = ShortcutGestures.ToStorage(gesture);
+            item.Message = Strings.Format(
+                "Sc_Conflict", ShortcutGestures.Display(gesture, keymap.IsMacOS), owner.Label);
+            return;
+        }
+        Dictionary<string, string> next = new(Shortcuts.Overrides, StringComparer.Ordinal);
+        PutShortcut(next, id, gesture);
+        CommitShortcuts(next);
+    }
+
+    /// <summary>确认替换:手势改给这一行,原来占着它的那一条变为解绑。</summary>
+    public void ConfirmShortcutReplace(ShortcutItem item)
+    {
+        if (item.BindingId is not { } id
+            || !ShortcutGestures.TryParse(item.PendingGesture, out Avalonia.Input.KeyGesture? gesture))
+        {
+            ClearShortcutFeedback(item);
+            return;
+        }
+        Dictionary<string, string> next = new(Shortcuts.Overrides, StringComparer.Ordinal);
+        if (StagedKeymap.Owner(gesture) is { } owner && owner.Id != id)
+        {
+            next[owner.Id] = string.Empty;
+        }
+        PutShortcut(next, id, gesture);
+        ClearShortcutFeedback(item);
+        CommitShortcuts(next);
+    }
+
+    /// <summary>解绑:这一按不再触发任何动作,原样交给终端。</summary>
+    public void UnbindShortcut(ShortcutItem item)
+    {
+        if (item.BindingId is not { } id)
+        {
+            return;
+        }
+        ClearShortcutFeedback(item);
+        Dictionary<string, string> next = new(Shortcuts.Overrides, StringComparer.Ordinal) { [id] = string.Empty };
+        CommitShortcuts(next);
+    }
+
+    /// <summary>
+    /// 恢复出厂键位。出厂键位眼下被别的改动占着时,与录键撞车一样先问一句,而不是悄悄恢复成「未绑定」。
+    /// </summary>
+    public void ResetShortcut(ShortcutItem item)
+    {
+        if (item.BindingId is not { } id || ShortcutBindings.Find(id) is not { } binding)
+        {
+            return;
+        }
+        ClearShortcutFeedback(item);
+        if (StagedKeymap.Owner(binding.Default) is { } owner && owner.Id != id)
+        {
+            item.PendingGesture = ShortcutGestures.ToStorage(binding.Default);
+            item.Message = Strings.Format(
+                "Sc_Conflict", ShortcutGestures.Display(binding.Default, StagedKeymap.IsMacOS), owner.Label);
+            return;
+        }
+        Dictionary<string, string> next = new(Shortcuts.Overrides, StringComparer.Ordinal);
+        next.Remove(id);
+        CommitShortcuts(next);
+    }
+
+    /// <summary>全部恢复出厂键位。</summary>
+    public void ResetAllShortcuts()
+    {
+        foreach (ShortcutItem item in EditableShortcutItems)
+        {
+            ClearShortcutFeedback(item);
+        }
+        CommitShortcuts(new(StringComparer.Ordinal));
+    }
+
+    /// <summary>写入一条改动;与出厂键位相同就等于没改,不留记录。</summary>
+    private static void PutShortcut(Dictionary<string, string> overrides, string id, Avalonia.Input.KeyGesture gesture)
+    {
+        if (ShortcutBindings.Find(id) is { } binding && ShortcutGestures.AreSame(binding.Default, gesture))
+        {
+            overrides.Remove(id);
+        }
+        else
+        {
+            overrides[id] = ShortcutGestures.ToStorage(gesture);
+        }
+    }
+
+    /// <summary>换上新的改动表,原地刷新每一行可自定义键位(不重建分组,焦点与滚动位置不丢)。</summary>
+    private void CommitShortcuts(Dictionary<string, string> overrides)
+    {
+        Shortcuts.Overrides = overrides;
+        _stagedKeymap = null;
+        ShortcutKeymap keymap = StagedKeymap;
+        foreach (ShortcutItem item in EditableShortcutItems)
+        {
+            item.Refresh(keymap);
+        }
+        this.RaisePropertyChanged(nameof(HasCustomShortcuts));
+        if (_shortcutSearchActive)
+        {
+            RefreshShortcutView();
+        }
+    }
+
+    private static void ClearShortcutFeedback(ShortcutItem item)
+    {
+        item.IsRecording = false;
+        item.Message = null;
+        item.PendingGesture = null;
+    }
 
     /// <summary>
     /// 快捷键页的搜索词:同时匹配动作名、键位与生效条件备注(见 <see cref="ShortcutItem.SearchText" />)。
@@ -1060,7 +1247,7 @@ public partial class SettingsViewModel : ReactiveObject
     public string ShortcutCountText =>
         Strings.Format("Sc_Count", FilteredShortcutGroups.Sum(group => group.FilteredItems.Count));
 
-    /// <summary>macOS 上终端内改用 Command 的说明(全局键位仍是 Ctrl,见 KeyboardShortcutService)。</summary>
+    /// <summary>macOS 上终端内另有一组固定的 Command 键位的说明(见 KeyboardShortcutService)。</summary>
     [System.Diagnostics.CodeAnalysis.SuppressMessage("Performance", "CA1822:将成员标记为 static", Justification = "<挂起>")]
     public string ShortcutMacNote => Strings.Get("Sc_MacNote");
 
@@ -1507,6 +1694,8 @@ public partial class SettingsViewModel : ReactiveObject
         Proxy = settings.Proxy;
         Notifications = settings.Notifications;
         XServer = settings.XServer;
+        Shortcuts = settings.Shortcuts;
+        RebuildShortcutGroups();
         RefreshTrustedLaunchTargets();
         RefreshXServerDetection();
 
@@ -1736,6 +1925,7 @@ public partial class SettingsViewModel : ReactiveObject
         _loaded.Proxy = Proxy;
         _loaded.Notifications = Notifications;
         _loaded.XServer = XServer;
+        _loaded.Shortcuts = Shortcuts;
         // 语言先于落盘切换:落盘触发的 SettingsSaved 会把设置重新下发到已打开的终端,
         // 其中行号栏右键菜单等文案是下发时现取的 —— 晚一步换语言,它们就停在旧语言。
         _localizationService?.SetLanguage(Language);

@@ -74,7 +74,10 @@ dotnet test  VelaShell.slnx
 漏译与孤儿键由 `LocalizedKeyUsageTests` / `UnusedLocalizedKeyTests` 拦住。
 - **新增或改动快捷键先改目录**:唯一事实来源是
 `src/VelaShell/ViewModels/ShortcutCatalog.cs`,设置页与文档都从它取数。没登记的话
-`ShortcutCatalogTests` 会失败并打印出可粘贴的 Markdown 行。快捷键文档在
+`ShortcutCatalogTests` 会失败并打印出可粘贴的 Markdown 行。全局键位用户可以改键、解绑,
+出厂表在 `src/VelaShell/Services/ShortcutKeymap.cs` 的 `ShortcutBindings`,主窗口按它登记 KeyBindings ——
+**`MainWindow.axaml` 里不许写死 `KeyBinding`**(写死的那条用户改不掉),新的出厂键位也不许再占 `Ctrl+字母`
+这类终端控制字符(#551),两条都有测试拦着。快捷键文档在
 [`zh/host/快捷键参考.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/zh/host/快捷键参考.md),改了要同步。
 - **集成测试按环境早退跳过,而 MSTest 把跳过记为「通过」**。`DockerIntegration` 分类需要
 Docker 与 `docker-compose.test.yml`,`CrossPlatformPublishTests` 需 `VELASHELL_PUBLISH_TESTS=1`。

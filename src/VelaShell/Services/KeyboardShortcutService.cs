@@ -50,9 +50,11 @@ public class KeyboardShortcutService : IKeyboardShortcutService
 
     private void RegisterMappings()
     {
-        KeyModifiers primaryModifier = IsMacOS ? KeyModifiers.Meta : KeyModifiers.Ctrl;
         RegisterTerminalMappings();
-        RegisterGlobalMappings(primaryModifier);
+        if (IsMacOS)
+        {
+            RegisterMacGlobalAliases();
+        }
     }
 
     private void RegisterTerminalMappings()
@@ -73,15 +75,20 @@ public class KeyboardShortcutService : IKeyboardShortcutService
         }
     }
 
-    private void RegisterGlobalMappings(KeyModifiers primaryModifier)
+    /// <summary>
+    /// macOS 上的 Command 别名:终端里 Cmd+T / Cmd+W / Cmd+, 新建标签、关闭标签、打开设置。
+    /// </summary>
+    /// <remarks>
+    /// 只在 macOS 上登记,而且只登记 Command 版本。Ctrl 版本的全局键位归键位表管
+    /// (<see cref="ShortcutKeymap" />,设置 → 快捷键可改键、解绑),由主窗口的 KeyBindings 处理 ——
+    /// 它们先于终端控件吃键,根本轮不到这里。这里若再映射一遍 Ctrl+W,用户把它解绑之后,
+    /// 焦点落在标签视图上时 Ctrl+W 照样关标签,解绑就成了一半。
+    /// </remarks>
+    private void RegisterMacGlobalAliases()
     {
-        Map(primaryModifier, KeyCode.T, ShortcutContext.Global, ShortcutAction.NewTab);
-        Map(primaryModifier, KeyCode.W, ShortcutContext.Global, ShortcutAction.CloseTab);
-        Map(primaryModifier, KeyCode.Comma, ShortcutContext.Global, ShortcutAction.OpenSettings);
-
-        // 标签页切换在所有平台都使用 Ctrl
-        Map(KeyModifiers.Ctrl, KeyCode.Tab, ShortcutContext.Global, ShortcutAction.NextTab);
-        Map(KeyModifiers.Ctrl | KeyModifiers.Shift, KeyCode.Tab, ShortcutContext.Global, ShortcutAction.PreviousTab);
+        Map(KeyModifiers.Meta, KeyCode.T, ShortcutContext.Global, ShortcutAction.NewTab);
+        Map(KeyModifiers.Meta, KeyCode.W, ShortcutContext.Global, ShortcutAction.CloseTab);
+        Map(KeyModifiers.Meta, KeyCode.Comma, ShortcutContext.Global, ShortcutAction.OpenSettings);
     }
 
     private void Map(KeyModifiers modifiers, KeyCode key, ShortcutContext context, ShortcutAction action) => _mappings[(modifiers, key, context)] = action;

@@ -191,7 +191,7 @@ graph RL
 - 文字菜单栏已整体移除（与命令面板重复，用户决策）；标题栏右侧是功能图标组，全部走命令注册表。
 - **命令面板**（`Ctrl+P`；`Ctrl+K` 不绑，见 §154）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
 - **状态栏跟随激活标签**：连接串 / 状态 / 终端类型 / 编码 / 尺寸 / 延迟。
-- **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键参考（纯展示）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
+- **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键（全局与标签类可改键、解绑，§155）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
   逐项审计见 velashell-docs `zh/host/settings-audit.md`。
 - **终端配色跟随主题**：未自定义时随具名主题配对的终端方案实时切换（§25、§26）。
 
@@ -253,7 +253,7 @@ graph RL
 
 ### ❌ B. 确认不做(2026-07-10)
 
-连字、自适应标题栏色、系统 Toast、输入脱敏、自定义键位、热切终端类型;理由见 feature-plan.md「确认不做」。
+连字、自适应标题栏色、系统 Toast、输入脱敏、自定义键位、热切终端类型;理由见 feature-plan.md「确认不做」。其中自定义键位 2026-10-03 因 #551 推翻并实现,见 §155。
 
 ### ✅ C. 顺手清掉的技术债
 
@@ -1565,3 +1565,20 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 守门:`ShortcutCatalogTests.MainWindowKeyBindings_DoNotTakeNewControlCharacters` 扫 `MainWindow.axaml` 的每条 `KeyBinding`:只按 Ctrl、经 `InputEncoder` 编码成单个 C0 控制字节、且这个字节不是键本身就会发的(`Ctrl+Tab` 的 `^I` 单按 Tab 也发),一律报红。判定直接问编码器,与真正发往远端的字节同源。带 Shift 的不算 —— 编码器对 `Ctrl+Shift+字母` 发同一个字节,但不带 Shift 的那一按还在。上面那六条历史遗留列在名单里,**名单只减不增**。
 
 **三、验证**:新用例把 `Ctrl+K` 加回去时红、删掉后绿;`ShortcutCatalogTests`(含与改过的文档逐条比对)与本地化键的几条守卫通过;`VelaShell.Tests` 1694 通过 / 8 跳过。文档同步见 `feature-plan.md`「文档待同步」。
+
+## ✅ 155. 2026-10-03 快捷键可自定义:改键、解绑、恢复默认(#551,推翻「确认不做」)
+
+**一、问题**:§154 只删了 `Ctrl+K` 这个多余的别名。窗口级键位先于终端控件吃键,出厂的 `Ctrl+N` / `Ctrl+T` / `Ctrl+W` / `Ctrl+P` / `Ctrl+B` / `Ctrl+-` 与终端标签里的 `Ctrl+F` 同样各抢走一个控制字符(bash 删词、tmux 前缀、vim / less 翻页……),而 07-10 定下的「不做自定义键位」(§12-B)让用户撞上了也无计可施 —— #551 的报告者在设置里看到「只读」就停了。任何一套出厂键位都会撞上某个远端程序,说得通的只有让用户自己改、自己解绑。
+
+**二、做法**:
+- **出厂表** `Services/ShortcutKeymap.cs` 的 `ShortcutBindings`:30 条 —— 全局、标签与面板两组里除窗格移焦外的全部,终端组的搜索、清屏与三个字号缩放。每条 = 稳定 id + 命令 id + 出厂手势 + 文案键 + 生效范围(窗口 / 终端标签)。跳标签从「一行区间」拆成 8 条,每条能单独解绑(欧洲键盘布局上 AltGr 就是 Ctrl+Alt)。
+- **键位表** `ShortcutKeymap`(不可变)= 出厂表 + `AppSettings.Shortcuts.Overrides`(id → Avalonia 手势,**空串 = 解绑**,只存改过的,出厂键位日后调整时没改过的人自动跟上)。认不出、不合规则的改动按出厂处理;同一手势只归一条:改过的压过出厂的,两条改动撞车按表序先到先得。`ShortcutKeymapService`(DI 单例)持有生效的那一份,设置保存后换新;主窗口载入设置后补一次。
+- **生效**:`MainWindow.axaml` 里 29 条写死的 `KeyBinding` 全删,改由 `ApplyKeymap` 按键位表整表登记(都指向 `MainWindowViewModel.ShortcutCommand`,参数是命令 id;`tab.next` / `tab.prev` 不进命令面板,在 `ExecuteShortcut` 里单独接),键位表换新就重建。终端内搜索(`TerminalTabView` 隧道阶段)改成按键位表匹配。命令面板右侧的键位提示取键位表里当前生效的那个(同一命令两个键位取先绑着的,全解绑则不显示),命令注册里那批写死的提示随之删掉;不归键位表管的复制、粘贴、重连、窗格移焦照旧用注册时的提示。`KeyboardShortcutService` 不再映射 Ctrl 版本的全局键位 —— 留着的话,解绑 `Ctrl+W` 之后焦点落在标签视图上它照样关标签;只留 macOS 的 Command 别名。
+- **改键的规则**(`ShortcutGestures.Check`):要带 Ctrl / Alt / Meta,不带修饰键的只能 F1–F24;不能占固定键位(复制粘贴、`^C`、跳提示符、删词、断线重连、补全、`Alt+方向`、SFTP 的 `Ctrl+L`,macOS 另有 `Cmd+C` / `Cmd+V`)。撞上别的绑定先问,确认替换后那一条写成解绑;恢复默认时出厂键位被别人占着同样先问;录回出厂键位不留记录。
+- **终端冲突提示**(`ShortcutGestures.TerminalBytesLost` / `ShortcutKeymap.TerminalWarning`):直接问 `InputEncoder` —— 这一按本来会发字节,且去掉 Shift 或 Ctrl 后的那一按发的不一样,就算「抢键」。单个控制字符还会指出没人占用的 `Ctrl+Shift+同一个键`(编码器对它发同一个字节),例如出厂 `Ctrl+P` 提示「要把 ^P 发给远端,请按 Ctrl+Shift+P」。原来写死的「缩小字号会占用 ^_」备注随之撤掉。§154 的守门用例改为扫出厂表、用同一个判定,名单补上 `Ctrl+F`。
+- **设置页**:页名「快捷键参考」→「快捷键」,副标题不再写「只读」。可改的行右侧三个图标按钮(改键 / 解绑 / 恢复默认),改过的键帽用强调色,解绑的显示「未绑定」,会抢键的行下方警示色提示;搜索框旁「全部恢复默认」。录键框 `Controls/ShortcutRecorder`:显示即抢焦点;只按修饰键时只显示已按住的修饰键;每个按键都标 Handled(设置窗口的 Esc 关窗、Tab 移焦都不会在录键时动作);不带修饰键的 Esc 或失焦即取消。改动暂存,保存设置才落盘。
+  ⚠️ 提示行的颜色必须走样式类:`TextBlock.row-desc` 这种带类名的样式按「样式触发」优先级生效,会压过数据模板里直接写在 `TextBlock` 上的 `Foreground`(headless 截图里第一版的警示与报错都是灰的)。
+- 文案 14 个新键,五份 resx 齐;`Cmd_GotoTabN`、`Sc_NoteZoomOutTakesUnitSeparator` 删掉;`Sc_MacNote` 改成「另有一组固定的 Command 键位」;新图标 `Icon.rotate-ccw`。
+- `feature-plan.md`「确认不做」删掉自定义键位那一条;vi 复制模式那条里引用它的理由一并标为失效。
+
+**三、验证**:`ShortcutKeymapTests` 21 例(出厂表 id 与手势不重复、出厂手势过得了改键检查、每条命令真实存在、键帽写法、存储写法往返含 `Key` 的同值别名、改键 / 解绑 / 坏值回落 / 撞车规则、固定键位、编码器判定抢键、冲突提示指出替代按法、命令面板显示生效的键位);`ShortcutKeyBindingsUiTests` 3 例走真实的 Avalonia 按键分发(改过的 `Ctrl+Shift+P` 与出厂的 `Ctrl+B` 触发命令,改走的 `Ctrl+P` 与解绑的 `Ctrl+W` 原样到达焦点控件;整表替换;录键框);`SettingsShortcutEditingTests` 13 例(载入、被拒留在录键状态、撞车先问再替换、取消、解绑与恢复默认、恢复默认撞车先问、全部恢复、保存落盘、改键后搜得到新键位);`ShortcutCatalogTests` 改写(`MainWindow.axaml` 不许写死 KeyBinding、出厂表每条在目录里恰好一次、出厂键位不许新占终端按键、固定键位都在页上);`ShortcutOptionsNormalizeTests` 4 例;`KeyboardShortcutServiceTests` 改为 Ctrl 全局键位归键位表。headless 截图核过暗 / 亮两套主题下的录键、报错、替换确认与冲突提示。`VelaShell.Tests` 1729 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 570 通过 / 4 跳过,`VelaShell.Presentation.Tests` 69 通过,`VelaShell.Core.Tests` 629 通过 / 10 跳过 / 1 失败(X11 靶机用例,本机 `ssh-shells` 镜像旧,§152 记过的那条)。文档同步见 `feature-plan.md`「文档待同步」。

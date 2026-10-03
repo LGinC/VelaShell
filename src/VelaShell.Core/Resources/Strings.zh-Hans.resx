@@ -2816,10 +2816,10 @@
     <value>// 事件负载:{ source, event, message, detail, timestamp };端点不可达不影响连接流程</value>
   </data>
   <data name="SetShortcuts_Subtitle" xml:space="preserve">
-    <value>// 当前版本的内置键位一览(只读)</value>
+    <value>// 全部键位一览;带铅笔按钮的可以改键或解绑</value>
   </data>
   <data name="SetShortcuts_Title" xml:space="preserve">
-    <value>快捷键参考</value>
+    <value>快捷键</value>
   </data>
   <data name="SetSnippets_Add" xml:space="preserve">
     <value>添加</value>
@@ -3385,9 +3385,6 @@
   <data name="Sc_NewTabAlias" xml:space="preserve">
     <value>新建标签(同新建连接)</value>
   </data>
-  <data name="Cmd_GotoTabN" xml:space="preserve">
-    <value>跳到第 N 个标签</value>
-  </data>
   <data name="Sc_FocusPane" xml:space="preserve">
     <value>窗格间移动焦点</value>
   </data>
@@ -3399,9 +3396,6 @@
   </data>
   <data name="Sc_NoteNotPinned" xml:space="preserve">
     <value>固定的标签页除外</value>
-  </data>
-  <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
-    <value>会占用 ^_;要发送它请用 Ctrl+Shift+-</value>
   </data>
   <data name="Sc_NextTab" xml:space="preserve">
     <value>下一个标签页</value>
@@ -5222,7 +5216,7 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>共 {0} 条快捷键</value>
   </data>
   <data name="Sc_MacNote" xml:space="preserve">
-    <value>在 macOS 上,终端内的复制/粘贴/新建标签/关闭标签/打开设置使用 Command 代替 Ctrl。</value>
+    <value>在 macOS 上,终端内另有一组 Command 键位:Cmd+C / Cmd+V 复制粘贴,Cmd+T / Cmd+W / Cmd+, 新建标签、关闭标签、打开设置。它们是固定的,不随上面的改键变化。</value>
   </data>
   <data name="ExtLaunch_Title" xml:space="preserve">
     <value>外部登录请求</value>
@@ -6410,5 +6404,48 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="XHelp_XkbVariant" xml:space="preserve">
     <value>XKB 变体。默认不设置。</value>
+  </data>
+  <!-- 快捷键页:可自定义键位(#551) -->
+  <data name="Sc_EditHint" xml:space="preserve">
+    <value>// 点铅笔按钮后直接按下新的组合键(Esc 取消)。解绑后这一按不再触发任何动作,原样交给终端 —— 比如 nano 的 ^W、tmux 的 ^B。改动在保存设置后生效。</value>
+  </data>
+  <data name="Sc_ResetAll" xml:space="preserve">
+    <value>全部恢复默认</value>
+  </data>
+  <data name="Sc_Unbound" xml:space="preserve">
+    <value>未绑定</value>
+  </data>
+  <data name="Sc_RecordPrompt" xml:space="preserve">
+    <value>按下组合键…</value>
+  </data>
+  <data name="Sc_EditShortcut" xml:space="preserve">
+    <value>改键</value>
+  </data>
+  <data name="Sc_UnbindShortcut" xml:space="preserve">
+    <value>解绑(这一按交给终端)</value>
+  </data>
+  <data name="Sc_ResetShortcut" xml:space="preserve">
+    <value>恢复默认</value>
+  </data>
+  <data name="Sc_ErrNeedsModifier" xml:space="preserve">
+    <value>要带 Ctrl 或 Alt;不带修饰键的只能用 F1–F24</value>
+  </data>
+  <data name="Sc_ErrReserved" xml:space="preserve">
+    <value>已被固定键位「{0}」占用</value>
+  </data>
+  <data name="Sc_Conflict" xml:space="preserve">
+    <value>{0} 已绑给「{1}」。替换后那一条变为未绑定。</value>
+  </data>
+  <data name="Sc_Replace" xml:space="preserve">
+    <value>替换</value>
+  </data>
+  <data name="Sc_WarnControlChar" xml:space="preserve">
+    <value>终端里这一按是 {0},绑定期间远端程序收不到它</value>
+  </data>
+  <data name="Sc_WarnControlCharAlt" xml:space="preserve">
+    <value>终端里这一按是 {0};要把 {0} 发给远端,请按 {1}</value>
+  </data>
+  <data name="Sc_WarnTerminalKey" xml:space="preserve">
+    <value>这一按本来会发给远端程序,绑定期间远端收不到它</value>
   </data>
 </root>
