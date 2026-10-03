@@ -22,6 +22,7 @@ public static class PresentationServiceCollectionExtensions
         services.AddSingleton<IConnectionWorkflowService, ConnectionWorkflowService>();
         services.AddSingleton<IConnectionDiagnosticsService, ConnectionDiagnosticsService>();
         services.AddSingleton<ITunnelWorkflowService, TunnelWorkflowService>();
+        services.AddSingleton<SharedCredentialService>();
         // 命令注册表提为容器单例:主窗口视图模型与插件命令桥共享同一实例,
         // 插件命令才能出现在命令面板里。
         services.AddSingleton<ICommandRegistry, CommandRegistry>();

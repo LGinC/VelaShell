@@ -1,4 +1,5 @@
 using Microsoft.Extensions.DependencyInjection;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Diagnostics;
 using VelaShell.Core.Ftp;
@@ -15,6 +16,7 @@ using VelaShell.Core.Ssh;
 using VelaShell.Core.Sync;
 using VelaShell.Core.Tunnels;
 using VelaShell.Core.XServer;
+using VelaShell.Infrastructure.Credentials;
 using VelaShell.Infrastructure.Diagnostics;
 using VelaShell.Infrastructure.Ftp;
 using VelaShell.Infrastructure.Import;
@@ -69,6 +71,16 @@ public static class InfrastructureServiceCollectionExtensions
             return new SonnetDbSettingsService(sp.GetRequiredService<SonnetDbEngine>(),
                 [paths.RootDirectory]);
         });
+        // 共享凭据(#550):连接配置只存引用,连接那一刻由解析器按来源取回。
+        // 来源以集合注册(先注册具体类型,再转发),外部密码管理器接进来时在这里追加一行。
+        services.AddSingleton<ISharedCredentialRepository>(sp =>
+            new SonnetDbSharedCredentialRepository(sp.GetRequiredService<SonnetDbEngine>(),
+                sp.GetRequiredService<ISecretProtector>()));
+        services.AddSingleton<SharedCredentialProvider>(sp =>
+            new(sp.GetRequiredService<ISharedCredentialRepository>()));
+        services.AddSingleton<ICredentialProvider>(sp => sp.GetRequiredService<SharedCredentialProvider>());
+        services.AddSingleton<ICredentialResolver>(sp =>
+            new CredentialResolver(sp.GetServices<ICredentialProvider>()));
         // 会话一键迁移:各来源(Xshell / WinSCP)解析 + 还原密码 + 写入会话仓储。
         // 同时以 ISessionImportService 集合注册 —— 导入对话框打开即遍历全部来源自动扫描,
         // 用户无需先选「从哪个工具导入」;新增来源只要在这里追加一行。
@@ -216,7 +228,9 @@ public static class InfrastructureServiceCollectionExtensions
             sp.GetRequiredService<IAppDataStore>(), sp.GetRequiredService<IQuickCommandRepository>(),
             sp.GetRequiredService<ISecretProtector>(),
             // 后台活动账本:自动同步是静默的,至少让状态栏的圆环交代一句"正在同步"。
-            sp.GetService<IBackgroundActivityService>()));
+            sp.GetService<IBackgroundActivityService>(),
+            // 共享凭据随连接配置一起同步,否则另一台设备上的引用全是悬空的。
+            sp.GetRequiredService<ISharedCredentialRepository>()));
         services.AddSingleton<ISessionMetricsService>(sp =>
             new SessionMetricsService(sp.GetRequiredService<ISshConnectionService>()));
         services.AddSingleton<IRemoteProcessService>(sp =>

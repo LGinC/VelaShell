@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Reflection;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Models;
 
 namespace VelaShell.Core.Tests.Models;
@@ -37,6 +38,7 @@ public sealed class SessionProfileCloneTests
             PrivateKeyPath = @"C:\keys\id_ed25519",
             PrivateKeyPassphrase = "phrase",
             CertificatePath = @"C:\keys\id_ed25519-cert.pub",
+            CredentialSource = CredentialReference.ForShared(Guid.NewGuid()),
             GroupId = Guid.NewGuid(),
             LastConnectedAt = new DateTime(2026, 9, 5, 12, 0, 0, DateTimeKind.Utc),
             Tags = ["prod", "bastion"],

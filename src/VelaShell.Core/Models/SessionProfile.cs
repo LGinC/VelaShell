@@ -1,3 +1,5 @@
+using VelaShell.Core.Credentials;
+
 namespace VelaShell.Core.Models;
 
 /// <summary>一条已保存的 SSH 连接配置,描述连接目标主机所需的地址、认证方式与凭据等信息。</summary>
@@ -54,6 +56,20 @@ public class SessionProfile
     /// 真正的机密仍是 <see cref="PrivateKeyPassphrase" /> 保护的那把私钥。
     /// </remarks>
     public string? CertificatePath { get; set; }
+
+    /// <summary>
+    /// 凭据来源(#550):非 null 时认证材料不存在本条配置里,连接那一刻按引用去取
+    /// (目前是设置 → 共享凭据里的一条)。null = 凭据就在本条配置上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 有引用时 <see cref="Password" /> / <see cref="PrivateKeyPath" /> / <see cref="PrivateKeyPassphrase" /> /
+    /// <see cref="CertificatePath" /> 一律不落盘(仓储层强制),内存里它们有值只表示"这一次在登录框里手输过"。
+    /// <see cref="Username" /> 照常保存:填了就覆盖凭据里的用户名,留空才用凭据的。
+    /// </para>
+    /// <para>引用本身不是机密,明文落盘、随云同步漫游。</para>
+    /// </remarks>
+    public CredentialReference? CredentialSource { get; set; }
 
     /// <summary>所属分组的标识;未分组时为 null。</summary>
     public Guid? GroupId { get; set; }
@@ -226,6 +242,8 @@ public class SessionProfile
             PrivateKeyPath = PrivateKeyPath,
             PrivateKeyPassphrase = PrivateKeyPassphrase,
             CertificatePath = CertificatePath,
+            // 引用是不可变的 record,共享同一个实例无妨。
+            CredentialSource = CredentialSource,
             GroupId = GroupId,
             IsPinned = IsPinned,
             LastConnectedAt = LastConnectedAt,

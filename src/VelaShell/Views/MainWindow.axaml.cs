@@ -10,6 +10,7 @@ using Avalonia.Threading;
 using Avalonia.VisualTree;
 using Microsoft.Extensions.DependencyInjection;
 using ReactiveUI.Primitives;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Diagnostics;
 using VelaShell.Core.Import;
@@ -177,7 +178,7 @@ public partial class MainWindow : Window
         _keymapService = ShortcutKeymapService.Resolve();
         if (_keymapService is { } keymapService)
         {
-            Action<ShortcutKeymap> onKeymapChanged = keymap => RunOnUiThread(() => ApplyKeymap(keymap));
+            void onKeymapChanged(ShortcutKeymap keymap) => RunOnUiThread(() => ApplyKeymap(keymap));
             keymapService.Changed += onKeymapChanged;
             Closed += (_, _) => keymapService.Changed -= onKeymapChanged;
         }
@@ -1192,7 +1193,9 @@ public partial class MainWindow : Window
             // 用户点到某个页签才触发它的惰性激活。
             app.Services.GetService<Infrastructure.Plugins.Protocols.PluginProtocolRegistry>(),
             // 「只转发指定密钥」的候选:本机 agent 里的钥与 ~/.ssh 下的公钥。
-            app.Services.GetService<ISshKeyService>()
+            app.Services.GetService<ISshKeyService>(),
+            // 「凭据来源」下拉的候选(#550)。
+            app.Services.GetService<ISharedCredentialRepository>()
         )
         {
             // 协议栏底部「获取更多协议…」:插件管理器是非模态的,在那边启用的协议经注册表的
@@ -1519,10 +1522,15 @@ public partial class MainWindow : Window
     /// <summary>
     /// 登录验证弹窗本体:已信任主机显示其指纹;首次连接提示握手时记录(TOFU)。取消返回 null。
     /// </summary>
+    /// <remarks>
+    /// 返回的是副本,传入的那一份不动(会话树、命令面板缓存的就是它,就地改会让手输的密码
+    /// 跟着别的保存落盘)。连接引用了共享凭据时,框上说明为什么又来问,并可把输入存回凭据(#550)。
+    /// </remarks>
     private async Task<SessionProfile?> PromptCredentialsCoreAsync(SessionProfile profile)
     {
+        IServiceProvider? services = (Application.Current as App)?.Services;
         string? knownFingerprint = null;
-        if (Application.Current is App app && app.Services?.GetService<IHostKeyService>() is { } hostKeys)
+        if (services?.GetService<IHostKeyService>() is { } hostKeys)
         {
             try
             {
@@ -1536,39 +1544,69 @@ public partial class MainWindow : Window
                 // 指纹仅用于展示,读取失败不阻塞验证流程。
             }
         }
+
+        SharedCredential? credential = null;
+        SharedCredentialPromptContext? sharedContext = null;
+        if (SharedCredentialService.SharedCredentialIdOf(profile) is { } credentialId
+            && services?.GetService<ISharedCredentialRepository>() is { } credentials
+            && services.GetService<SharedCredentialService>() is { } credentialService)
+        {
+            try
+            {
+                credential = await credentials.GetAsync(credentialId);
+                IReadOnlyDictionary<Guid, int> usages = await credentialService.CountUsagesAsync();
+                sharedContext = SharedCredentialPrompt.BuildContext(profile, credential, usages.GetValueOrDefault(credentialId));
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException)
+            {
+                // 读不出凭据:照普通登录框问,只是少了那句说明与"存回凭据"的选项。
+            }
+        }
+
+        // 凭据还在且这次没手输过:框上默认选凭据的认证方式、填凭据的私钥路径。
+        bool fromCredential = credential is not null && !CredentialMaterial.HasInline(profile);
         var viewModel = new AuthenticationDialogViewModel(
             profile.Host,
             profile.Port,
-            profile.Username,
+            SharedCredentialPrompt.InitialUsername(profile, credential),
             knownFingerprint,
-            profile.AuthMethod
+            fromCredential ? credential!.AuthMethod : profile.AuthMethod,
+            sharedContext
         );
+        if (fromCredential && credential!.AuthMethod is AuthMethod.PrivateKey or AuthMethod.Certificate)
+        {
+            viewModel.PrivateKeyPath = credential.PrivateKeyPath;
+            viewModel.CertificatePath = credential.CertificatePath;
+        }
         var dialog = new AuthenticationDialogView { DataContext = viewModel };
         AuthenticationResult? result = await dialog.ShowDialog<AuthenticationResult?>(this);
         if (result is null)
         {
             return null;
         }
-        profile.Username = result.Username;
-        profile.AuthMethod = result.AuthMethod;
+        string? password = null;
         if (result.AuthMethod == AuthMethod.Password)
         {
             // 交接点:SecureString → 管线所需的明文,随即释放 SecureString。
             using (result.Password)
             {
-                profile.Password = SecureStringConvert.ToPlaintext(result.Password);
+                password = SecureStringConvert.ToPlaintext(result.Password);
             }
-            profile.RememberPassword = result.RememberPassword;
         }
-        else
+        SessionProfile copy = SharedCredentialPrompt.Apply(profile, credential, result, password, out SharedCredential? updated);
+        if (updated is not null && services?.GetService<ISharedCredentialRepository>() is { } repository)
         {
-            profile.PrivateKeyPath = result.PrivateKeyPath;
-            profile.PrivateKeyPassphrase = result.PrivateKeyPassphrase;
-            // 证书路径无条件跟着写回,包括写回 null:从证书认证切回密钥认证时它必须被清掉,
-            // 否则 AuthMethod 已经是 PrivateKey、证书路径却还留着上一次的值。
-            profile.CertificatePath = result.CertificatePath;
+            try
+            {
+                await repository.SaveAsync(updated);
+            }
+            catch (Exception ex) when (ex is IOException or InvalidOperationException)
+            {
+                // 没存进去不影响这一次连接:副本上带着刚输的那一份。
+                Trace.WriteLine($"[Cred] Updating shared credential {updated.Id} failed: {ex.Message}");
+            }
         }
-        return profile;
+        return copy;
     }
 
     /// <summary>导出终端输出(§12.4):有选区导出选区,否则导出整个缓冲区(scrollback+屏幕)。</summary>

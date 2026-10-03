@@ -1,3 +1,4 @@
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 
@@ -69,6 +70,12 @@ public class SyncPayload
 
     /// <summary>连接配置;未启用端到端口令时密码与私钥口令被剥离。</summary>
     public List<SessionProfile>? Profiles { get; set; }
+
+    /// <summary>
+    /// 共享凭据(#550,随连接配置同步);未启用端到端口令时密码与私钥口令被剥离。
+    /// 连接配置里的引用指向它们,只同步连接不同步凭据,另一台设备上的引用就全是悬空的。
+    /// </summary>
+    public List<SharedCredential>? SharedCredentials { get; set; }
 
     /// <summary>端口转发隧道配置(随连接配置同步):键 = 所属连接的 profileId。</summary>
     public Dictionary<Guid, List<TunnelConfig>>? Tunnels { get; set; }

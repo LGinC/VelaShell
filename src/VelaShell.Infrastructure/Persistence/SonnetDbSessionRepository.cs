@@ -1,5 +1,6 @@
 using System.Text.Json;
 using SonnetDB.Documents;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 
@@ -133,8 +134,16 @@ public sealed class SonnetDbSessionRepository(SonnetDbEngine engine, ISecretProt
         // Clone 已经把全部字段深拷贝了(它是唯一的拷贝口径,加字段只改那一处);
         // 这里只覆盖需要加密的三项。原先这里是逐字段手写的,每加一个字段就得记得回来补一行。
         SessionProfile copy = profile.Clone();
-        copy.Password = _protector.Protect(profile.Password);
-        copy.PrivateKeyPassphrase = _protector.Protect(profile.PrivateKeyPassphrase);
+        if (copy.CredentialSource is not null)
+        {
+            // 引用了凭据的配置,认证材料一律不落盘(#550)。放在仓储而不是各个调用方:
+            // 保存点有七八处(拖动分组、复制配置、证书信任、同步拉取、导入…),逐个防守迟早漏一个。
+            // 这条不变量还撑着「内存里有材料 = 本次手输过」那条判断(CredentialMaterial.HasInline)——
+            // 一旦有材料混进库里,这条配置就会永远用那份旧材料,引用形同虚设。
+            CredentialMaterial.ClearInline(copy);
+        }
+        copy.Password = _protector.Protect(copy.Password);
+        copy.PrivateKeyPassphrase = _protector.Protect(copy.PrivateKeyPassphrase);
         copy.PluginSecrets = MapSecrets(profile.PluginSecrets, _protector.Protect);
         return copy;
     }

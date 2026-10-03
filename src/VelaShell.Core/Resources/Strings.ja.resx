@@ -5989,4 +5989,163 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Sc_WarnTerminalKey" xml:space="preserve">
     <value>このキーは本来リモートのプログラムに送られます。割り当て中は届きません</value>
   </data>
+  <data name="Cred_Failure_NotFound" xml:space="preserve">
+    <value>この接続が参照している共有資格情報はもう存在しません。</value>
+  </data>
+  <data name="Cred_Failure_ProviderDisabled" xml:space="preserve">
+    <value>この接続が使う資格情報のソース「{0}」はこのデバイスでは使用できません。</value>
+  </data>
+  <data name="Cred_Failure_MissingUsername" xml:space="preserve">
+    <value>共有資格情報「{0}」にもこの接続にもユーザー名がありません。</value>
+  </data>
+  <data name="Cred_Failure_MissingSecret" xml:space="preserve">
+    <value>共有資格情報「{0}」にはこのデバイス上のパスワードや鍵がありません(エンドツーエンドのパスフレーズなしのクラウド同期では転送されません)。</value>
+  </data>
+  <data name="Cred_Failure_UnsupportedAuth" xml:space="preserve">
+    <value>共有資格情報「{0}」はパスワード方式ではありません。FTP とプラグイン接続はパスワードでのみサインインできます。</value>
+  </data>
+  <data name="Svc_JumpCredentialFailed" xml:space="preserve">
+    <value>踏み台 {0}: {1}</value>
+  </data>
+  <data name="Auth_SharedRejected" xml:space="preserve">
+    <value>共有資格情報「{0}」でのサインインが拒否されました。パスワードを変更したばかりなら、下に新しいパスワードを入力して「あわせて更新」にチェックしてください。この資格情報を使うすべての接続がまとめて切り替わります。</value>
+  </data>
+  <data name="Auth_SharedIncomplete" xml:space="preserve">
+    <value>共有資格情報「{0}」はこのデバイスでは不完全です(ユーザー名、パスワード、または鍵がありません)。ここで入力して、資格情報に保存し直せます。</value>
+  </data>
+  <data name="Auth_SharedMissing" xml:space="preserve">
+    <value>この接続が参照している共有資格情報はもう存在しません。ここで入力した資格情報は今回のサインインにだけ使われます。保存するには、接続を編集して資格情報のソースを選び直してください。</value>
+  </data>
+  <data name="Auth_UpdateShared" xml:space="preserve">
+    <value>共有資格情報「{0}」もあわせて更新({1} 件の接続で使用中)</value>
+  </data>
+  <data name="Profile_CredSource" xml:space="preserve">
+    <value>資格情報のソース</value>
+  </data>
+  <data name="Profile_CredSourceInline" xml:space="preserve">
+    <value>この接続に入力</value>
+  </data>
+  <data name="Profile_CredSourceMissing" xml:space="preserve">
+    <value>(参照している共有資格情報は存在しません)</value>
+  </data>
+  <data name="Profile_CredNew" xml:space="preserve">
+    <value>新規…</value>
+  </data>
+  <data name="Profile_CredNewTip" xml:space="preserve">
+    <value>このフォームのユーザー名とパスワード / 鍵から共有資格情報を作成し、この接続で使います</value>
+  </data>
+  <data name="Profile_CredUsernameInherit" xml:space="preserve">
+    <value>空欄なら資格情報の {0} を使用</value>
+  </data>
+  <data name="Profile_CredSummary" xml:space="preserve">
+    <value>共有資格情報: ユーザー {0} · {1}。パスワードの変更は 設定 → 共有資格情報 で行います。</value>
+  </data>
+  <data name="Profile_ErrCredMissing" xml:space="preserve">
+    <value>共有資格情報が存在しません。資格情報のソースを選び直してください。</value>
+  </data>
+  <data name="Profile_ErrCredNotPassword" xml:space="preserve">
+    <value>この種類の接続はパスワードでのみサインインできます。パスワード方式の資格情報を選んでください。</value>
+  </data>
+  <data name="SharedCred_NewTitle" xml:space="preserve">
+    <value>共有資格情報の作成</value>
+  </data>
+  <data name="SharedCred_EditTitle" xml:space="preserve">
+    <value>共有資格情報の編集</value>
+  </data>
+  <data name="SharedCred_ErrNameRequired" xml:space="preserve">
+    <value>名前を入力してください</value>
+  </data>
+  <data name="SharedCred_ErrPasswordRequired" xml:space="preserve">
+    <value>パスワードを入力してください</value>
+  </data>
+  <data name="SharedCred_ErrKeyRequired" xml:space="preserve">
+    <value>秘密鍵ファイルを選択してください</value>
+  </data>
+  <data name="SharedCred_UsersSummary" xml:space="preserve">
+    <value>{0} 件の接続を選択中</value>
+  </data>
+  <data name="SharedCred_MatchResult" xml:space="preserve">
+    <value>資格情報が同じ接続を新たに {0} 件選択しました</value>
+  </data>
+  <data name="SharedCred_CopyFrom" xml:space="preserve">
+    <value>接続からコピー(任意)</value>
+  </data>
+  <data name="SharedCred_CopyFromPlaceholder" xml:space="preserve">
+    <value>接続を選ぶと、そのユーザー名とパスワード / 鍵を入力します</value>
+  </data>
+  <data name="SharedCred_Name" xml:space="preserve">
+    <value>名前</value>
+  </data>
+  <data name="SharedCred_NamePlaceholder" xml:space="preserve">
+    <value>例: データセンターのスイッチ admin</value>
+  </data>
+  <data name="SharedCred_UsernamePlaceholder" xml:space="preserve">
+    <value>空欄なら各接続で指定</value>
+  </data>
+  <data name="SharedCred_Notes" xml:space="preserve">
+    <value>メモ(任意)</value>
+  </data>
+  <data name="SharedCred_UsersTitle" xml:space="preserve">
+    <value>この資格情報を使う接続</value>
+  </data>
+  <data name="SharedCred_CheckMatching" xml:space="preserve">
+    <value>資格情報が同じ接続を選択</value>
+  </data>
+  <data name="SharedCred_CheckMatchingTip" xml:space="preserve">
+    <value>ユーザー名とパスワード / 鍵が上と完全に同じで、まだ個別に保存している接続もまとめて選択します(既存の接続を移行するため)</value>
+  </data>
+  <data name="SharedCred_FilterPlaceholder" xml:space="preserve">
+    <value>接続を絞り込み(名前、ホスト、ユーザー名)</value>
+  </data>
+  <data name="SharedCred_UsernameFromConnection" xml:space="preserve">
+    <value>接続ごとに指定</value>
+  </data>
+  <data name="SharedCred_UsageCount" xml:space="preserve">
+    <value>{0} 件の接続</value>
+  </data>
+  <data name="SharedCred_Saved" xml:space="preserve">
+    <value>「{0}」を保存しました。{1} 件の接続で使用中です。</value>
+  </data>
+  <data name="SharedCred_Deleted" xml:space="preserve">
+    <value>「{0}」を削除しました。</value>
+  </data>
+  <data name="SharedCred_DeleteConfirm" xml:space="preserve">
+    <value>共有資格情報「{0}」を削除しますか?</value>
+  </data>
+  <data name="SharedCred_DeleteConfirmInUse" xml:space="preserve">
+    <value>共有資格情報「{0}」を削除しますか? {1} 件の接続が使っています。各接続には同じ資格情報のコピーが個別に保存され、削除後も接続できます。</value>
+  </data>
+  <data name="SetVm_SectionCredentials" xml:space="preserve">
+    <value>共有資格情報</value>
+  </data>
+  <data name="SetCred_Title" xml:space="preserve">
+    <value>共有資格情報</value>
+  </data>
+  <data name="SetCred_Subtitle" xml:space="preserve">
+    <value>複数の接続で共用するユーザー名とパスワード / 鍵です。ここで一度変更すれば、使っているすべての接続が次回の接続から新しい値を使います。</value>
+  </data>
+  <data name="SetCred_SearchPlaceholder" xml:space="preserve">
+    <value>名前、ユーザー名、メモで検索</value>
+  </data>
+  <data name="SetCred_New" xml:space="preserve">
+    <value>新規作成</value>
+  </data>
+  <data name="SetCred_ColUsage" xml:space="preserve">
+    <value>使用中</value>
+  </data>
+  <data name="SetCred_Edit" xml:space="preserve">
+    <value>編集</value>
+  </data>
+  <data name="SetCred_Delete" xml:space="preserve">
+    <value>資格情報を削除</value>
+  </data>
+  <data name="SetCred_MissingSecretTip" xml:space="preserve">
+    <value>このデバイスにはこの資格情報のパスワードや鍵がありません(エンドツーエンドのパスフレーズなしのクラウド同期では転送されません)。「編集」で入力してください。</value>
+  </data>
+  <data name="SetCred_Empty" xml:space="preserve">
+    <value>共有資格情報はまだありません。作成して、同じアカウントを使う接続にチェックを入れてください。以後のパスワード変更は 1 か所で済みます。</value>
+  </data>
+  <data name="SetCred_StorageHint" xml:space="preserve">
+    <value>パスワードと秘密鍵のパスフレーズは AES-256 で暗号化してこのデバイスに保存されます。クラウド同期では資格情報の名前とユーザー名が転送され、パスワードとパスフレーズはエンドツーエンドのパスフレーズを設定した場合にのみ同期されます。</value>
+  </data>
 </root>

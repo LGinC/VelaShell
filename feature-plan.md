@@ -41,7 +41,7 @@
 | --- | :---: | :---: | :---: | :---: | :---: |
 | 一、欠账 | 4 | 2 | 7 | 9 | **22** |
 | 二、路线图 | — | 5 | 16 | 12 | **33** |
-| 三、文档待同步 | — | — | — | — | **25** |
+| 三、文档待同步 | — | — | — | — | **26** |
 
 
 ---
@@ -143,7 +143,7 @@
 | AI 助手 / Agent | ✅ **含 IM 桥接 + MCP** | — | — | 插件 | — | 有限 |
 | 云同步 | ✅ Gist | — | ✅ | ✅ | ✅ | ✅ 自营 |
 | 键盘复制模式 | ❌ 不做 | — | — | — | ✅ | — |
-| 凭据管理器集成 | ⏳ 设计已定稿 | — | — | — | — | ✅ 自营保险库 |
+| 凭据管理器集成 | 🚧 共享凭据 ✅ · 外部保险库 ⏳ | — | — | — | — | ✅ 自营保险库 |
 | 团队共享配置 | 💡 | 企业版 | — | — | — | ✅ |
 
 **结论**：连接与运维这条主线已经追平甚至反超 —— 计量隧道、录制回放、双模插件、AI 协作接入、内置 X 服务端都是别家少有的。
@@ -191,7 +191,7 @@
 | :---: | :---: | --- | --- | --- |
 | ⏳ | 🟠 P1 | **录制与日志的输出脱敏** | — | ⚠️ **现实风险，不是洁癖。**「输入脱敏不做」是对的（只录输出、密码无回显），但输出里照样有密钥：`cat .env`、`kubectl get secret -o yaml`、`env \| grep TOKEN`，会话日志与录制存的是原始字节。落点：`SshTerminalBridge.DataReceived` 这条旁路本来就是记录专用，在那里过一遍可配的脱敏规则，**不影响显示路径**。规则表与 A 组的自定义高亮共用 |
 | 🚧 | 🟠 P1 | **插件发布者的信任根** | VS Code / JetBrains | 已有：验签 + 发布者连续性（`plan.md` §57，钉住首装的公钥，换钥 / 去签名要用户看过两个指纹再点头）；市场 `GET /api/plugins/latest` 给出每版的发布者指纹、宿主有只读客户端 `IPluginMarketClient`，**更新路径**已拿它比对（`plan.md` §71）。⚠️ 但这仍是 TOFU：`velashell-identity` 是 OIDC 账号服务，不是公钥注册表。真要闭合，缺一份**由发布者身份背书**的 id ↔ 公钥映射（市场把上传者 `sub` 与公钥绑定并可对外验证），且**装包路径也去查它**。外呼仍只在打开插件管理页时发生，别改成开机外呼（`PRIVACY.md`） |
-| ⏳ | 🟡 P2 | **凭据管理器集成** | Termius | **设计已定稿**（velashell-docs [`zh/host/凭据管理器集成设计.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/zh/host/凭据管理器集成设计.md)）：连接配置存**引用**，连接时由宿主内置的 `ICredentialProvider` 解析，1Password / Bitwarden / KeePassXC 三家 CLI 一起交付，解锁口令内存 TTL 缓存，解析失败退回登录弹窗 + 提示条。⚠️ `ISecretProtector` **不是**那层抽象（它管加密不管来源，见设计 §1）。私钥走 SSH Agent。系统密钥链 provider 等 [`系统密钥链与sudo凭据填充可行性调研.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/zh/host/系统密钥链与sudo凭据填充可行性调研.md) 里 `IMasterKeyStore` 的 P/Invoke 层。⚠️ 设计 §3 记了**四处既有缺陷**（其一：「记住密码」未勾时，登录弹窗手输的密码经「拖动分组 / 复制配置 / 证书信任」仍会落盘），建议作为阶段 0a 先修；§16 另有 11 项待确认决策 |
+| 🚧 | 🟡 P2 | **凭据管理器集成** | Termius | **设计已定稿**（velashell-docs [`zh/host/凭据管理器集成设计.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/zh/host/凭据管理器集成设计.md)，v3）。**已落地第一个凭据来源：本机共享凭据**（`plan.md` §157，#550）—— `CredentialReference` / `ICredentialProvider` / `ICredentialResolver` 契约、仓储不变量、五个构建点接线、解析失败退回登录框，以及设计 §3 的 D1 / D3。**还差外部保险库**：1Password / Bitwarden / KeePassXC 三家 CLI（`CliCredentialRunner`、解锁口令内存 TTL 缓存、`ICredentialUnlockPrompt`），届时给解析补上交互 / 非交互之分（自动重连不许弹解锁框，设计 §5.7）与单次尝试缓存，`CredentialReference` 再加 `Scope` 等字段（JSON 省略 null，零迁移）。⚠️ `ISecretProtector` **不是**那层抽象（它管加密不管来源，见设计 §1）。外部保险库的私钥走 SSH Agent。系统密钥链 provider 等 [`系统密钥链与sudo凭据填充可行性调研.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/zh/host/系统密钥链与sudo凭据填充可行性调研.md) 里 `IMasterKeyStore` 的 P/Invoke 层。设计 §3 的 D2（私钥口令不受「记住密码」控制）、D4（`SshSession.ConnectionInfo` 持有每一跳的密码）仍在；§16 另有 11 项待确认决策 |
 | ⏳ | 🟡 P2 | **主机证书（宿主侧）** | OpenSSH `@cert-authority` | **SSH 库已支持**（`plan.md` §113，velashell-docs `ssh/spec/03-key-exchange.md` §5.5）。宿主还用不上：`VelaHostKeyPolicy` 走自己的信任库（`IHostKeyService`），没有「受信 CA」的概念；证书目前按里面那把钥当普通主机密钥处理，默认算法清单里证书又排在后面，实际谈不成证书。要接：①信任库能存受信的主机 CA（手动添加，或从 `~/.ssh/known_hosts` 读 `@cert-authority`）；②`VelaHostKeyPolicy` 实现 `IHostKeyTypePreference`，有对上的 CA 时把证书算法排前；③裁决时先用 `OpenSshCertificate.CheckHostCertificate` 验证书，CA 管的主机出示没有担保的钥**不退回 TOFU**（规格 §5.5 第 4 条）；④弹窗与设置页文案，五份 resx |
 | ⏳ | 🟡 P2 | **与 OpenSSH 互通：known_hosts 与 `~/.ssh/config`** | 各家都有 | known_hosts 现在只能在设置里看和删，导入 / 导出之后与命令行 ssh 共用一份信任基线（顺带喂给上一行的 `@cert-authority`）。`~/.ssh/config` 的导入已有（`plan.md` §58），反向的**导出**是同一条线 |
 | 💡 | 🟡 P2 | **团队共享配置（只读策略分发）** | Termius / Xshell 企业版 | 「运维组长发一份机器清单，组员只读订阅」。Gist 云同步的载荷格式与版本回溯现成，差的是**方向**：现在是「我的多设备漫游」，团队要的是「一处发布、多处只读」。⚠️ 这条会把产品推向企业形态，**先想清楚商业授权边界再动手** |
@@ -255,6 +255,7 @@
 | `plan.md` §152 连接备注（#549） | `{zh,en}/host/交互与界面规格.md` §13.1「整理」补备注一行（多行、回车换行、最多约五行高再长框内滚、去首尾空白、明文且随云同步上传）；§4 资源管理器补悬停显示备注（整行、无备注不弹、12 行 / 500 字符截断） | [velashell-docs#82](https://github.com/VelaShellLabs/velashell-docs/pull/82) 已开，与宿主 #553 一起合 |
 | `plan.md` §154 命令面板不再占 `Ctrl+K`（#551） | `{zh,en}/host/快捷键参考.md` 全局表只留命令面板 `Ctrl+P` 一行，表下补一句为什么不绑 `Ctrl+K`；`{zh,en}/host/交互与界面规格.md` §8 标题与搜索框键帽徽章、§4A 那条实现变更备注、键位总表；`{zh,en}/host/architecture.md` 与 `{zh,en}/templates/dev-guide.md` 里的「Ctrl+P / Ctrl+K」 | [velashell-docs#83](https://github.com/VelaShellLabs/velashell-docs/pull/83) 已开（与 §155 同一个 PR），与宿主 #554 一起合 |
 | `plan.md` §155 快捷键可自定义（#551） | `{zh,en}/host/快捷键参考.md`（`keyboard-shortcuts.md`）：开头说明表里是出厂键位；维护约定换成新的守门用例；「绑定都写在哪」与「平台差异」改写；新增「自定义键位」一节（可改范围、怎么改、规则、终端冲突提示、`shortcuts.overrides` 存储与绑定 id 表）；跳标签拆成 8 行；删掉早已不存在的「过滤会话 `Ctrl+Shift+E`」一行；英文版补上一直漏掉的关闭全部标签、跳标签、清屏与三个字号缩放。`{zh,en}/host/settings-audit.md`：C-10 / A-08 改为已完成，§6 / §9.2 两行与阶段勾选项对上，补「第十批」整改记录。`{zh,en}/host/交互与界面规格.md`：设计稿对照表的快捷键行、§8 命令面板右侧键位跟随当前键位、§16 标题与跳标签那一行。`zh/host/架构设计.md` / `en/host/architecture-design.md`：「明确不做清单」删掉自定义快捷键并注明推翻 | [velashell-docs#83](https://github.com/VelaShellLabs/velashell-docs/pull/83) 已开，与宿主 #554 一起合 |
+| `plan.md` §157 共享凭据（#550） | `zh/host/凭据管理器集成设计.md` 升 v3：内置共享凭据已落地、与 v2 决策的出入（用户名规则取代 `OverrideUsername`、`ResolvedCredential` 带认证方式与私钥、解析交回副本、跳板失败不退回登录框、同步载荷版本 3）、阶段 0a 的 D1 / D3 勾掉；`{zh,en}/host/交互与界面规格.md`：设置页加「共享凭据」、§13.1 身份验证补「凭据来源」、登录框补共享凭据说明条与「同时更新共享凭据」；`zh/host/架构设计.md` / `en/host/architecture-design.md` 与 `{zh,en}/host/architecture.md`：SonnetDB 集合补 `shared_credentials`、连接时序图补「带引用的配置连接时才解析」；`{zh,en}/host/README.md` 那篇设计文档的一行简介 | [velashell-docs#85](https://github.com/VelaShellLabs/velashell-docs/pull/85) 已开，与宿主 PR 一起合 |
 | `en/` 树 | `zh/` 有 **8 篇** `en/` 里没有：Redis 调研、S3 两篇、系统密钥链调研、凭据管理器集成设计、三份 `release-process.md`。缺口已在 `en/host/README.md` 与根 README 逐篇列出（不再是静默漂移），翻译本身仍欠着 | 未开始 |
 
 ---

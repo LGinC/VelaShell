@@ -7,6 +7,8 @@ using System.Security;
 using Avalonia.Threading;
 using ReactiveUI;
 using ReactiveUI.Primitives;
+using ReactiveUI.SourceGenerators;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
@@ -26,8 +28,33 @@ public sealed record GroupOption(Guid? Id, string Name)
     public override string ToString() => Name;
 }
 
+/// <summary>
+/// 「凭据来源」下拉的一项(#550):在本配置中填写,或某条共享凭据。
+/// </summary>
+/// <param name="Reference">引用;在本配置中填写时为 null。</param>
+/// <param name="Display">下拉里显示的文字。</param>
+/// <param name="Credential">指向的共享凭据;在本配置中填写,或引用已失效时为 null。</param>
+public sealed record CredentialSourceOption(CredentialReference? Reference, string Display, SharedCredential? Credential)
+{
+    /// <summary>「在本配置中填写」。</summary>
+    public static CredentialSourceOption Inline() => new(null, Strings.Get("Profile_CredSourceInline"), null);
+
+    /// <summary>一条共享凭据:名称后面跟着用户名,下拉里一眼能分出同名的两条。</summary>
+    public static CredentialSourceOption Shared(SharedCredential credential) =>
+        new(CredentialReference.ForShared(credential.Id),
+            credential.Username.Length > 0 ? $"{credential.Name} ({credential.Username})" : credential.Name,
+            credential);
+
+    /// <summary>引用指向的凭据已不在了:照样摆出来,让用户看见并改选,而不是悄悄落回「在本配置中填写」。</summary>
+    public static CredentialSourceOption Missing(CredentialReference reference) =>
+        new(reference, Strings.Get("Profile_CredSourceMissing"), null);
+
+    /// <summary>下拉项以显示文字展示。</summary>
+    public override string ToString() => Display;
+}
+
 /// <summary>新建/编辑连接配置对话框的视图模型:承载表单字段、认证方式切换、分组与跳板主机选择,并提供保存、连接、测试等命令。</summary>
-public class ConnectionProfileViewModel : ReactiveObject, IDisposable
+public partial class ConnectionProfileViewModel : ReactiveObject, IDisposable
 {
     /// <summary>
     /// “未分组”选项/输入的显示名;输入等于该名或留空即保存为未分组。
@@ -54,6 +81,13 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     private readonly List<Guid>? _autoStartTunnelIds;
 
     private readonly ISessionRepository? _sessionRepository;
+
+    // ---- 凭据来源(#550) ----
+    private readonly ISharedCredentialRepository? _sharedCredentials;
+
+    /// <summary>当前的凭据引用;null = 在本配置中填写。下拉还没加载出来时也以它为准。</summary>
+    private CredentialReference? _credentialSource;
+    private CredentialSourceOption _selectedCredentialSource;
     private AuthMethod _authMethod = AuthMethod.Password;
     private string? _certificatePath;
     private ConnectionType _connectionType = ConnectionType.SSH;
@@ -139,10 +173,14 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         int defaultPort = 22,
         string? defaultPrivateKeyPath = null,
         PluginProtocolRegistry? protocolRegistry = null,
-        ISshKeyService? keyService = null)
+        ISshKeyService? keyService = null,
+        ISharedCredentialRepository? sharedCredentials = null)
     {
         _protocolRegistry = protocolRegistry;
         _keyService = keyService;
+        _sharedCredentials = sharedCredentials;
+        CredentialSources = [CredentialSourceOption.Inline()];
+        _selectedCredentialSource = CredentialSources[0];
         _connectionWorkflowService = connectionWorkflowService;
         _sessionRepository = sessionRepository;
         Groups = [new(null, UngroupedName)];
@@ -178,6 +216,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             _privateKeyPath = existing.PrivateKeyPath;
             _privateKeyPassphrase = existing.PrivateKeyPassphrase;
             _certificatePath = existing.CertificatePath;
+            _credentialSource = existing.CredentialSource;
             _groupId = existing.GroupId;
             _isPasswordAuth = existing.AuthMethod == AuthMethod.Password;
             _isKeyAuth = existing.AuthMethod == AuthMethod.PrivateKey;
@@ -244,6 +283,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
                 IsCertAuth = method == AuthMethod.Certificate;
                 this.RaisePropertyChanged(nameof(ShowsPrivateKeyFields));
                 this.RaisePropertyChanged(nameof(IsAgentAuth));
+                // 口令框也跟着认证方式显隐 —— 原先漏发了这一条,切到私钥页时口令框会留在原地。
+                this.RaisePropertyChanged(nameof(ShowPasswordField));
+                RaiseCredentialSourceDependents();
             });
 
         // Skip(1):WhenAnyValue 订阅时会立即用当前值(默认“未分组”/“直连”)触发一次,
@@ -274,12 +316,19 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             x => x.AllowsAnonymous,
             x => x.PluginUnavailable,
             x => x.SshAlgorithmsError,
-            (host, username, port, isBusy, anonymous, type, pluginAnonymous, pluginUnavailable, algorithmsError) =>
+            x => x.CredentialSourceError,
+            x => x.SharedCredentialProvidesUsername,
+            (host, username, port, isBusy, anonymous, type, pluginAnonymous, pluginUnavailable, algorithmsError,
+             credentialSourceError, usernameFromCredential) =>
                 !isBusy &&
                 // 算法清单写错了连不上,存下来也只是把错误推迟到连接那一刻。
                 algorithmsError is null &&
+                // 选了一条用不上的共享凭据(FTP 配了私钥凭据):存下去就是一条注定连不上的配置。
+                credentialSourceError is null &&
                 !string.IsNullOrWhiteSpace(host) &&
                 (!string.IsNullOrWhiteSpace(username) ||
+                 // 共享凭据自带用户名时,连接自己可以不填(#550)。
+                 usernameFromCredential ||
                  (type == ConnectionType.FTP && anonymous) ||
                  // 插件不可用时也放行:否则一条「用户名为空的 S3 配置」在禁用插件后
                  // 保存/连接/测试三个按钮同时灰死,连改个名字都存不下去。
@@ -324,6 +373,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         BrowseCertificateFileCommand = ReactiveCommand.Create(() => { });
         SelectSectionCommand = ReactiveCommand.Create<ConnectionProfileSection>(section => SelectedSection = section);
         SelectAuthMethodCommand = ReactiveCommand.Create<AuthMethod>(method => AuthMethod = method);
+        NewSharedCredentialCommand = ReactiveCommand.CreateFromTask(NewSharedCredentialAsync);
         OpenPluginManagerCommand = ReactiveCommand.Create(() => OpenPluginManager?.Invoke());
         TogglePasswordVisibilityCommand = ReactiveCommand.Create(() => { ShowPassword = !ShowPassword; });
     }
@@ -364,6 +414,8 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             this.RaisePropertyChanged(nameof(HostPlaceholder));
             this.RaisePropertyChanged(nameof(UsernameLabel));
             this.RaisePropertyChanged(nameof(PasswordLabel));
+            // FTP / 插件只认密码类的共享凭据:换协议要重判一次凭据来源能不能用。
+            RaiseCredentialSourceDependents();
         }
     }
 
@@ -542,6 +594,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         {
             this.RaiseAndSetIfChanged(ref _ftpAnonymous, value);
             this.RaisePropertyChanged(nameof(ShowPasswordField));
+            RaiseCredentialSourceDependents();
         }
     }
 
@@ -681,6 +734,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     /// </summary>
     public string? UsernameError =>
         !string.IsNullOrWhiteSpace(Username)
+        || SharedCredentialProvidesUsername
         || (ConnectionType == ConnectionType.FTP && FtpAnonymous)
         || (ConnectionType == ConnectionType.Plugin && (AllowsAnonymous || PluginUnavailable))
             ? null
@@ -862,6 +916,225 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     {
         get => _rememberPassword;
         set => this.RaiseAndSetIfChanged(ref _rememberPassword, value);
+    }
+
+    // ---- 凭据来源(#550) ----
+    //
+    // 选了共享凭据,这条配置就不再存自己的认证材料:认证方式、密码、私钥那几栏收起,
+    // 连接那一刻向凭据去取。用户名照常可填 —— 填了覆盖凭据里的,留空就跟着凭据走。
+
+    /// <summary>「凭据来源」下拉:第一项「在本配置中填写」,其后是全部共享凭据。</summary>
+    public ObservableCollection<CredentialSourceOption> CredentialSources { get; }
+
+    /// <summary>当前选中的凭据来源。</summary>
+    public CredentialSourceOption SelectedCredentialSource
+    {
+        get => _selectedCredentialSource;
+        set
+        {
+            // ComboBox 在 ItemsSource 重建的瞬间会回写一个 null,不能让它把引用清掉。
+            if (value is null || ReferenceEquals(value, _selectedCredentialSource))
+            {
+                return;
+            }
+            SharedCredential? previous = _selectedCredentialSource.Credential;
+            this.RaiseAndSetIfChanged(ref _selectedCredentialSource, value);
+            _credentialSource = value.Reference;
+            if (value.Reference is null && previous is not null)
+            {
+                // 从共享凭据切回「在本配置中填写」:把凭据拷进表单,而不是丢给用户一排空框 ——
+                // 用户多半只是想让这一条不再跟着凭据走,不是想重新输一遍密码。
+                CopyCredentialIntoForm(previous);
+            }
+            // 选中的凭据自带的用户名与表单里的相同:清掉表单里那一份,让这条连接跟着凭据走 ——
+            // 否则凭据日后改了用户名,这条连接还钉在旧名字上。
+            if (value.Credential is { Username.Length: > 0 } credential
+                && string.Equals(Username.Trim(), credential.Username, StringComparison.Ordinal))
+            {
+                Username = string.Empty;
+            }
+            RaiseCredentialSourceDependents();
+        }
+    }
+
+    /// <summary>是否使用共享凭据(而不是在本配置中填写)。</summary>
+    public bool UsesSharedCredential => _credentialSource is not null;
+
+    /// <summary>
+    /// 是否显示「凭据来源」那一栏:没有凭据仓储(设计期、单测)不显示;
+    /// 匿名 FTP 与无凭据协议(Telnet)用不上任何凭据,也不显示。
+    /// </summary>
+    public bool ShowCredentialSourceSelector => _sharedCredentials is not null && CredentialSourceApplies;
+
+    /// <summary>这种连接用不用得上凭据来源:匿名 FTP 与无凭据协议(Telnet)用不上。</summary>
+    /// <remarks>与仓储在不在无关 —— 没有仓储只是选不了,已有的引用照样要存回去。</remarks>
+    private bool CredentialSourceApplies => ShowCredentialFields && !(IsFtpSelected && FtpAnonymous);
+
+    /// <summary>认证方式分段按钮是否显示:用共享凭据时认证方式由凭据决定。</summary>
+    public bool ShowAuthMethodSelector => RequiresSshAuth && !UsesSharedCredential;
+
+    /// <summary>口令框(与「记住密码」)是否显示:用共享凭据时不显示 —— 密码在凭据里。</summary>
+    public bool ShowInlinePassword => ShowPasswordField && !UsesSharedCredential;
+
+    /// <summary>私钥 / 证书那几栏是否显示:用共享凭据时不显示。</summary>
+    public bool ShowInlineKeyFields => ShowsPrivateKeyFields && !UsesSharedCredential;
+
+    /// <summary>Agent 认证那行说明是否显示:用共享凭据时不显示。</summary>
+    public bool ShowAgentHint => IsAgentAuth && !UsesSharedCredential;
+
+    /// <summary>选中的共享凭据自带用户名:这时连接自己的用户名可以留空。</summary>
+    public bool SharedCredentialProvidesUsername =>
+        UsesSharedCredential && _selectedCredentialSource.Credential is { Username.Length: > 0 };
+
+    /// <summary>用户名框的占位提示:跟着凭据走时写明会用哪个用户名。</summary>
+    public string UsernamePlaceholder => SharedCredentialProvidesUsername
+        ? Strings.Format("Profile_CredUsernameInherit", _selectedCredentialSource.Credential!.Username)
+        : "root";
+
+    /// <summary>选中的共享凭据的摘要(用户名 · 认证方式),显示在下拉下方。</summary>
+    public string? SharedCredentialSummary => UsesSharedCredential && _selectedCredentialSource.Credential is { } credential
+        ? Strings.Format("Profile_CredSummary",
+            credential.Username.Length > 0 ? credential.Username : Strings.Get("SharedCred_UsernameFromConnection"),
+            credential.AuthMethod switch
+            {
+                AuthMethod.PrivateKey => Strings.Get("Profile_KeyAuth"),
+                AuthMethod.Certificate => Strings.Get("Profile_CertAuth"),
+                AuthMethod.Agent => Strings.Get("Profile_AgentAuth"),
+                _ => Strings.Get("Profile_PasswordAuth")
+            })
+        : null;
+
+    /// <summary>
+    /// 凭据来源的问题:引用已失效,或选的凭据这种连接用不上(FTP 与插件协议只认密码)。没问题为 null。
+    /// </summary>
+    public string? CredentialSourceError
+    {
+        get
+        {
+            if (!UsesSharedCredential || !CredentialSourceApplies)
+            {
+                return null;
+            }
+            if (_selectedCredentialSource.Credential is not { } credential)
+            {
+                // 下拉还没加载出来时不报:那一刻不知道它在不在。
+                return _sharedCredentialsLoaded ? Strings.Get("Profile_ErrCredMissing") : null;
+            }
+            return ConnectionType is ConnectionType.FTP or ConnectionType.Plugin && credential.AuthMethod != AuthMethod.Password
+                ? Strings.Get("Profile_ErrCredNotPassword")
+                : null;
+        }
+    }
+
+    /// <summary>共享凭据下拉是否已经加载过(决定「引用已失效」能不能报)。</summary>
+    private bool _sharedCredentialsLoaded;
+
+    /// <summary>
+    /// 「新建…」:由视图注入,打开共享凭据编辑框(预填当前表单里的凭据),返回新建的那一条;取消为 null。
+    /// </summary>
+    [Reactive]
+    public partial Func<SharedCredential, Task<SharedCredential?>>? CreateSharedCredential { get; set; }
+
+    /// <summary>从当前表单里的凭据新建一条共享凭据并选中它。</summary>
+    public ReactiveCommand<RxVoid, RxVoid> NewSharedCredentialCommand { get; }
+
+    /// <summary>加载共享凭据下拉,并选中当前引用的那一条。</summary>
+    public async Task LoadSharedCredentialsAsync()
+    {
+        if (_sharedCredentials is null)
+        {
+            return;
+        }
+        List<SharedCredential> credentials;
+        try
+        {
+            credentials = await _sharedCredentials.GetAllAsync();
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            // 读不出来时只剩「在本配置中填写」可选;已有的引用原样保留,保存时不会被清掉。
+            return;
+        }
+        CredentialReference? current = _credentialSource;
+        while (CredentialSources.Count > 1)
+        {
+            CredentialSources.RemoveAt(CredentialSources.Count - 1);
+        }
+        foreach (SharedCredential credential in credentials)
+        {
+            CredentialSources.Add(CredentialSourceOption.Shared(credential));
+        }
+        CredentialSourceOption selected = CredentialSources[0];
+        if (current is not null)
+        {
+            selected = CredentialSources.FirstOrDefault(option => option.Reference == current)
+                       ?? CredentialSourceOption.Missing(current);
+            if (selected.Credential is null)
+            {
+                CredentialSources.Add(selected);
+            }
+        }
+        _sharedCredentialsLoaded = true;
+        _selectedCredentialSource = selected;
+        _credentialSource = selected.Reference;
+        this.RaisePropertyChanged(nameof(SelectedCredentialSource));
+        RaiseCredentialSourceDependents();
+    }
+
+    /// <summary>用表单里现有的凭据预填一条共享凭据,新建成功后选中它。</summary>
+    private async Task NewSharedCredentialAsync()
+    {
+        if (CreateSharedCredential is not { } create)
+        {
+            return;
+        }
+        bool keyBased = AuthMethod is AuthMethod.PrivateKey or AuthMethod.Certificate;
+        var draft = new SharedCredential
+        {
+            Name = Username.Trim(),
+            Username = Username.Trim(),
+            AuthMethod = RequiresSshAuth ? AuthMethod : AuthMethod.Password,
+            Password = AuthMethod == AuthMethod.Password || !RequiresSshAuth ? SecureStringConvert.ToPlaintext(Password) : null,
+            PrivateKeyPath = keyBased ? PrivateKeyPath : null,
+            PrivateKeyPassphrase = keyBased ? PrivateKeyPassphrase : null,
+            CertificatePath = AuthMethod == AuthMethod.Certificate ? CertificatePath : null
+        };
+        if (await create(draft) is not { } created)
+        {
+            return;
+        }
+        var option = CredentialSourceOption.Shared(created);
+        CredentialSources.Add(option);
+        SelectedCredentialSource = option;
+    }
+
+    private void CopyCredentialIntoForm(SharedCredential credential)
+    {
+        if (string.IsNullOrWhiteSpace(Username))
+        {
+            Username = credential.Username;
+        }
+        // FTP 与插件协议的认证方式下拉是收起的,只认密码:别把它切到一个界面上切不回来的私钥页。
+        AuthMethod = RequiresSshAuth ? credential.AuthMethod : AuthMethod.Password;
+        Password = SecureStringConvert.FromPlaintext(credential.Password);
+        PrivateKeyPath = credential.PrivateKeyPath;
+        PrivateKeyPassphrase = credential.PrivateKeyPassphrase;
+        CertificatePath = credential.CertificatePath;
+    }
+
+    private void RaiseCredentialSourceDependents()
+    {
+        this.RaisePropertyChanged(nameof(UsesSharedCredential));
+        this.RaisePropertyChanged(nameof(ShowCredentialSourceSelector));
+        this.RaisePropertyChanged(nameof(ShowAuthMethodSelector));
+        this.RaisePropertyChanged(nameof(ShowInlinePassword));
+        this.RaisePropertyChanged(nameof(ShowInlineKeyFields));
+        this.RaisePropertyChanged(nameof(ShowAgentHint));
+        this.RaisePropertyChanged(nameof(SharedCredentialProvidesUsername));
+        this.RaisePropertyChanged(nameof(UsernamePlaceholder));
+        this.RaisePropertyChanged(nameof(SharedCredentialSummary));
+        this.RaisePropertyChanged(nameof(CredentialSourceError));
+        this.RaisePropertyChanged(nameof(UsernameError));
     }
 
     /// <summary>是否明文显示密码。</summary>
@@ -1645,9 +1918,8 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     public ReactiveCommand<RxVoid, RxVoid> CopyErrorCommand { get; }
 
     /// <summary>写系统剪贴板的回调;由视图注入(视图模型层拿不到 TopLevel)。</summary>
-    [SuppressMessage("ReactiveUI.SourceGenerators.CodeFixers.PropertyToReactiveFieldAnalyzer", "RXUISG0016:Property can be a [Reactive] property",
-        Justification = "视图注入的回调,不是可绑定状态,不需要变更通知。")]
-    public Func<string, Task>? CopyToClipboard { get; set; }
+    [Reactive]
+    public partial Func<string, Task>? CopyToClipboard { get; set; }
 
     /// <summary>浏览私钥文件命令;由视图层挂接文件选择对话框。</summary>
     public ReactiveCommand<RxVoid, RxVoid> BrowseKeyFileCommand { get; }
@@ -1876,6 +2148,22 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         string? postAuthCommand = SupportsPostAuthCommand && _postAuthCommand?.Trim() is { Length: > 0 } trimmed
             ? trimmed
             : null;
+        SessionProfile profile = BuildProfileCore(name, postAuthCommand);
+        // 凭据来源那一栏不显示(匿名 FTP、无凭据协议)时,引用一并不存:存下去就是一条看不见、
+        // 却会在切回来时突然生效的引用(#550)。
+        if (CredentialSourceApplies && _credentialSource is { } reference)
+        {
+            profile.CredentialSource = reference;
+            // 表单里收起来的那几栏可能还留着切换之前填的值:一起清掉。留着的话,「测试」会拿这份
+            // 看不见的旧值去连(内存里有材料即视为本次手输,见 CredentialMaterial.HasInline),
+            // 测出来的根本不是共享凭据。
+            CredentialMaterial.ClearInline(profile);
+        }
+        return profile;
+    }
+
+    private SessionProfile BuildProfileCore(string name, string? postAuthCommand)
+    {
         return new()
         {
             Id = _profileId,
@@ -2490,6 +2778,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         this.RaisePropertyChanged(nameof(PasswordLabel));
         this.RaisePropertyChanged(nameof(ShowCredentialFields));
         this.RaisePropertyChanged(nameof(ShowPasswordField));
+        RaiseCredentialSourceDependents();
         // 主机那一栏的形态与端口栏的显隐同样只看描述符 —— 漏发的表现是
         // 「已经切回 SSH,主机那格还是个串口下拉」。
         this.RaisePropertyChanged(nameof(ShowPortField));

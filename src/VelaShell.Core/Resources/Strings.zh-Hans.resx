@@ -6448,4 +6448,163 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="Sc_WarnTerminalKey" xml:space="preserve">
     <value>这一按本来会发给远端程序,绑定期间远端收不到它</value>
   </data>
+  <data name="Cred_Failure_NotFound" xml:space="preserve">
+    <value>这条连接引用的共享凭据已不存在。</value>
+  </data>
+  <data name="Cred_Failure_ProviderDisabled" xml:space="preserve">
+    <value>这条连接使用的凭据来源「{0}」在本机不可用。</value>
+  </data>
+  <data name="Cred_Failure_MissingUsername" xml:space="preserve">
+    <value>共享凭据「{0}」和这条连接都没有填写用户名。</value>
+  </data>
+  <data name="Cred_Failure_MissingSecret" xml:space="preserve">
+    <value>共享凭据「{0}」在本机没有密码或密钥(云同步未设端到端口令时不会带上它们)。</value>
+  </data>
+  <data name="Cred_Failure_UnsupportedAuth" xml:space="preserve">
+    <value>共享凭据「{0}」不是密码类型;FTP 与插件连接只能用密码登录。</value>
+  </data>
+  <data name="Svc_JumpCredentialFailed" xml:space="preserve">
+    <value>跳板 {0}:{1}</value>
+  </data>
+  <data name="Auth_SharedRejected" xml:space="preserve">
+    <value>使用共享凭据「{0}」登录被拒绝。如果刚改过密码,在下面输入新密码并勾选「同时更新」,所有使用它的连接会一起换上。</value>
+  </data>
+  <data name="Auth_SharedIncomplete" xml:space="preserve">
+    <value>共享凭据「{0}」在本机不完整(缺用户名、密码或密钥)。在这里填好,可以顺手存回这条凭据。</value>
+  </data>
+  <data name="Auth_SharedMissing" xml:space="preserve">
+    <value>这条连接引用的共享凭据已不存在。这里输入的凭据只用于这一次;要长期保存,请编辑这条连接,改选凭据来源。</value>
+  </data>
+  <data name="Auth_UpdateShared" xml:space="preserve">
+    <value>同时更新共享凭据「{0}」({1} 条连接在用)</value>
+  </data>
+  <data name="Profile_CredSource" xml:space="preserve">
+    <value>凭据来源</value>
+  </data>
+  <data name="Profile_CredSourceInline" xml:space="preserve">
+    <value>在本配置中填写</value>
+  </data>
+  <data name="Profile_CredSourceMissing" xml:space="preserve">
+    <value>(引用的共享凭据已不存在)</value>
+  </data>
+  <data name="Profile_CredNew" xml:space="preserve">
+    <value>新建…</value>
+  </data>
+  <data name="Profile_CredNewTip" xml:space="preserve">
+    <value>用表单里现有的用户名与密码 / 密钥新建一条共享凭据,并让这条连接使用它</value>
+  </data>
+  <data name="Profile_CredUsernameInherit" xml:space="preserve">
+    <value>留空则使用凭据中的 {0}</value>
+  </data>
+  <data name="Profile_CredSummary" xml:space="preserve">
+    <value>共享凭据:用户名 {0} · {1}。改密码请到 设置 → 共享凭据。</value>
+  </data>
+  <data name="Profile_ErrCredMissing" xml:space="preserve">
+    <value>引用的共享凭据已不存在,请改选凭据来源。</value>
+  </data>
+  <data name="Profile_ErrCredNotPassword" xml:space="preserve">
+    <value>这种连接只能用密码登录,请选一条密码类型的共享凭据。</value>
+  </data>
+  <data name="SharedCred_NewTitle" xml:space="preserve">
+    <value>新建共享凭据</value>
+  </data>
+  <data name="SharedCred_EditTitle" xml:space="preserve">
+    <value>编辑共享凭据</value>
+  </data>
+  <data name="SharedCred_ErrNameRequired" xml:space="preserve">
+    <value>请填写名称</value>
+  </data>
+  <data name="SharedCred_ErrPasswordRequired" xml:space="preserve">
+    <value>请填写密码</value>
+  </data>
+  <data name="SharedCred_ErrKeyRequired" xml:space="preserve">
+    <value>请选择私钥文件</value>
+  </data>
+  <data name="SharedCred_UsersSummary" xml:space="preserve">
+    <value>已选 {0} 条连接</value>
+  </data>
+  <data name="SharedCred_MatchResult" xml:space="preserve">
+    <value>新勾选了 {0} 条凭据相同的连接</value>
+  </data>
+  <data name="SharedCred_CopyFrom" xml:space="preserve">
+    <value>从连接复制(可选)</value>
+  </data>
+  <data name="SharedCred_CopyFromPlaceholder" xml:space="preserve">
+    <value>选一条连接,把它的用户名与密码 / 密钥填进来</value>
+  </data>
+  <data name="SharedCred_Name" xml:space="preserve">
+    <value>名称</value>
+  </data>
+  <data name="SharedCred_NamePlaceholder" xml:space="preserve">
+    <value>如:机房交换机 admin</value>
+  </data>
+  <data name="SharedCred_UsernamePlaceholder" xml:space="preserve">
+    <value>留空则由各连接自己填写</value>
+  </data>
+  <data name="SharedCred_Notes" xml:space="preserve">
+    <value>备注(可选)</value>
+  </data>
+  <data name="SharedCred_UsersTitle" xml:space="preserve">
+    <value>使用这条凭据的连接</value>
+  </data>
+  <data name="SharedCred_CheckMatching" xml:space="preserve">
+    <value>勾选凭据相同的连接</value>
+  </data>
+  <data name="SharedCred_CheckMatchingTip" xml:space="preserve">
+    <value>把用户名与密码 / 密钥和上面完全相同、但还各存各的连接一并勾上 —— 迁移已有连接用</value>
+  </data>
+  <data name="SharedCred_FilterPlaceholder" xml:space="preserve">
+    <value>筛选连接(名称、主机、用户名)</value>
+  </data>
+  <data name="SharedCred_UsernameFromConnection" xml:space="preserve">
+    <value>由连接提供</value>
+  </data>
+  <data name="SharedCred_UsageCount" xml:space="preserve">
+    <value>{0} 条连接</value>
+  </data>
+  <data name="SharedCred_Saved" xml:space="preserve">
+    <value>已保存「{0}」,{1} 条连接在用它。</value>
+  </data>
+  <data name="SharedCred_Deleted" xml:space="preserve">
+    <value>已删除「{0}」。</value>
+  </data>
+  <data name="SharedCred_DeleteConfirm" xml:space="preserve">
+    <value>删除共享凭据「{0}」?</value>
+  </data>
+  <data name="SharedCred_DeleteConfirmInUse" xml:space="preserve">
+    <value>删除共享凭据「{0}」?有 {1} 条连接在用它,这些连接会各自保存一份同样的凭据,删除后照样能连。</value>
+  </data>
+  <data name="SetVm_SectionCredentials" xml:space="preserve">
+    <value>共享凭据</value>
+  </data>
+  <data name="SetCred_Title" xml:space="preserve">
+    <value>共享凭据</value>
+  </data>
+  <data name="SetCred_Subtitle" xml:space="preserve">
+    <value>多条连接共用的一套用户名与密码 / 密钥。改这里一处,所有使用它的连接下次连接即用上新值。</value>
+  </data>
+  <data name="SetCred_SearchPlaceholder" xml:space="preserve">
+    <value>搜索名称、用户名或备注</value>
+  </data>
+  <data name="SetCred_New" xml:space="preserve">
+    <value>新建凭据</value>
+  </data>
+  <data name="SetCred_ColUsage" xml:space="preserve">
+    <value>使用中</value>
+  </data>
+  <data name="SetCred_Edit" xml:space="preserve">
+    <value>编辑</value>
+  </data>
+  <data name="SetCred_Delete" xml:space="preserve">
+    <value>删除凭据</value>
+  </data>
+  <data name="SetCred_MissingSecretTip" xml:space="preserve">
+    <value>本机没有这条凭据的密码或密钥(云同步未设端到端口令时不会带上它们)。点「编辑」补上。</value>
+  </data>
+  <data name="SetCred_Empty" xml:space="preserve">
+    <value>还没有共享凭据。新建一条,再把使用同一套账号的连接勾上;以后改密码只需改这一处。</value>
+  </data>
+  <data name="SetCred_StorageHint" xml:space="preserve">
+    <value>密码与私钥口令经 AES-256 加密保存在本机。云同步会带上凭据的名称与用户名;只有设了端到端口令,密码与口令才会一起同步。</value>
+  </data>
 </root>
