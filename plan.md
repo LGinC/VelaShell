@@ -1524,20 +1524,13 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 
 **三、验证**:`SidebarQuickCommandsUiTests` 新增 `LongActiveIdentity_TrimsBeforeFooterButtons`(260 / 180 两种宽度:名称右沿 + 8 不越过按钮左沿、确实截成了省略号、悬停提示是完整名称;改之前实测 260px 下名称画到 191、按钮从 164 开始,180px 下按钮从 84 开始,两例都红)与 `ShortActiveIdentity_IsNotTrimmed`(放得下的名称不截)。velashell-docs `交互与界面规格.md` / `interaction-and-ui-specs.md` §4 底部用户栏原先还写着「头像 + `root`」,一并改成当前身份的实际行为与截断规则。
 
-## ✅ 151. 2026-10-02 插件工作台的连接表单照插件的版式声明排,右侧栏给连接串预览与逐步测试(用户需求,MongoDB 插件设计稿 10)
+## ✅ 151. 2026-10-03 连接对话框只让有焦点的文本框滚动表单(插件连接表单那次改动撤回后保留的两处修复)
 
-**一、问题**:插件协议的字段在连接对话框里一行一个,统统落在「<协议> 设置」一节(§145 第四条记的出入);测试连接只有「成功 / 失败 + 一句原因」。MongoDB 插件的设计稿 10(副本集三台、SRV、连接字符串、SCRAM、TLS、SSH 跳板、环境标记、安全策略)照这样画是十几行一列到底;稿子右半边的连接串预览、逐步测试结果与发现的成员在宿主里无处可放 —— 插件那边曾把它们做成工作台里的「连接信息」对话框,用户要求做进新建连接窗口,并同意为此改 SDK。
+**一、问题**:编辑一条存了口令的连接,口令框落在首屏以下时(矮屏,或插件字段多的协议),对话框一打开表单就被拽下去一百来像素,连接名一栏看不见。根因:文本框被程序赋值时光标跟着挪,`TextPresenter` 随后发一次 BringIntoView —— 不管它有没有焦点 —— 外层的表单区照单全收。
 
 **二、做法**:
-- **SDK 2.0.7**(velashell-plugin-sdk `a5746b3`;都只增不改,`apiLevel` 不动):字段版式 `Section`(并入宿主的 `vela:basic` / `vela:target` / `vela:auth` 或自定义节)、`Width`(整行 / 半行 / 三分之一)、`Presentation`(分段按钮 / 语气色小标签 / 开关卡片)、`Placement`(右侧栏)与 `ProtocolSettingChoice.Tone`;新形态 `ProtocolSettingKind.HostList`;工作台的连接检查 `IWorkspaceConnectionInspector`(`Preview` 给按角色分段的连接串,`ProbeAsync` 按步骤键报进度、返回步骤与发现的端点)。契约程序集用宿主那一份,用到其中任何一样的插件都要钉 `minSdkVersion: "2.0.7"`。
-- **分节**:`ConnectionProfileViewModel` 拆出 `ConnectionProfileViewModel.PluginLayout.cs`。字段按 `Section` 分进基本 / 连接目标 / 身份验证三节或插件自定义的节(没写节的照旧进「<协议> 设置」);基本一节有插件字段时整理一节提到最上(`ShowBasicOnTop`),插件那一列按内容定宽;变体键字段排在主机行之上,值一变按 `WorkspaceShape` 重算主机标签、端口栏、凭据栏与匿名 / 隧道能力,并作废上一次的测试结果、角色标记与成功条(量的是另一种连接形态);插件声明了 `SshSession` 字段时宿主的跳板行不出现;插件工作台的用户名与口令并排。
-- **画法**:`Controls/FieldFlowPanel`(一行六格:整行 6 / 半行 3 / 三分之一 2)。`PluginFieldRow` 模板新增分支:分段按钮、带语气色圆点的小标签(`ChipTheme`,24 高、3 圆角,危险色选中时铺 `VelaErrorSurface`)、开关卡片、SSH 卡片(开 = 经跳板并预选第一条已保存的 SSH 配置;一条都没有时开关禁用并说明原因,已经开着的仍能关)、主机列表(一行一台 + 端口 + 角色徽章 + 删除,底下「添加主机」)。
-- **右侧栏**:插件提供者实现了连接检查、或声明了 `Placement = Aside` 的字段时出现,320 宽,对话框 792 → 1112。连接字符串按角色着色、可复制(去抖 120ms,草稿里不给口令、去掉 `IsSecret` 字段、补默认值,插件抛异常当作没有预览);测试结果按步骤键原地更新;发现的成员;右侧栏字段节。页脚的目标预览改显示插件给的连接串。测试后主机行与主机列表各行按端点地址标上角色。
-- **测试链路**:`ConnectionWorkflowService.TestConnectionAsync` 新增带 `IProgress<WorkspaceProbeStep>` 的重载,`ConnectionTestResult.Report` 带回报告,失败原因取第一个失败步骤;`PluginWorkspaceLauncher.ProbeAsync` 与打开会话走同一个请求(含隧道端点),提供者没实现连接检查时返回 null(照旧两态);`MainWindowViewModel.ProbePluginConnectionAsync` 先建 SSH 隧道再探测,隧道失败报一条 `tunnel` 失败步骤,匿名与隧道能力按变体判。
-- **表单只让有焦点的文本框滚动**:文本框被程序赋值时光标跟着挪,`TextPresenter` 随后发 BringIntoView —— 不管有没有焦点。编辑一条存了口令的连接,口令框落在首屏以下时表单一打开就被拽下去一百来像素(矮屏上内置协议也一样)。现在在表单内容上拦掉没焦点的文本框发来的请求。
-- **文案**:新增 8 个键(`Profile_TestFailed`、`Profile_ProbeTunnel`、`Profile_SecBasic`、`Profile_TestResults`、`Profile_TestResultsHint`、`Profile_AddHost`、`Profile_RemoveHost`、`Profile_NoSshSessions`),五份 resx 齐。
-- `ConnectionProfileViewModel.CopyToClipboard` 是视图注入的回调,对 ReactiveUI 分析器 RXUISG0016(建议改 `[Reactive]`)按 CA1822 那几处的写法加 `SuppressMessage` 并写明理由。
+- `ConnectionProfileView` 在表单内容(而不是 `ScrollViewer` 本身 —— 请求冒泡时先到 `ScrollContentPresenter`,挂在外面就拦晚了)上处理 `RequestBringIntoViewEvent`:来自没有键盘焦点的文本框的请求一律吞掉。Tab / 点击进去的那一个照常带进视野。
+- `ConnectionProfileViewModel.CopyToClipboard` 是视图注入的回调,对 ReactiveUI 分析器 RXUISG0016(建议改 `[Reactive]`)按本文件 CA1822 那几处的写法加 `SuppressMessage` 并写明理由。
+- 来历:这两处原是 `7769181d`(插件工作台的连接表单照版式声明排、右侧栏给连接串预览与逐步测试,PR #548)的一部分。MongoDB 插件随后改为像 Docker 面板一样从命令面板打开、自己管理连接,那次改动连同 SDK 2.0.7 的连接对话框契约一并撤回(`f4e6b470`;SDK 侧 velashell-plugin-sdk `06f5800`),`VelaShell.PluginSdk*` 回到 2.0.6;与契约无关的这两处单独留下。
 
-**三、验证**:新增 `ConnectionProfileInspectorTests`(9 例:分节与默认节、版式单位与画法、变体键改主机行并作废上次结果、预览草稿里没有口令与密文字段、测试结果按键原地更新与角色标记、切回 SSH 右侧栏消失、主机列表往返、六格换算、变体只套对应那一种)、`WorkspaceConnectionInspectorTests`(3 例:探测与打开同一个请求含隧道端点、没实现连接检查为 null 而抛异常给失败报告、预览草稿)、`ConnectionWorkflowServiceTests` 补报告驱动结果与原因一例;UI 测试新增 `OpeningWithASavedPassword_LeavesTheFormAtTheTop`(改之前红),口令框那条改为「两处都挂输入行为、只一处可见」。headless 下装上真的 MongoDB 插件截图与设计稿 10 对照,当场抓到并改掉:小标签的 `ControlTheme` 里写了后代选择器,一画就抛异常;小标签被三等分挤断;没有 SSH 配置时卡片开关一点就弹回;换变体后上一次的角色徽章还挂着;SRV 形态下主机框右边空出 12px。`VelaShell.Tests` 1681 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 572 通过 / 4 跳过,`VelaShell.Presentation.Tests` 70 通过。`VelaShell.PluginSdk*` 抬到 2.0.7(连同 `VelaShell.Plugin.Ai` 里那处显式版本),对着 nuget.org 上发布的签名包:整个解决方案零警告零错误,上面三个工程的数字不变。
-
-**四、与设计稿的出入**:主机行仍是宿主那一行,稿子里的第一台成员就是它,「其余成员」从第二台起;主机列表各行没有拖动排序的手柄;页脚按钮沿用宿主的「测试 / 保存 / 连接」;左侧协议栏保留。velashell-docs 的同步见 `feature-plan.md` 第三节。
+**三、验证**:UI 测试新增 `OpeningWithASavedPassword_LeavesTheFormAtTheTop`(压一块 320 高的矮屏,口令框在首屏以下时表单停在顶上;焦点放进口令框后照常滚过去),修之前红。

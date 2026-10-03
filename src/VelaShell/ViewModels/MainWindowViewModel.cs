@@ -4530,9 +4530,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             // 可能触发插件的惰性激活(用户刚从「最近连接」点开一条 Redis 会话)。
             descriptor =
                 (await registry.ResolveWorkspaceAsync(profile.PluginProtocolId).ConfigureAwait(true))?.Descriptor;
-            // 按变体求形态:同一个连接类型的不同形态对凭据的要求可以不同(SRV 允许匿名、某种方言根本没有账号)。
-            allowsAnonymous = descriptor is not null
-                              && WorkspaceShape.Of(descriptor, profile).Features.HasFlag(WorkspaceFeatures.AnonymousAccess);
+            allowsAnonymous = descriptor?.Features.HasFlag(WorkspaceFeatures.AnonymousAccess) == true;
             if (descriptor is { DisplayName.Length: > 0 })
             {
                 ui.Document.TypeLabel = descriptor.DisplayName;
@@ -4649,21 +4647,10 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// 隧道与文档都在 finally 里拆:测试不留任何东西 —— 既不占本地转发端口,
     /// 也不给插件留一条没人管的连接。
     /// </para>
-    /// <para>
-    /// 连接类型实现了连接检查(<see cref="IWorkspaceConnectionInspector" />)时不开会话,
-    /// 交给它逐步检查(隧道照样由宿主先建好),返回的报告画进对话框的右侧栏。
-    /// 隧道本身没建起来时插件根本轮不到上场 —— 由宿主补一份"SSH 隧道"那一步失败的报告,
-    /// 否则右侧栏一片空白,失败原因只剩反馈条里的一行。
-    /// </para>
     /// </summary>
     /// <param name="profile">要测的配置(凭据已由弹窗填好)。</param>
-    /// <param name="progress">逐步进度;可为 <see langword="null" />。</param>
     /// <param name="cancellationToken">取消令牌。</param>
-    /// <returns>逐步报告;连接类型没有连接检查时为 <see langword="null" />(成功即正常返回,失败抛异常)。</returns>
-    private async Task<WorkspaceProbeReport?> ProbePluginConnectionAsync(
-        SessionProfile profile,
-        IProgress<WorkspaceProbeStep>? progress,
-        CancellationToken cancellationToken)
+    private async Task ProbePluginConnectionAsync(SessionProfile profile, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
         // 文件系统形态(S3 之类)与工作台形态(Redis 之类)是两套打开路径,按声明分流。
@@ -4677,44 +4664,19 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             }
             Guid fileSessionId = await sessions.OpenSessionAsync(profile, cancellationToken).ConfigureAwait(true);
             await sessions.CloseSessionAsync(fileSessionId, CancellationToken.None).ConfigureAwait(true);
-            return null;
+            return;
         }
 
         if (_workspaceLauncher is not { } launcher)
         {
             throw new InvalidOperationException(Strings.Get("Plugin_TestUnavailable"));
         }
-        bool inspects = _protocolRegistry is { } workspaces
-                        && (await workspaces.ResolveWorkspaceAsync(profile.PluginProtocolId).ConfigureAwait(true))?.Provider
-                            is IWorkspaceConnectionInspector;
-        WorkspaceEndpoint? endpoint;
-        Guid tunnelId;
-        try
-        {
-            (endpoint, tunnelId) = await EstablishWorkspaceTunnelAsync(profile, cancellationToken).ConfigureAwait(true);
-        }
-        catch (Exception ex) when (inspects && ex is not OperationCanceledException)
-        {
-            var failed = new WorkspaceProbeStep("tunnel", Strings.Get("Profile_ProbeTunnel"), WorkspaceProbeState.Failed, ex.Message);
-            progress?.Report(failed);
-            return new WorkspaceProbeReport { Succeeded = false, Steps = [failed] };
-        }
-        if (inspects)
-        {
-            try
-            {
-                return await launcher.ProbeAsync(profile, endpoint, progress, cancellationToken).ConfigureAwait(true);
-            }
-            finally
-            {
-                await RemoveWorkspaceTunnelAsync(tunnelId).ConfigureAwait(true);
-            }
-        }
+        (WorkspaceEndpoint? endpoint, Guid tunnelId) =
+            await EstablishWorkspaceTunnelAsync(profile, cancellationToken).ConfigureAwait(true);
         PluginWorkspaceSession? session = null;
         try
         {
             session = await launcher.OpenAsync(profile, endpoint, cancellationToken).ConfigureAwait(true);
-            return null;
         }
         finally
         {
@@ -4776,8 +4738,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         }
         WorkspaceDescriptor? descriptor =
             (await registry.ResolveWorkspaceAsync(profile.PluginProtocolId).ConfigureAwait(true))?.Descriptor;
-        // 按变体求形态:MongoDB 的 SRV 形态不提供隧道,选了也不该建。
-        if (descriptor is null || !WorkspaceShape.Of(descriptor, profile).Features.HasFlag(WorkspaceFeatures.SshTunnel))
+        if (descriptor is null || !descriptor.Features.HasFlag(WorkspaceFeatures.SshTunnel))
         {
             return (null, Guid.Empty);
         }

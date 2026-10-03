@@ -2,7 +2,6 @@ using NSubstitute;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Ssh;
-using VelaShell.PluginSdk.Workspaces;
 using VelaShell.Presentation.Services;
 
 namespace VelaShell.Presentation.Tests.Services;
@@ -86,10 +85,10 @@ public sealed class ConnectionWorkflowServiceTests
         ConnectionWorkflowService service = CreateService();
         SessionProfile profile = CreatePluginProfile();
         SessionProfile? probed = null;
-        service.PluginProbe = (candidate, _, _) =>
+        service.PluginProbe = (candidate, _) =>
         {
             probed = candidate;
-            return Task.FromResult<WorkspaceProbeReport?>(null);
+            return Task.CompletedTask;
         };
 
         ConnectionTestResult result = await service.TestConnectionAsync(profile);
@@ -104,57 +103,12 @@ public sealed class ConnectionWorkflowServiceTests
     public async Task TestConnectionAsync_PluginProbeThrows_ReportsProbeMessage()
     {
         ConnectionWorkflowService service = CreateService();
-        service.PluginProbe = (_, _, _) => throw new InvalidOperationException("wrong password");
+        service.PluginProbe = (_, _) => throw new InvalidOperationException("wrong password");
 
         ConnectionTestResult result = await service.TestConnectionAsync(CreatePluginProfile());
 
         Assert.IsFalse(result.Success);
         Assert.AreEqual("wrong password", result.ErrorMessage);
-    }
-
-    /// <summary>
-    /// 连接检查给了报告:结论跟着报告走,失败原因取第一条失败步骤("步骤名: 原因"),
-    /// 报告原样带回给对话框画右侧栏;进度原样转交。
-    /// </summary>
-    [TestMethod]
-    public async Task TestConnectionAsync_ProbeReport_DrivesTheResultAndReason()
-    {
-        ConnectionWorkflowService service = CreateService();
-        var steps = new List<WorkspaceProbeStep>();
-        var progress = new SyncProgress(steps.Add);
-        var report = new WorkspaceProbeReport
-        {
-            Succeeded = false,
-            Steps =
-            [
-                new("tcp", "TCP", WorkspaceProbeState.Passed, ElapsedMs: 2),
-                new("auth", "SCRAM-SHA-256", WorkspaceProbeState.Failed, "Authentication failed"),
-                new("hello", "hello", WorkspaceProbeState.Skipped)
-            ]
-        };
-        service.PluginProbe = (_, sink, _) =>
-        {
-            sink?.Report(report.Steps[0]);
-            return Task.FromResult<WorkspaceProbeReport?>(report);
-        };
-
-        ConnectionTestResult result = await service.TestConnectionAsync(CreatePluginProfile(), progress);
-
-        Assert.IsFalse(result.Success);
-        Assert.AreEqual("SCRAM-SHA-256: Authentication failed", result.ErrorMessage);
-        Assert.AreSame(report, result.Report);
-        Assert.AreEqual("tcp", steps.Single().Key);
-
-        service.PluginProbe = (_, _, _) => Task.FromResult<WorkspaceProbeReport?>(new WorkspaceProbeReport { Succeeded = true, Summary = "OK · 3 ms" });
-        ConnectionTestResult passed = await service.TestConnectionAsync(CreatePluginProfile());
-        Assert.IsTrue(passed.Success);
-        Assert.IsNull(passed.ErrorMessage);
-        Assert.AreEqual("OK · 3 ms", passed.Report?.Summary);
-    }
-
-    private sealed class SyncProgress(Action<WorkspaceProbeStep> report) : IProgress<WorkspaceProbeStep>
-    {
-        public void Report(WorkspaceProbeStep value) => report(value);
     }
 
     /// <summary>没接探针时要明确说"测不了",而不是拿 SSH 去撞插件端口撞出一个假原因。</summary>

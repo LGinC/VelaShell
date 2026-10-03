@@ -77,7 +77,7 @@ public sealed record PluginSessionChoice(string Id, string Display);
 /// 那是任意界面,这只是一张形状封闭的参数表。
 /// </para>
 /// </summary>
-public sealed class PluginProtocolFieldViewModel : ReactiveObject, Controls.IFieldFlowItem
+public sealed class PluginProtocolFieldViewModel : ReactiveObject
 {
     private string _text = string.Empty;
 
@@ -135,107 +135,6 @@ public sealed class PluginProtocolFieldViewModel : ReactiveObject, Controls.IFie
         {
             _text = field.Choices[0].Value;
         }
-        // 分段按钮与小标签:每个候选一个按钮,选中态跟着 Text 走(见 Text 的 setter)。
-        Options = [.. field.Choices.Select(choice => new PluginOptionViewModel(choice, this))];
-        SyncOptions();
-        if (field.Kind == ProtocolSettingKind.HostList)
-        {
-            HostList = new PluginHostListViewModel(this);
-        }
-    }
-
-    // ---- 版式(ProtocolSettingField.Section / Width / Presentation / Placement) ----
-
-    /// <inheritdoc />
-    /// <remarks>整行 6 份,半行 3 份,三分之一行 2 份。</remarks>
-    public int FlowUnits => Field.Width switch
-    {
-        ProtocolFieldWidth.Half => 3,
-        ProtocolFieldWidth.Third => 2,
-        _ => Controls.FieldFlowPanel.FullUnits
-    };
-
-    /// <summary>归入哪一节(插件给的;见 <see cref="ProtocolSettingField.Section" />)。</summary>
-    public string? Section => Field.Section;
-
-    /// <summary>放在右侧栏(连接检查旁边)而不是主表单。</summary>
-    public bool IsAside => Field.Placement == ProtocolFieldPlacement.Aside;
-
-    /// <summary>选项画成分段按钮。</summary>
-    public bool IsSegmented => Field.Kind == ProtocolSettingKind.Choice && !Field.AllowsCustomValue
-                               && Field.Presentation == ProtocolSettingPresentation.Segmented;
-
-    /// <summary>选项画成一排带语气色的小标签。</summary>
-    public bool IsChips => Field.Kind == ProtocolSettingKind.Choice && !Field.AllowsCustomValue
-                           && Field.Presentation == ProtocolSettingPresentation.Chips;
-
-    /// <summary>布尔画成开关卡片(标题 + 开关 + 说明)。</summary>
-    public bool IsToggleCard => Field.Kind == ProtocolSettingKind.Boolean && Field.Presentation == ProtocolSettingPresentation.Card;
-
-    /// <summary>SSH 跳板画成开关卡片(开着时卡片里多一个会话下拉)。</summary>
-    public bool IsSshCard => Field.Kind == ProtocolSettingKind.SshSession && Field.Presentation == ProtocolSettingPresentation.Card;
-
-    /// <summary>是不是一张卡片(两种卡片共用外框)。</summary>
-    public bool IsCard => IsToggleCard || IsSshCard;
-
-    /// <summary>主机列表(一行一台)。</summary>
-    public bool IsHostList => Field.Kind == ProtocolSettingKind.HostList;
-
-    /// <summary>
-    /// 字段上方要不要单独一行标签。复选框与卡片把标题画在自己身上;分段按钮的几段本身就说明了它是什么
-    /// (「主机列表 / SRV 记录 / 连接字符串」),上面再压一行标签只是重复。
-    /// </summary>
-    public bool ShowsLabel => !(IsToggle || IsCard || IsSegmented);
-
-    /// <summary>分段按钮 / 小标签的各个选项。</summary>
-    public IReadOnlyList<PluginOptionViewModel> Options { get; }
-
-    /// <summary>主机列表的各行;不是主机列表时为 <see langword="null" />。</summary>
-    public PluginHostListViewModel? HostList { get; }
-
-    /// <summary>
-    /// 新加一行主机时用的默认端口。由 <see cref="ConnectionProfileViewModel" /> 按当前变体下发 ——
-    /// 字段视图模型不该认识连接类型描述。
-    /// </summary>
-    public Func<int>? DefaultPortProvider { get; set; }
-
-    /// <summary>
-    /// SSH 卡片的开关:开 = 经跳板(值是选中的那条会话配置 id),关 = 直连(值为空)。
-    /// 打开时预选第一条已保存的 SSH 配置 —— 开关开着、下拉却空着,等于"开了个寂寞"。
-    /// </summary>
-    public bool SshEnabled
-    {
-        get => _text.Length > 0;
-        set
-        {
-            if (value == SshEnabled)
-            {
-                return;
-            }
-            Text = value && SshCardSessions is [var first, ..] ? first.Id : string.Empty;
-            this.RaisePropertyChanged();
-        }
-    }
-
-    /// <summary>SSH 卡片里的会话下拉:不含"不经跳板机"那一项(那由开关表达)。</summary>
-    public IReadOnlyList<PluginSessionChoice> SshCardSessions => [.. SshSessions.Where(static s => s.Id.Length > 0)];
-
-    /// <summary>
-    /// 有没有能选的 SSH 配置。一条都没有时卡片的开关禁用并说明原因 ——
-    /// 否则一点就弹回去(没有可预选的会话),看着像坏了。
-    /// </summary>
-    public bool HasSshCardSessions => SshSessions.Any(static s => s.Id.Length > 0);
-
-    /// <summary>SSH 卡片上「还没有保存的 SSH 连接」那句说明。</summary>
-    public bool ShowNoSshSessions => IsSshCard && !HasSshCardSessions;
-
-    /// <summary>选中态跟着当前值走。</summary>
-    private void SyncOptions()
-    {
-        foreach (PluginOptionViewModel option in Options)
-        {
-            option.IsSelected = string.Equals(option.Value, _text, StringComparison.Ordinal);
-        }
     }
 
     /// <summary>字段声明。</summary>
@@ -290,12 +189,12 @@ public sealed class PluginProtocolFieldViewModel : ReactiveObject, Controls.IFie
     /// <summary>是否为掩码输入。</summary>
     public bool IsPassword => Field.Kind == ProtocolSettingKind.Password;
 
-    /// <summary>是否为复选框(画成卡片的不算)。</summary>
-    public bool IsToggle => Field.Kind == ProtocolSettingKind.Boolean && !IsToggleCard;
+    /// <summary>是否为复选框。</summary>
+    public bool IsToggle => Field.Kind == ProtocolSettingKind.Boolean;
 
-    /// <summary>是否为**只读**下拉(值只能取自候选项;画成分段按钮 / 小标签的不算)。</summary>
+    /// <summary>是否为**只读**下拉(值只能取自候选项)。</summary>
     public bool IsChoice => Field.Kind is ProtocolSettingKind.Choice or ProtocolSettingKind.DynamicChoice
-                            && !Field.AllowsCustomValue && !IsSegmented && !IsChips;
+                            && !Field.AllowsCustomValue;
 
     /// <summary>
     /// 是否为**可编辑**下拉(候选项是便利,不是白名单)。
@@ -333,8 +232,8 @@ public sealed class PluginProtocolFieldViewModel : ReactiveObject, Controls.IFie
         this.RaisePropertyChanged(nameof(SelectedChoice));
     }
 
-    /// <summary>是否为"已保存的 SSH 配置"选择器(画成卡片的不算)。</summary>
-    public bool IsSshSession => Field.Kind == ProtocolSettingKind.SshSession && !IsSshCard;
+    /// <summary>是否为"已保存的 SSH 配置"选择器。</summary>
+    public bool IsSshSession => Field.Kind == ProtocolSettingKind.SshSession;
 
     /// <summary>SSH 配置候选(含一条"不经跳板机"的空项)。</summary>
     public IReadOnlyList<PluginSessionChoice> SshSessions { get; }
@@ -368,9 +267,6 @@ public sealed class PluginProtocolFieldViewModel : ReactiveObject, Controls.IFie
             this.RaisePropertyChanged(nameof(Toggle));
             this.RaisePropertyChanged(nameof(SelectedChoice));
             this.RaisePropertyChanged(nameof(SelectedSshSession));
-            this.RaisePropertyChanged(nameof(SshEnabled));
-            SyncOptions();
-            HostList?.OnTextChanged();
         }
     }
 

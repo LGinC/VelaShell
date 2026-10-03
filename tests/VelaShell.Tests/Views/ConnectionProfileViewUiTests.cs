@@ -62,15 +62,11 @@ public sealed class ConnectionProfileViewUiTests
                 .ToList();
             Assert.IsEmpty(legacyProtocols);
 
-            // 口令框有两处:内建协议上下排的那一个,与插件协议里和用户名并排的那一个(同一个绑定)。
-            // 两处都得挂同样的输入行为,而任一时刻只有一个看得见。
-            var passwordBoxes = window.GetVisualDescendants()
+            TextBox passwordBox = window.GetVisualDescendants()
                 .OfType<TextBox>()
-                .Where(SecurePasswordBox.GetEnabled)
-                .ToList();
-            Assert.IsTrue(passwordBoxes.All(EnglishInputLocale.GetEnabled));
-            Assert.IsFalse(passwordBoxes.Any(InputMethod.GetIsInputMethodEnabled));
-            Assert.AreEqual(1, passwordBoxes.Count(static box => box.IsEffectivelyVisible));
+                .Single(SecurePasswordBox.GetEnabled);
+            Assert.IsTrue(EnglishInputLocale.GetEnabled(passwordBox));
+            Assert.IsFalse(InputMethod.GetIsInputMethodEnabled(passwordBox));
 
             vm.SelectConnectionTypeCommand.Execute(ConnectionType.SFTP).Subscribe();
             Dispatcher.UIThread.RunJobs();
@@ -301,8 +297,8 @@ public sealed class ConnectionProfileViewUiTests
     /// </summary>
     /// <remarks>
     /// 文本框被程序赋值时光标跟着挪,<c>TextPresenter</c> 随后发一次 BringIntoView ——
-    /// 不管它有没有焦点。口令框落在首屏以下时(插件把「基本」一节提到顶上、主机列表又占了几行之后,
-    /// MongoDB 这类表单就是这样),外层的表单区就被它滚下去一百来像素,连接名一栏打开就看不见。
+    /// 不管它有没有焦点。口令框落在首屏以下时(矮屏,或插件字段多的协议),
+    /// 外层的表单区就被它滚下去一百来像素,连接名一栏打开就看不见。
     /// </remarks>
     [TestMethod]
     public void OpeningWithASavedPassword_LeavesTheFormAtTheTop()

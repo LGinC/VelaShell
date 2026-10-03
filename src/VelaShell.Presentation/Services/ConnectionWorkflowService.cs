@@ -2,7 +2,6 @@ using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
-using VelaShell.PluginSdk.Workspaces;
 
 namespace VelaShell.Presentation.Services;
 
@@ -55,14 +54,7 @@ public sealed class ConnectionWorkflowService(
     /// 宁可明说"这种连接类型测不了",也不给一个假的失败原因。
     /// </para>
     /// </summary>
-    public Task<ConnectionTestResult> TestConnectionAsync(SessionProfile profile, CancellationToken cancellationToken = default) =>
-        TestConnectionAsync(profile, progress: null, cancellationToken);
-
-    /// <inheritdoc />
-    public async Task<ConnectionTestResult> TestConnectionAsync(
-        SessionProfile profile,
-        IProgress<WorkspaceProbeStep>? progress,
-        CancellationToken cancellationToken = default)
+    public async Task<ConnectionTestResult> TestConnectionAsync(SessionProfile profile, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(profile);
         if (profile.ConnectionType == ConnectionType.Plugin)
@@ -73,19 +65,8 @@ public sealed class ConnectionWorkflowService(
             }
             try
             {
-                WorkspaceProbeReport? report = await probe(profile, progress, cancellationToken).ConfigureAwait(false);
-                if (report is null)
-                {
-                    return new(true);
-                }
-                // 失败原因取第一条失败步骤的说明 —— 反馈条那一行要能单独读懂,
-                // 而"连接失败"四个字什么也没说;都没有时才退到插件的结论或宿主的通用说法。
-                string? reason = report.Succeeded
-                    ? null
-                    : report.FirstFailure?.Detail is { Length: > 0 } detail
-                        ? $"{report.FirstFailure.Title}: {detail}"
-                        : report.Summary ?? Strings.Get("Profile_TestFailed");
-                return new(report.Succeeded, reason) { Report = report };
+                await probe(profile, cancellationToken).ConfigureAwait(false);
+                return new(true);
             }
             catch (Exception ex)
             {

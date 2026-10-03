@@ -63,51 +63,6 @@ internal sealed record PluginConnectionForm(
     bool HostAllowsCustomValue = false,
     IProtocolChoiceSource? ChoiceSource = null)
 {
-    /// <summary>
-    /// 工作台描述(变体与默认端口从它算);文件协议为 <see langword="null" />。
-    /// </summary>
-    public WorkspaceDescriptor? Workspace { get; init; }
-
-    /// <summary>
-    /// 连接检查(工作台提供方实现了 <see cref="IWorkspaceConnectionInspector" /> 时才有):
-    /// 对话框据此画右侧栏的连接串预览与逐步测试结果。
-    /// </summary>
-    public IWorkspaceConnectionInspector? Inspector { get; init; }
-
-    /// <summary>当前形态的默认端口(主机列表新加一行时用);文件协议为 0。</summary>
-    public int DefaultPort { get; init; }
-
-    /// <summary>
-    /// 按表单当前取值套用变体(<see cref="WorkspaceDescriptor.VariantKey" />):三格标签、端口栏、
-    /// 凭据栏、匿名与隧道能力都随之换掉。没有变体时原样返回。
-    /// <para>
-    /// 总是从**描述符**重算,而不是在上一次的结果上再套 —— 变体是整体替换(见 <see cref="WorkspaceVariant.Features" />),
-    /// 叠着套会把"SRV 不要端口"带进切回来的"主机列表"。
-    /// </para>
-    /// </summary>
-    /// <param name="lookup">按键取表单当前值。</param>
-    /// <returns>套用后的表单模型。</returns>
-    public PluginConnectionForm ApplyVariant(Func<string, string?> lookup)
-    {
-        if (Workspace is not { } descriptor)
-        {
-            return this;
-        }
-        var shape = WorkspaceShape.Of(descriptor, lookup);
-        return this with
-        {
-            HostLabel = shape.HostLabel,
-            HostPlaceholder = shape.HostPlaceholder,
-            UsernameLabel = shape.UsernameLabel,
-            PasswordLabel = shape.PasswordLabel,
-            AllowsAnonymous = shape.Features.HasFlag(WorkspaceFeatures.AnonymousAccess),
-            SupportsSshTunnel = shape.Features.HasFlag(WorkspaceFeatures.SshTunnel),
-            ShowsCredentials = !shape.Features.HasFlag(WorkspaceFeatures.NoCredentials),
-            ShowsPort = !shape.Features.HasFlag(WorkspaceFeatures.NoEndpoint),
-            DefaultPort = shape.DefaultPort
-        };
-    }
-
     /// <summary>主机栏是否渲染成下拉(静态或动态)。</summary>
     public bool HostIsChoice => HostKind is ProtocolSettingKind.Choice or ProtocolSettingKind.DynamicChoice;
 
@@ -144,12 +99,8 @@ internal sealed record PluginConnectionForm(
 
     /// <summary>从工作台描述转换。</summary>
     /// <param name="descriptor">连接类型描述。</param>
-    /// <param name="provider">
-    /// 提供方。只用来问一件事:它认不认 <see cref="IWorkspaceConnectionInspector" /> ——
-    /// 认的话对话框多出右侧栏(连接串预览、逐步测试结果)。
-    /// </param>
-    /// <returns>统一表单模型(未套变体;变体由 <see cref="ApplyVariant" /> 按表单取值套)。</returns>
-    public static PluginConnectionForm From(WorkspaceDescriptor descriptor, IWorkspaceProvider? provider = null) =>
+    /// <returns>统一表单模型。</returns>
+    public static PluginConnectionForm From(WorkspaceDescriptor descriptor) =>
         new(PluginConnectionKind.Workspace,
             descriptor.HostLabel,
             descriptor.HostPlaceholder,
@@ -161,10 +112,5 @@ internal sealed record PluginConnectionForm(
             ShowsCredentials: !descriptor.Features.HasFlag(WorkspaceFeatures.NoCredentials),
             // SQLite / DuckDB 这类"就是磁盘上一个文件"的方言:端口那一栏收起,
             // 主机那一栏改标成「数据库文件」装路径。
-            ShowsPort: !descriptor.Features.HasFlag(WorkspaceFeatures.NoEndpoint))
-        {
-            Workspace = descriptor,
-            Inspector = provider as IWorkspaceConnectionInspector,
-            DefaultPort = descriptor.DefaultPort
-        };
+            ShowsPort: !descriptor.Features.HasFlag(WorkspaceFeatures.NoEndpoint));
 }
