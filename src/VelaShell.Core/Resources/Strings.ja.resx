@@ -1832,6 +1832,15 @@
   <data name="Profile_TagsPlaceholder" xml:space="preserve">
     <value>web, 本番</value>
   </data>
+  <data name="Profile_Notes" xml:space="preserve">
+    <value>メモ</value>
+  </data>
+  <data name="Profile_NotesPlaceholder" xml:space="preserve">
+    <value>用途、担当者、注意事項など(Enter で改行)</value>
+  </data>
+  <data name="Profile_NotesHint" xml:space="preserve">
+    <value>エクスプローラーでこの接続にマウスを合わせると表示されます。メモは平文で保存され、クラウド同期でもアップロードされます。パスワードは認証欄に入力してください。</value>
+  </data>
   <data name="Profile_Test" xml:space="preserve">
     <value>テスト</value>
   </data>

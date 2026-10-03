@@ -62,6 +62,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     private bool _isPasswordAuth = true;
     private Guid? _jumpHostProfileId;
     private string _name = string.Empty;
+    private string? _notes;
     private SecureString? _password;
     private int _port = 22;
     private string? _privateKeyPassphrase;
@@ -172,6 +173,7 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             _isCertAuth = existing.AuthMethod == AuthMethod.Certificate;
             _rememberPassword = existing.RememberPassword;
             _tagsText = string.Join(", ", existing.Tags);
+            _notes = existing.Notes;
             _jumpHostProfileId = existing.JumpHostProfileId;
             _postAuthCommand = existing.PostAuthCommand;
             _postAuthCommandDelaySeconds = existing.PostAuthCommandDelaySeconds;
@@ -1122,6 +1124,16 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     }
 
     /// <summary>
+    /// 备注(#549,「常规」页「整理」一节的多行文本框);留空 = 没有备注。
+    /// 资源管理器里悬停这条连接时显示它。
+    /// </summary>
+    public string? Notes
+    {
+        get => _notes;
+        set => this.RaiseAndSetIfChanged(ref _notes, value);
+    }
+
+    /// <summary>
     /// 本条配置专属的「认证后执行命令」(「终端」页);留空 = 不执行。
     /// 与设置里那条全局的「连接后执行命令」互不影响,两处都配就都执行(先全局后本条)。
     /// </summary>
@@ -1869,6 +1881,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             CertificatePath = CertificatePath,
             GroupId = GroupId,
             Tags = [.. TagsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
+            // 首尾的空行空格去掉(悬停提示里一条空行也是一截空白);只有空白的归 null,
+            // 免得一个回车就让这条连接带上一个空的悬停提示。行内的换行与缩进原样保留。
+            Notes = _notes?.Trim() is { Length: > 0 } notes ? notes : null,
             JumpHostProfileId = _jumpHostProfileId,
             // 只有 SSH 有 shell 通道可注入;换到别的协议还把它存回去,存下的就是一条永远不执行的
             // 命令,而且切回 SSH 时会诈尸执行一次。空白也一律归 null,免得存进一个只有空格的命令。

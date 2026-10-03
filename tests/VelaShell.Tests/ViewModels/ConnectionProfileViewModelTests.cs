@@ -63,6 +63,50 @@ public sealed class ConnectionProfileViewModelTests
     }
 
     /// <summary>
+    /// 备注(#549):打开已存的配置要回显,保存要原样带回 —— 包括行内的换行;
+    /// 首尾的空行空格去掉。不分协议,哪种连接都有这一栏。
+    /// </summary>
+    [TestMethod]
+    [DataRow(ConnectionType.SSH)]
+    [DataRow(ConnectionType.SFTP)]
+    [DataRow(ConnectionType.FTP)]
+    public async Task Notes_RoundTripThroughTheEditDialog(ConnectionType type)
+    {
+        var existing = new SessionProfile
+        {
+            ConnectionType = type,
+            Name = "bastion",
+            Host = "10.0.0.1",
+            Username = "ops",
+            Notes = "跳板机,只开 22\n值班:运维二组",
+        };
+
+        var vm = new ConnectionProfileViewModel(existing);
+        Assert.AreEqual(existing.Notes, vm.Notes);
+
+        vm.Notes = "\n  跳板机,只开 22\n\n改配置先报备  \n";
+        SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
+
+        Assert.IsNotNull(saved);
+        Assert.AreEqual("跳板机,只开 22\n\n改配置先报备", saved.Notes);
+    }
+
+    /// <summary>只有空白的备注等于没写:存成 null,资源管理器里也就不弹一块空的悬停提示。</summary>
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("")]
+    [DataRow(" \r\n \n\t")]
+    public async Task Notes_WhenBlank_AreSavedAsNull(string? notes)
+    {
+        var vm = new ConnectionProfileViewModel { Host = "h", Username = "u", Notes = notes };
+
+        SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
+
+        Assert.IsNotNull(saved);
+        Assert.IsNull(saved.Notes);
+    }
+
+    /// <summary>
     /// 防空闲是一条会话自己的事:打开已存的配置要回显,保存要原样带回去,清成 0 要存回 null。
     /// </summary>
     /// <remarks>

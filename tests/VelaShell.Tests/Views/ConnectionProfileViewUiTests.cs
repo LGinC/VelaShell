@@ -335,6 +335,44 @@ public sealed class ConnectionProfileViewUiTests
     }
 
     /// <summary>
+    /// 备注框(#549)是多行的:回车在框里换行,不会把对话框提交掉;敲进去的内容回到视图模型。
+    /// </summary>
+    [TestMethod]
+    public void NotesBox_EnterStartsANewLine_AndDoesNotSubmitTheDialog()
+    {
+        _session.Dispatch(() =>
+        {
+            var vm = new ConnectionProfileViewModel { Host = "10.0.0.1", Username = "ops", Notes = "跳板机" };
+            bool submitted = false;
+            vm.SaveCommand.Subscribe(_ => submitted = true);
+            vm.ConnectCommand.Subscribe(_ => submitted = true);
+            var window = new ConnectionProfileView { DataContext = vm };
+            window.Show();
+            Dispatcher.UIThread.RunJobs();
+            try
+            {
+                TextBox notes = window.FindControl<TextBox>("NotesBox")!;
+                Assert.IsTrue(notes.IsEffectivelyVisible, "备注在「常规」页,对话框一打开就看得见。");
+                Assert.AreEqual("跳板机", notes.Text);
+
+                notes.Focus();
+                notes.CaretIndex = notes.Text!.Length;
+                window.KeyPressQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+                window.KeyReleaseQwerty(PhysicalKey.Enter, RawInputModifiers.None);
+                window.KeyTextInput("值班:运维二组");
+                Dispatcher.UIThread.RunJobs();
+
+                Assert.AreEqual("跳板机" + notes.NewLine + "值班:运维二组", vm.Notes);
+                Assert.IsFalse(submitted, "回车只是换行,不该保存或连接。");
+            }
+            finally
+            {
+                window.Close();
+            }
+        }, CancellationToken.None).GetAwaiter().GetResult();
+    }
+
+    /// <summary>
     /// 可编辑下拉在用户选中一项之后,文本框里必须是**落盘值**。
     /// <para>
     /// 串口的端口下拉整个设计都压在这一条上:列表里显示的是

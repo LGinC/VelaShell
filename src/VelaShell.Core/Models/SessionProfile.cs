@@ -79,6 +79,15 @@ public class SessionProfile
     public List<string> Tags { get; set; } = [];
 
     /// <summary>
+    /// 备注(#549):用途、负责人、注意事项之类的自由文本,可以多行。null = 没有备注。
+    /// </summary>
+    /// <remarks>
+    /// 明文落盘,不经 <c>ISecretProtector</c>:它不是凭据,而且要在资源管理器的悬停提示里直接显示。
+    /// 云同步没开端到端口令时也照原样上传 —— 对话框里那条提示就是在说这件事,口令该放在认证里。
+    /// </remarks>
+    public string? Notes { get; set; }
+
+    /// <summary>
     /// 跳板主机(ProxyJump,§12 P1-2):引用另一条已保存配置作为堡垒机;
     /// 跳板配置自身还可以再配跳板,链式即多段跳。null = 直连。
     /// </summary>
@@ -221,6 +230,7 @@ public class SessionProfile
             IsPinned = IsPinned,
             LastConnectedAt = LastConnectedAt,
             Tags = [.. Tags],
+            Notes = Notes,
             JumpHostProfileId = JumpHostProfileId,
             PostAuthCommand = PostAuthCommand,
             PostAuthCommandDelaySeconds = PostAuthCommandDelaySeconds,

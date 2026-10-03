@@ -236,12 +236,13 @@
             </StackPanel>
           </Border>
 
-          <!-- 服务器 / 会话行 -->
+          <!-- 服务器 / 会话行。悬停显示备注(#549);没写备注时 NotesTip 为 null,不弹提示。 -->
           <Border IsVisible="{Binding !IsGroup}"
                   Classes="session"
                   Classes.selected="{Binding IsSelected}"
                   Classes.dualmarked="{Binding IsDualMarked}"
                   Classes.rootlevel="{Binding ShowsAtRootIndent}"
+                  ToolTip.Tip="{Binding NotesTip}"
                   Height="28"
                   Cursor="Hand"
                   DoubleTapped="Session_DoubleTapped"

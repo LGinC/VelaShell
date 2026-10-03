@@ -69,6 +69,62 @@ public sealed class SessionTreeNodeViewModel(
         set => this.RaiseAndSetIfChanged(ref field, value);
     } = name;
 
+    /// <summary>悬停提示最多显示的行数;再多就截断,完整的备注在编辑对话框里看。</summary>
+    public const int NotesTipMaxLines = 12;
+
+    /// <summary>悬停提示最多显示的字符数(一行很长、不换行的备注也会把提示撑满半个屏幕)。</summary>
+    public const int NotesTipMaxLength = 500;
+
+    /// <summary>会话的备注(#549);分组节点与没写备注的会话为 null。</summary>
+    public string? Notes
+    {
+        get;
+        set
+        {
+            if (field == value)
+            {
+                return;
+            }
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(NotesTip));
+        }
+    }
+
+    /// <summary>
+    /// 资源管理器里悬停这一行时的提示:备注本身,超过 <see cref="NotesTipMaxLines" /> 行或
+    /// <see cref="NotesTipMaxLength" /> 个字符的截断并补省略号。null = 不弹提示。
+    /// </summary>
+    /// <remarks>
+    /// 截断放在这里而不是交给提示框:提示框只管宽度(到宽就折行),不管高度 ——
+    /// 一大段粘贴进来的备注会弹出一块比侧栏还高的浮层,把正要点的那几行全盖住。
+    /// </remarks>
+    public string? NotesTip
+    {
+        get
+        {
+            if (string.IsNullOrWhiteSpace(Notes))
+            {
+                return null;
+            }
+            string text = Notes.Trim();
+            string[] lines = text.Split('\n');
+            bool truncated = false;
+            if (lines.Length > NotesTipMaxLines)
+            {
+                text = string.Join('\n', lines.AsSpan(0, NotesTipMaxLines)).TrimEnd();
+                truncated = true;
+            }
+            if (text.Length > NotesTipMaxLength)
+            {
+                // 别把代理对(emoji 之类)从中间切开,留半个字符会画成一个方框。
+                int cut = char.IsHighSurrogate(text[NotesTipMaxLength - 1]) ? NotesTipMaxLength - 1 : NotesTipMaxLength;
+                text = text[..cut].TrimEnd();
+                truncated = true;
+            }
+            return truncated ? text + "…" : text;
+        }
+    }
+
     /// <summary>分组节点是否处于展开状态(默认分组展开、会话不适用)。</summary>
     public bool IsExpanded
     {

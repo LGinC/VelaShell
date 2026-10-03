@@ -116,6 +116,30 @@ public sealed class SonnetDbPersistenceTests : IDisposable
         Assert.AreEqual(0, loadedDev.PostAuthCommandDelaySeconds);
     }
 
+    /// <summary>
+    /// 备注(#549)原样落盘:换行不丢、不加密(它要在资源管理器的悬停提示里直接显示);
+    /// 加字段之前存下的配置读回来是 null,而不是空串。
+    /// </summary>
+    [TestMethod]
+    public async Task SessionRepository_Notes_RoundTripWithLineBreaks()
+    {
+        var repo = new SonnetDbSessionRepository(_engine, _protector);
+        var noted = new SessionProfile
+        {
+            Name = "bastion",
+            Host = "10.0.0.1",
+            Username = "ops",
+            Notes = "跳板机,只开 22\r\n值班:运维二组\n\n改配置先报备",
+        };
+        var bare = new SessionProfile { Name = "bare", Host = "10.0.0.2", Username = "ops" };
+
+        await repo.SaveSessionAsync(noted);
+        await repo.SaveSessionAsync(bare);
+
+        Assert.AreEqual(noted.Notes, (await repo.GetSessionAsync(noted.Id))!.Notes);
+        Assert.IsNull((await repo.GetSessionAsync(bare.Id))!.Notes);
+    }
+
     [TestMethod]
     public async Task SessionRepository_LegacyDocumentWithoutConnectionType_DefaultsToSsh()
     {
