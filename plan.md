@@ -1582,3 +1582,11 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - `feature-plan.md`「确认不做」删掉自定义键位那一条;vi 复制模式那条里引用它的理由一并标为失效。
 
 **三、验证**:`ShortcutKeymapTests` 21 例(出厂表 id 与手势不重复、出厂手势过得了改键检查、每条命令真实存在、键帽写法、存储写法往返含 `Key` 的同值别名、改键 / 解绑 / 坏值回落 / 撞车规则、固定键位、编码器判定抢键、冲突提示指出替代按法、命令面板显示生效的键位);`ShortcutKeyBindingsUiTests` 3 例走真实的 Avalonia 按键分发(改过的 `Ctrl+Shift+P` 与出厂的 `Ctrl+B` 触发命令,改走的 `Ctrl+P` 与解绑的 `Ctrl+W` 原样到达焦点控件;整表替换;录键框);`SettingsShortcutEditingTests` 13 例(载入、被拒留在录键状态、撞车先问再替换、取消、解绑与恢复默认、恢复默认撞车先问、全部恢复、保存落盘、改键后搜得到新键位);`ShortcutCatalogTests` 改写(`MainWindow.axaml` 不许写死 KeyBinding、出厂表每条在目录里恰好一次、出厂键位不许新占终端按键、固定键位都在页上);`ShortcutOptionsNormalizeTests` 4 例;`KeyboardShortcutServiceTests` 改为 Ctrl 全局键位归键位表。headless 截图核过暗 / 亮两套主题下的录键、报错、替换确认与冲突提示。`VelaShell.Tests` 1729 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 570 通过 / 4 跳过,`VelaShell.Presentation.Tests` 69 通过,`VelaShell.Core.Tests` 629 通过 / 10 跳过 / 1 失败(X11 靶机用例,本机 `ssh-shells` 镜像旧,§152 记过的那条)。文档同步见 `feature-plan.md`「文档待同步」。
+
+## ✅ 156. 2026-10-03 CI:文档仓库检出 PR 正文里引用的那个文档 PR(#554 的 CI 红)
+
+**一、问题**:#554 三个平台都只红在 `Doc_ListsEveryCatalogEntry` —— CI 检出的是 velashell-docs 的默认分支,而对应的文档改动(velashell-docs#83)那时还没合。这不是 #554 独有的:改快捷键的代码 PR 按 AGENTS.md 要与文档 PR 一起合,合并之前文档仓库的默认分支必然是旧的,比对用例必然红。(这一次 #83 在 CI 跑完约一分钟后合了,重跑就绿;改流水线是为了下一次。)
+
+**二、做法**:`ci.yml` 在「检出文档仓库」前加一步「定位文档分支」:只在 `pull_request` 事件上跑,从 PR 正文里找 `velashell-docs#NN` 或 `velashell-docs/pull/NN`,逐个用 `gh api` 查,第一个**开着的、来自文档仓库本身**(不检出 fork)的 PR,检出它的 head 分支;都没有就照旧用默认分支。正文是 PR 作者写的任意文本:经环境变量传入、只从里面抽数字,不拼进脚本;查询失败时 gh 打到 stdout 的错误响应不当结果读。这一步 `continue-on-error`,失败就退回默认分支。推送到 `main` 的检查没有 PR 正文、用默认分支,所以两个 PR 先合文档、再合代码 —— 写进了 `CONTRIBUTING.md` / `CONTRIBUTING.en.md`(英文版顺带补上一直漏掉的「比对用例要读到文档仓库」那段,两份都补上 §155 出厂表的说明)。
+
+**三、验证**:把那段脚本原样抽出来在本地跑:#554 的真实正文(引用的 #83 已合并)→ 默认分支;用替身 `gh` 模拟一个开着的文档 PR → 输出它的分支;fork 来的 PR 跳过;不存在的号码静默跳过;正文里塞 `$(...)` 与反引号不会执行。`ci.yml` 用 YamlDotNet 解析过,步骤顺序与 `ref` 都对。

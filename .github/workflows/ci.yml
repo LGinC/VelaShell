@@ -68,12 +68,47 @@ jobs:
       #
       # continue-on-error:文档仓库私有、改名或临时不可达时,门禁不该因此拦下代码 PR。
       # 检出失败的后果是那条用例回到"跳过",报告里看得见 —— 不是伪通过。
+      #
+      # 检出哪个分支:改了快捷键的代码 PR,对应的文档改动在 velashell-docs 的另一个 PR 里,
+      # 两个 PR 一起合(AGENTS.md 第二条)。文档仓库的默认分支在合并前还是旧的,比对用例必然红
+      # —— #554 就卡在这。所以 PR 正文引用了一个还开着的文档 PR(`velashell-docs#83` 或它的链接)时,
+      # 检出那个 PR 的分支;没引用、都已合并或关闭时照旧用默认分支。推送到 main 的检查没有 PR 正文,
+      # 用默认分支 —— 所以两个 PR 先合文档、再合代码。
+      # 正文是 PR 作者写的任意文本:经环境变量传入、只从里面抽数字,不拼进脚本;
+      # 只认文档仓库自己的分支,不检出 fork。这一步失败同样不拦 PR,退回默认分支。
+      - name: 定位文档分支
+        id: docsref
+        if: github.event_name == 'pull_request'
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          numbers=$(printf '%s' "$PR_BODY" | grep -oE 'velashell-docs(#|/pull/)[0-9]+' | grep -oE '[0-9]+$' | awk '!seen[$0]++' || true)
+          for number in $numbers; do
+            # 查询失败(号码不存在、限流)时 gh 会把错误响应打到 stdout,不能当成结果读。
+            if ! info=$(gh api "repos/VelaShellLabs/velashell-docs/pulls/$number" --jq '[.state, .head.repo.full_name, .head.ref] | @tsv' 2>/dev/null); then
+              info=""
+            fi
+            IFS=$'\t' read -r state repo ref <<< "$info"
+            if [ "$state" = "open" ] && [ "$repo" = "VelaShellLabs/velashell-docs" ]; then
+              echo "检出文档 PR #$number 的分支 $ref。"
+              echo "ref=$ref" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "文档 PR #$number:状态 ${state:-未知},来源 ${repo:-未知},跳过。"
+          done
+          echo "没有引用开着的文档 PR,用文档仓库的默认分支。"
+
       - name: 检出文档仓库
         id: docs
         continue-on-error: true
         uses: actions/checkout@v7
         with:
           repository: VelaShellLabs/velashell-docs
+          # 空串 = 默认分支(上一步没跑、没找到或失败时都是空的)。
+          ref: ${{ steps.docsref.outputs.ref }}
           path: velashell-docs
 
       # runner 镜像通常已带这些,列全是为了镜像换代时不至于悄悄少一个。
