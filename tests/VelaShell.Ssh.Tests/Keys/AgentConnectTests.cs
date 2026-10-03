@@ -29,7 +29,9 @@ public sealed class AgentConnectTests
     [TestMethod]
     public async Task 套接字不存在时报没在跑()
     {
-        string missing = Path.Combine(Path.GetTempPath(), $"velashell-no-agent-{Guid.NewGuid():N}.sock");
+        // 文件名要短：macOS 的临时目录本身就有约 50 个字符，而 Unix 套接字路径上限是 104（Linux 108）——
+        // 超了的话构造端点时就抛，测到的是「路径不合法」而不是「没在跑」。
+        string missing = Path.Combine(Path.GetTempPath(), $"vna-{Guid.NewGuid().ToString("N")[..8]}.sock");
 
         SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
             async () => await SshAgentClient.ConnectAsync(missing));

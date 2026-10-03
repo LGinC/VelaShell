@@ -88,7 +88,8 @@ public sealed class AgentSessionDeclarationTests
         using var key = InMemorySshSigner.GenerateEd25519();
         agent.Add(key, "k");
 
-        string path = Path.Combine(Path.GetTempPath(), $"velashell-agent-{Guid.NewGuid():N}.sock");
+        // 文件名要短：macOS 的临时目录本身就有约 50 个字符，Unix 套接字路径上限是 104。
+        string path = Path.Combine(Path.GetTempPath(), $"vsa-{Guid.NewGuid().ToString("N")[..8]}.sock");
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         using Socket listener = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
         listener.Bind(new UnixDomainSocketEndPoint(path));
