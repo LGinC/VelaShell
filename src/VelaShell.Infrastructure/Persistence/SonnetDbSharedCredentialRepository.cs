@@ -1,0 +1,80 @@
+using SonnetDB.Documents;
+using VelaShell.Core.Credentials;
+using VelaShell.Core.Data;
+
+namespace VelaShell.Infrastructure.Persistence;
+
+/// <summary>
+/// 基于 SonnetDB 文档集合 <c>shared_credentials</c> 的共享凭据仓储(#550,文档 Id 为 Guid 字符串)。
+/// 密码与私钥口令经 <see cref="ISecretProtector" /> 加密后落盘,与连接配置里的密码同一强度。
+/// </summary>
+public sealed class SonnetDbSharedCredentialRepository(SonnetDbEngine engine, ISecretProtector protector)
+    : ISharedCredentialRepository
+{
+    private readonly SonnetDbEngine _engine = engine ?? throw new ArgumentNullException(nameof(engine));
+    private readonly ISecretProtector _protector = protector ?? throw new ArgumentNullException(nameof(protector));
+
+    /// <inheritdoc />
+    public event EventHandler? Changed;
+
+    /// <inheritdoc />
+    public async Task<List<SharedCredential>> GetAllAsync()
+    {
+        List<SharedCredential?> credentials = await _engine.WithCollectionAsync(SonnetDbEngine.SharedCredentialsCollection, store =>
+            store.Scan().Select(row => SonnetDbJson.Deserialize<SharedCredential>(row.Json)).ToList()).ConfigureAwait(false);
+        return [.. credentials.OfType<SharedCredential>()
+                              .Select(Unprotect)
+                              .OrderBy(static c => c.Name, StringComparer.OrdinalIgnoreCase)];
+    }
+
+    /// <inheritdoc />
+    public async Task<SharedCredential?> GetAsync(Guid id)
+    {
+        SharedCredential? credential = await _engine.WithCollectionAsync(SonnetDbEngine.SharedCredentialsCollection, store =>
+        {
+            DocumentRow? row = store.Get(id.ToString("D"));
+            return row is null ? null : SonnetDbJson.Deserialize<SharedCredential>(row.Json);
+        }).ConfigureAwait(false);
+        return credential is null ? null : Unprotect(credential);
+    }
+
+    /// <inheritdoc />
+    public async Task SaveAsync(SharedCredential credential)
+    {
+        ArgumentNullException.ThrowIfNull(credential);
+        string json = SonnetDbJson.Serialize(Protect(credential));
+        await _engine.WithCollectionAsync<object?>(SonnetDbEngine.SharedCredentialsCollection, store =>
+        {
+            store.Upsert(credential.Id.ToString("D"), json);
+            return null;
+        }).ConfigureAwait(false);
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <inheritdoc />
+    public async Task DeleteAsync(Guid id)
+    {
+        await _engine.WithCollectionAsync<object?>(SonnetDbEngine.SharedCredentialsCollection, store =>
+        {
+            store.Delete(id.ToString("D"));
+            return null;
+        }).ConfigureAwait(false);
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    /// <summary>返回加密副本 —— 不得修改调用方持有的实例(界面还拿着它的明文)。</summary>
+    private SharedCredential Protect(SharedCredential credential)
+    {
+        SharedCredential copy = credential.Clone();
+        copy.Password = _protector.Protect(credential.Password);
+        copy.PrivateKeyPassphrase = _protector.Protect(credential.PrivateKeyPassphrase);
+        return copy;
+    }
+
+    private SharedCredential Unprotect(SharedCredential credential)
+    {
+        credential.Password = _protector.Unprotect(credential.Password);
+        credential.PrivateKeyPassphrase = _protector.Unprotect(credential.PrivateKeyPassphrase);
+        return credential;
+    }
+}

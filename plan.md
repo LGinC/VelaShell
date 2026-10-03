@@ -191,7 +191,7 @@ graph RL
 - 文字菜单栏已整体移除（与命令面板重复，用户决策）；标题栏右侧是功能图标组，全部走命令注册表。
 - **命令面板**（`Ctrl+P`；`Ctrl+K` 不绑，见 §154）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
 - **状态栏跟随激活标签**：连接串 / 状态 / 终端类型 / 编码 / 尺寸 / 延迟。
-- **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键（全局与标签类可改键、解绑，§155）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
+- **设置窗口 14 页**：常规 / 外观 / 终端 / 密钥管理 / 共享凭据（§157）/ 快捷键（全局与标签类可改键、解绑，§155）/ 文件传输 / 安全审计 / 网络代理 / X Server / 代码片段 / 云同步 / 关于 / 支持与捐赠。
   逐项审计见 velashell-docs `zh/host/settings-audit.md`。
 - **终端配色跟随主题**：未自定义时随具名主题配对的终端方案实时切换（§25、§26）。
 
@@ -1590,3 +1590,23 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **二、做法**:`ci.yml` 在「检出文档仓库」前加一步「定位文档分支」:只在 `pull_request` 事件上跑,从 PR 正文里找 `velashell-docs#NN` 或 `velashell-docs/pull/NN`,逐个用 `gh api` 查,第一个**开着的、来自文档仓库本身**(不检出 fork)的 PR,检出它的 head 分支;都没有就照旧用默认分支。正文是 PR 作者写的任意文本:经环境变量传入、只从里面抽数字,不拼进脚本;查询失败时 gh 打到 stdout 的错误响应不当结果读。这一步 `continue-on-error`,失败就退回默认分支。推送到 `main` 的检查没有 PR 正文、用默认分支,所以两个 PR 先合文档、再合代码 —— 写进了 `CONTRIBUTING.md` / `CONTRIBUTING.en.md`(英文版顺带补上一直漏掉的「比对用例要读到文档仓库」那段,两份都补上 §155 出厂表的说明)。
 
 **三、验证**:把那段脚本原样抽出来在本地跑:#554 的真实正文(引用的 #83 已合并)→ 默认分支;用替身 `gh` 模拟一个开着的文档 PR → 输出它的分支;fork 来的 PR 跳过;不存在的号码静默跳过;正文里塞 `$(...)` 与反引号不会执行。`ci.yml` 用 YamlDotNet 解析过,步骤顺序与 `ref` 都对。
+
+## ✅ 157. 2026-10-03 共享凭据:多条连接共用一套账号与密码 / 密钥(#550)
+
+**一、问题**:#550:一百台设备用同一套账号,改一次密码就要把一百条连接配置各改一遍(对标 WindTerm 的 OneKey)。凭据是逐条内联在 `SessionProfile` 上的(用户名 / 认证方式 / 密码 / 私钥 / 口令 / 证书),没有「这几条共用一份」的概念。velashell-docs《凭据管理器集成设计》(09-15 定稿、未实施)里的「配置存引用、连接那一刻才解析」正是这件事要的骨架,这次按那套契约把**本机共享凭据**做成第一个凭据来源(方案 D)。
+
+**二、做法**:
+- **模型**:`Core/Credentials/` —— `CredentialReference`(来源 id + 条目 id;本机共享凭据的来源 id 是 `shared`)、`SharedCredential`(名称 / 用户名 / 认证方式 / 密码 / 私钥 / 口令 / 证书 / 备注)、`ICredentialProvider` / `ICredentialResolver` / `ResolvedCredential` / `CredentialProviderException`(消息面向用户)、`CredentialMaterial`。`SessionProfile.CredentialSource`(null = 在本配置中填写;老数据零迁移)。仓储 `ISharedCredentialRepository` → `SonnetDbSharedCredentialRepository`,新集合 `shared_credentials`,密码与口令经 `ISecretProtector` 加密(与连接密码同一强度),有 `Changed` 事件。
+- **用户名规则**:连接自己填了用户名就以连接为准(同一套密钥配不同登录名),留空跟着凭据走。设计里那个 `OverrideUsername` 开关因此不要了。
+- **仓储不变量**:带引用的配置,`SonnetDbSessionRepository.Protect` 一律清掉密码 / 私钥 / 口令 / 证书再落盘(插件机密照常加密)。七八条保存路径(拖动分组、复制配置、证书信任、同步拉取、导入…)一处管住。它还撑着另一条规矩:**内存里带引用的配置若有材料,只可能是本次在登录框里手输的** —— 解析时以手输为准(否则用户刚输的新密码会被凭据里那份旧的盖掉),但用户名仍可向凭据去取。
+- **解析**:`CredentialResolver` 按来源 id 找 provider,交回一份填好凭据的副本、不回写原配置 —— 明文不进会话树缓存、`tab.Profile`,重连自然用上凭据的新值。完整性按连接类型判:FTP / 插件协议只认密码类凭据;缺用户名、缺材料各报一条;匿名 FTP 不解析。五个构建点:SSH 工作流 `BuildChainAsync` **每一跳**各自解析(跳板取不到凭据时改抛普通连接错误「跳板 X:…」—— 退回登录框的话问的是目标机的凭据);FTP、插件文件协议、插件终端、插件工作台(含「测试」探针)在 `MainWindowViewModel` 里解析(这几个服务的调用方全在那里)。
+- **连接流程**:带引用的配置一律不先弹登录框(`RequiresCredentials` 等三处);解析失败的 `CredentialProviderException` 与认证被拒同等对待 —— 退回登录框。连接历史 / 审计记实际登录的用户名。
+- **登录框**:引用共享凭据时顶部一条说明(被服务器拒绝 / 本机不完整 / 凭据已不存在),「记住密码」收起,换成「同时更新共享凭据「X」(N 条连接在用)」—— 改完服务器密码,在这里输一次、勾一下,所有引用它的连接一起换上。被拒时默认不勾(可能只是这一台密码不同),不完整时默认勾。输入落到哪由 `SharedCredentialPrompt`(可单测的纯函数)决定。
+- **顺带修掉设计 §3 的 D1 / D3**:登录框原先就地改传入的实例(会话树缓存里那一份),手输、没让记住的密码会跟着拖动分组之类的保存落盘;带引用之后还会让那份手输的旧密码一直压过凭据。改为返回副本;FTP / 插件证书信任后的 `PersistProfileIfSavedAsync` 改走工作流保存(按「记住密码」剥密码);四个文档路径(及双栏)失败卡片的「重新连接」改为捕获最近一次尝试的配置,维持「重试不用重输」。D2(私钥口令不受记住密码控制)、D4(`SshSession.ConnectionInfo` 持有跳板密码)未动。
+- **设置 → 共享凭据**(新页,排在「密钥管理」之后,`SettingsSectionKey.Credentials`):表格列名称 / 用户名 / 认证方式 / 使用中 N 条,本机缺材料的行打警示记号;新建、编辑、删除当场生效,不等设置窗口的「保存」。**删除时把凭据拷回每条引用它的连接**,删完照样能连(确认框里说清这一句)。`FileBrowserView` 里写死的设置页下标 5 改为 `SelectSection(Transfer)` —— 中间插一页,写死的下标就静默错位。
+- **编辑框** `SharedCredentialEditorView`:从连接复制(把已有连接身上那一份搬过来)、名称 / 用户名 / 四种认证方式 / 备注;下半是「使用这条凭据的连接」勾选清单(筛选框;认证方式用不上的连接置灰)和「勾选凭据相同的连接」—— 一键勾出认证材料完全相同、还各存各的连接,迁移已有连接用。挂上时与凭据相同的用户名清掉(跟着凭据走),摘下时把凭据拷回连接。批量操作在 `SharedCredentialService`(Presentation)。
+- **连接配置页**:身份验证一节顶上加「凭据来源」(在本配置中填写 / 各条共享凭据)+「新建…」(用表单里现有的凭据预填编辑框,建好即选中)。选了共享凭据,认证方式、密码、私钥、记住密码收起,用户名框提示「留空则使用凭据中的 X」,下方一行摘要;引用已失效、FTP / 插件配了非密码凭据时报错并禁止保存;切回「在本配置中填写」把凭据拷进表单。顺带修掉一个旧缺陷:切认证方式时没发 `ShowPasswordField` 通知,切到私钥页时口令框会留在原地。
+- **云同步**:载荷加 `sharedCredentials`(随连接配置同步,先于连接落库;没设端到端口令时剥掉密码与口令,拉取时保留本机那一份)。载荷版本:**用到共享凭据时写 3,否则仍写 2** —— 不认识引用的旧客户端会把它当未知字段丢掉、再推回来就从云端抹了,写 3 让旧客户端照章拒收,而没用这个功能的人照旧与旧版本互通。
+- 文案 53 个新键,五份 resx 齐;新图标 `Icon.key-round`(lucide)。外部密码管理器(1Password / Bitwarden / KeePassXC)仍按原设计排在后面,接进同一个解析器。
+
+**三、验证**:Core `CredentialModelTests`(引用往返、老数据为 null、派生状态不落盘、`HasInline` / `NeedsResolution` 判定)与 `SessionProfileCloneTests` 补字段;Infrastructure `SharedCredentialStorageTests`(真实 SonnetDB:密码与口令加密落盘、排序与删除、带引用的配置不落盘任何材料、插件机密照常加密)、`CredentialResolverTests`(13 个用例:不取 / 填副本 / 用户名覆盖 / 手输优先只补用户名 / 不存在 / 来源不可用 / 缺用户名 / 插件可无用户名 / 缺材料 / Agent / FTP 与插件拒私钥 / 匿名 FTP)、`GistSyncServiceTests` 补 4 例(未加密推送剥密码且标版本 3、无共享凭据仍为 2、拉取保留本机密码且凭据先于连接落库、拒收更新的版本);Presentation `ConnectionWorkflowCredentialTests`(明文只进 ConnectionInfo、每一跳各自解析、跳板失败是普通错误且点名那一跳、目标失败原样抛)、`SharedCredentialServiceTests`(挂上 / 不兼容跳过 / 摘下拷回 / 保存时增减与认证方式变更后解除 / 删除拷回 / 计数 / 迁移匹配);App `SharedCredentialUiTests`(登录框四种原因与默认勾选、输入落到副本、勾选更新交回凭据、配置页选中 / 保存引用不带材料 / 清掉相同用户名 / 切回拷回 / FTP 配私钥凭据不可保存 / 引用失效、编辑框校验与字段、迁移匹配、兼容性置灰、设置页计数、带引用不先弹框、解析失败退回登录框)。新增与改动的用例共 69 个;headless 截图核过设置页、编辑框、登录框的说明条与勾选框、连接配置页的凭据来源与 FTP 配私钥凭据时的报错。顺带:`EveryVisibleButtonInTheSettingsWindowHasAName` 抓到新页「新建凭据」按钮(图标 + 文字的内容读屏器读不到)没名字,已补。全解决方案零警告零错误;`VelaShell.Tests` 1752 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 592 通过 / 4 跳过,`VelaShell.Presentation.Tests` 84 通过,`VelaShell.Core.Tests` 650 通过 / 10 跳过 / 1 失败(X11 靶机用例,§152 记过的那条,干净的 HEAD 上同样失败),其余各测试工程全部通过。文档同步见 `feature-plan.md`「文档待同步」。

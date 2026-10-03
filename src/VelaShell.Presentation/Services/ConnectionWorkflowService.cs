@@ -1,3 +1,4 @@
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
@@ -14,7 +15,8 @@ public sealed class ConnectionWorkflowService(
     ISshConnectionService sshConnectionService,
     IRecentConnectionService? recentConnections = null,
     IAuditLogService? auditLog = null,
-    ISettingsService? settingsService = null)
+    ISettingsService? settingsService = null,
+    ICredentialResolver? credentialResolver = null)
     : IConnectionWorkflowService
 {
     private readonly ISessionRepository _sessionRepository = sessionRepository ?? throw new ArgumentNullException(nameof(sessionRepository));
@@ -76,7 +78,7 @@ public sealed class ConnectionWorkflowService(
         try
         {
             SshSession session = await _sshConnectionService
-                                       .ConnectAsync(await BuildConnectionInfoAsync(profile).ConfigureAwait(false), cancellationToken)
+                                       .ConnectAsync(await BuildConnectionInfoAsync(profile, cancellationToken).ConfigureAwait(false), cancellationToken)
                                        .ConfigureAwait(false);
             await _sshConnectionService.DisconnectAsync(session.SessionId, cancellationToken).ConfigureAwait(false);
             return new(true);
@@ -97,17 +99,19 @@ public sealed class ConnectionWorkflowService(
         try
         {
             session = await _sshConnectionService
-                            .ConnectAsync(await BuildConnectionInfoAsync(profile).ConfigureAwait(false), cancellationToken)
+                            .ConnectAsync(await BuildConnectionInfoAsync(profile, cancellationToken).ConfigureAwait(false), cancellationToken)
                             .ConfigureAwait(false);
         }
         catch
         {
-            await RecordHistoryAsync(profile, startedAt, false).ConfigureAwait(false);
+            await RecordHistoryAsync(profile, profile.Username, startedAt, false).ConfigureAwait(false);
             throw;
         }
         profile.LastConnectedAt = DateTime.UtcNow;
+        // 存回去的是调用方那一份,不是解析出凭据的副本:凭据的明文到不了仓储(#550)。
         await _sessionRepository.SaveSessionAsync(await WithPersistablePasswordAsync(profile).ConfigureAwait(false)).ConfigureAwait(false);
-        await RecordHistoryAsync(profile, startedAt, true).ConfigureAwait(false);
+        // 历史里记实际登录的用户名 —— 引用共享凭据的配置自己可以不填用户名。
+        await RecordHistoryAsync(profile, session.ConnectionInfo.Username, startedAt, true).ConfigureAwait(false);
         return session;
     }
 
@@ -146,7 +150,11 @@ public sealed class ConnectionWorkflowService(
     }
 
     /// <summary>连接结果写入连接历史与审计日志(SonnetDB 时序),失败不影响主流程。</summary>
-    private async Task RecordHistoryAsync(SessionProfile profile, DateTimeOffset startedAt, bool success)
+    /// <param name="profile">连接配置。</param>
+    /// <param name="username">登录用户名(连上时取实际用的那个,配置可能把它留给了共享凭据)。</param>
+    /// <param name="startedAt">开始连接的时刻。</param>
+    /// <param name="success">是否连上。</param>
+    private async Task RecordHistoryAsync(SessionProfile profile, string username, DateTimeOffset startedAt, bool success)
     {
         if (auditLog is not null)
         {
@@ -158,7 +166,7 @@ public sealed class ConnectionWorkflowService(
                     Category = "connection",
                     Action = success ? "connect" : "connect-failed",
                     ProfileId = profile.Id,
-                    Detail = $"{profile.Username}@{profile.Host}:{profile.Port}"
+                    Detail = $"{username}@{profile.Host}:{profile.Port}"
                 }).ConfigureAwait(false);
             }
             catch
@@ -183,12 +191,12 @@ public sealed class ConnectionWorkflowService(
                 ProfileId = profile.Id,
                 ConnectionType = profile.ConnectionType,
                 Name = string.IsNullOrWhiteSpace(profile.Name)
-                           ? $"{profile.Username}@{profile.Host}"
+                           ? $"{username}@{profile.Host}"
                            : profile.Name,
                 GroupName = groupName,
                 Host = profile.Host,
                 Port = profile.Port,
-                Username = profile.Username,
+                Username = username,
                 ConnectedAt = startedAt,
                 Success = success,
                 DurationMs = (long)(DateTimeOffset.UtcNow - startedAt).TotalMilliseconds
@@ -202,59 +210,74 @@ public sealed class ConnectionWorkflowService(
 
     /// <summary>
     /// 把配置解析成连接信息;JumpHostProfileId 链递归展开为嵌套 JumpHost
-    /// (最多 5 跳,带环检测)。跳板配置必须已保存凭据,否则该跳认证会失败。
+    /// (最多 5 跳,带环检测)。跳板配置必须已保存凭据(或引用共享凭据),否则该跳认证会失败。
     /// </summary>
-    private async Task<ConnectionInfo> BuildConnectionInfoAsync(SessionProfile profile)
+    private async Task<ConnectionInfo> BuildConnectionInfoAsync(SessionProfile profile, CancellationToken cancellationToken)
     {
         var visited = new HashSet<Guid> { profile.Id };
-        return await BuildChainAsync(profile, visited, 0).ConfigureAwait(false);
+        return await BuildChainAsync(profile, visited, 0, cancellationToken).ConfigureAwait(false);
     }
 
-    private async Task<ConnectionInfo> BuildChainAsync(SessionProfile profile, HashSet<Guid> visited, int depth)
+    private async Task<ConnectionInfo> BuildChainAsync(SessionProfile profile, HashSet<Guid> visited, int depth, CancellationToken cancellationToken)
     {
+        // 每一跳各自解析自己引用的凭据(#550);解析出的明文只进 ConnectionInfo,不回写配置。
+        SessionProfile effective = await ResolveHopCredentialAsync(profile, depth, cancellationToken).ConfigureAwait(false);
         ConnectionInfo? jump = null;
-        if (profile.JumpHostProfileId is not { } jumpId)
+        if (profile.JumpHostProfileId is { } jumpId)
         {
-            return new()
+            if (depth >= 5)
             {
-                Host = profile.Host,
-                Port = profile.Port,
-                Username = profile.Username,
-                AuthMethod = profile.AuthMethod,
-                Password = profile.Password,
-                PrivateKeyPath = profile.PrivateKeyPath,
-                PrivateKeyPassphrase = profile.PrivateKeyPassphrase,
-                CertificatePath = profile.CertificatePath,
-                // 会话级保活覆盖(F-06);null = 跟随全局。跳板链上每一跳各带各的。
-                KeepAliveSeconds = profile.Terminal?.KeepAliveSeconds,
-                Ssh = profile.Ssh?.Clone(),
-                JumpHost = jump
-            };
+                throw new InvalidOperationException(Strings.Get("Svc_JumpChainTooLong"));
+            }
+            if (!visited.Add(jumpId))
+            {
+                throw new InvalidOperationException(Strings.Get("Svc_JumpChainLoop"));
+            }
+            SessionProfile jumpProfile = await _sessionRepository.GetSessionAsync(jumpId).ConfigureAwait(false) ?? throw new InvalidOperationException(Strings.Get("Svc_JumpHostMissing"));
+            jump = await BuildChainAsync(jumpProfile, visited, depth + 1, cancellationToken).ConfigureAwait(false);
         }
-        if (depth >= 5)
-        {
-            throw new InvalidOperationException(Strings.Get("Svc_JumpChainTooLong"));
-        }
-        if (!visited.Add(jumpId))
-        {
-            throw new InvalidOperationException(Strings.Get("Svc_JumpChainLoop"));
-        }
-        SessionProfile jumpProfile = await _sessionRepository.GetSessionAsync(jumpId).ConfigureAwait(false) ?? throw new InvalidOperationException(Strings.Get("Svc_JumpHostMissing"));
-        jump = await BuildChainAsync(jumpProfile, visited, depth + 1).ConfigureAwait(false);
         return new()
         {
-            Host = profile.Host,
-            Port = profile.Port,
-            Username = profile.Username,
-            AuthMethod = profile.AuthMethod,
-            Password = profile.Password,
-            PrivateKeyPath = profile.PrivateKeyPath,
-            PrivateKeyPassphrase = profile.PrivateKeyPassphrase,
-            CertificatePath = profile.CertificatePath,
-            KeepAliveSeconds = profile.Terminal?.KeepAliveSeconds,
-            Ssh = profile.Ssh?.Clone(),
+            Host = effective.Host,
+            Port = effective.Port,
+            Username = effective.Username,
+            AuthMethod = effective.AuthMethod,
+            Password = effective.Password,
+            PrivateKeyPath = effective.PrivateKeyPath,
+            PrivateKeyPassphrase = effective.PrivateKeyPassphrase,
+            CertificatePath = effective.CertificatePath,
+            // 会话级保活覆盖(F-06);null = 跟随全局。跳板链上每一跳各带各的。
+            KeepAliveSeconds = effective.Terminal?.KeepAliveSeconds,
+            Ssh = effective.Ssh?.Clone(),
             JumpHost = jump
         };
+    }
+
+    /// <summary>取这一跳要用的凭据;没有解析器(单测、设计期)时原样返回。</summary>
+    /// <remarks>
+    /// 跳板那几跳取不到凭据时**不**抛 <see cref="CredentialProviderException" />,而是改抛一个普通的连接错误:
+    /// 连接流程见到前者会退回登录框,可那个框问的是目标机的凭据 —— 拿用户填的目标机密码去顶跳板机,
+    /// 只会换来又一次失败。跳板向来是不弹框的,这里维持原样,只把是哪一跳、为什么说清楚。
+    /// </remarks>
+    private async Task<SessionProfile> ResolveHopCredentialAsync(SessionProfile profile, int depth, CancellationToken cancellationToken)
+    {
+        if (credentialResolver is null)
+        {
+            return profile;
+        }
+        if (depth == 0)
+        {
+            return await credentialResolver.ResolveAsync(profile, cancellationToken).ConfigureAwait(false);
+        }
+        try
+        {
+            return await credentialResolver.ResolveAsync(profile, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CredentialProviderException ex)
+        {
+            string name = string.IsNullOrWhiteSpace(profile.Name) ? profile.Host : profile.Name;
+            throw new InvalidOperationException(Strings.Format("Svc_JumpCredentialFailed", name, ex.Message), ex);
+        }
     }
 
     private static void ValidateProfile(SessionProfile profile, bool requireCredentials = true)
@@ -272,7 +295,9 @@ public sealed class ConnectionWorkflowService(
         // 这里再无条件拦一道,结果就是按钮亮着、一保存就抛。
         bool anonymousAllowed = profile.ConnectionType == ConnectionType.Plugin
                                 || (profile.ConnectionType == ConnectionType.FTP && profile.Ftp?.Anonymous == true);
-        if (!anonymousAllowed && string.IsNullOrWhiteSpace(profile.Username))
+        // 引用共享凭据的配置:用户名可以留给凭据提供,认证材料要到连接那一刻才取 ——
+        // 这两样在这里都查不了,缺了由解析器报出具体原因(#550)。
+        if (!anonymousAllowed && profile.CredentialSource is null && string.IsNullOrWhiteSpace(profile.Username))
         {
             throw new ArgumentException(Strings.Get("Svc_UsernameRequired"), nameof(profile));
         }
@@ -280,7 +305,7 @@ public sealed class ConnectionWorkflowService(
         {
             throw new ArgumentOutOfRangeException(nameof(profile), Strings.Get("Svc_PortRange"));
         }
-        if (!requireCredentials)
+        if (!requireCredentials || CredentialMaterial.NeedsResolution(profile))
         {
             return;
         }

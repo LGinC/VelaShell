@@ -17,6 +17,9 @@ namespace VelaShell.ViewModels;
 /// <param name="PrivateKeyPassphrase">私钥口令短语(如私钥已加密)。</param>
 /// <param name="CertificatePath">OpenSSH 用户证书文件路径(证书认证时使用)。</param>
 /// <param name="RememberPassword">是否记住本次登录密码。</param>
+/// <param name="UpdateSharedCredential">
+/// 是否把本次输入的凭据存回连接所引用的共享凭据(#550);连接没引用共享凭据时恒为 false。
+/// </param>
 public sealed record AuthenticationResult(
     string Username,
     AuthMethod AuthMethod,
@@ -24,7 +27,32 @@ public sealed record AuthenticationResult(
     string? PrivateKeyPath,
     string? PrivateKeyPassphrase,
     string? CertificatePath,
-    bool RememberPassword);
+    bool RememberPassword,
+    bool UpdateSharedCredential = false);
+
+/// <summary>为什么一条引用共享凭据的连接又来问凭据(#550)。</summary>
+public enum SharedCredentialPromptReason
+{
+    /// <summary>不必说明(例如本次手输的凭据又被拒了)。</summary>
+    None,
+
+    /// <summary>用共享凭据登录被服务器拒绝 —— 多半是密码刚改过。</summary>
+    Rejected,
+
+    /// <summary>共享凭据在本机不完整(缺用户名、密码或密钥)。</summary>
+    Incomplete,
+
+    /// <summary>引用的共享凭据已不存在。</summary>
+    Missing
+}
+
+/// <summary>
+/// 登录框里关于共享凭据的那一块:用的是哪条、为什么又来问、有几条连接在用它。
+/// </summary>
+/// <param name="CredentialName">共享凭据名称;<see cref="SharedCredentialPromptReason.Missing" /> 时为空串。</param>
+/// <param name="UsageCount">引用它的连接数。</param>
+/// <param name="Reason">又来问的原因。</param>
+public sealed record SharedCredentialPromptContext(string CredentialName, int UsageCount, SharedCredentialPromptReason Reason);
 
 /// <summary>
 /// 两步身份验证弹窗(设计 oNZIM / twD13):
@@ -40,16 +68,27 @@ public class AuthenticationDialogViewModel : ReactiveObject
     /// <summary>
     /// 创建身份验证弹窗视图模型:根据目标主机、端口、可选用户名、已知指纹与初始认证方式初始化两步流程的界面状态与命令。
     /// </summary>
+    /// <param name="host">目标主机。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="username">预填的用户名。</param>
+    /// <param name="knownFingerprint">已信任的主机指纹;首次连接为 null。</param>
+    /// <param name="initialMethod">初始选中的认证方式。</param>
+    /// <param name="sharedCredential">连接引用了共享凭据时传入(#550);否则为 null。</param>
     public AuthenticationDialogViewModel(
         string host,
         int port,
         string? username = null,
         string? knownFingerprint = null,
-        AuthMethod initialMethod = AuthMethod.Password)
+        AuthMethod initialMethod = AuthMethod.Password,
+        SharedCredentialPromptContext? sharedCredential = null)
     {
         TargetText = host;
         _port = port;
         _username = username ?? string.Empty;
+        SharedCredential = sharedCredential;
+        // 凭据不完整时用户就是来补它的,默认存回去;被拒时可能只是这一台密码不同,
+        // 默认不动 —— 勾错的代价是另外几十台一起连不上。
+        UpdateSharedCredential = sharedCredential?.Reason == SharedCredentialPromptReason.Incomplete;
         // 分段选择器的顺序(密码/证书/密钥)与 AuthMethod 的枚举顺序不一致,这里显式映射,
         // 不要图省事写成强转 —— 那会把证书认证的配置打开成密钥页。
         _methodIndex = initialMethod switch
@@ -192,6 +231,47 @@ public class AuthenticationDialogViewModel : ReactiveObject
         set => this.RaiseAndSetIfChanged(ref field, value);
     } = true;
 
+    // ---- 共享凭据(#550) ----
+
+    /// <summary>连接引用的共享凭据及又来问的原因;没引用时为 null。</summary>
+    public SharedCredentialPromptContext? SharedCredential { get; }
+
+    /// <summary>
+    /// 是否显示「记住密码」。引用共享凭据的连接不显示:手输的这一份只用于本次,
+    /// 要长期保存就存回共享凭据(<see cref="UpdateSharedCredential" />)—— 连接自己不再存密码。
+    /// </summary>
+    public bool ShowRememberPassword => SharedCredential is null;
+
+    /// <summary>又来问凭据的原因说明;不必说明时为 null。</summary>
+    public string? SharedCredentialNotice => SharedCredential switch
+    {
+        { Reason: SharedCredentialPromptReason.Rejected } shared =>
+            Strings.Format("Auth_SharedRejected", shared.CredentialName),
+        { Reason: SharedCredentialPromptReason.Incomplete } shared =>
+            Strings.Format("Auth_SharedIncomplete", shared.CredentialName),
+        { Reason: SharedCredentialPromptReason.Missing } => Strings.Get("Auth_SharedMissing"),
+        _ => null
+    };
+
+    /// <summary>是否显示原因说明条。</summary>
+    public bool HasSharedCredentialNotice => SharedCredentialNotice is not null;
+
+    /// <summary>能否把本次输入存回共享凭据:凭据还在才能存。</summary>
+    public bool CanUpdateSharedCredential =>
+        SharedCredential is { Reason: not SharedCredentialPromptReason.Missing };
+
+    /// <summary>「同时更新共享凭据」勾选框的文案(带凭据名与引用它的连接数)。</summary>
+    public string UpdateSharedCredentialText => SharedCredential is { } shared
+        ? Strings.Format("Auth_UpdateShared", shared.CredentialName, shared.UsageCount)
+        : string.Empty;
+
+    /// <summary>是否把本次输入存回共享凭据 —— 服务器改了密码之后,一次改完所有引用它的连接。</summary>
+    public bool UpdateSharedCredential
+    {
+        get;
+        set => this.RaiseAndSetIfChanged(ref field, value);
+    }
+
     /// <summary>私钥文件路径(密钥认证方式使用)。</summary>
     public string? PrivateKeyPath
     {
@@ -255,7 +335,8 @@ public class AuthenticationDialogViewModel : ReactiveObject
             ShowsKeyFields ? PrivateKeyPath : null,
             ShowsKeyFields ? PrivateKeyPassphrase : null,
             IsCertificateMethod ? CertificatePath : null,
-            RememberPassword);
+            RememberPassword,
+            CanUpdateSharedCredential && UpdateSharedCredential);
     }
 
     private static string Shorten(string fingerprint) => fingerprint.Length <= 24 ? fingerprint : $"{fingerprint[..12]}...{fingerprint[^4..]}";

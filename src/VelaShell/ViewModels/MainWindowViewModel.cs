@@ -10,6 +10,7 @@ using ReactiveUI;
 using ReactiveUI.Primitives;
 using ReactiveUI.Primitives.Concurrency;
 using ReactiveUI.Primitives.Signals;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Diagnostics;
 using VelaShell.Core.Ftp;
@@ -54,6 +55,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     private static readonly byte[] RisResetSequence = [0x1B, (byte)'c']; // ESC c
 
     private readonly IConnectionWorkflowService? _connectionWorkflowService;
+
+    /// <summary>
+    /// 凭据解析器(#550):FTP 与插件协议不走 SSH 工作流,连接前在这里把引用换成凭据。
+    /// 无 UI 单测不注入,此时配置原样交出。
+    /// </summary>
+    private readonly ICredentialResolver? _credentialResolver;
+
+    /// <summary>共享凭据变更通知到 UI 线程之前是否已有一次树刷新在排队(同步拉取会连发很多次)。</summary>
+    private int _credentialRefreshQueued;
     private readonly ISessionMetricsService? _metricsService;
     private readonly IRemoteProcessService? _remoteProcessService;
 
@@ -233,9 +243,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         IConnectivityMonitor? connectivityMonitor = null,
         ILocalXServer? localXServer = null,
         ILocalizationService? localization = null,
-        ShortcutKeymapService? shortcutKeymap = null
+        ShortcutKeymapService? shortcutKeymap = null,
+        ICredentialResolver? credentialResolver = null,
+        ISharedCredentialRepository? sharedCredentials = null
     )
     {
+        _credentialResolver = credentialResolver;
+        // 共享凭据被改名、删除(删除会把凭据拷回引用它的连接)之后,树上缓存的配置就旧了:
+        // 带着一条已删除的引用去连,只会换来一个"凭据不存在"的登录框。
+        sharedCredentials?.Changed += OnSharedCredentialsChanged;
         // 注册表可注入(DI 里与插件命令桥共享同一单例);无 UI 单测传 null 时自己创建一个。
         Commands = commandRegistry ?? new CommandRegistry();
         _shortcutKeymap = shortcutKeymap;
@@ -2209,6 +2225,35 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         RxSchedulers.MainThreadScheduler.Schedule(() => _ = RefreshSessionTreeAsync());
     }
 
+    /// <summary>
+    /// 共享凭据有变 → 重读会话树(树缓存里的配置可能刚被改写)。可能来自任意线程;
+    /// 同步拉取会一条一条地存,连发的通知合并成一次刷新。
+    /// </summary>
+    private void OnSharedCredentialsChanged(object? sender, EventArgs args)
+    {
+        _ = sender;
+        _ = args;
+        if (Interlocked.Exchange(ref _credentialRefreshQueued, 1) == 1)
+        {
+            return;
+        }
+        RxSchedulers.MainThreadScheduler.Schedule(() =>
+        {
+            Interlocked.Exchange(ref _credentialRefreshQueued, 0);
+            _ = RefreshSessionTreeAsync();
+        });
+    }
+
+    /// <summary>
+    /// 取这一次连接要用的配置:引用了共享凭据就交出一份填好凭据的副本,原配置不动(#550)。
+    /// 没有解析器(无 UI 单测)时原样返回。
+    /// </summary>
+    /// <remarks>只给不走 SSH 工作流的几条路径用(FTP、插件协议);SSH 由工作流自己解析,含跳板的每一跳。</remarks>
+    private Task<SessionProfile> ResolveCredentialsAsync(SessionProfile profile, CancellationToken cancellationToken) =>
+        _credentialResolver is { } resolver
+            ? resolver.ResolveAsync(profile, cancellationToken)
+            : Task.FromResult(profile);
+
     /// <summary>BuildPaletteItems 是同步回调,这里预取 session_profiles 全量与分组名。</summary>
     private async Task RefreshPaletteSessionsAsync()
     {
@@ -3376,7 +3421,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         string.IsNullOrWhiteSpace(profile.Name) ? profile.Host : profile.Name;
 
     /// <summary>缺少连接所需凭据(用户名/密码/私钥/证书)时需要先走登录验证流程。</summary>
+    /// <remarks>
+    /// 引用共享凭据的配置一律不先弹(#550):用户名与认证材料都由凭据提供(手输过的材料也算在内),
+    /// 真缺了什么,解析时会以 <see cref="CredentialProviderException" /> 报出来,连接流程再退回登录框。
+    /// </remarks>
     private static bool RequiresCredentials(SessionProfile profile) =>
+        profile.CredentialSource is null
+        && RequiresInlineCredentials(profile);
+
+    private static bool RequiresInlineCredentials(SessionProfile profile) =>
         string.IsNullOrWhiteSpace(profile.Username)
         || (profile.AuthMethod == AuthMethod.Password && string.IsNullOrEmpty(profile.Password))
         || (
@@ -3523,7 +3576,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             {
                 LastConnectionError = DescribeConnectionError(ex, current);
                 Toasts.Error(LastConnectionError);
-                bool isAuth = ex is VelaSshAuthenticationException;
+                // 共享凭据取不到(被删了、在本机没有密码)与认证被拒同等对待:退回登录框让用户手输(#550)。
+                bool isAuth = ex is VelaSshAuthenticationException or CredentialProviderException;
 
                 // 认证失败但无法交互重试(headless):保持既有契约,撤标签、返回 null。
                 if (isAuth && InteractiveAuthenticator is null)
@@ -3701,14 +3755,18 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             return null;
         }
 
+        // 失败卡片上的「重新连接」用最近一次尝试的配置:登录框交回的是副本、不改调用方那一份,
+        // 用户刚输过却没让记住的密码只在副本里 —— 拿最初那份重试,就得把密码再输一遍。
+        SessionProfile latest = profile;
         using var ui = new DocumentConnectUi(
             this, profile, "SFTP", reuse,
-            document => OpenSftpDocumentForProfileAsync(profile, document, CancellationToken.None),
+            document => OpenSftpDocumentForProfileAsync(latest, document, CancellationToken.None),
             cancellationToken);
         (DocumentSessionConnection? connection, DocumentConnectFailure failure) =
             await ConnectSshDocumentSessionAsync(profile, ui).ConfigureAwait(true);
         if (connection is null)
         {
+            latest = failure.Profile;
             FinishFailedDocumentConnect(ui, failure);
             return null;
         }
@@ -3828,8 +3886,9 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 await DisconnectQuietlyAsync(session?.SessionId).ConfigureAwait(true);
                 return (null, new(current, null));
             }
-            catch (VelaSshAuthenticationException auth)
+            catch (Exception auth) when (auth is VelaSshAuthenticationException or CredentialProviderException)
             {
+                // 后者是共享凭据取不到:同样退回登录框(#550)。
                 await DisconnectQuietlyAsync(session?.SessionId).ConfigureAwait(true);
                 lastAuthFailure = auth;
             }
@@ -3934,14 +3993,17 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             return null;
         }
 
+        // 失败卡片上的「重新连接」用最近一次尝试的配置(理由同 SFTP 那条路径)。
+        SessionProfile latest = profile;
         using var ui = new DocumentConnectUi(
             this, profile, FtpTypeLabel(profile), reuse,
-            document => OpenFtpDocumentForProfileAsync(profile, document, CancellationToken.None),
+            document => OpenFtpDocumentForProfileAsync(latest, document, CancellationToken.None),
             cancellationToken);
         (DocumentSessionConnection? connection, DocumentConnectFailure failure) =
             await ConnectFtpDocumentSessionAsync(profile, ui).ConfigureAwait(true);
         if (connection is null)
         {
+            latest = failure.Profile;
             FinishFailedDocumentConnect(ui, failure);
             return null;
         }
@@ -3997,8 +4059,10 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             try
             {
                 ui.BeginAttempt();
+                // 共享凭据在这一刻才取,只进 FtpConnectionInfo;文档拿的仍是不带明文的 current(#550)。
+                SessionProfile resolved = await ResolveCredentialsAsync(current, ui.Token).ConfigureAwait(true);
                 Guid sessionId = await ftp
-                    .OpenSessionAsync(FtpConnectionInfo.FromProfile(current), ui.Token)
+                    .OpenSessionAsync(FtpConnectionInfo.FromProfile(resolved), ui.Token)
                     .ConfigureAwait(true);
                 return (new(current, sessionId, null, ftp.CloseSessionAsync), default);
             }
@@ -4021,7 +4085,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 // 用户自己点了"不信任",原因他清楚 —— 再弹一扇框只是复述他刚做的决定。
                 return (null, new(current, certificate, certificate.Message));
             }
-            catch (VelaFtpAuthenticationException auth)
+            catch (Exception auth) when (auth is VelaFtpAuthenticationException or CredentialProviderException)
             {
                 lastAuthFailure = auth;
             }
@@ -4070,9 +4134,12 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             return null;
         }
 
+        // 失败卡片上的「重新连接」用两栏各自最近一次尝试的配置(理由同 SFTP 那条路径)。
+        SessionProfile latestLeft = left;
+        SessionProfile latestRight = right;
         using var ui = new DocumentConnectUi(
             this, left, "SFTP", reuse,
-            document => OpenDualSftpDocumentAsync(left, right, document, CancellationToken.None),
+            document => OpenDualSftpDocumentAsync(latestLeft, latestRight, document, CancellationToken.None),
             cancellationToken,
             $"{ProfileDisplayName(left)} ⇄ {ProfileDisplayName(right)}");
         var connections = new List<DocumentSessionConnection>(2);
@@ -4087,6 +4154,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     ConnectionType.Plugin when CanOpenInDualSftp(profile) => await ConnectPluginForDualAsync(profile, ui).ConfigureAwait(true),
                     _ => (null, new(profile, new NotSupportedException(Strings.Get("Tree_OpenDualSftpUnsupported")))),
                 };
+                SessionProfile attempted = connection?.Profile ?? failure.Profile;
+                if (ReferenceEquals(profile, left))
+                {
+                    latestLeft = attempted;
+                }
+                else
+                {
+                    latestRight = attempted;
+                }
                 if (connection is null)
                 {
                     // 整体回滚:先把已经连上的那条断掉,再按这一条的结局收尾(取消 → 撤占位,失败 → 失败卡片)。
@@ -4183,9 +4259,11 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         // 占位标签建在解析协议之前:解析可能触发插件的惰性激活(装配、启动进程),
         // 那往往就是这条路上最慢的一步 —— 等它完再建标签,慢的那段照样没有任何回执。
         // 类型名此刻还问不到,先挂协议 id,解析出来再换成展示名。
+        // 失败卡片上的「重新连接」用最近一次尝试的配置(理由同 SFTP 那条路径)。
+        SessionProfile latest = profile;
         using var ui = new DocumentConnectUi(
             this, profile, profile.PluginProtocolId ?? string.Empty, reuse,
-            document => OpenPluginDocumentForProfileAsync(profile, document, CancellationToken.None),
+            document => OpenPluginDocumentForProfileAsync(latest, document, CancellationToken.None),
             cancellationToken);
         ui.BeginAttempt();
 
@@ -4204,6 +4282,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             await ConnectPluginDocumentSessionAsync(profile, ui, descriptor).ConfigureAwait(true);
         if (connection is null)
         {
+            latest = failure.Profile;
             FinishFailedDocumentConnect(ui, failure);
             return null;
         }
@@ -4281,7 +4360,9 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             try
             {
                 ui.BeginAttempt();
-                Guid sessionId = await plugins.OpenSessionAsync(current, ui.Token).ConfigureAwait(true);
+                // 共享凭据只进交给插件的那一份;文档拿的仍是不带明文的 current(#550)。
+                SessionProfile resolved = await ResolveCredentialsAsync(current, ui.Token).ConfigureAwait(true);
+                Guid sessionId = await plugins.OpenSessionAsync(resolved, ui.Token).ConfigureAwait(true);
                 return (new(current, sessionId, null, plugins.CloseSessionAsync), default);
             }
             catch (OperationCanceledException)
@@ -4309,7 +4390,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 // 用户自己点了"不信任",原因他清楚 —— 再弹一扇框只是复述他刚做的决定。
                 return (null, new(current, certificate, certificate.Message));
             }
-            catch (PluginProtocolAuthenticationException auth)
+            catch (Exception auth) when (auth is PluginProtocolAuthenticationException or CredentialProviderException)
             {
                 lastAuthFailure = auth;
             }
@@ -4445,8 +4526,10 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         // 打开与重连都经过这里,右下角圆环的登记放在这一处就够(理由同 RunHandshakeAsync)。
         using IBackgroundActivityScope? activity =
             _backgroundActivity?.Begin(Strings.Connecting, ProfileDisplayName(profile));
+        // 共享凭据在这一刻才取(打开与重连都经过这里,重连自然用上凭据的新值,#550)。
+        SessionProfile resolved = await ResolveCredentialsAsync(profile, cancellationToken).ConfigureAwait(true);
         IShellStreamWrapper stream = await PluginProtocolTerminalConnector
-            .OpenAsync(registration, profile, options, cancellationToken)
+            .OpenAsync(registration, resolved, options, cancellationToken)
             .ConfigureAwait(true);
         await tab.AttachTransportAsync(stream).ConfigureAwait(true);
         tab.Start();
@@ -4529,9 +4612,11 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         }
 
         // 同插件协议那条路径:占位标签建在解析之前 —— 惰性激活插件往往是最慢的一步。
+        // 失败卡片上的「重新连接」用最近一次尝试的配置(理由同 SFTP 那条路径)。
+        SessionProfile latest = profile;
         using var ui = new DocumentConnectUi(
             this, profile, profile.PluginProtocolId ?? string.Empty, reuse,
-            document => OpenWorkspaceDocumentForProfileAsync(profile, document, CancellationToken.None),
+            document => OpenWorkspaceDocumentForProfileAsync(latest, document, CancellationToken.None),
             cancellationToken);
         ui.BeginAttempt();
 
@@ -4574,6 +4659,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                     return null;
                 }
                 current = prompted;
+                latest = current;
             }
 
             try
@@ -4581,12 +4667,15 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 ui.BeginAttempt();
                 // 声明了 SshTunnel 且用户选了跳板机 → 宿主先把 SSH 会话与本地转发建好,
                 // 插件只看到一个已经能连的本地端点(凭据永不出宿主)。
+                // 共享凭据先取:取不到就别白建一条隧道(#550)。
+                SessionProfile resolved = await ResolveCredentialsAsync(current, ui.Token).ConfigureAwait(true);
                 (WorkspaceEndpoint? endpoint, Guid tunnelId) =
                     await EstablishWorkspaceTunnelAsync(current, ui.Token).ConfigureAwait(true);
                 PluginWorkspaceSession session;
                 try
                 {
-                    session = await launcher.OpenAsync(current, endpoint, ui.Token).ConfigureAwait(true);
+                    // 明文只进交给插件的那一份;文档拿的仍是不带明文的 current。
+                    session = await launcher.OpenAsync(resolved, endpoint, ui.Token).ConfigureAwait(true);
                 }
                 catch
                 {
@@ -4631,7 +4720,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 ui.Fail(certificate.Message);
                 return null;
             }
-            catch (PluginProtocolAuthenticationException auth)
+            catch (Exception auth) when (auth is PluginProtocolAuthenticationException or CredentialProviderException)
             {
                 lastAuthFailure = auth;
                 continue;
@@ -4666,6 +4755,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     private async Task ProbePluginConnectionAsync(SessionProfile profile, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(profile);
+        // 引用了共享凭据的配置先把凭据取出来(#550);取不到时异常的消息就是测试结论。
+        profile = await ResolveCredentialsAsync(profile, cancellationToken).ConfigureAwait(true);
         // 文件系统形态(S3 之类)与工作台形态(Redis 之类)是两套打开路径,按声明分流。
         // 查形态不会装载任何插件程序集。
         if (_protocolRegistry is { } registry
@@ -4772,16 +4863,39 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
 
         // 按"目标主机 + 端口 + 用户"匹配已连着的会话。这不是权宜:隧道要穿的是**那台主机**,
         // 谁开的那条 SSH 无关紧要 —— 而 SshSession 上本就没有"来自哪条配置"这个信息。
+        // 跳板引用共享凭据而自己没填用户名时,实际登录名在凭据里(#550);取不到就不复用,下面新连时会如实报错。
+        string jumpUsername = jump.Username;
+        if (CredentialMaterial.NeedsResolution(jump) && string.IsNullOrWhiteSpace(jumpUsername))
+        {
+            try
+            {
+                jumpUsername = (await ResolveCredentialsAsync(jump, cancellationToken).ConfigureAwait(true)).Username;
+            }
+            catch (CredentialProviderException)
+            {
+                // 留给 ConnectProfileAsync 去报。
+            }
+        }
         Guid sshSessionId = _sshConnectionService?.Sessions
             .FirstOrDefault(session => session.Status == SessionStatus.Connected
                                        && string.Equals(session.ConnectionInfo.Host, jump.Host, StringComparison.OrdinalIgnoreCase)
                                        && session.ConnectionInfo.Port == jump.Port
-                                       && string.Equals(session.ConnectionInfo.Username, jump.Username, StringComparison.Ordinal))
+                                       && string.Equals(session.ConnectionInfo.Username, jumpUsername, StringComparison.Ordinal))
             ?.SessionId ?? Guid.Empty;
         if (sshSessionId == Guid.Empty)
         {
-            SshSession connected = await _connectionWorkflowService
-                .ConnectProfileAsync(jump, cancellationToken).ConfigureAwait(true);
+            SshSession connected;
+            try
+            {
+                connected = await _connectionWorkflowService
+                    .ConnectProfileAsync(jump, cancellationToken).ConfigureAwait(true);
+            }
+            catch (CredentialProviderException ex)
+            {
+                // 跳板的共享凭据取不到:改报普通的连接错误。原样抛出去的话,工作台的连接循环会把它
+                // 当成「这条工作台缺凭据」退回登录框 —— 问的是 Redis 的口令,缺的却是跳板的(#550)。
+                throw new PluginProtocolConnectionException(Strings.Format("Svc_JumpCredentialFailed", jump.Name, ex.Message));
+            }
             sshSessionId = connected.SessionId;
         }
 
@@ -4896,9 +5010,11 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// 只有「填了用户名却没有口令」才是真的缺东西。
     /// </summary>
     private static bool RequiresPluginCredentials(SessionProfile profile, bool allowsAnonymous) =>
-        allowsAnonymous
+        // 引用共享凭据的不先弹,理由同 RequiresCredentials。
+        profile.CredentialSource is null
+        && (allowsAnonymous
             ? !string.IsNullOrWhiteSpace(profile.Username) && string.IsNullOrEmpty(profile.Password)
-            : string.IsNullOrWhiteSpace(profile.Username) || string.IsNullOrEmpty(profile.Password);
+            : string.IsNullOrWhiteSpace(profile.Username) || string.IsNullOrEmpty(profile.Password));
 
     /// <summary>
     /// 返回一份把服务器证书指纹记为已信任的配置副本。指纹写进协议自己声明的那个隐藏字段
@@ -4956,6 +5072,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// <summary>FTP 缺少登录凭据时才需要弹登录框;匿名登录不需要用户名与口令。</summary>
     private static bool RequiresFtpCredentials(SessionProfile profile) =>
         profile.Ftp?.Anonymous != true &&
+        // 引用共享凭据的不先弹,理由同 RequiresCredentials。
+        profile.CredentialSource is null &&
         (string.IsNullOrWhiteSpace(profile.Username) || string.IsNullOrEmpty(profile.Password));
 
     /// <summary>返回一份把服务器证书指纹记为已信任的配置副本。</summary>
@@ -4979,12 +5097,22 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         }
         try
         {
-            if (await _sessionRepository.GetSessionAsync(profile.Id).ConfigureAwait(true) is not null)
+            if (await _sessionRepository.GetSessionAsync(profile.Id).ConfigureAwait(true) is null)
+            {
+                return;
+            }
+            // 经工作流保存:登录框交回来的副本可能带着用户这次手输、却没让记住的密码,
+            // 工作流会按「记住密码」把它剥掉 —— 直接落仓储等于替用户记住了他明确不让记的东西。
+            if (_connectionWorkflowService is { } workflow)
+            {
+                await workflow.SaveProfileAsync(profile).ConfigureAwait(true);
+            }
+            else
             {
                 await _sessionRepository.SaveSessionAsync(profile).ConfigureAwait(true);
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or ArgumentException)
         {
             // 信任指纹没落盘不影响本次连接,下次会再问一遍。
         }
@@ -5056,6 +5184,8 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
             PluginProtocolConnectionException
                 or PluginProtocolAuthenticationException
                 or PluginProtocolUnavailableException => detail,
+            // 共享凭据取不到:消息本身就是面向用户的,而且写明了是哪条凭据、缺什么(#550)。
+            CredentialProviderException => detail,
             _ => Strings.Format("Msg_ConnectGenericFailed", target, detail),
         };
     }

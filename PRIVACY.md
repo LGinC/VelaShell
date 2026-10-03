@@ -40,7 +40,7 @@ computer unless you explicitly enable the optional sync feature described below.
 | Data | Location |
 | --- | --- |
 | Connection profiles (host, port, username), groups, and settings | `~/.velashell` |
-| Passwords and private-key passphrases you choose to save | Same folder, encrypted with AES-256 |
+| Passwords and private-key passphrases you choose to save, including those of shared credentials (one username and password / key reused by many connections) | Same folder, encrypted with AES-256 |
 | The encryption key protecting the above | Same folder, generated on your device |
 | Known SSH host keys | Same folder |
 | Saved commands and snippets | Same folder |
@@ -108,8 +108,11 @@ VelaShell connects to the network only in these situations:
    account**, using a personal access token that you supply. The data goes to your GitHub
    account, never to us. You may additionally set an end-to-end encryption passphrase, in which
    case the payload is encrypted with AES-GCM on your device before upload and GitHub stores
-   only ciphertext. You choose which categories to sync, and you can turn it off or delete the
-   Gist at any time.
+   only ciphertext. Without that passphrase, saved passwords and private-key passphrases are
+   never uploaded — neither those on connection profiles nor those of shared credentials; a
+   shared credential travels only as its name, username, notes and key / certificate file
+   paths. You choose which categories to sync, and you can turn it off or delete the Gist at
+   any time.
 
 VelaShell does not download the IP geolocation database itself. If you want that optional
 feature, the application opens the DB-IP download page in your browser and you choose the
@@ -191,7 +194,7 @@ VelaShell 发起的每一个网络连接,都完整列在下方。
 | 数据 | 位置 |
 | --- | --- |
 | 连接配置(主机、端口、用户名)、分组与应用设置 | `~/.velashell` |
-| 你选择保存的密码与私钥口令 | 同上,以 AES-256 加密 |
+| 你选择保存的密码与私钥口令,包括共享凭据(多条连接共用的一套用户名与密码 / 密钥)里的 | 同上,以 AES-256 加密 |
 | 保护上述内容的加密密钥 | 同上,在你的设备上生成 |
 | 已知的 SSH 主机密钥 | 同上 |
 | 快捷命令与代码片段 | 同上 |
@@ -246,7 +249,9 @@ VelaShell 仅在以下情形联网:
 7. **云同步 —— 默认关闭,完全可选。** 若你启用,VelaShell 会使用你自己提供的个人访问令牌,
    把设置、连接配置与代码片段保存到**你自己 GitHub 账户下的一个 secret Gist** 中。数据进入
    的是你的 GitHub 账户,而非我们。你还可以额外设置端到端加密口令,此时载荷会在你的设备上
-   用 AES-GCM 加密后再上传,GitHub 只能拿到密文。同步范围由你勾选,可随时关闭或删除该 Gist。
+   用 AES-GCM 加密后再上传,GitHub 只能拿到密文。没设这个口令时,已保存的密码与私钥口令一律
+   不上传 —— 连接配置上的与共享凭据里的都一样;共享凭据只带名称、用户名、备注与私钥 / 证书
+   文件路径。同步范围由你勾选,可随时关闭或删除该 Gist。
 
 VelaShell 不会自行下载 IP 归属地数据库。若你需要该可选功能,应用会在你的浏览器中打开 DB-IP
 的下载页面,由你手动选择下载好的文件。

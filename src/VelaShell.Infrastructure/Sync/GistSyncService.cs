@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text.Json;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
@@ -19,10 +20,19 @@ public sealed class GistSyncService(
     IAppDataStore appDataStore,
     IQuickCommandRepository quickCommandRepository,
     ISecretProtector secretProtector,
-    Core.Services.IBackgroundActivityService? backgroundActivity = null
+    Core.Services.IBackgroundActivityService? backgroundActivity = null,
+    ISharedCredentialRepository? sharedCredentials = null
 ) : IGistSyncService
 {
-    private const int CurrentSchemaVersion = 2;
+    /// <summary>
+    /// 本机认得的最高载荷版本。3 = 带共享凭据(#550)。
+    /// </summary>
+    /// <remarks>
+    /// 推送时只在真用到共享凭据时才写 3,否则仍写 2(见 <see cref="PayloadSchemaVersion" />):
+    /// 不认识引用的旧客户端拉到这份载荷,会把连接上的引用当未知字段丢掉,再推回来时就把
+    /// 引用从云端抹了 —— 写 3 让旧客户端照章拒收,而没用这个功能的人照旧与旧版本互通。
+    /// </remarks>
+    private const int CurrentSchemaVersion = 3;
     private const string ConfigCollection = "app_config";
     private const string ConfigDocId = "sync";
     private const string GistFileName = "velashell-sync.json";
@@ -462,7 +472,7 @@ public sealed class GistSyncService(
         return new(SyncAction.Pushed, true, Strings.Format("SyncSvc_Pushed", Short(version)));
     }
 
-    private async Task<string> BuildGistContentAsync(
+    internal async Task<string> BuildGistContentAsync(
         SyncSettings config,
         CancellationToken cancellationToken
     )
@@ -495,6 +505,21 @@ public sealed class GistSyncService(
             }
             payload.Profiles = profiles;
 
+            // 共享凭据随连接同步(#550),剥离规则与连接配置一致。
+            if (sharedCredentials is not null)
+            {
+                List<SharedCredential> credentials = await sharedCredentials.GetAllAsync().ConfigureAwait(false);
+                if (!encrypted)
+                {
+                    foreach (SharedCredential credential in credentials)
+                    {
+                        credential.Password = null;
+                        credential.PrivateKeyPassphrase = null;
+                    }
+                }
+                payload.SharedCredentials = credentials.Count > 0 ? credentials : null;
+            }
+
             // 端口转发隧道配置随连接同步(tunnels 集合按 profileId 分文档)。
             var tunnels = new Dictionary<Guid, List<TunnelConfig>>();
             foreach (SessionProfile profile in profiles)
@@ -519,8 +544,10 @@ public sealed class GistSyncService(
                 .ExportSyncAsync(cancellationToken)
                 .ConfigureAwait(false);
         }
+        payload.SchemaVersion = PayloadSchemaVersion(payload);
         var envelope = new SyncEnvelope
         {
+            SchemaVersion = payload.SchemaVersion,
             UpdatedAtUtc = payload.UpdatedAtUtc,
             DeviceName = config.DeviceName,
             Encrypted = encrypted,
@@ -538,6 +565,16 @@ public sealed class GistSyncService(
         }
         return JsonSerializer.Serialize(envelope, JsonOptions);
     }
+
+    /// <summary>
+    /// 这份载荷要标的版本:用到共享凭据(有凭据,或有连接引用凭据)时为 3,否则为 2。
+    /// 理由见 <see cref="CurrentSchemaVersion" />。
+    /// </summary>
+    internal static int PayloadSchemaVersion(SyncPayload payload) =>
+        payload.SharedCredentials is { Count: > 0 }
+        || payload.Profiles?.Exists(static p => p.CredentialSource is not null) == true
+            ? 3
+            : 2;
 
     // ———— 拉取与应用 ————
 
@@ -606,6 +643,26 @@ public sealed class GistSyncService(
                 foreach (ServerGroup group in payload.Groups ?? [])
                 {
                     await sessionRepository.SaveGroupAsync(group).ConfigureAwait(false);
+                }
+                // 共享凭据先于连接落库:连接里的引用指向它们。合并口径与连接相同 ——
+                // upsert 不删本机独有的;非加密载荷不带机密,保留本机已存的那一份。
+                if (sharedCredentials is not null && payload.SharedCredentials is { } incomingCredentials)
+                {
+                    var localCredentials = (
+                        await sharedCredentials.GetAllAsync().ConfigureAwait(false)
+                    ).ToDictionary(c => c.Id);
+                    foreach (SharedCredential incoming in incomingCredentials)
+                    {
+                        if (
+                            incoming.Password is null
+                            && localCredentials.TryGetValue(incoming.Id, out SharedCredential? existing)
+                        )
+                        {
+                            incoming.Password = existing.Password;
+                            incoming.PrivateKeyPassphrase ??= existing.PrivateKeyPassphrase;
+                        }
+                        await sharedCredentials.SaveAsync(incoming).ConfigureAwait(false);
+                    }
                 }
                 if (payload.Profiles is { } profiles)
                 {

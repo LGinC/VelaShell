@@ -348,8 +348,12 @@ public sealed class ConnectionDiagnosticsService(
         return text.Length == 0 ? null : text;
     }
 
+    /// <summary>
+    /// 配置能不能不问用户就去认证。引用了共享凭据的算能(#550):凭据在测试连接时现取,
+    /// 取不到的话测试结果会如实写出是哪条凭据、缺了什么。
+    /// </summary>
     private static bool HasStoredCredentials(SessionProfile profile) =>
-        profile.AuthMethod switch
+        profile.CredentialSource is not null || profile.AuthMethod switch
         {
             AuthMethod.Password => !string.IsNullOrEmpty(profile.Password),
             AuthMethod.PrivateKey => !string.IsNullOrEmpty(profile.PrivateKeyPath),

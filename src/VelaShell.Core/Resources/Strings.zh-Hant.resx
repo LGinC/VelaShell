@@ -6448,4 +6448,163 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Sc_WarnTerminalKey" xml:space="preserve">
     <value>這個按鍵原本會送給遠端程式,綁定期間遠端收不到它</value>
   </data>
+  <data name="Cred_Failure_NotFound" xml:space="preserve">
+    <value>這條連線參照的共用憑證已不存在。</value>
+  </data>
+  <data name="Cred_Failure_ProviderDisabled" xml:space="preserve">
+    <value>這條連線使用的憑證來源「{0}」在本機無法使用。</value>
+  </data>
+  <data name="Cred_Failure_MissingUsername" xml:space="preserve">
+    <value>共用憑證「{0}」和這條連線都沒有填寫使用者名稱。</value>
+  </data>
+  <data name="Cred_Failure_MissingSecret" xml:space="preserve">
+    <value>共用憑證「{0}」在本機沒有密碼或金鑰(雲端同步未設端對端口令時不會帶上它們)。</value>
+  </data>
+  <data name="Cred_Failure_UnsupportedAuth" xml:space="preserve">
+    <value>共用憑證「{0}」不是密碼類型;FTP 與外掛連線只能用密碼登入。</value>
+  </data>
+  <data name="Svc_JumpCredentialFailed" xml:space="preserve">
+    <value>跳板 {0}:{1}</value>
+  </data>
+  <data name="Auth_SharedRejected" xml:space="preserve">
+    <value>使用共用憑證「{0}」登入被拒絕。如果剛改過密碼,在下方輸入新密碼並勾選「同時更新」,所有使用它的連線會一起換上。</value>
+  </data>
+  <data name="Auth_SharedIncomplete" xml:space="preserve">
+    <value>共用憑證「{0}」在本機不完整(缺使用者名稱、密碼或金鑰)。在這裡填好,可以順手存回這條憑證。</value>
+  </data>
+  <data name="Auth_SharedMissing" xml:space="preserve">
+    <value>這條連線參照的共用憑證已不存在。這裡輸入的憑證只用於這一次;要長期保存,請編輯這條連線,改選憑證來源。</value>
+  </data>
+  <data name="Auth_UpdateShared" xml:space="preserve">
+    <value>同時更新共用憑證「{0}」({1} 條連線在用)</value>
+  </data>
+  <data name="Profile_CredSource" xml:space="preserve">
+    <value>憑證來源</value>
+  </data>
+  <data name="Profile_CredSourceInline" xml:space="preserve">
+    <value>在本設定中填寫</value>
+  </data>
+  <data name="Profile_CredSourceMissing" xml:space="preserve">
+    <value>(參照的共用憑證已不存在)</value>
+  </data>
+  <data name="Profile_CredNew" xml:space="preserve">
+    <value>新增…</value>
+  </data>
+  <data name="Profile_CredNewTip" xml:space="preserve">
+    <value>用表單裡現有的使用者名稱與密碼 / 金鑰新增一條共用憑證,並讓這條連線使用它</value>
+  </data>
+  <data name="Profile_CredUsernameInherit" xml:space="preserve">
+    <value>留空則使用憑證中的 {0}</value>
+  </data>
+  <data name="Profile_CredSummary" xml:space="preserve">
+    <value>共用憑證:使用者名稱 {0} · {1}。改密碼請到 設定 → 共用憑證。</value>
+  </data>
+  <data name="Profile_ErrCredMissing" xml:space="preserve">
+    <value>參照的共用憑證已不存在,請改選憑證來源。</value>
+  </data>
+  <data name="Profile_ErrCredNotPassword" xml:space="preserve">
+    <value>這種連線只能用密碼登入,請選一條密碼類型的共用憑證。</value>
+  </data>
+  <data name="SharedCred_NewTitle" xml:space="preserve">
+    <value>新增共用憑證</value>
+  </data>
+  <data name="SharedCred_EditTitle" xml:space="preserve">
+    <value>編輯共用憑證</value>
+  </data>
+  <data name="SharedCred_ErrNameRequired" xml:space="preserve">
+    <value>請填寫名稱</value>
+  </data>
+  <data name="SharedCred_ErrPasswordRequired" xml:space="preserve">
+    <value>請填寫密碼</value>
+  </data>
+  <data name="SharedCred_ErrKeyRequired" xml:space="preserve">
+    <value>請選擇私鑰檔案</value>
+  </data>
+  <data name="SharedCred_UsersSummary" xml:space="preserve">
+    <value>已選 {0} 條連線</value>
+  </data>
+  <data name="SharedCred_MatchResult" xml:space="preserve">
+    <value>新勾選了 {0} 條憑證相同的連線</value>
+  </data>
+  <data name="SharedCred_CopyFrom" xml:space="preserve">
+    <value>從連線複製(選填)</value>
+  </data>
+  <data name="SharedCred_CopyFromPlaceholder" xml:space="preserve">
+    <value>選一條連線,把它的使用者名稱與密碼 / 金鑰填進來</value>
+  </data>
+  <data name="SharedCred_Name" xml:space="preserve">
+    <value>名稱</value>
+  </data>
+  <data name="SharedCred_NamePlaceholder" xml:space="preserve">
+    <value>如:機房交換器 admin</value>
+  </data>
+  <data name="SharedCred_UsernamePlaceholder" xml:space="preserve">
+    <value>留空則由各連線自行填寫</value>
+  </data>
+  <data name="SharedCred_Notes" xml:space="preserve">
+    <value>備註(選填)</value>
+  </data>
+  <data name="SharedCred_UsersTitle" xml:space="preserve">
+    <value>使用這條憑證的連線</value>
+  </data>
+  <data name="SharedCred_CheckMatching" xml:space="preserve">
+    <value>勾選憑證相同的連線</value>
+  </data>
+  <data name="SharedCred_CheckMatchingTip" xml:space="preserve">
+    <value>把使用者名稱與密碼 / 金鑰和上面完全相同、但還各存各的連線一併勾上 —— 遷移既有連線用</value>
+  </data>
+  <data name="SharedCred_FilterPlaceholder" xml:space="preserve">
+    <value>篩選連線(名稱、主機、使用者名稱)</value>
+  </data>
+  <data name="SharedCred_UsernameFromConnection" xml:space="preserve">
+    <value>由連線提供</value>
+  </data>
+  <data name="SharedCred_UsageCount" xml:space="preserve">
+    <value>{0} 條連線</value>
+  </data>
+  <data name="SharedCred_Saved" xml:space="preserve">
+    <value>已儲存「{0}」,{1} 條連線在用它。</value>
+  </data>
+  <data name="SharedCred_Deleted" xml:space="preserve">
+    <value>已刪除「{0}」。</value>
+  </data>
+  <data name="SharedCred_DeleteConfirm" xml:space="preserve">
+    <value>刪除共用憑證「{0}」?</value>
+  </data>
+  <data name="SharedCred_DeleteConfirmInUse" xml:space="preserve">
+    <value>刪除共用憑證「{0}」?有 {1} 條連線在用它,這些連線會各自保存一份同樣的憑證,刪除後照樣能連。</value>
+  </data>
+  <data name="SetVm_SectionCredentials" xml:space="preserve">
+    <value>共用憑證</value>
+  </data>
+  <data name="SetCred_Title" xml:space="preserve">
+    <value>共用憑證</value>
+  </data>
+  <data name="SetCred_Subtitle" xml:space="preserve">
+    <value>多條連線共用的一套使用者名稱與密碼 / 金鑰。改這裡一處,所有使用它的連線下次連線即用上新值。</value>
+  </data>
+  <data name="SetCred_SearchPlaceholder" xml:space="preserve">
+    <value>搜尋名稱、使用者名稱或備註</value>
+  </data>
+  <data name="SetCred_New" xml:space="preserve">
+    <value>新增憑證</value>
+  </data>
+  <data name="SetCred_ColUsage" xml:space="preserve">
+    <value>使用中</value>
+  </data>
+  <data name="SetCred_Edit" xml:space="preserve">
+    <value>編輯</value>
+  </data>
+  <data name="SetCred_Delete" xml:space="preserve">
+    <value>刪除憑證</value>
+  </data>
+  <data name="SetCred_MissingSecretTip" xml:space="preserve">
+    <value>本機沒有這條憑證的密碼或金鑰(雲端同步未設端對端口令時不會帶上它們)。點「編輯」補上。</value>
+  </data>
+  <data name="SetCred_Empty" xml:space="preserve">
+    <value>還沒有共用憑證。新增一條,再把使用同一套帳號的連線勾上;以後改密碼只需改這一處。</value>
+  </data>
+  <data name="SetCred_StorageHint" xml:space="preserve">
+    <value>密碼與私鑰密碼短語經 AES-256 加密保存在本機。雲端同步會帶上憑證的名稱與使用者名稱;只有設了端對端口令,密碼與密碼短語才會一起同步。</value>
+  </data>
 </root>

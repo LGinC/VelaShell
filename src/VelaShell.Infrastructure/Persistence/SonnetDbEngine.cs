@@ -15,7 +15,7 @@ namespace VelaShell.Infrastructure.Persistence;
 /// 并对上层仓储提供带锁的文档/时序访问原语。
 /// 数据模型:
 /// - 文档集合(业务数据,JSON):session_groups、session_profiles($.groupId 索引)、
-/// app_config(settings/state 单文档)、known_hosts、ui_config、quick_commands。
+/// app_config(settings/state 单文档)、known_hosts、ui_config、quick_commands、shared_credentials。
 /// - 时序 measurement(时间相关数据):conn_history(最近连接)、audit_log(安全审计)、
 /// session_recording_chunks(会话录制),以及插件私有的 pts_* (见 SonnetDbPluginTimeSeries)。
 /// </summary>
@@ -35,6 +35,8 @@ public sealed class SonnetDbEngine : IDisposable
     public const string QuickCommandsCollection = "quick_commands";
     /// <summary>会话录制元数据文档集合名。</summary>
     public const string RecordingsCollection = "recordings";
+    /// <summary>共享凭据文档集合名(#550;密码与私钥口令加密落盘)。</summary>
+    public const string SharedCredentialsCollection = "shared_credentials";
 
     /// <summary>
     /// 插件数据文档集合名(KV 与机密)。单集合 + 复合主键 <c>&lt;pluginId&gt;|&lt;kind&gt;|&lt;key&gt;</c>:
@@ -434,6 +436,7 @@ public sealed class SonnetDbEngine : IDisposable
         CreateCollectionIfMissing(QuickCommandsCollection);
         CreateCollectionIfMissing(RecordingsCollection);
         CreateCollectionIfMissing(PluginDataCollection);
+        CreateCollectionIfMissing(SharedCredentialsCollection);
         CreateMeasurementIfMissing(ConnHistoryMeasurement);
         CreateMeasurementIfMissing(AuditLogMeasurement);
         CreateMeasurementIfMissing(RecordingChunksMeasurement);

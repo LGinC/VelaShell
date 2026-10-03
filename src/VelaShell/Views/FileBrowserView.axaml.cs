@@ -658,13 +658,13 @@ public partial class FileBrowserView : UserControl
             return;
         }
 
-        // 直达 设置 → 文件传输 页(索引 5,对应 SettingsView 的页序)。
+        // 直达 设置 → 文件传输 页。按枚举跳而不是写死下标:设置页中间插一页,下标就静默错位。
         if (
             Application.Current is App app
             && app.Services?.GetService<SettingsViewModel>() is { } settingsViewModel
         )
         {
-            settingsViewModel.SelectedSectionIndex = 5;
+            settingsViewModel.SelectSection(SettingsSectionKey.Transfer);
         }
         if (owner.DataContext is MainWindowViewModel mainViewModel)
         {

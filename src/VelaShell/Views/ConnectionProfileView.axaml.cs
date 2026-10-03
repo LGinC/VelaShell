@@ -6,7 +6,11 @@ using Avalonia.Interactivity;
 using Avalonia.Platform;
 using Avalonia.Platform.Storage;
 using Avalonia.VisualTree;
+using Microsoft.Extensions.DependencyInjection;
 using ReactiveUI.Primitives;
+using VelaShell.Core.Credentials;
+using VelaShell.Core.Data;
+using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.ViewModels;
@@ -194,8 +198,39 @@ public partial class ConnectionProfileView : Window
         viewModel.SaveCommand.Subscribe(this.PostClose);
         viewModel.ConnectCommand.Subscribe(this.PostClose);
         viewModel.CancelCommand.Subscribe(this.PostClose);
+        // 「凭据来源」旁的「新建…」(#550):编辑框是本对话框的子窗口,视图模型够不着窗口,由视图注入。
+        viewModel.CreateSharedCredential = CreateSharedCredentialAsync;
         await viewModel.LoadGroupsAsync();
+        await viewModel.LoadSharedCredentialsAsync();
     });
+
+    /// <summary>
+    /// 打开共享凭据编辑框(预填表单里现有的凭据),保存后交回新建的那一条;取消为 null。
+    /// </summary>
+    /// <remarks>
+    /// 不显示「使用这条凭据的连接」清单:要挂的就是正在编辑的这一条,由本对话框自己保存时带上引用。
+    /// </remarks>
+    private async Task<SharedCredential?> CreateSharedCredentialAsync(SharedCredential draft)
+    {
+        if ((Application.Current as App)?.Services is not { } services
+            || services.GetService<ISharedCredentialRepository>() is not { } repository)
+        {
+            return null;
+        }
+        List<SessionProfile> profiles = services.GetService<ISessionRepository>() is { } sessions
+            ? await sessions.GetAllSessionsAsync()
+            : [];
+        var dialog = new SharedCredentialEditorView
+        {
+            DataContext = new SharedCredentialEditorViewModel(null, profiles, showUsers: false, draft: draft)
+        };
+        if (await dialog.ShowDialog<SharedCredentialEditResult?>(this) is not { } result)
+        {
+            return null;
+        }
+        await repository.SaveAsync(result.Credential);
+        return result.Credential;
+    }
 
     /// <summary>窗口关闭时退订注册表事件,免得单例注册表上挂满已关闭对话框的视图模型。</summary>
     protected override void OnClosed(EventArgs e)

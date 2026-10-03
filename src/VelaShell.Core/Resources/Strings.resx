@@ -5994,4 +5994,163 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="Sc_WarnTerminalKey" xml:space="preserve">
     <value>This key would otherwise go to the remote program; while it is bound, it never arrives</value>
   </data>
+  <data name="Cred_Failure_NotFound" xml:space="preserve">
+    <value>This connection uses a shared credential that no longer exists.</value>
+  </data>
+  <data name="Cred_Failure_ProviderDisabled" xml:space="preserve">
+    <value>The credential source “{0}” used by this connection is not available on this device.</value>
+  </data>
+  <data name="Cred_Failure_MissingUsername" xml:space="preserve">
+    <value>Neither the shared credential “{0}” nor this connection has a username.</value>
+  </data>
+  <data name="Cred_Failure_MissingSecret" xml:space="preserve">
+    <value>The shared credential “{0}” has no password or key on this device (cloud sync without an end-to-end passphrase does not carry them).</value>
+  </data>
+  <data name="Cred_Failure_UnsupportedAuth" xml:space="preserve">
+    <value>The shared credential “{0}” does not use a password; FTP and plugin connections can only sign in with a password.</value>
+  </data>
+  <data name="Svc_JumpCredentialFailed" xml:space="preserve">
+    <value>Jump host {0}: {1}</value>
+  </data>
+  <data name="Auth_SharedRejected" xml:space="preserve">
+    <value>Signing in with the shared credential “{0}” was rejected. If the password was just changed, enter the new one below and tick “Also update” — every connection that uses it switches over at once.</value>
+  </data>
+  <data name="Auth_SharedIncomplete" xml:space="preserve">
+    <value>The shared credential “{0}” is incomplete on this device (missing username, password or key). Fill it in here and save it back to the credential.</value>
+  </data>
+  <data name="Auth_SharedMissing" xml:space="preserve">
+    <value>The shared credential this connection uses no longer exists. What you enter here is used for this sign-in only; to keep it, edit the connection and choose another credential source.</value>
+  </data>
+  <data name="Auth_UpdateShared" xml:space="preserve">
+    <value>Also update the shared credential “{0}” (used by {1} connections)</value>
+  </data>
+  <data name="Profile_CredSource" xml:space="preserve">
+    <value>Credential source</value>
+  </data>
+  <data name="Profile_CredSourceInline" xml:space="preserve">
+    <value>Enter in this connection</value>
+  </data>
+  <data name="Profile_CredSourceMissing" xml:space="preserve">
+    <value>(shared credential no longer exists)</value>
+  </data>
+  <data name="Profile_CredNew" xml:space="preserve">
+    <value>New…</value>
+  </data>
+  <data name="Profile_CredNewTip" xml:space="preserve">
+    <value>Create a shared credential from the username and password / key in this form, and make this connection use it</value>
+  </data>
+  <data name="Profile_CredUsernameInherit" xml:space="preserve">
+    <value>Leave empty to use {0} from the credential</value>
+  </data>
+  <data name="Profile_CredSummary" xml:space="preserve">
+    <value>Shared credential: user {0} · {1}. Change the password in Settings → Shared Credentials.</value>
+  </data>
+  <data name="Profile_ErrCredMissing" xml:space="preserve">
+    <value>The shared credential no longer exists. Choose another credential source.</value>
+  </data>
+  <data name="Profile_ErrCredNotPassword" xml:space="preserve">
+    <value>This connection type signs in with a password only. Choose a password credential.</value>
+  </data>
+  <data name="SharedCred_NewTitle" xml:space="preserve">
+    <value>New Shared Credential</value>
+  </data>
+  <data name="SharedCred_EditTitle" xml:space="preserve">
+    <value>Edit Shared Credential</value>
+  </data>
+  <data name="SharedCred_ErrNameRequired" xml:space="preserve">
+    <value>Name is required</value>
+  </data>
+  <data name="SharedCred_ErrPasswordRequired" xml:space="preserve">
+    <value>Password is required</value>
+  </data>
+  <data name="SharedCred_ErrKeyRequired" xml:space="preserve">
+    <value>Choose a private key file</value>
+  </data>
+  <data name="SharedCred_UsersSummary" xml:space="preserve">
+    <value>{0} connections selected</value>
+  </data>
+  <data name="SharedCred_MatchResult" xml:space="preserve">
+    <value>Selected {0} more connections with the same credentials</value>
+  </data>
+  <data name="SharedCred_CopyFrom" xml:space="preserve">
+    <value>Copy from a connection (optional)</value>
+  </data>
+  <data name="SharedCred_CopyFromPlaceholder" xml:space="preserve">
+    <value>Pick a connection to fill in its username and password / key</value>
+  </data>
+  <data name="SharedCred_Name" xml:space="preserve">
+    <value>Name</value>
+  </data>
+  <data name="SharedCred_NamePlaceholder" xml:space="preserve">
+    <value>e.g. Data-center switches admin</value>
+  </data>
+  <data name="SharedCred_UsernamePlaceholder" xml:space="preserve">
+    <value>Leave empty to let each connection provide it</value>
+  </data>
+  <data name="SharedCred_Notes" xml:space="preserve">
+    <value>Notes (optional)</value>
+  </data>
+  <data name="SharedCred_UsersTitle" xml:space="preserve">
+    <value>Connections using this credential</value>
+  </data>
+  <data name="SharedCred_CheckMatching" xml:space="preserve">
+    <value>Select matching connections</value>
+  </data>
+  <data name="SharedCred_CheckMatchingTip" xml:space="preserve">
+    <value>Also tick the connections whose username and password / key are exactly the same as above but are still stored on their own — for moving existing connections over</value>
+  </data>
+  <data name="SharedCred_FilterPlaceholder" xml:space="preserve">
+    <value>Filter connections (name, host, username)</value>
+  </data>
+  <data name="SharedCred_UsernameFromConnection" xml:space="preserve">
+    <value>From connection</value>
+  </data>
+  <data name="SharedCred_UsageCount" xml:space="preserve">
+    <value>{0} connections</value>
+  </data>
+  <data name="SharedCred_Saved" xml:space="preserve">
+    <value>Saved “{0}”; {1} connections use it.</value>
+  </data>
+  <data name="SharedCred_Deleted" xml:space="preserve">
+    <value>Deleted “{0}”.</value>
+  </data>
+  <data name="SharedCred_DeleteConfirm" xml:space="preserve">
+    <value>Delete the shared credential “{0}”?</value>
+  </data>
+  <data name="SharedCred_DeleteConfirmInUse" xml:space="preserve">
+    <value>Delete the shared credential “{0}”? {1} connections use it; each of them will keep its own copy of the same credential and can still connect afterwards.</value>
+  </data>
+  <data name="SetVm_SectionCredentials" xml:space="preserve">
+    <value>Shared Credentials</value>
+  </data>
+  <data name="SetCred_Title" xml:space="preserve">
+    <value>Shared Credentials</value>
+  </data>
+  <data name="SetCred_Subtitle" xml:space="preserve">
+    <value>One set of username and password / key shared by many connections. Change it here once and every connection using it picks up the new value on its next connect.</value>
+  </data>
+  <data name="SetCred_SearchPlaceholder" xml:space="preserve">
+    <value>Search name, username or notes</value>
+  </data>
+  <data name="SetCred_New" xml:space="preserve">
+    <value>New Credential</value>
+  </data>
+  <data name="SetCred_ColUsage" xml:space="preserve">
+    <value>In use</value>
+  </data>
+  <data name="SetCred_Edit" xml:space="preserve">
+    <value>Edit</value>
+  </data>
+  <data name="SetCred_Delete" xml:space="preserve">
+    <value>Delete credential</value>
+  </data>
+  <data name="SetCred_MissingSecretTip" xml:space="preserve">
+    <value>This device has no password or key for this credential (cloud sync without an end-to-end passphrase does not carry them). Click Edit to fill it in.</value>
+  </data>
+  <data name="SetCred_Empty" xml:space="preserve">
+    <value>No shared credentials yet. Create one and tick the connections that use the same account — from then on a password change is made in one place.</value>
+  </data>
+  <data name="SetCred_StorageHint" xml:space="preserve">
+    <value>Passwords and key passphrases are stored on this device encrypted with AES-256. Cloud sync carries credential names and usernames; passwords and passphrases are synced only when an end-to-end passphrase is set.</value>
+  </data>
 </root>

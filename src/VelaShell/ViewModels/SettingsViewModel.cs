@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text.Json;
@@ -17,6 +18,7 @@ using VelaShell.Core.XServer;
 using VelaShell.Infrastructure.Diagnostics;
 using VelaShell.Infrastructure.Persistence;
 using VelaShell.Infrastructure.Ssh;
+using VelaShell.Presentation.Services;
 using VelaShell.Presentation.ViewModels;
 using VelaShell.Services;
 
@@ -63,6 +65,9 @@ public enum SettingsSectionKey
 
     /// <summary>密钥管理。</summary>
     Keys,
+
+    /// <summary>共享凭据(#550)。</summary>
+    Credentials,
 
     /// <summary>快捷键。</summary>
     Shortcuts,
@@ -145,9 +150,13 @@ public partial class SettingsViewModel : ReactiveObject
         IUpdateService? updateService = null,
         QuickCommandsViewModel? snippets = null,
         IQuickCommandRepository? quickCommandRepository = null,
-        ILocalXServer? localXServer = null
+        ILocalXServer? localXServer = null,
+        ISharedCredentialRepository? sharedCredentials = null,
+        SharedCredentialService? sharedCredentialService = null,
+        ISessionRepository? sessionRepository = null
     )
     {
+        SharedCredentials = new(sharedCredentials, sharedCredentialService, sessionRepository);
         _settingsService = settingsService ?? throw new ArgumentNullException(nameof(settingsService));
         _themeService = themeService ?? throw new ArgumentNullException(nameof(themeService));
         _localizationService = localizationService;
@@ -448,6 +457,9 @@ public partial class SettingsViewModel : ReactiveObject
     /// <summary>密钥管理页。</summary>
     public SshKeyManagerViewModel SshKeys { get; }
 
+    /// <summary>共享凭据页(#550)。</summary>
+    public SharedCredentialsViewModel SharedCredentials { get; }
+
     /// <summary>
     /// 安全审计页“已信任主机”列表(SonnetDB known_hosts 集合)。删除即时生效,
     /// 不随“保存设置”走:这是信任数据管理,不是偏好设置。
@@ -527,6 +539,10 @@ public partial class SettingsViewModel : ReactiveObject
             new(
                 Strings.Get("SetVm_SectionKeys"),
                 "M12.65 10C11.83 7.67 9.61 6 7 6c-3.31 0-6 2.69-6 6s2.69 6 6 6c2.61 0 4.83-1.67 5.65-4H17v4h4v-4h2v-4H12.65zM7 14c-1.1 0-2-.9-2-2s.9-2 2-2 2 .9 2 2-.9 2-2 2z"
+            ),
+            new(
+                Strings.Get("SetVm_SectionCredentials"),
+                "M11 10V12H9V14H7V12H5.8C5.4 13.2 4.3 14 3 14C1.3 14 0 12.7 0 11S1.3 8 3 8C4.3 8 5.4 8.8 5.8 10H11M3 10C2.4 10 2 10.4 2 11S2.4 12 3 12 4 11.6 4 11 3.6 10 3 10M16 14C18.7 14 24 15.3 24 18V20H8V18C8 15.3 13.3 14 16 14M16 12C13.8 12 12 10.2 12 8S13.8 4 16 4 20 5.8 20 8 18.2 12 16 12Z"
             ),
             new(
                 Strings.Get("SetVm_SectionShortcuts"),
@@ -1021,11 +1037,9 @@ public partial class SettingsViewModel : ReactiveObject
     /// </summary>
     public ShortcutGroup[] ShortcutGroups { get; private set; } = ShortcutCatalog.Build();
 
-    /// <summary>按暂存改动算出的键位表(改一次键就作废重算)。</summary>
-    private ShortcutKeymap? _stagedKeymap;
-
     /// <summary>快捷键页当前显示的键位表:出厂表 + 暂存的改动。</summary>
-    public ShortcutKeymap StagedKeymap => _stagedKeymap ??= new(Shortcuts.Overrides);
+    [AllowNull]
+    public ShortcutKeymap StagedKeymap { get => field ??= new(Shortcuts.Overrides); private set; }
 
     /// <summary>是否有改过的键位(为 true 时显示「全部恢复默认」)。</summary>
     public bool HasCustomShortcuts => StagedKeymap.HasCustomizations;
@@ -1041,7 +1055,7 @@ public partial class SettingsViewModel : ReactiveObject
             group => group.IsExpanded,
             StringComparer.Ordinal
         );
-        _stagedKeymap = null;
+        StagedKeymap = null;
         ShortcutGroups = ShortcutCatalog.Build(StagedKeymap);
         foreach (ShortcutGroup group in ShortcutGroups)
         {
@@ -1174,7 +1188,7 @@ public partial class SettingsViewModel : ReactiveObject
         {
             ClearShortcutFeedback(item);
         }
-        CommitShortcuts(new(StringComparer.Ordinal));
+        CommitShortcuts([with(StringComparer.Ordinal)]);
     }
 
     /// <summary>写入一条改动;与出厂键位相同就等于没改,不留记录。</summary>
@@ -1194,7 +1208,7 @@ public partial class SettingsViewModel : ReactiveObject
     private void CommitShortcuts(Dictionary<string, string> overrides)
     {
         Shortcuts.Overrides = overrides;
-        _stagedKeymap = null;
+        StagedKeymap = null;
         ShortcutKeymap keymap = StagedKeymap;
         foreach (ShortcutItem item in EditableShortcutItems)
         {
@@ -1619,6 +1633,7 @@ public partial class SettingsViewModel : ReactiveObject
         ApplyToViewModel(_loaded);
         this.RaisePropertyChanged(nameof(Keys)); // 列表就位后重新评估选中项
         await RefreshKnownHostsAsync();
+        await SharedCredentials.RefreshAsync();
         if (Snippets is not null)
         {
             await Snippets.LoadAsync();

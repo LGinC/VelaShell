@@ -1,4 +1,5 @@
 using NSubstitute;
+using VelaShell.Core.Credentials;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Sync;
@@ -57,6 +58,105 @@ public sealed class GistSyncServiceTests
         Assert.AreEqual(SyncAction.Pulled, result.Action);
         Assert.IsTrue(profileWasSavedWhenNotified, "通知必须发生在连接配置写入仓储之后。");
         await sessions.Received(1).SaveSessionAsync(profile);
+    }
+
+    // ———— 共享凭据(#550) ————
+
+    private static (GistSyncService Service, ISessionRepository Sessions, ISharedCredentialRepository Credentials) CreateWithCredentials()
+    {
+        ISettingsService settings = Substitute.For<ISettingsService>();
+        ISessionRepository sessions = Substitute.For<ISessionRepository>();
+        IAppDataStore store = Substitute.For<IAppDataStore>();
+        IQuickCommandRepository snippets = Substitute.For<IQuickCommandRepository>();
+        ISecretProtector secrets = Substitute.For<ISecretProtector>();
+        ISharedCredentialRepository credentials = Substitute.For<ISharedCredentialRepository>();
+        sessions.GetAllSessionsAsync().Returns([]);
+        sessions.GetAllGroupsAsync().Returns([]);
+        credentials.GetAllAsync().Returns([]);
+        return (new GistSyncService(settings, sessions, store, snippets, secrets, sharedCredentials: credentials), sessions, credentials);
+    }
+
+    // 每次新建:ApplyRemoteAsync 会往配置上写同步状态,共用一个实例会让用例之间互相串。
+    private static SyncSettings ProfilesOnly() => new() { SyncAppSettings = false, SyncProfiles = true, SyncSnippets = false };
+
+    /// <summary>没设端到端口令:凭据随连接上传,但密码与口令剥掉 —— 与连接配置同一条规矩。</summary>
+    [TestMethod]
+    public async Task Push_WithoutPassphrase_CarriesCredentialsWithoutSecrets_AsSchema3()
+    {
+        (GistSyncService service, _, ISharedCredentialRepository credentials) = CreateWithCredentials();
+        credentials.GetAllAsync().Returns([
+            new SharedCredential { Name = "switches", Username = "admin", Password = "plaintext-pass", PrivateKeyPassphrase = "plaintext-phrase" }
+        ]);
+
+        string content = await service.BuildGistContentAsync(ProfilesOnly(), CancellationToken.None);
+
+        Assert.Contains("switches", content);
+        Assert.Contains("admin", content);
+        Assert.DoesNotContain("plaintext-pass", content, "未加密载荷不得带凭据的明文密码");
+        Assert.DoesNotContain("plaintext-phrase", content);
+        SyncEnvelope envelope = System.Text.Json.JsonSerializer.Deserialize<SyncEnvelope>(
+            content, new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web))!;
+        Assert.AreEqual(3, envelope.SchemaVersion, "用到共享凭据的载荷要让不认识它的旧客户端拒收");
+        Assert.AreEqual(3, envelope.Payload!.SchemaVersion);
+    }
+
+    /// <summary>没用这个功能的人,载荷版本不变,照旧与旧客户端互通。</summary>
+    [TestMethod]
+    public void PayloadWithoutSharedCredentials_StaysOnSchema2()
+    {
+        var plain = new SyncPayload { Profiles = [new SessionProfile { Name = "p" }] };
+        var referencing = new SyncPayload
+        {
+            Profiles = [new SessionProfile { Name = "p", CredentialSource = CredentialReference.ForShared(Guid.NewGuid()) }]
+        };
+        var withCredential = new SyncPayload { SharedCredentials = [new SharedCredential { Name = "c" }] };
+
+        Assert.AreEqual(2, GistSyncService.PayloadSchemaVersion(plain));
+        Assert.AreEqual(3, GistSyncService.PayloadSchemaVersion(referencing));
+        Assert.AreEqual(3, GistSyncService.PayloadSchemaVersion(withCredential));
+    }
+
+    /// <summary>拉到不带密码的凭据:保留本机已存的那一份,而不是把它抹掉;凭据先于连接落库。</summary>
+    [TestMethod]
+    public async Task Pull_KeepsLocalSecrets_AndSavesCredentialsBeforeProfiles()
+    {
+        (GistSyncService service, ISessionRepository sessions, ISharedCredentialRepository credentials) = CreateWithCredentials();
+        var id = Guid.NewGuid();
+        credentials.GetAllAsync().Returns([new SharedCredential { Id = id, Name = "old", Password = "local-pass", PrivateKeyPassphrase = "local-phrase" }]);
+        var incoming = new SharedCredential { Id = id, Name = "renamed", Username = "admin" };
+        var profile = new SessionProfile { Name = "web", Host = "h", CredentialSource = CredentialReference.ForShared(id) };
+        var order = new List<string>();
+        credentials.When(c => c.SaveAsync(Arg.Any<SharedCredential>())).Do(_ => order.Add("credential"));
+        sessions.When(s => s.SaveSessionAsync(Arg.Any<SessionProfile>())).Do(_ => order.Add("profile"));
+
+        SyncResult result = await service.ApplyRemoteAsync(
+            ProfilesOnly(),
+            new SyncEnvelope
+            {
+                SchemaVersion = 3,
+                Payload = new SyncPayload { SchemaVersion = 3, Profiles = [profile], SharedCredentials = [incoming] }
+            },
+            remoteVersion: "rev",
+            CancellationToken.None);
+
+        Assert.IsTrue(result.Success, result.Message);
+        await credentials.Received(1).SaveAsync(Arg.Is<SharedCredential>(c =>
+            c.Id == id && c.Name == "renamed" && c.Password == "local-pass" && c.PrivateKeyPassphrase == "local-phrase"));
+        CollectionAssert.AreEqual(new[] { "credential", "profile" }, order);
+    }
+
+    [TestMethod]
+    public async Task Pull_RejectsAPayloadNewerThanItUnderstands()
+    {
+        (GistSyncService service, _, _) = CreateWithCredentials();
+
+        SyncResult result = await service.ApplyRemoteAsync(
+            ProfilesOnly(),
+            new SyncEnvelope { SchemaVersion = 4, Payload = new SyncPayload { SchemaVersion = 4 } },
+            remoteVersion: "rev",
+            CancellationToken.None);
+
+        Assert.IsFalse(result.Success);
     }
 
     [TestMethod]
