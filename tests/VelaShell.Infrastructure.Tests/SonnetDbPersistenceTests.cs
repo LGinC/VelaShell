@@ -798,6 +798,126 @@ public sealed class SonnetDbPersistenceTests : IDisposable
         );
     }
 
+    /// <summary>
+    /// #555 的覆盖层与排序:删掉的内置命令(含本版本不认识的标识)、内置分组之间的先后、
+    /// 每个分组的组内顺序,都要原样落盘、装回,并经云同步导出 / 应用后不丢。
+    /// </summary>
+    [TestMethod]
+    public async Task QuickCommands_OverlayAndOrder_RoundTripThroughStorageAndSync()
+    {
+        var store = new SonnetDbAppDataStore(_engine);
+        var repository = new SonnetDbQuickCommandRepository(store);
+        QuickCommand hidden = QuickCommandCatalog.BuiltIns[0];
+        QuickCommand overridden = QuickCommandCatalog.BuiltIns[1];
+        var unknown = Guid.NewGuid();
+        List<QuickCommandGroup> groups = QuickCommandGroupCatalog.CreateSystemGroups();
+        QuickCommandGroup firstBuiltIn = groups.First(group => group.Kind == QuickCommandGroupKind.BuiltIn);
+        QuickCommandGroup lastBuiltIn = groups.Last(group => group.Kind == QuickCommandGroupKind.BuiltIn);
+        (firstBuiltIn.SortOrder, lastBuiltIn.SortOrder) = (lastBuiltIn.SortOrder, firstBuiltIn.SortOrder);
+        Guid[] builtInOrder = [overridden.Id, Guid.NewGuid()];
+        firstBuiltIn.CommandOrder = [.. builtInOrder];
+        var user = new QuickCommandGroup
+        {
+            Id = Guid.NewGuid(),
+            Name = "Ops",
+            Kind = QuickCommandGroupKind.User,
+            SortOrder = 9,
+        };
+        var custom = new QuickCommand { Id = Guid.NewGuid(), GroupId = user.Id, Name = "deploy", CommandText = "./deploy.sh" };
+        user.CommandOrder = [custom.Id];
+        groups.Add(user);
+        await repository.SaveAsync(
+            new()
+            {
+                Groups = groups,
+                Commands =
+                [
+                    custom,
+                    new() { Id = overridden.Id, GroupId = firstBuiltIn.Id, Name = "edited", CommandText = "echo edited" },
+                ],
+                HiddenBuiltInIds = [hidden.Id, unknown],
+            }
+        );
+
+        QuickCommandLoadResult loaded = await new SonnetDbQuickCommandRepository(store).LoadAsync();
+
+        Assert.IsFalse(loaded.Migrated, "刚存下的文档再装回来不该被当成要修复 —— 那会让每次启动都触发一次同步");
+        AssertOverlay(loaded.Data);
+
+        QuickCommandSyncData exported = await repository.ExportSyncAsync();
+        Assert.AreSequenceEqual([hidden.Id, unknown], [.. exported.HiddenBuiltInIds]);
+        using var remoteEngine = new SonnetDbEngine(Path.Combine(_testDirectory, "remote-db"));
+        var remote = new SonnetDbQuickCommandRepository(new SonnetDbAppDataStore(remoteEngine));
+        await remote.ApplySyncAsync(exported);
+        AssertOverlay((await remote.LoadAsync()).Data);
+
+        void AssertOverlay(QuickCommandData data)
+        {
+            Assert.AreSequenceEqual([hidden.Id, unknown], [.. data.HiddenBuiltInIds], "不认识的标识也要留着,否则同步回去会把新版本删掉的命令放出来");
+            // 两个内置分组对调过先后:存的是对调后的,不能被目录里的出厂顺序盖回去。
+            Assert.AreEqual(firstBuiltIn.SortOrder, data.Groups.Single(group => group.Id == firstBuiltIn.Id).SortOrder);
+            Assert.AreEqual(lastBuiltIn.SortOrder, data.Groups.Single(group => group.Id == lastBuiltIn.Id).SortOrder);
+            Assert.AreNotEqual(
+                QuickCommandGroupCatalog.BuiltIns.Single(group => group.Id == firstBuiltIn.Id).SortOrder,
+                data.Groups.Single(group => group.Id == firstBuiltIn.Id).SortOrder
+            );
+            Assert.AreSequenceEqual(builtInOrder, [.. data.Groups.Single(group => group.Id == firstBuiltIn.Id).CommandOrder]);
+            Assert.AreSequenceEqual([custom.Id], [.. data.Groups.Single(group => group.Id == user.Id).CommandOrder]);
+            Assert.AreEqual("edited", data.Commands.Single(command => command.Id == overridden.Id).Name);
+            Assert.AreEqual(
+                int.MaxValue,
+                data.Groups.Single(group => group.Kind == QuickCommandGroupKind.Default).SortOrder,
+                "「未分组」固定垫底,它的顺序不跟存档走"
+            );
+        }
+    }
+
+    /// <summary>
+    /// 旧版本存下的 v2 文档(没有隐藏清单与顺序表)原样装回,不当成要修复的数据 ——
+    /// 否则升级后第一次启动就会无端标记「本地有改动」并推一次同步。
+    /// </summary>
+    [TestMethod]
+    public async Task QuickCommands_DocumentFromBefore555_LoadsWithoutRepair()
+    {
+        var store = new SonnetDbAppDataStore(_engine);
+        await store.UpsertAsync(
+            "quick_commands",
+            "commands",
+            new
+            {
+                schemaVersion = 2,
+                groups = QuickCommandGroupCatalog
+                    .CreateSystemGroups()
+                    .Select(group => new
+                    {
+                        id = group.Id,
+                        name = group.Name,
+                        sortOrder = group.SortOrder,
+                        kind = group.Kind.ToString(),
+                    }),
+                commands = new[]
+                {
+                    new
+                    {
+                        id = Guid.NewGuid(),
+                        groupId = QuickCommandGroupCatalog.DefaultGroupId,
+                        name = "mine",
+                        commandText = "pwd",
+                        description = "",
+                        sortOrder = 0,
+                    },
+                },
+            }
+        );
+
+        QuickCommandLoadResult result = await new SonnetDbQuickCommandRepository(store).LoadAsync();
+
+        Assert.IsFalse(result.Migrated);
+        Assert.IsEmpty(result.Data.HiddenBuiltInIds);
+        Assert.IsTrue(result.Data.Groups.All(group => group.CommandOrder.Count == 0));
+        Assert.AreEqual("mine", Assert.ContainsSingle(result.Data.Commands).Name);
+    }
+
     [TestMethod]
     public async Task Engine_Reopen_PersistsDocumentsAndTimeSeries()
     {

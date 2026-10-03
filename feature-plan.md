@@ -256,6 +256,7 @@
 | `plan.md` §154 命令面板不再占 `Ctrl+K`（#551） | `{zh,en}/host/快捷键参考.md` 全局表只留命令面板 `Ctrl+P` 一行，表下补一句为什么不绑 `Ctrl+K`；`{zh,en}/host/交互与界面规格.md` §8 标题与搜索框键帽徽章、§4A 那条实现变更备注、键位总表；`{zh,en}/host/architecture.md` 与 `{zh,en}/templates/dev-guide.md` 里的「Ctrl+P / Ctrl+K」 | [velashell-docs#83](https://github.com/VelaShellLabs/velashell-docs/pull/83) 已开（与 §155 同一个 PR），与宿主 #554 一起合 |
 | `plan.md` §155 快捷键可自定义（#551） | `{zh,en}/host/快捷键参考.md`（`keyboard-shortcuts.md`）：开头说明表里是出厂键位；维护约定换成新的守门用例；「绑定都写在哪」与「平台差异」改写；新增「自定义键位」一节（可改范围、怎么改、规则、终端冲突提示、`shortcuts.overrides` 存储与绑定 id 表）；跳标签拆成 8 行；删掉早已不存在的「过滤会话 `Ctrl+Shift+E`」一行；英文版补上一直漏掉的关闭全部标签、跳标签、清屏与三个字号缩放。`{zh,en}/host/settings-audit.md`：C-10 / A-08 改为已完成，§6 / §9.2 两行与阶段勾选项对上，补「第十批」整改记录。`{zh,en}/host/交互与界面规格.md`：设计稿对照表的快捷键行、§8 命令面板右侧键位跟随当前键位、§16 标题与跳标签那一行。`zh/host/架构设计.md` / `en/host/architecture-design.md`：「明确不做清单」删掉自定义快捷键并注明推翻 | [velashell-docs#83](https://github.com/VelaShellLabs/velashell-docs/pull/83) 已开，与宿主 #554 一起合 |
 | `plan.md` §157 共享凭据（#550） | `zh/host/凭据管理器集成设计.md` 升 v3：内置共享凭据已落地、与 v2 决策的出入（用户名规则取代 `OverrideUsername`、`ResolvedCredential` 带认证方式与私钥、解析交回副本、跳板失败不退回登录框、同步载荷版本 3）、阶段 0a 的 D1 / D3 勾掉；`{zh,en}/host/交互与界面规格.md`：设置页加「共享凭据」、§13.1 身份验证补「凭据来源」、登录框补共享凭据说明条与「同时更新共享凭据」；`zh/host/架构设计.md` / `en/host/architecture-design.md` 与 `{zh,en}/host/architecture.md`：SonnetDB 集合补 `shared_credentials`、连接时序图补「带引用的配置连接时才解析」；`{zh,en}/host/README.md` 那篇设计文档的一行简介 | [velashell-docs#85](https://github.com/VelaShellLabs/velashell-docs/pull/85) 已开，与宿主 PR 一起合 |
+| `plan.md` §158 快捷命令覆盖层、多行与拖动排序（#555） | `{zh,en}/host/交互与界面规格.md` §14 设置页表「代码片段」一行，新增 §14.4（内置命令可改可删、恢复默认与恢复内置命令；多行命令走括号粘贴、远端没开时先确认、沿用多行粘贴确认开关、不进补全；拖动排序的手柄、插入线、落点规则、「未分组」垫底、拖出列表取消、自动滚动、**没有键盘替代**；侧栏只显示首行加「+N 行」）；`{zh,en}/host/architecture.md` 快捷命令仓储那段补覆盖层与组内顺序表的存法、同步只加字段不抬版本 | [velashell-docs#86](https://github.com/VelaShellLabs/velashell-docs/pull/86) 已开，与宿主 PR 一起合 |
 | `en/` 树 | `zh/` 有 **8 篇** `en/` 里没有：Redis 调研、S3 两篇、系统密钥链调研、凭据管理器集成设计、三份 `release-process.md`。缺口已在 `en/host/README.md` 与根 README 逐篇列出（不再是静默漂移），翻译本身仍欠着 | 未开始 |
 
 ---
@@ -266,6 +267,7 @@
 
 | 项 | 不做的理由 |
 | --- | --- |
+| **快捷命令点击后自动执行** | 维护者决策（#555，2026-10-03）：很多命令要在终端里改一改参数才能正确执行；发送后由用户自己按回车，本身就是一道二次确认。快捷命令照旧只发正文、不带回车，多行命令也是整段放进命令行等回车（`plan.md` §158） |
 | **X / Y / ZMODEM** | 2026-09-14 移除：终端链路上要写大量专门处理，维护麻烦、收益很低，如今几乎没人用。协议引擎、终端路由、设置项、连接级覆盖与命令面板的「发送 / 接收文件」一并删除，传文件统一走 SFTP 面板 |
 | **多窗口（新开独立主窗口）** | 与现架构三处硬冲突：①应用是**单实例**（`Program.cs` 命名 Mutex，自更新重启依赖锁交接）；②主窗口是唯一组合根（`MainWindowViewModel` 持有会话 / 布局 / 状态栏全部状态，无状态分片）；③VelaDock **产品决策不做浮动窗口**。多屏需求由五区拖放分屏承担 |
 | **VelaDock 浮动窗口** | 产品决策，见上一条 |

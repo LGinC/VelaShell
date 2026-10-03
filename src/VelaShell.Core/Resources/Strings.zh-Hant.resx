@@ -6607,4 +6607,32 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="SetCred_StorageHint" xml:space="preserve">
     <value>密碼與私鑰密碼短語經 AES-256 加密保存在本機。雲端同步會帶上憑證的名稱與使用者名稱;只有設了端對端口令,密碼與密碼短語才會一起同步。</value>
   </data>
+  <data name="QuickCmd_MoreLines" xml:space="preserve">
+    <value>+{0} 行</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmTitle" xml:space="preserve">
+    <value>傳送多行命令</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmBody" xml:space="preserve">
+    <value>這條快速命令有 {0} 行,而目標終端機沒有開啟括號貼上,傳過去每一行都會被立即執行:
+
+{1}
+
+確定傳送嗎?</value>
+  </data>
+  <data name="SetSnippets_ReorderHint" xml:space="preserve">
+    <value>// 按住左側的握把拖曳,調整分組與命令的順序;命令也可以拖進別的分組</value>
+  </data>
+  <data name="SetSnippets_DragToReorder" xml:space="preserve">
+    <value>拖曳以調整順序</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltIns" xml:space="preserve">
+    <value>還原內建命令</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltInsBody" xml:space="preserve">
+    <value>刪掉的內建命令會重新出現,對內建命令的修改(包括移到別的分組)會被復原。自己新建的命令不受影響。確定繼續嗎?</value>
+  </data>
+  <data name="SetSnippets_MultilineHint" xml:space="preserve">
+    <value>// 可以換行寫多行命令:傳送時整段放進命令列,不會逐行執行;遠端不支援括號貼上時先詢問</value>
+  </data>
 </root>

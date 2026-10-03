@@ -14,8 +14,21 @@ public sealed class QuickCommandData
     /// <summary>默认、内置和用户分组。</summary>
     public List<QuickCommandGroup> Groups { get; set; } = [];
 
-    /// <summary>自定义快捷命令列表。</summary>
+    /// <summary>
+    /// 自定义快捷命令列表。与内置命令同 <see cref="QuickCommand.Id" /> 的一条是用户改过的内置命令,
+    /// 显示时顶替目录里的那一条(见 <see cref="QuickCommandCatalog.VisibleBuiltIns" />)。
+    /// </summary>
     public List<QuickCommand> Commands { get; set; } = [];
+
+    /// <summary>
+    /// 用户删掉的内置命令。内置命令由目录提供、不落盘,删除只能记成「不再显示哪几条」;
+    /// 「恢复内置命令」即清空它。
+    /// </summary>
+    /// <remarks>
+    /// 不认识的标识(更新的版本里才有的内置命令)原样留着:旧版本把它剔掉再同步回去,
+    /// 新版本那边删掉的命令就又冒出来了。
+    /// </remarks>
+    public List<Guid> HiddenBuiltInIds { get; set; } = [];
 }
 
 /// <summary>
@@ -24,6 +37,11 @@ public sealed class QuickCommandData
 /// 描述文案本地化;命令文本本身(shell 命令)不翻译。首次访问时按当前语言取值
 /// (启动流程先应用语言设置再构建 UI,顺序有保证)。
 /// </summary>
+/// <remarks>
+/// 用户对内置命令的改动不改目录,而是叠一层覆盖(#555):删掉的记进
+/// <see cref="QuickCommandData.HiddenBuiltInIds" />,改过的存成同标识的自定义命令。
+/// 没动过的内置命令因此仍跟着界面语言切换描述,新版本新增的内置命令也会自动出现。
+/// </remarks>
 public static class QuickCommandCatalog
 {
     /// <summary>内置快捷命令列表(描述按当前语言本地化)。</summary>
@@ -118,6 +136,22 @@ public static class QuickCommandCatalog
         ),
         BuiltIn("docker disk usage", "Docker", "docker system df", "QuickCmd_DockerDf", 5),
     ];
+
+    private static readonly HashSet<Guid> BuiltInIds = [.. BuiltIns.Select(command => command.Id)];
+
+    /// <summary>该标识是否属于内置目录(自定义命令用了这个标识,即是改过的内置命令)。</summary>
+    public static bool IsBuiltInId(Guid id) => BuiltInIds.Contains(id);
+
+    /// <summary>
+    /// 叠上用户的覆盖层之后仍应显示的内置命令:删掉的、改过的(有同标识的自定义命令顶替)都不在其中。
+    /// </summary>
+    public static IEnumerable<QuickCommand> VisibleBuiltIns(QuickCommandData data)
+    {
+        ArgumentNullException.ThrowIfNull(data);
+        var hidden = (data.HiddenBuiltInIds ?? []).ToHashSet();
+        var overridden = (data.Commands ?? []).Select(command => command.Id).ToHashSet();
+        return BuiltIns.Where(command => !hidden.Contains(command.Id) && !overridden.Contains(command.Id));
+    }
 
     private static QuickCommand BuiltIn(
         string name,

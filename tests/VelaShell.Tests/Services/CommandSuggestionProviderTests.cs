@@ -1,3 +1,5 @@
+using NSubstitute;
+using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Services;
@@ -116,6 +118,54 @@ public class CommandSuggestionProviderTests
 
         // 真实用过的历史(100+recency)排在通用用法表(90)之前。
         Assert.AreEqual("git checkout dev", items[0].Text);
+    }
+
+    /// <summary>#555:用户删掉的内置命令不再补全;改过的补全改后的正文,原样那条不再出现。</summary>
+    [TestMethod]
+    public async Task DeletedAndEditedBuiltIns_FollowTheOverlay()
+    {
+        QuickCommand deleted = QuickCommandCatalog.BuiltIns[0];
+        QuickCommand edited = QuickCommandCatalog.BuiltIns[1];
+        CommandSuggestionProvider provider = CreateProvider(new QuickCommandData
+        {
+            HiddenBuiltInIds = [deleted.Id],
+            Commands = [new() { Id = edited.Id, Name = edited.Name, CommandText = "edited-" + edited.CommandText }],
+        });
+
+        IReadOnlyList<CommandSuggestion> items = await provider.GetSuggestionsAsync(
+            string.Empty,
+            QuickCommandCatalog.BuiltIns.Count + 5
+        );
+
+        Assert.DoesNotContain(s => s.Text == deleted.CommandText, items);
+        Assert.DoesNotContain(s => s.Text == edited.CommandText, items);
+        Assert.Contains(s => s.Text == "edited-" + edited.CommandText, items);
+    }
+
+    /// <summary>补全是按已键入的前缀续写一行,接受一条多行候选等于替用户敲了回车 —— 多行命令不进补全。</summary>
+    [TestMethod]
+    public async Task MultilineQuickCommands_AreNotSuggested()
+    {
+        CommandSuggestionProvider provider = CreateProvider(new QuickCommandData
+        {
+            Commands =
+            [
+                new() { Name = "deploy", CommandText = "deploy-step-one\ndeploy-step-two" },
+                new() { Name = "single", CommandText = "deploy-single" },
+            ],
+        });
+
+        IReadOnlyList<CommandSuggestion> items = await provider.GetSuggestionsAsync("deploy", 8);
+
+        Assert.Contains(s => s.Text == "deploy-single", items);
+        Assert.DoesNotContain(s => s.Text.Contains('\n'), items);
+    }
+
+    private static CommandSuggestionProvider CreateProvider(QuickCommandData data)
+    {
+        IQuickCommandRepository repository = Substitute.For<IQuickCommandRepository>();
+        repository.LoadAsync(Arg.Any<CancellationToken>()).Returns(Task.FromResult(new QuickCommandLoadResult(data)));
+        return new(new CommandHistoryService(null), repository);
     }
 
     [TestMethod]

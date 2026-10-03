@@ -141,19 +141,24 @@ public sealed class CommandSuggestionProvider
             return _customCommands;
         }
         var merged = new List<QuickCommand>();
+        IEnumerable<QuickCommand> builtIns = QuickCommandCatalog.BuiltIns;
         if (_repository is not null)
         {
             try
             {
                 QuickCommandLoadResult result = await _repository.LoadAsync();
                 merged.AddRange(result.Data.Commands);
+                // 用户删掉的内置命令不再补全,改过的以改后的那条(已在自定义命令里)为准。
+                builtIns = QuickCommandCatalog.VisibleBuiltIns(result.Data);
             }
             catch
             {
                 // 读不出自定义命令就只用内置目录。
             }
         }
-        merged.AddRange(QuickCommandCatalog.BuiltIns);
+        merged.AddRange(builtIns);
+        // 多行命令不进补全:补全是按已键入的前缀续写一行,接受一条多行候选等于替用户敲回车。
+        merged.RemoveAll(command => QuickCommandText.IsMultiline(command.CommandText));
         _customCommands = merged;
         _customLoadedAt = DateTime.UtcNow;
         return merged;

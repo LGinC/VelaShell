@@ -32,6 +32,17 @@ public sealed class QuickCommandGroup
 
     /// <summary>分组来源。</summary>
     public QuickCommandGroupKind Kind { get; set; }
+
+    /// <summary>
+    /// 用户拖出来的组内顺序(命令标识,可以含内置命令);空表示从没排过,按默认顺序
+    /// (内置命令在前、自定义命令按 <see cref="QuickCommand.SortOrder" />)。
+    /// 不在表里的命令(之后新建的、新版本新增的内置命令)按默认顺序接在后面。
+    /// </summary>
+    /// <remarks>
+    /// 内置命令不落盘、没有可存的 <c>SortOrder</c>,组内顺序只能记在分组上。
+    /// 旧版本不认识这个字段,读到时忽略 —— 顶多看到默认顺序,不会读坏。
+    /// </remarks>
+    public List<Guid> CommandOrder { get; set; } = [];
 }
 
 /// <summary>内置及默认分组的稳定目录。</summary>
@@ -89,6 +100,7 @@ public static class QuickCommandGroupCatalog
             Name = group.Name,
             SortOrder = group.SortOrder,
             Kind = group.Kind,
+            CommandOrder = [.. group.CommandOrder ?? []],
         };
 
     private static QuickCommandGroup CreateBuiltIn(string name, int sortOrder) =>

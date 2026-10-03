@@ -207,10 +207,21 @@
                                      Foreground="{DynamicResource VelaTextPrimary}"
                                      FontSize="{DynamicResource VelaFontSize11}" FontWeight="SemiBold"
                                      TextTrimming="CharacterEllipsis" />
-                          <TextBlock Text="{Binding CommandText}"
-                                     Foreground="{DynamicResource VelaAccentText}"
-                                     FontFamily="{DynamicResource VelaUiMonoFont}"
-                                     FontSize="{DynamicResource VelaFontSize9}" TextTrimming="CharacterEllipsis" />
+                          <!-- 多行命令只显示第一行,后面跟一个「+N 行」;整条正文在悬停提示里。 -->
+                          <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="{Binding CommandPreview}"
+                                       Foreground="{DynamicResource VelaAccentText}"
+                                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                                       FontSize="{DynamicResource VelaFontSize9}" TextTrimming="CharacterEllipsis" />
+                            <Border Grid.Column="1" Classes="more-lines" Margin="6,0,0,0" Padding="4,0"
+                                    CornerRadius="3" Background="{DynamicResource VelaBgInput}"
+                                    VerticalAlignment="Center"
+                                    IsVisible="{Binding IsMultiline}">
+                              <TextBlock Text="{Binding MoreLinesText}"
+                                         Foreground="{DynamicResource VelaTextMuted}"
+                                         FontSize="{DynamicResource VelaFontSize9}" />
+                            </Border>
+                          </Grid>
                         </StackPanel>
                         <pc:LucideIcon Grid.Column="2" Classes="send-hint"
                                        Width="12" Height="12"
