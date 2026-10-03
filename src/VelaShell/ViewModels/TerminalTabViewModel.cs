@@ -662,6 +662,11 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
     /// 通过正常用户输入通道把快捷命令文本发送到终端。只发正文不附加回车——
     /// 快捷命令可能是不完整的模板(如缺少参数),由用户在终端里补全后自行按 Enter 执行。
     /// </summary>
+    /// <remarks>
+    /// 多行命令走括号粘贴(#555):原样写进去的话,中间每个换行都等于按一次回车,前几行当场就执行了。
+    /// 远端开着括号粘贴时 shell 把整段放进命令行等用户回车;没开时照样会逐行执行 ——
+    /// 发之前问不问由调用方决定(见 <see cref="MainWindowViewModel" /> 的多行确认)。
+    /// </remarks>
     /// <returns>文本已发送时为 true;终端未连接或命令为空时为 false。</returns>
     public bool TrySendCommandText(string command)
     {
@@ -670,6 +675,7 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
             return false;
         }
         string payload = command.TrimEnd('\r', '\n');
+        bool multiline = QuickCommandText.IsMultiline(payload);
 
         // 快捷命令可能同时下发给同频道的多个标签,若再经同步频道转发,频道内
         // 每个标签都会收到重复注入;WriteInput 同步触发 TypedInput,压制窗口有效。
@@ -679,9 +685,17 @@ public class TerminalTabViewModel : TabViewModel, IAsyncDisposable
         IsProgrammaticInput = true;
         try
         {
-            // 按会话字符集编码:快捷命令里可能带中文(路径、grep 的关键字),
-            // 写死 UTF-8 的话在 GBK 主机上送过去就是乱码。
-            TerminalEmulator.WriteInput(TerminalEmulator.SessionEncoding.GetBytes(payload));
+            if (multiline)
+            {
+                // 括号粘贴由终端按会话字符集编正文、按 ASCII 编标记,换行也由它统一成回车。
+                TerminalEmulator.WritePasteInput(payload);
+            }
+            else
+            {
+                // 按会话字符集编码:快捷命令里可能带中文(路径、grep 的关键字),
+                // 写死 UTF-8 的话在 GBK 主机上送过去就是乱码。
+                TerminalEmulator.WriteInput(TerminalEmulator.SessionEncoding.GetBytes(payload));
+            }
         }
         finally
         {

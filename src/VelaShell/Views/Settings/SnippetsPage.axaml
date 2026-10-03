@@ -13,7 +13,7 @@
     <Style Selector="ToggleButton.group-header">
       <Setter Property="Background" Value="{DynamicResource VelaBgSidebar}" />
       <Setter Property="BorderThickness" Value="0" />
-      <Setter Property="Padding" Value="12,8" />
+      <Setter Property="Padding" Value="4,8,12,8" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
       <Setter Property="Cursor" Value="Hand" />
@@ -57,6 +57,34 @@
     <Style Selector="Border.snippet-row:pointerover">
       <Setter Property="Background" Value="{DynamicResource VelaBgHover}" />
     </Style>
+
+    <!-- 拖动手柄:分组头与每一行最左侧的六点,按住拖动调整顺序。底色透明但要能被命中,
+         否则只有点在圆点上才拖得起来。 -->
+    <Style Selector="Border.drag-grip">
+      <Setter Property="Width" Value="20" />
+      <Setter Property="Background" Value="Transparent" />
+      <Setter Property="Cursor" Value="SizeNorthSouth" />
+    </Style>
+    <Style Selector="Border.drag-grip pc|LucideIcon">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextMuted}" />
+    </Style>
+    <Style Selector="Border.drag-grip:pointerover pc|LucideIcon">
+      <Setter Property="Foreground" Value="{DynamicResource VelaTextSecondary}" />
+    </Style>
+    <!-- 拖动中的那一行 / 那一组变淡,落点由插入线表示,原位置一直看得见。 -->
+    <Style Selector="Border.dragging">
+      <Setter Property="Opacity" Value="0.45" />
+    </Style>
+
+    <!-- 命令输入框:多行、等宽、自动折行;再长就在框内滚动,不把整页撑开。 -->
+    <Style Selector="TextBox.command-input">
+      <Setter Property="AcceptsReturn" Value="True" />
+      <Setter Property="TextWrapping" Value="Wrap" />
+      <Setter Property="FontFamily" Value="{DynamicResource VelaUiMonoFont}" />
+      <Setter Property="MinHeight" Value="64" />
+      <Setter Property="MaxHeight" Value="220" />
+      <Setter Property="VerticalContentAlignment" Value="Top" />
+    </Style>
   </UserControl.Styles>
 
   <StackPanel Spacing="14">
@@ -80,86 +108,140 @@
     </Grid>
 
     <TextBlock Text="{Binding Snippets.ErrorMessage}"
-               Foreground="{DynamicResource VelaStatusError}"
+               Foreground="{DynamicResource VelaError}"
                TextWrapping="Wrap"
                IsVisible="{Binding Snippets.ErrorMessage, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
 
-    <ItemsControl ItemsSource="{Binding Snippets.FilteredGroups}">
-      <ItemsControl.ItemTemplate>
-        <DataTemplate x:DataType="pvm:QuickCommandGroupViewModel">
-          <Border Classes="table" Margin="0,0,0,8">
-            <StackPanel>
-              <ToggleButton Classes="group-header"
-                            IsChecked="{Binding IsExpanded, Mode=TwoWay}">
-                <Grid ColumnDefinitions="Auto,8,*,Auto">
-                  <Panel Width="11" Height="11" VerticalAlignment="Center">
-                    <pc:LucideIcon Width="11" Height="11"
-                                   Data="{StaticResource Icon.chevron-right}"
-                                   Foreground="{DynamicResource VelaTextTertiary}"
-                                   IsVisible="{Binding !IsExpanded}" />
-                    <pc:LucideIcon Width="11" Height="11"
-                                   Data="{StaticResource Icon.chevron-down}"
-                                   Foreground="{DynamicResource VelaTextTertiary}"
-                                   IsVisible="{Binding IsExpanded}" />
-                  </Panel>
-                  <TextBlock Grid.Column="2" Text="{Binding Name}"
-                             Foreground="{DynamicResource VelaTextSecondary}"
-                             FontSize="{DynamicResource VelaFontSize12}" FontWeight="SemiBold"
-                             VerticalAlignment="Center"
-                             TextTrimming="CharacterEllipsis" />
-                  <Border Grid.Column="3" Padding="6,1" CornerRadius="8"
-                          Background="{DynamicResource VelaBgInput}"
-                          VerticalAlignment="Center">
-                    <TextBlock Text="{Binding FilteredCommands.Count}"
-                               Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" />
-                  </Border>
-                </Grid>
-              </ToggleButton>
+    <!-- 列表上方:怎么排序的一句说明 + 删过 / 改过内置命令时才出现的「恢复内置命令」。 -->
+    <Grid ColumnDefinitions="*,12,Auto">
+      <TextBlock Classes="row-desc" TextWrapping="Wrap" VerticalAlignment="Center"
+                 Text="{loc:Localize SetSnippets_ReorderHint}" />
+      <Button Grid.Column="2" Theme="{StaticResource VelaOutlineButtonTheme}"
+              Content="{loc:Localize SetSnippets_RestoreBuiltIns}"
+              IsVisible="{Binding Snippets.HasBuiltInChanges}"
+              Click="RestoreAllBuiltIns_Click" />
+    </Grid>
 
-              <ItemsControl ItemsSource="{Binding FilteredCommands}"
-                            IsVisible="{Binding IsExpanded}">
-                <ItemsControl.ItemTemplate>
-                  <DataTemplate x:DataType="pvm:QuickCommandViewModel">
-                    <Border Classes="snippet-row" Padding="12,8" BorderThickness="0,1,0,0"
-                            BorderBrush="{DynamicResource VelaBorderPrimary}">
-                      <Grid ColumnDefinitions="*,12,Auto,4,Auto">
-                        <StackPanel Spacing="3">
-                          <TextBlock Text="{Binding Name}"
-                                     Foreground="{DynamicResource VelaTextPrimary}"
-                                     FontSize="{DynamicResource VelaFontSize12}" FontWeight="Medium" />
-                          <TextBlock Text="{Binding CommandText}"
-                                     Foreground="{DynamicResource VelaAccentText}"
-                                     FontFamily="{DynamicResource VelaUiMonoFont}"
-                                     FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
-                        </StackPanel>
-                        <Button Grid.Column="2" Classes="icon-btn"
-                                ToolTip.Tip="{loc:Localize Edit}"
-                                IsVisible="{Binding !IsBuiltIn}"
-                                VerticalAlignment="Center"
-                                Click="EditSnippet_Click">
-                          <pc:LucideIcon Width="13" Height="13"
-                                         Data="{StaticResource Icon.pencil}"
-                                         Foreground="{DynamicResource VelaTextTertiary}" />
-                        </Button>
-                        <Button Grid.Column="4" Classes="icon-btn"
-                                ToolTip.Tip="{loc:Localize Delete}"
-                                IsVisible="{Binding !IsBuiltIn}"
-                                VerticalAlignment="Center"
-                                Click="DeleteSnippet_Click">
-                          <pc:LucideIcon Width="13" Height="13"
-                                         Data="{StaticResource Icon.trash-2}"
-                                         Foreground="{DynamicResource VelaStatusError}" />
-                        </Button>
-                      </Grid>
-                    </Border>
-                  </DataTemplate>
-                </ItemsControl.ItemTemplate>
-              </ItemsControl>
-            </StackPanel>
-          </Border>
-        </DataTemplate>
-      </ItemsControl.ItemTemplate>
-    </ItemsControl>
+    <!-- 列表与拖动插入线叠在一起:插入线放在不参与命中测试的 Canvas 里,
+         坐标由代码后置按落点算(以 SnippetListHost 为参照系)。 -->
+    <Panel x:Name="SnippetListHost">
+      <ItemsControl x:Name="SnippetGroups" ItemsSource="{Binding Snippets.FilteredGroups}">
+        <ItemsControl.ItemTemplate>
+          <DataTemplate x:DataType="pvm:QuickCommandGroupViewModel">
+            <Border Classes="table snippet-group" Margin="0,0,0,8">
+              <StackPanel>
+                <Grid ColumnDefinitions="Auto,*" Background="{DynamicResource VelaBgSidebar}">
+                  <!-- 「未分组」固定垫底,没有手柄;占位宽度照留,箭头与别的分组对齐。 -->
+                  <Border Classes="drag-grip"
+                          IsHitTestVisible="{Binding !IsDefault}"
+                          ToolTip.Tip="{loc:Localize SetSnippets_DragToReorder}"
+                          AutomationProperties.Name="{loc:Localize SetSnippets_DragToReorder}"
+                          PointerPressed="Grip_PointerPressed"
+                          PointerMoved="Grip_PointerMoved"
+                          PointerReleased="Grip_PointerReleased"
+                          PointerCaptureLost="Grip_PointerCaptureLost">
+                    <pc:LucideIcon Width="12" Height="12"
+                                   Data="{StaticResource Icon.grip-vertical}"
+                                   IsVisible="{Binding !IsDefault}" />
+                  </Border>
+                  <ToggleButton Grid.Column="1" Classes="group-header"
+                                IsChecked="{Binding IsExpanded, Mode=TwoWay}">
+                    <Grid ColumnDefinitions="Auto,8,*,Auto">
+                      <Panel Width="11" Height="11" VerticalAlignment="Center">
+                        <pc:LucideIcon Width="11" Height="11"
+                                       Data="{StaticResource Icon.chevron-right}"
+                                       Foreground="{DynamicResource VelaTextTertiary}"
+                                       IsVisible="{Binding !IsExpanded}" />
+                        <pc:LucideIcon Width="11" Height="11"
+                                       Data="{StaticResource Icon.chevron-down}"
+                                       Foreground="{DynamicResource VelaTextTertiary}"
+                                       IsVisible="{Binding IsExpanded}" />
+                      </Panel>
+                      <TextBlock Grid.Column="2" Text="{Binding Name}"
+                                 Foreground="{DynamicResource VelaTextSecondary}"
+                                 FontSize="{DynamicResource VelaFontSize12}" FontWeight="SemiBold"
+                                 VerticalAlignment="Center"
+                                 TextTrimming="CharacterEllipsis" />
+                      <Border Grid.Column="3" Padding="6,1" CornerRadius="8"
+                              Background="{DynamicResource VelaBgInput}"
+                              VerticalAlignment="Center">
+                        <TextBlock Text="{Binding FilteredCommands.Count}"
+                                   Foreground="{DynamicResource VelaTextMuted}" FontSize="{DynamicResource VelaFontSize10}" />
+                      </Border>
+                    </Grid>
+                  </ToggleButton>
+                </Grid>
+
+                <ItemsControl ItemsSource="{Binding FilteredCommands}"
+                              IsVisible="{Binding IsExpanded}">
+                  <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="pvm:QuickCommandViewModel">
+                      <Border Classes="snippet-row" Padding="4,8,12,8" BorderThickness="0,1,0,0"
+                              BorderBrush="{DynamicResource VelaBorderPrimary}">
+                        <Grid ColumnDefinitions="Auto,8,*,12,Auto,4,Auto,4,Auto">
+                          <Border Classes="drag-grip"
+                                  ToolTip.Tip="{loc:Localize SetSnippets_DragToReorder}"
+                                  AutomationProperties.Name="{loc:Localize SetSnippets_DragToReorder}"
+                                  PointerPressed="Grip_PointerPressed"
+                                  PointerMoved="Grip_PointerMoved"
+                                  PointerReleased="Grip_PointerReleased"
+                                  PointerCaptureLost="Grip_PointerCaptureLost">
+                            <pc:LucideIcon Width="12" Height="12"
+                                           Data="{StaticResource Icon.grip-vertical}" />
+                          </Border>
+                          <StackPanel Grid.Column="2" Spacing="3">
+                            <TextBlock Text="{Binding Name}"
+                                       Foreground="{DynamicResource VelaTextPrimary}"
+                                       FontSize="{DynamicResource VelaFontSize12}" FontWeight="Medium" />
+                            <TextBlock Text="{Binding CommandText}"
+                                       Foreground="{DynamicResource VelaAccentText}"
+                                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                                       FontSize="{DynamicResource VelaFontSize10}" TextWrapping="Wrap" />
+                          </StackPanel>
+                          <Button Grid.Column="4" Classes="icon-btn"
+                                  ToolTip.Tip="{loc:Localize Settings_RestoreDefaults}"
+                                  AutomationProperties.Name="{loc:Localize Settings_RestoreDefaults}"
+                                  IsVisible="{Binding IsBuiltInOverride}"
+                                  VerticalAlignment="Center"
+                                  Click="RestoreSnippet_Click">
+                            <pc:LucideIcon Width="13" Height="13"
+                                           Data="{StaticResource Icon.rotate-ccw}"
+                                           Foreground="{DynamicResource VelaTextTertiary}" />
+                          </Button>
+                          <Button Grid.Column="6" Classes="icon-btn"
+                                  ToolTip.Tip="{loc:Localize Edit}"
+                                  AutomationProperties.Name="{loc:Localize Edit}"
+                                  VerticalAlignment="Center"
+                                  Click="EditSnippet_Click">
+                            <pc:LucideIcon Width="13" Height="13"
+                                           Data="{StaticResource Icon.pencil}"
+                                           Foreground="{DynamicResource VelaTextTertiary}" />
+                          </Button>
+                          <Button Grid.Column="8" Classes="icon-btn"
+                                  ToolTip.Tip="{loc:Localize Delete}"
+                                  AutomationProperties.Name="{loc:Localize Delete}"
+                                  VerticalAlignment="Center"
+                                  Click="DeleteSnippet_Click">
+                            <pc:LucideIcon Width="13" Height="13"
+                                           Data="{StaticResource Icon.trash-2}"
+                                           Foreground="{DynamicResource VelaError}" />
+                          </Button>
+                        </Grid>
+                      </Border>
+                    </DataTemplate>
+                  </ItemsControl.ItemTemplate>
+                </ItemsControl>
+              </StackPanel>
+            </Border>
+          </DataTemplate>
+        </ItemsControl.ItemTemplate>
+      </ItemsControl>
+
+      <Canvas IsHitTestVisible="False">
+        <Border x:Name="DropIndicator" Height="2" CornerRadius="1"
+                Background="{DynamicResource VelaAccent}" IsVisible="False" />
+      </Canvas>
+    </Panel>
 
     <Border Classes="sep" />
 
@@ -169,19 +251,20 @@
          在绑定路径里是**显式的一环**:页面刚 new 出来、还没挂进可视树那一刻它就是 null,
          于是每开一次设置就刷一屏 "Value is null"。
          直接把条件写进 IsVisible,DataContext 保持继承,里面全部回到普通绑定。 -->
-    <StackPanel Spacing="10"
+    <StackPanel x:Name="EditPanel" Spacing="10"
                 IsVisible="{Binding Snippets.EditingCommand, Converter={x:Static ObjectConverters.IsNotNull}}">
       <TextBlock Classes="section-title" Text="{loc:Localize QuickCmd_EditSnippet}" />
       <Grid ColumnDefinitions="*,8,*">
-        <TextBox Text="{Binding Snippets.NewName}"
+        <TextBox x:Name="EditNameBox" Text="{Binding Snippets.NewName}"
                  PlaceholderText="{loc:Localize SetSnippets_NamePlaceholder}" />
         <ComboBox Grid.Column="2" IsEditable="True"
                   ItemsSource="{Binding Snippets.Categories}"
                   Text="{Binding Snippets.NewCategory}"
                   PlaceholderText="{loc:Localize QuickCmd_GroupPlaceholder}" />
       </Grid>
-      <TextBox Text="{Binding Snippets.NewCommandText}"
+      <TextBox Classes="command-input" Text="{Binding Snippets.NewCommandText}"
                PlaceholderText="{loc:Localize SetSnippets_CommandPlaceholder}" />
+      <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_MultilineHint}" />
       <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_VariablesHint}" />
       <TextBox Text="{Binding Snippets.NewDescription}"
                PlaceholderText="{loc:Localize Description}" />
@@ -202,8 +285,9 @@
                 Text="{Binding Snippets.NewCategory}"
                 PlaceholderText="{loc:Localize QuickCmd_GroupPlaceholder}" />
     </Grid>
-    <TextBox Text="{Binding Snippets.NewCommandText}"
+    <TextBox Classes="command-input" Text="{Binding Snippets.NewCommandText}"
              PlaceholderText="{loc:Localize SetSnippets_CommandPlaceholder}" />
+    <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_MultilineHint}" />
     <TextBlock Classes="row-desc" TextWrapping="Wrap" Text="{loc:Localize SetSnippets_VariablesHint}" />
     <TextBox Text="{Binding Snippets.NewDescription}"
              PlaceholderText="{loc:Localize Description}" />

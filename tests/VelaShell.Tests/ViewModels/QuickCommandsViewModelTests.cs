@@ -186,7 +186,7 @@ public class QuickCommandsViewModelTests : IDisposable
 
     [TestMethod]
     [TestCategory("QuickCommands")]
-    public async Task DeleteCommand_RemovesCustomCommand_ButNotBuiltIn()
+    public async Task DeleteCommand_RemovesCustomCommand()
     {
         _vm.AddCommandCommand.Execute().Subscribe();
         _vm.NewName = "temp-cmd";
@@ -197,12 +197,265 @@ public class QuickCommandsViewModelTests : IDisposable
         await _vm.DeleteCommandCommand.Execute(customCmd).FirstAsync();
         Assert.DoesNotContain(c => c.Name == "temp-cmd", _vm.AllCommands);
         Assert.HasCount(BuiltInCount, _vm.AllCommands);
+        Assert.IsFalse(_vm.HasBuiltInChanges, "删的是自定义命令,不该冒出「恢复内置命令」。");
+    }
 
-        // 内置命令删不掉。
-        QuickCommandViewModel builtIn = _vm.AllCommands.First(c => c.Name == SampleBuiltIn.Name);
+    /// <summary>#555:内置命令删得掉,删掉的重启后仍不出现,「恢复内置命令」能把它找回来。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task DeleteBuiltIn_StaysHiddenAfterReload_UntilRestored()
+    {
+        QuickCommandViewModel builtIn = _vm.AllCommands.Single(c => c.Id == SampleBuiltIn.Id);
+
         await _vm.DeleteCommandCommand.Execute(builtIn).FirstAsync();
-        Assert.Contains(c => c.Name == SampleBuiltIn.Name, _vm.AllCommands);
-        Assert.HasCount(BuiltInCount, _vm.AllCommands);
+
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, _vm.AllCommands);
+        Assert.IsTrue(_vm.HasBuiltInChanges);
+        QuickCommandsViewModel reloaded = await ReloadAsync();
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, reloaded.AllCommands);
+        Assert.HasCount(BuiltInCount - 1, reloaded.AllCommands);
+
+        await reloaded.RestoreAllBuiltInsCommand.Execute().FirstAsync();
+
+        Assert.IsTrue(reloaded.AllCommands.Single(c => c.Id == SampleBuiltIn.Id).IsBuiltIn);
+        Assert.IsFalse(reloaded.HasBuiltInChanges);
+        Assert.HasCount(BuiltInCount, (await ReloadAsync()).AllCommands);
+    }
+
+    /// <summary>
+    /// 改内置命令 = 原地换上一条同标识的自定义命令:位置不变、重启后还在原处;
+    /// 「恢复默认」把目录里的原样放回同一个位置。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task EditBuiltIn_ReplacesItInPlace_AndRestoreBringsBackTheOriginal()
+    {
+        QuickCommandGroupViewModel group = _vm.Groups.First(g => g.Commands.Count >= 3);
+        QuickCommandViewModel original = group.Commands[1];
+        Assert.IsTrue(original.IsBuiltIn, "样本前提:内置分组里的命令应是内置命令");
+        string originalText = original.CommandText;
+
+        _vm.BeginEditCommand.Execute(original).Subscribe();
+        _vm.NewCommandText = originalText + " --edited";
+        await _vm.SaveEditCommand.Execute().FirstAsync();
+
+        QuickCommandViewModel edited = group.Commands[1];
+        Assert.AreEqual(original.Id, edited.Id);
+        Assert.IsFalse(edited.IsBuiltIn);
+        Assert.IsTrue(edited.IsBuiltInOverride);
+        Assert.AreEqual(originalText + " --edited", edited.CommandText);
+        Assert.ContainsSingle(c => c.Id == original.Id, _vm.AllCommands);
+        Assert.IsTrue(_vm.HasBuiltInChanges);
+
+        QuickCommandsViewModel reloaded = await ReloadAsync();
+        QuickCommandGroupViewModel reloadedGroup = reloaded.Groups.Single(g => g.Id == group.Id);
+        Assert.AreEqual(original.Id, reloadedGroup.Commands[1].Id, "改过的内置命令重启后应留在原来的位置");
+        Assert.AreEqual(originalText + " --edited", reloadedGroup.Commands[1].CommandText);
+
+        await reloaded.RestoreBuiltInCommand.Execute(reloadedGroup.Commands[1]).FirstAsync();
+
+        QuickCommandViewModel restored = reloaded.Groups.Single(g => g.Id == group.Id).Commands[1];
+        Assert.AreEqual(original.Id, restored.Id);
+        Assert.IsTrue(restored.IsBuiltIn);
+        Assert.AreEqual(originalText, restored.CommandText);
+        Assert.IsFalse(reloaded.HasBuiltInChanges);
+        Assert.AreEqual(
+            originalText,
+            (await ReloadAsync()).Groups.Single(g => g.Id == group.Id).Commands[1].CommandText
+        );
+    }
+
+    /// <summary>打开内置命令的编辑框、什么都不改就保存:它仍是原样的内置命令,不留一条一模一样的副本。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task EditBuiltIn_WithoutChanges_KeepsItBuiltIn()
+    {
+        QuickCommandViewModel builtIn = _vm.AllCommands.Single(c => c.Id == SampleBuiltIn.Id);
+
+        _vm.BeginEditCommand.Execute(builtIn).Subscribe();
+        await _vm.SaveEditCommand.Execute().FirstAsync();
+
+        Assert.IsNull(_vm.EditingCommand);
+        Assert.IsTrue(_vm.AllCommands.Single(c => c.Id == SampleBuiltIn.Id).IsBuiltIn);
+        Assert.IsFalse(_vm.HasBuiltInChanges);
+    }
+
+    /// <summary>删掉一条改过的内置命令:是删掉,不是恢复默认 —— 目录里的原样不能冒出来。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task DeleteEditedBuiltIn_DoesNotBringBackTheOriginal()
+    {
+        QuickCommandViewModel builtIn = _vm.AllCommands.Single(c => c.Id == SampleBuiltIn.Id);
+        _vm.BeginEditCommand.Execute(builtIn).Subscribe();
+        _vm.NewName = "renamed";
+        await _vm.SaveEditCommand.Execute().FirstAsync();
+
+        await _vm.DeleteCommandCommand.Execute(_vm.AllCommands.Single(c => c.Id == SampleBuiltIn.Id)).FirstAsync();
+
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, _vm.AllCommands);
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, (await ReloadAsync()).AllCommands);
+    }
+
+    /// <summary>「恢复内置命令」只动内置命令:删掉的回来、改过的还原,自己建的命令原样保留。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task RestoreAllBuiltIns_KeepsCustomCommands()
+    {
+        QuickCommand[] samples = [.. QuickCommandCatalog.BuiltIns.Take(2)];
+        await _vm.DeleteCommandCommand.Execute(_vm.AllCommands.Single(c => c.Id == samples[0].Id)).FirstAsync();
+        _vm.BeginEditCommand.Execute(_vm.AllCommands.Single(c => c.Id == samples[1].Id)).Subscribe();
+        _vm.NewName = "renamed";
+        await _vm.SaveEditCommand.Execute().FirstAsync();
+        _vm.NewName = "mine";
+        _vm.NewCommandText = "echo mine";
+        _vm.NewCategory = "Ops";
+        await _vm.SaveNewCommandCommand.Execute().FirstAsync();
+
+        await _vm.RestoreAllBuiltInsCommand.Execute().FirstAsync();
+
+        Assert.HasCount(BuiltInCount + 1, _vm.AllCommands);
+        Assert.AreEqual(BuiltInCount, _vm.AllCommands.Count(c => c.IsBuiltIn));
+        Assert.AreEqual(samples[1].Name, _vm.AllCommands.Single(c => c.Id == samples[1].Id).Name);
+        Assert.ContainsSingle(c => c.Name == "mine", (await ReloadAsync()).AllCommands);
+    }
+
+    /// <summary>组内拖动:内置命令也能排,排出来的顺序重启后还在,内置命令仍是内置命令。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task MoveCommand_WithinGroup_PersistsOrderOfBuiltIns()
+    {
+        QuickCommandGroupViewModel group = _vm.Groups.First(g => g.Commands.Count >= 3);
+        QuickCommandViewModel last = group.Commands[^1];
+        Guid[] expected = [last.Id, .. group.Commands.Take(group.Commands.Count - 1).Select(c => c.Id)];
+
+        Assert.IsTrue(await _vm.MoveCommandAsync(last, group, group.Commands[0]));
+
+        Assert.AreSequenceEqual(expected, [.. group.Commands.Select(c => c.Id)]);
+        Assert.IsTrue(group.Commands[0].IsBuiltIn, "组内挪动不该把内置命令变成自定义命令");
+        Assert.IsFalse(_vm.HasBuiltInChanges);
+        Assert.AreSequenceEqual(
+            expected,
+            [.. (await ReloadAsync()).Groups.Single(g => g.Id == group.Id).Commands.Select(c => c.Id)]
+        );
+    }
+
+    /// <summary>落回原处(自己前面或后面一格)什么都不做,分组也不被记成「排过序」。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task MoveCommand_BackToItsOwnPlace_IsANoOp()
+    {
+        QuickCommandGroupViewModel group = _vm.Groups.First(g => g.Commands.Count >= 3);
+        QuickCommandViewModel middle = group.Commands[1];
+
+        Assert.IsFalse(await _vm.MoveCommandAsync(middle, group, middle));
+        Assert.IsFalse(await _vm.MoveCommandAsync(middle, group, group.Commands[2]));
+
+        Assert.AreSame(middle, group.Commands[1]);
+        Assert.IsFalse(group.HasCustomOrder);
+    }
+
+    /// <summary>
+    /// 内置命令的分组由目录定死,拖进别的分组就换成一条同标识的自定义命令;
+    /// 「恢复默认」把它送回目录定的分组。
+    /// </summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task MoveBuiltInToAnotherGroup_BecomesAnOverride_AndRestoreSendsItHome()
+    {
+        QuickCommandGroupViewModel home = _vm.Groups.Single(g => g.Id == SampleBuiltIn.GroupId);
+        QuickCommandGroupViewModel other = _vm.Groups.First(g => g.Kind == QuickCommandGroupKind.BuiltIn && g.Id != home.Id);
+        QuickCommandViewModel builtIn = home.Commands.Single(c => c.Id == SampleBuiltIn.Id);
+
+        Assert.IsTrue(await _vm.MoveCommandAsync(builtIn, other, null));
+
+        QuickCommandViewModel moved = other.Commands[^1];
+        Assert.AreEqual(SampleBuiltIn.Id, moved.Id);
+        Assert.IsTrue(moved.IsBuiltInOverride);
+        Assert.AreEqual(other.Name, moved.Category);
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, home.Commands);
+
+        QuickCommandsViewModel reloaded = await ReloadAsync();
+        Assert.Contains(c => c.Id == SampleBuiltIn.Id, reloaded.Groups.Single(g => g.Id == other.Id).Commands);
+
+        await reloaded.RestoreBuiltInCommand.Execute(reloaded.AllCommands.Single(c => c.Id == SampleBuiltIn.Id)).FirstAsync();
+
+        Assert.IsTrue(reloaded.Groups.Single(g => g.Id == home.Id).Commands.Single(c => c.Id == SampleBuiltIn.Id).IsBuiltIn);
+        Assert.DoesNotContain(c => c.Id == SampleBuiltIn.Id, reloaded.Groups.Single(g => g.Id == other.Id).Commands);
+    }
+
+    /// <summary>自定义命令拖进别的分组,换的是它自己的分组,重启后仍在新分组的那个位置。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task MoveCustomCommand_AcrossGroups_PersistsGroupAndPosition()
+    {
+        _vm.NewName = "deploy";
+        _vm.NewCommandText = "./deploy.sh";
+        _vm.NewCategory = "Ops";
+        await _vm.SaveNewCommandCommand.Execute().FirstAsync();
+        QuickCommandViewModel deploy = _vm.AllCommands.Single(c => c.Name == "deploy");
+        QuickCommandGroupViewModel target = _vm.Groups.First(g => g.Commands.Count >= 2 && g.Kind == QuickCommandGroupKind.BuiltIn);
+
+        Assert.IsTrue(await _vm.MoveCommandAsync(deploy, target, target.Commands[1]));
+
+        Assert.AreSame(deploy, target.Commands[1]);
+        Assert.AreEqual(target.Id, deploy.GroupId);
+        QuickCommandGroupViewModel reloaded = (await ReloadAsync()).Groups.Single(g => g.Id == target.Id);
+        Assert.AreEqual("deploy", reloaded.Commands[1].Name);
+        Assert.AreEqual(target.Name, reloaded.Commands[1].Category);
+    }
+
+    /// <summary>分组拖动:顺序重启后还在;「未分组」固定垫底,拖不动,也没有分组能排到它后面。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task MoveGroup_PersistsOrder_AndUngroupedStaysLast()
+    {
+        _vm.NewName = "loose";
+        _vm.NewCommandText = "pwd";
+        await _vm.SaveNewCommandCommand.Execute().FirstAsync();
+        QuickCommandGroupViewModel ungrouped = _vm.Groups.Single(g => g.IsDefault);
+        QuickCommandGroupViewModel first = _vm.Groups[0];
+        QuickCommandGroupViewModel lastBuiltIn = _vm.Groups.Last(g => g.Kind == QuickCommandGroupKind.BuiltIn);
+
+        Assert.IsTrue(await _vm.MoveGroupAsync(lastBuiltIn, first));
+        Assert.IsTrue(await _vm.MoveGroupAsync(first, null));
+        Assert.IsFalse(await _vm.MoveGroupAsync(ungrouped, _vm.Groups[0]), "「未分组」不该能拖");
+
+        Guid[] expected = [.. _vm.Groups.Select(g => g.Id)];
+        Assert.AreEqual(lastBuiltIn.Id, expected[0]);
+        Assert.AreEqual(first.Id, expected[^2], "排到最后的分组应在「未分组」之前");
+        Assert.AreEqual(ungrouped.Id, expected[^1]);
+        Assert.AreSequenceEqual(expected, [.. (await ReloadAsync()).Groups.Select(g => g.Id)]);
+    }
+
+    /// <summary>多行命令:换行统一成 \n、首尾空白去掉;侧栏用的首行与「+N 行」跟着正文走。</summary>
+    [TestMethod]
+    [TestCategory("QuickCommands")]
+    public async Task NewMultilineCommand_NormalizesLineEndings_AndExposesPreview()
+    {
+        _vm.NewName = "multi";
+        _vm.NewCommandText = "  cd /srv\r\ngit pull\r\nsystemctl restart app\r\n";
+
+        await _vm.SaveNewCommandCommand.Execute().FirstAsync();
+
+        QuickCommandViewModel multi = _vm.AllCommands.Single(c => c.Name == "multi");
+        Assert.AreEqual("cd /srv\ngit pull\nsystemctl restart app", multi.CommandText);
+        Assert.IsTrue(multi.IsMultiline);
+        Assert.AreEqual("cd /srv", multi.CommandPreview);
+        Assert.AreEqual(Core.Resources.Strings.Format("QuickCmd_MoreLines", 2), multi.MoreLinesText);
+        Assert.AreEqual(
+            "cd /srv\ngit pull\nsystemctl restart app",
+            (await ReloadAsync()).AllCommands.Single(c => c.Name == "multi").CommandText
+        );
+    }
+
+    /// <summary>重新开一个仓储与视图模型,从落盘的数据装载 —— 等同于重启。</summary>
+    private async Task<QuickCommandsViewModel> ReloadAsync()
+    {
+        var reloaded = new QuickCommandsViewModel(
+            new SonnetDbQuickCommandRepository(_dataStore, _legacyDataPath)
+        );
+        await reloaded.LoadAsync();
+        return reloaded;
     }
 
     [TestMethod]

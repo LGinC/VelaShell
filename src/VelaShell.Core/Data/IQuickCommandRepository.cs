@@ -39,6 +39,12 @@ public sealed class QuickCommandSyncData
 
     /// <summary>命令列表;Category 仅用于旧客户端兼容。</summary>
     public List<QuickCommandSyncItem> Commands { get; set; } = [];
+
+    /// <summary>
+    /// 用户删掉的内置命令(#555)。只加字段不抬版本:旧客户端读到时忽略,它再推一次会把这份清单
+    /// 连同分组上的自定义顺序一起抹掉 —— 删掉的内置命令重新出现、顺序回到默认,用户写的命令不受影响。
+    /// </summary>
+    public List<Guid> HiddenBuiltInIds { get; set; } = [];
 }
 
 /// <summary>快捷命令同步条目。</summary>

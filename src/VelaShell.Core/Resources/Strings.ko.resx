@@ -6148,4 +6148,32 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   <data name="SetCred_StorageHint" xml:space="preserve">
     <value>비밀번호와 개인 키 암호 문구는 AES-256으로 암호화해 이 기기에 저장됩니다. 클라우드 동기화는 자격 증명의 이름과 사용자 이름을 전송하며, 비밀번호와 암호 문구는 종단 간 암호 문구를 설정한 경우에만 동기화됩니다.</value>
   </data>
+  <data name="QuickCmd_MoreLines" xml:space="preserve">
+    <value>+{0}줄</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmTitle" xml:space="preserve">
+    <value>여러 줄 명령 보내기</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmBody" xml:space="preserve">
+    <value>이 빠른 명령은 {0}줄이며, 대상 터미널에서 브래킷 붙여넣기가 켜져 있지 않아 각 줄이 도착하는 즉시 실행됩니다:
+
+{1}
+
+보내시겠습니까?</value>
+  </data>
+  <data name="SetSnippets_ReorderHint" xml:space="preserve">
+    <value>// 왼쪽 핸들을 끌어 그룹과 명령의 순서를 바꿀 수 있으며, 명령은 다른 그룹으로도 옮길 수 있습니다</value>
+  </data>
+  <data name="SetSnippets_DragToReorder" xml:space="preserve">
+    <value>끌어서 순서 변경</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltIns" xml:space="preserve">
+    <value>기본 제공 명령 복원</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltInsBody" xml:space="preserve">
+    <value>삭제한 기본 제공 명령이 다시 나타나고, 기본 제공 명령에 대한 변경(다른 그룹으로 옮긴 것 포함)은 취소됩니다. 직접 만든 명령은 영향을 받지 않습니다. 계속하시겠습니까?</value>
+  </data>
+  <data name="SetSnippets_MultilineHint" xml:space="preserve">
+    <value>// 줄을 바꿔 여러 줄 명령을 쓸 수 있습니다. 보낼 때 전체가 명령줄에 들어가며 한 줄씩 실행되지 않습니다. 원격이 브래킷 붙여넣기를 지원하지 않으면 먼저 확인합니다</value>
+  </data>
 </root>

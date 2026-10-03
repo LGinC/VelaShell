@@ -191,6 +191,7 @@ public sealed class SonnetDbQuickCommandRepository(
                     SortOrder = command.SortOrder,
                 }),
             ],
+            HiddenBuiltInIds = [.. data.HiddenBuiltInIds],
         };
     }
 
@@ -245,6 +246,7 @@ public sealed class SonnetDbQuickCommandRepository(
                                 SortOrder = command.SortOrder,
                             }),
                     ],
+                    HiddenBuiltInIds = [.. data.HiddenBuiltInIds ?? []],
                 };
         Normalize(normalized, data.Commands);
         await SaveAsync(normalized, cancellationToken).ConfigureAwait(false);
@@ -346,8 +348,28 @@ public sealed class SonnetDbQuickCommandRepository(
     {
         bool changed = data.SchemaVersion != QuickCommandData.CurrentSchemaVersion;
         data.SchemaVersion = QuickCommandData.CurrentSchemaVersion;
+        changed |= data.Groups is null || data.Commands is null;
+        data.Groups ??= [];
+        data.Commands ??= [];
 
+        // 系统分组(内置 + 未分组)的标识、名称与来源以目录为准;用户拖出来的顺序沿用存档 ——
+        // 内置分组之间的先后(#555)与每个分组的组内顺序。未分组固定垫底,它的 SortOrder 不跟存档走。
+        Dictionary<Guid, QuickCommandGroup> stored = data
+            .Groups.Where(group => group is not null)
+            .GroupBy(group => group.Id)
+            .ToDictionary(group => group.Key, group => group.First());
         List<QuickCommandGroup> normalizedGroups = QuickCommandGroupCatalog.CreateSystemGroups();
+        foreach (QuickCommandGroup system in normalizedGroups)
+        {
+            if (stored.TryGetValue(system.Id, out QuickCommandGroup? persisted))
+            {
+                if (system.Kind == QuickCommandGroupKind.BuiltIn)
+                {
+                    system.SortOrder = persisted.SortOrder;
+                }
+                system.CommandOrder = NormalizeOrder(persisted.CommandOrder);
+            }
+        }
         var groupIds = normalizedGroups.Select(group => group.Id).ToHashSet();
         var groupNames = normalizedGroups
             .Where(group => group.Kind != QuickCommandGroupKind.Default)
@@ -373,6 +395,7 @@ public sealed class SonnetDbQuickCommandRepository(
                     Name = name,
                     SortOrder = group.SortOrder,
                     Kind = QuickCommandGroupKind.User,
+                    CommandOrder = NormalizeOrder(group.CommandOrder),
                 }
             );
             groupIds.Add(id);
@@ -435,21 +458,41 @@ public sealed class SonnetDbQuickCommandRepository(
 
         changed |= !GroupsEquivalent(data.Groups, normalizedGroups);
         data.Groups = normalizedGroups;
+
+        List<Guid> hidden = NormalizeOrder(data.HiddenBuiltInIds);
+        changed |= data.HiddenBuiltInIds is null || !hidden.SequenceEqual(data.HiddenBuiltInIds);
+        data.HiddenBuiltInIds = hidden;
         return changed;
     }
 
+    /// <summary>去掉空标识与重复项,保留首次出现的位置。</summary>
+    private static List<Guid> NormalizeOrder(List<Guid>? ids) =>
+        [.. (ids ?? []).Where(id => id != Guid.Empty).Distinct()];
+
+    /// <summary>
+    /// 按标识比较两份分组表(列表里的先后不算:界面按 <see cref="QuickCommandGroup.SortOrder" /> 排)。
+    /// 「有变化」会让装载结果标成已迁移、进而触发一次云同步,这里多报一次就是每次启动都同步一次。
+    /// </summary>
     private static bool GroupsEquivalent(
         List<QuickCommandGroup> left,
         List<QuickCommandGroup> right
-    ) =>
-        left.Count == right.Count
-        && left.Zip(right)
-            .All(pair =>
-                pair.First.Id == pair.Second.Id
-                && pair.First.Name == pair.Second.Name
-                && pair.First.SortOrder == pair.Second.SortOrder
-                && pair.First.Kind == pair.Second.Kind
-            );
+    )
+    {
+        if (left.Count != right.Count)
+        {
+            return false;
+        }
+        var byId = left.Where(group => group is not null)
+            .GroupBy(group => group.Id)
+            .ToDictionary(group => group.Key, group => group.First());
+        return right.All(group =>
+            byId.TryGetValue(group.Id, out QuickCommandGroup? other)
+            && other.Name == group.Name
+            && other.SortOrder == group.SortOrder
+            && other.Kind == group.Kind
+            && (other.CommandOrder ?? []).SequenceEqual(group.CommandOrder)
+        );
+    }
 
     private static QuickCommandData CreateEmptyDocument() =>
         new()

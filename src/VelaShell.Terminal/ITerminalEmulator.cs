@@ -122,6 +122,12 @@ public interface ITerminalEmulator : IDisposable
     void WritePasteInput(string text);
 
     /// <summary>
+    /// 远端是否开着括号粘贴(DECSET 2004)。开着时 <see cref="WritePasteInput" /> 送去的多行文本
+    /// 由 shell 整段放进命令行,不会逐行执行;关着时文本里的每个换行都等于按一次回车。
+    /// </summary>
+    bool IsBracketedPasteEnabled { get; }
+
+    /// <summary>
     /// 获取终端缓冲区中指定行的文本内容
     /// </summary>
     string GetBufferLine(int row);

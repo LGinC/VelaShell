@@ -1,12 +1,15 @@
+using Avalonia.Automation;
 using Avalonia.Controls;
 using Avalonia.Headless;
 using Avalonia.Interactivity;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using NSubstitute;
+using ReactiveUI.Primitives;
 using VelaShell.Core.Data;
 using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
+using VelaShell.Core.Resources;
 using VelaShell.Core.Services;
 using VelaShell.Localization;
 using VelaShell.Presentation.ViewModels;
@@ -74,6 +77,39 @@ public sealed class SnippetsPageRowActionsTests
         });
     }
 
+    /// <summary>
+    /// #555:内置命令的行也有「编辑」「删除」;「恢复默认」只出现在改过的内置命令上,点它换回目录里的原样。
+    /// </summary>
+    [TestMethod]
+    public void BuiltInRows_AreEditable_AndOnlyEditedOnesOfferRestore()
+    {
+        OnUi(() =>
+        {
+            (SnippetsPage page, QuickCommandsViewModel snippets) = Show();
+            QuickCommandViewModel builtIn = snippets.AllCommands.First(c => c.IsBuiltIn);
+            Guid id = builtIn.Id;
+
+            Assert.IsTrue(RowButton(page, builtIn, "Edit").IsVisible);
+            Assert.IsTrue(RowButton(page, builtIn, "Delete").IsVisible);
+            Assert.IsFalse(RowButton(page, builtIn, "Settings_RestoreDefaults").IsVisible);
+
+            RaiseClick(page, "EditSnippet_Click", builtIn);
+            snippets.NewName = "改过的";
+            snippets.SaveEditCommand.Execute().Subscribe();
+            Dispatcher.UIThread.RunJobs();
+            QuickCommandViewModel edited = snippets.AllCommands.Single(c => c.Id == id);
+            Assert.IsTrue(RowButton(page, edited, "Settings_RestoreDefaults").IsVisible);
+
+            RaiseClick(page, "RestoreSnippet_Click", edited);
+            Dispatcher.UIThread.RunJobs();
+
+            QuickCommandViewModel restored = snippets.AllCommands.Single(c => c.Id == id);
+            Assert.IsTrue(restored.IsBuiltIn);
+            Assert.AreEqual(builtIn.Name, restored.Name);
+            return Task.CompletedTask;
+        });
+    }
+
     /// <summary>页面还没拿到视图模型时点下去,不能抛。</summary>
     [TestMethod]
     public void ClickingBeforeTheViewModelArrives_IsIgnored()
@@ -96,6 +132,12 @@ public sealed class SnippetsPageRowActionsTests
             .GetMethod(handler, System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
             .Invoke(page, [button, new RoutedEventArgs()]);
     }
+
+    /// <summary>某一行里读屏名为指定文案的那个按钮。</summary>
+    private static Button RowButton(SnippetsPage page, QuickCommandViewModel row, string nameKey) =>
+        page.GetVisualDescendants()
+            .OfType<Button>()
+            .First(b => ReferenceEquals(b.DataContext, row) && AutomationProperties.GetName(b) == Strings.Get(nameKey));
 
     private static QuickCommandViewModel FirstEditable(QuickCommandsViewModel snippets) =>
         snippets.AllCommands.FirstOrDefault(c => !c.IsBuiltIn)

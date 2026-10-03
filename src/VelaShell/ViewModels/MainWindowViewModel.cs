@@ -671,6 +671,12 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
     /// </summary>
     public Func<string?, QuickCommandTemplate, Task<IReadOnlyDictionary<string, string>?>>? QuickCommandVariablePrompt { get; set; }
 
+    /// <summary>
+    /// 窗口注入的多行快捷命令确认框:目标终端里有没开括号粘贴的,多行命令发过去会逐行执行,先问一句。
+    /// 参数是将要发送的正文,确认返回 true。未挂时(headless)直接发送。
+    /// </summary>
+    public Func<string, Task<bool>>? QuickCommandMultilineConfirmer { get; set; }
+
     /// <summary>左侧边栏视图模型:资源管理器会话树与最近连接。</summary>
     public SidebarViewModel Sidebar
     {
@@ -2163,7 +2169,7 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         if (!template.HasVariables || QuickCommandVariablePrompt is not { } prompt)
         {
             // 没有占位(或没有窗口可以问,如 headless 测试)时原样发送,与引入占位之前一致。
-            SendQuickCommandText(request.TargetIds, request.CommandText);
+            DeliverQuickCommand(request.TargetIds, request.CommandText);
             return;
         }
         FireAndForget.Run(async () =>
@@ -2174,14 +2180,44 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 return;
             }
             // 弹框期间目标可能已经断开:发送时再按当下的标签挑一遍,只发给仍连着的。
-            SendQuickCommandText(request.TargetIds, template.Render(values));
+            DeliverQuickCommand(request.TargetIds, template.Render(values));
         });
+    }
+
+    /// <summary>
+    /// 多行命令要发给没开括号粘贴的终端时先确认(那边会逐行执行),其余情况直接发送。
+    /// 确认开关沿用「设置 → 终端 → 粘贴时确认多行内容」:关掉它的人已经表示过不想被这类问题打断。
+    /// </summary>
+    private void DeliverQuickCommand(IReadOnlyList<Guid> targetIds, string commandText)
+    {
+        if (
+            QuickCommandMultilineConfirmer is { } confirm
+            && _latestSettings?.TerminalBehavior.ConfirmMultilinePaste != false
+            && QuickCommandText.IsMultiline(commandText)
+            && QuickCommandTargets(targetIds).Any(tab => !tab.TerminalEmulator.IsBracketedPasteEnabled)
+        )
+        {
+            FireAndForget.Run(async () =>
+            {
+                if (await confirm(commandText))
+                {
+                    SendQuickCommandText(targetIds, commandText);
+                }
+            });
+            return;
+        }
+        SendQuickCommandText(targetIds, commandText);
+    }
+
+    private TerminalTabViewModel[] QuickCommandTargets(IReadOnlyList<Guid> targetIds)
+    {
+        var ids = targetIds.ToHashSet();
+        return [.. TerminalTabs.Where(tab => tab.IsConnected && ids.Contains(tab.Id))];
     }
 
     private void SendQuickCommandText(IReadOnlyList<Guid> targetIds, string commandText)
     {
-        var ids = targetIds.ToHashSet();
-        TerminalTabViewModel[] targets = [.. TerminalTabs.Where(tab => tab.IsConnected && ids.Contains(tab.Id))];
+        TerminalTabViewModel[] targets = QuickCommandTargets(targetIds);
         bool sent = false;
         foreach (TerminalTabViewModel target in targets)
         {

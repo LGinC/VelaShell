@@ -6148,4 +6148,32 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="SetCred_StorageHint" xml:space="preserve">
     <value>パスワードと秘密鍵のパスフレーズは AES-256 で暗号化してこのデバイスに保存されます。クラウド同期では資格情報の名前とユーザー名が転送され、パスワードとパスフレーズはエンドツーエンドのパスフレーズを設定した場合にのみ同期されます。</value>
   </data>
+  <data name="QuickCmd_MoreLines" xml:space="preserve">
+    <value>+{0} 行</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmTitle" xml:space="preserve">
+    <value>複数行のコマンドを送信</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmBody" xml:space="preserve">
+    <value>このクイックコマンドは {0} 行あります。送信先のターミナルでブラケットペーストが有効になっていないため、各行は届いた時点で実行されます:
+
+{1}
+
+送信しますか?</value>
+  </data>
+  <data name="SetSnippets_ReorderHint" xml:space="preserve">
+    <value>// 左端のハンドルをドラッグしてグループとコマンドの順序を変更できます。コマンドは別のグループにも移動できます</value>
+  </data>
+  <data name="SetSnippets_DragToReorder" xml:space="preserve">
+    <value>ドラッグして並べ替え</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltIns" xml:space="preserve">
+    <value>組み込みコマンドを復元</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltInsBody" xml:space="preserve">
+    <value>削除した組み込みコマンドが再び表示され、組み込みコマンドへの変更(別のグループへの移動を含む)は取り消されます。自分で作成したコマンドには影響しません。続行しますか?</value>
+  </data>
+  <data name="SetSnippets_MultilineHint" xml:space="preserve">
+    <value>// 改行して複数行のコマンドを書けます。送信時はまとめてコマンドラインに入り、1 行ずつ実行されることはありません。リモートがブラケットペーストに対応していない場合は先に確認します</value>
+  </data>
 </root>

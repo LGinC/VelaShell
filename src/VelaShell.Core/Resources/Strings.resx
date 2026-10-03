@@ -6153,4 +6153,32 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="SetCred_StorageHint" xml:space="preserve">
     <value>Passwords and key passphrases are stored on this device encrypted with AES-256. Cloud sync carries credential names and usernames; passwords and passphrases are synced only when an end-to-end passphrase is set.</value>
   </data>
+  <data name="QuickCmd_MoreLines" xml:space="preserve">
+    <value>+{0} lines</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmTitle" xml:space="preserve">
+    <value>Send multiline command</value>
+  </data>
+  <data name="QuickCmd_MultilineConfirmBody" xml:space="preserve">
+    <value>This quick command has {0} lines, and a target terminal has not enabled bracketed paste, so each line will run as soon as it arrives:
+
+{1}
+
+Send anyway?</value>
+  </data>
+  <data name="SetSnippets_ReorderHint" xml:space="preserve">
+    <value>// Drag the handle on the left to reorder groups and commands; a command can also be dragged into another group</value>
+  </data>
+  <data name="SetSnippets_DragToReorder" xml:space="preserve">
+    <value>Drag to reorder</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltIns" xml:space="preserve">
+    <value>Restore built-in commands</value>
+  </data>
+  <data name="SetSnippets_RestoreBuiltInsBody" xml:space="preserve">
+    <value>Deleted built-in commands will come back, and changes to built-in commands (including moving them to another group) will be undone. Commands you created are not affected. Continue?</value>
+  </data>
+  <data name="SetSnippets_MultilineHint" xml:space="preserve">
+    <value>// Line breaks are allowed: a multiline command lands on the command line as a whole instead of running line by line; if the remote side does not support bracketed paste, you will be asked first</value>
+  </data>
 </root>

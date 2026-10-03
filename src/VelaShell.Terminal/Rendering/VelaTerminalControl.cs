@@ -689,6 +689,9 @@ public sealed partial class VelaTerminalControl : Control, ITerminalEmulator
         AfterProgrammaticInput();
     }
 
+    /// <inheritdoc />
+    public bool IsBracketedPasteEnabled => Emulator.Modes.BracketedPaste;
+
     /// <summary>用户产生的输入字节(不含协议自动应答),供命令补全等跟踪键入。</summary>
     public event Action<byte[]>? TypedInput;
 

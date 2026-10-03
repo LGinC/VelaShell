@@ -24,6 +24,15 @@ public sealed class QuickCommandGroupViewModel(QuickCommandGroup model, string d
     /// <summary>是否为不可编辑的系统分组。</summary>
     public bool IsSystem => Kind != QuickCommandGroupKind.User;
 
+    /// <summary>是否为「未分组」:它固定排在最后,不参与分组之间的拖动排序。</summary>
+    public bool IsDefault => Kind == QuickCommandGroupKind.Default;
+
+    /// <summary>
+    /// 组内顺序是否由用户定过(拖过、或组里有内置命令被换成了自定义命令)。定过的分组保存时把
+    /// 当下的顺序整份写进 <see cref="QuickCommandGroup.CommandOrder" />,没定过的保持空表、按默认顺序排。
+    /// </summary>
+    public bool HasCustomOrder { get; internal set; } = model?.CommandOrder.Count > 0;
+
     /// <summary>分组全部命令。</summary>
     public ObservableCollection<QuickCommandViewModel> Commands { get; } = [];
 
