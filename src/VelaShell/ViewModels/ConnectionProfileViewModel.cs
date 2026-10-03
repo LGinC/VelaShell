@@ -45,6 +45,14 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
     private IDisposable? _copyFeedbackReset;
 
     private readonly Guid _profileId;
+
+    // ---- 对话框里没有、但属于这条配置的状态:编辑时原样带回 ----
+    // 保存是按界面字段新建一条配置再整条覆盖落盘,不带回来就等于清掉 ——
+    // 改个端口,置顶没了、这条连接从「最近连接」里掉到最后。
+    private readonly bool _isPinned;
+    private readonly DateTime? _lastConnectedAt;
+    private readonly List<Guid>? _autoStartTunnelIds;
+
     private readonly ISessionRepository? _sessionRepository;
     private AuthMethod _authMethod = AuthMethod.Password;
     private string? _certificatePath;
@@ -157,6 +165,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
         if (existing != null)
         {
             _profileId = existing.Id;
+            _isPinned = existing.IsPinned;
+            _lastConnectedAt = existing.LastConnectedAt;
+            _autoStartTunnelIds = existing.AutoStartTunnelIds;
             _connectionType = existing.ConnectionType;
             _name = existing.Name;
             _host = existing.Host;
@@ -1880,6 +1891,9 @@ public class ConnectionProfileViewModel : ReactiveObject, IDisposable
             PrivateKeyPassphrase = PrivateKeyPassphrase,
             CertificatePath = CertificatePath,
             GroupId = GroupId,
+            IsPinned = _isPinned,
+            LastConnectedAt = _lastConnectedAt,
+            AutoStartTunnelIds = _autoStartTunnelIds is null ? null : [.. _autoStartTunnelIds],
             Tags = [.. TagsText.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)],
             // 首尾的空行空格去掉(悬停提示里一条空行也是一截空白);只有空白的归 null,
             // 免得一个回车就让这条连接带上一个空的悬停提示。行内的换行与缩进原样保留。

@@ -91,6 +91,55 @@ public sealed class ConnectionProfileViewModelTests
         Assert.AreEqual("跳板机,只开 22\n\n改配置先报备", saved.Notes);
     }
 
+    /// <summary>
+    /// 对话框里没有、但属于这条配置的状态,编辑保存时必须原样带回:置顶(资源管理器右键)、
+    /// 最近连接时间(「最近连接」按它排)、自动开启的隧道。
+    /// </summary>
+    /// <remarks>
+    /// 保存是按界面上的字段新建一条配置再整条覆盖落盘的;漏带一项,表现就是"改个端口,
+    /// 置顶没了""改个名字,这条连接从最近连接里掉到最后",而且不报任何错。
+    /// </remarks>
+    [TestMethod]
+    public async Task EditingAProfile_KeepsStateTheDialogDoesNotShow()
+    {
+        DateTime lastConnected = new(2026, 9, 30, 8, 0, 0, DateTimeKind.Utc);
+        List<Guid> tunnels = [Guid.NewGuid(), Guid.NewGuid()];
+        var existing = new SessionProfile
+        {
+            Name = "bastion",
+            Host = "10.0.0.1",
+            Username = "ops",
+            IsPinned = true,
+            LastConnectedAt = lastConnected,
+            AutoStartTunnelIds = tunnels,
+        };
+
+        var vm = new ConnectionProfileViewModel(existing) { Port = 2222 };
+        SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
+
+        Assert.IsNotNull(saved);
+        Assert.AreEqual(2222, saved.Port);
+        Assert.IsTrue(saved.IsPinned, "编辑一条置顶的连接,保存后不该被取消置顶");
+        Assert.AreEqual(lastConnected, saved.LastConnectedAt);
+        Assert.IsNotNull(saved.AutoStartTunnelIds);
+        Assert.AreSequenceEqual(tunnels, saved.AutoStartTunnelIds);
+        Assert.AreNotSame(tunnels, saved.AutoStartTunnelIds, "存下去的是副本,不与传进来的配置共享列表");
+    }
+
+    /// <summary>新建的连接没有这些状态:不置顶、没连过。</summary>
+    [TestMethod]
+    public async Task NewProfile_IsNotPinnedAndHasNeverConnected()
+    {
+        var vm = new ConnectionProfileViewModel { Host = "h", Username = "u" };
+
+        SessionProfile? saved = await vm.SaveCommand.Execute().FirstAsync();
+
+        Assert.IsNotNull(saved);
+        Assert.IsFalse(saved.IsPinned);
+        Assert.IsNull(saved.LastConnectedAt);
+        Assert.IsNull(saved.AutoStartTunnelIds);
+    }
+
     /// <summary>只有空白的备注等于没写:存成 null,资源管理器里也就不弹一块空的悬停提示。</summary>
     [TestMethod]
     [DataRow(null)]

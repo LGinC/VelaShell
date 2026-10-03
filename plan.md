@@ -1546,3 +1546,11 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 文案:新增 `Profile_Notes` / `Profile_NotesPlaceholder` / `Profile_NotesHint`,五份 resx 齐。
 
 **三、验证**:`SonnetDbPersistenceTests` 补备注带换行原样落盘、旧文档读回 null;`ConnectionProfileViewModelTests` 补 SSH / SFTP / FTP 三种协议的回显与保存(去首尾空白、保留行内换行)、只剩空白存 null;新增 `SessionTreeNotesTests`(11 例:建树与 `AddSession` 带上备注、分组行与无备注不弹、去首尾空行、按行数 / 字符数截断并补省略号、正好 12 行不截、不切开 emoji、改备注刷新提示);UI 测试 `NotesBox_EnterStartsANewLine_AndDoesNotSubmitTheDialog`(回车在框里换行、不保存不连接;变异:去掉 `AcceptsReturn` → 红)与 `SessionTreeNotesUiTests`(真把指针移上去,有备注的行弹、移开收起、无备注的行不弹)。headless 截图核过对话框里的备注框与截断后的悬停提示。全解决方案零警告零错误;`VelaShell.Tests` 1664 通过 / 35 跳过,`VelaShell.Infrastructure.Tests` 570 通过 / 4 跳过,`VelaShell.Presentation.Tests` 69 通过,`VelaShell.Core.Tests` 625 通过 / 10 跳过 / 1 失败(X11 靶机用例,§144 / §149 记过的那条,本机 `ssh-shells` 镜像旧)。
+
+## ✅ 153. 2026-10-03 编辑连接不再把置顶与最近连接时间清掉
+
+**一、问题**:做 §152 时读 `ConnectionProfileViewModel.BuildProfile` 发现的。保存是按界面字段**新建**一条配置、再由 `SaveProfileAsync` 整条覆盖落盘,而对话框里没有的三项状态没被带回:`IsPinned`(资源管理器右键置顶,#474)、`LastConnectedAt`(「最近连接」按它倒序排)、`AutoStartTunnelIds`。于是编辑一条置顶的连接,哪怕只改个端口,保存后置顶就没了;这条连接在最近连接里也掉到最后。不报任何错。
+
+**二、做法**:视图模型在编辑模式下记下这三项(只读字段),`BuildProfile` 原样带回;隧道 id 列表存副本,不与传进来的配置共享。新建连接三项都是默认值(不置顶、没连过、null)。至此 `SessionProfile` 的每个属性在 `BuildProfile` 里都有着落。
+
+**三、验证**:`ConnectionProfileViewModelTests` 新增 `EditingAProfile_KeepsStateTheDialogDoesNotShow`(置顶 + 最近连接时间 + 两条隧道 id 的配置改端口后保存,三项原样带回、列表是副本),修之前在 `IsPinned` 上红;`NewProfile_IsNotPinnedAndHasNeverConnected`。连接对话框与资源管理器相关用例 217 例通过。velashell-docs 的 §4 本来就写着置顶「只改显示位置、不改数据」,这是缺陷修复,不涉及文档同步。
