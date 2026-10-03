@@ -375,7 +375,41 @@ public sealed class SshConfigConnectTests
         Assert.IsTrue(shell.X11Forwarding.Trusted);
 
         // §7.5.8：连接级开关打开的 X11 是尽力而为的 —— 失败不该让 shell 起不来。
-        Assert.IsTrue(shell.X11Forwarding.BestEffort);
+        Assert.AreEqual(ForwardFailureMode.Continue, shell.X11Forwarding.FailureMode);
+        Assert.AreEqual(ForwardFailureMode.Continue, shell.AgentForwarding.FailureMode, "ForwardAgent yes 同理");
+    }
+
+    [TestMethod]
+    public void ForwardAgent的四种写法()
+    {
+        // ssh_config(5)：yes / no / agent 套接字路径 / $环境变量。曾经只认 yes，写了路径的配置被当成 no。
+        static AgentForwardOptions? Agent(string value) =>
+            SshConfigFile.Resolve(SshConfigFile.Parse($"Host h\n    ForwardAgent {value}"), "h").ApplyToShell().AgentForwarding;
+
+        Assert.IsNull(Agent("no"));
+        Assert.IsNull(Agent("NO"));
+
+        AgentForwardOptions? yes = Agent("Yes");
+        Assert.IsNotNull(yes);
+        Assert.IsNull(yes.AgentEndpoint, "yes 转发默认的 agent");
+        Assert.AreEqual(ForwardFailureMode.Continue, yes.FailureMode, "连接级开关打开的，失败不该让 shell 起不来");
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.AreEqual(home + "/.1password/agent.sock", Agent("~/.1password/agent.sock")?.AgentEndpoint);
+
+        string variable = $"VELASHELL_TEST_AGENT_{Guid.NewGuid():N}";
+        Environment.SetEnvironmentVariable(variable, "/run/user/1000/other-agent.sock");
+        try
+        {
+            Assert.AreEqual("/run/user/1000/other-agent.sock", Agent("$" + variable)?.AgentEndpoint);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
+
+        // 变量没设：没有可转发的 agent，宣告出去只会让远端白连一次。
+        Assert.IsNull(Agent("$" + variable));
     }
 
     [TestMethod]
@@ -391,7 +425,7 @@ public sealed class SshConfigConnectTests
             .ApplyToShell(new SshShellOptions { X11Forwarding = explicitX11 });
 
         Assert.AreSame(explicitX11, shell.X11Forwarding, "模板里显式设了的不会被覆盖");
-        Assert.IsFalse(shell.X11Forwarding!.BestEffort);
+        Assert.AreEqual(ForwardFailureMode.Fail, shell.X11Forwarding!.FailureMode);
     }
 
     [TestMethod]

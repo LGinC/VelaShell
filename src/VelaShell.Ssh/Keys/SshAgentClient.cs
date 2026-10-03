@@ -34,14 +34,31 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// <summary>单个 agent 报文的长度上限。</summary>
     private const int MaxMessageLength = 256 * 1024;
 
-    private readonly Stream _stream;
+    /// <summary>Windows 上等 agent 的命名管道出现的上限。</summary>
+    /// <remarks>
+    /// 管道不存在时不带时限的连接会<b>一直重试</b>，直到管道出现 —— agent 服务没起，调用方就永远挂在那里
+    /// （spec/07 §7.1）。本机 IPC 用不了多久，三秒足够分辨「在跑」与「没在跑」。
+    /// 文件系统的存在性检查判断不了管道（对一个存在的管道也返回「不存在」），所以只能靠时限。
+    /// </remarks>
+    internal static readonly TimeSpan PipeConnectTimeout = TimeSpan.FromSeconds(3);
+
+    // 只在会话声明把连接弄断、要重开时换掉（见 DeclareSessionAsync），换的时候持有 _lock。
+    private Stream _stream;
     private readonly SemaphoreSlim _lock = new(1, 1);
+
+    /// <summary>由 <see cref="ConnectAsync"/> 连上的才能重开；<see cref="FromStream"/> 交来的流不知道怎么重开。</summary>
+    private readonly bool _canReopen;
+
+    // 已经声明过的会话。同一个会话只声明一次 —— 同一条 agent 连接上的几把钥共用一次声明。
+    private byte[]? _declaredSessionId;
+    private bool _declarationAccepted;
     private bool _disposed;
 
-    private SshAgentClient(Stream stream, string endpoint)
+    private SshAgentClient(Stream stream, string endpoint, bool canReopen)
     {
         _stream = stream;
         Endpoint = endpoint;
+        _canReopen = canReopen;
     }
 
     /// <summary>连到的是哪个端点（套接字路径或命名管道名）。</summary>
@@ -58,7 +75,7 @@ public sealed class SshAgentClient : IAsyncDisposable
     public static SshAgentClient FromStream(Stream stream, string label = "(自定义流)")
     {
         ArgumentNullException.ThrowIfNull(stream);
-        return new SshAgentClient(stream, label);
+        return new SshAgentClient(stream, label, canReopen: false);
     }
 
     /// <summary>本机 agent 的默认端点。</summary>
@@ -73,7 +90,11 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// <summary>连本机 agent。</summary>
     /// <param name="endpoint">端点；<see langword="null"/> 表示用 <see cref="DefaultEndpoint"/>。</param>
     /// <param name="cancellationToken">取消令牌。</param>
-    /// <exception cref="SshAgentException">连不上。</exception>
+    /// <exception cref="SshAgentException">
+    /// 连不上。agent 没在跑（<c>SSH_AUTH_SOCK</c> 没设、套接字不在、命名管道在 <see cref="PipeConnectTimeout"/>
+    /// 内没出现）时 <see cref="SshException.Reason"/> 是 <see cref="SshFailureReason.AgentNotRunning"/>，
+    /// 其余是 <see cref="SshFailureReason.AgentUnavailable"/>。
+    /// </exception>
     public static async ValueTask<SshAgentClient> ConnectAsync(
         string? endpoint = null, CancellationToken cancellationToken = default)
     {
@@ -81,7 +102,7 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         if (string.IsNullOrEmpty(actual))
         {
-            throw new SshAgentException(SshFailureReason.AgentUnavailable,
+            throw new SshAgentException(SshFailureReason.AgentNotRunning,
                 OperatingSystem.IsWindows()
                     ? "找不到 ssh-agent。Windows 上它是一个服务，用 " +
                       "`Get-Service ssh-agent` 看状态，`Start-Service ssh-agent` 起它。"
@@ -89,23 +110,32 @@ public sealed class SshAgentClient : IAsyncDisposable
                       "或者当前会话没继承到它。");
         }
 
+        Stream stream = await OpenStreamAsync(actual, cancellationToken).ConfigureAwait(false);
+        return new SshAgentClient(stream, actual, canReopen: true);
+    }
+
+    private static async ValueTask<Stream> OpenStreamAsync(string endpoint, CancellationToken cancellationToken)
+    {
         try
         {
-            if (OperatingSystem.IsWindows() && actual.StartsWith(@"\\.\pipe\", StringComparison.Ordinal))
+            if (OperatingSystem.IsWindows() && endpoint.StartsWith(@"\\.\pipe\", StringComparison.Ordinal))
             {
-                string pipeName = actual[@"\\.\pipe\".Length..];
+                string pipeName = endpoint[@"\\.\pipe\".Length..];
                 NamedPipeClientStream pipe = new(
                     ".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
 
                 try
                 {
-                    await pipe.ConnectAsync(cancellationToken).ConfigureAwait(false);
-                    EnsureTrustedPipeServer(pipe, actual);
-                    return new SshAgentClient(pipe, actual);
+                    // ⚠️ **必须带时限**（见 PipeConnectTimeout）。曾经只带取消令牌：
+                    //    agent 转发的通道没有别的期限，服务没起时远端的 ssh / git 一直挂到 shell 关掉。
+                    await pipe.ConnectAsync((int)PipeConnectTimeout.TotalMilliseconds, cancellationToken)
+                        .ConfigureAwait(false);
+                    EnsureTrustedPipeServer(pipe, endpoint);
+                    return pipe;
                 }
                 catch (Exception)
                 {
-                    // 连不上、超时（宿主只等三秒）或属主不对：句柄当场关掉，不留给终结器。
+                    // 连不上、超时或属主不对：句柄当场关掉，不留给终结器。
                     await pipe.DisposeAsync().ConfigureAwait(false);
                     throw;
                 }
@@ -116,14 +146,33 @@ public sealed class SshAgentClient : IAsyncDisposable
             // ⚠️ Windows 上 SSH_AUTH_SOCK 常常指向 msys / WSL 的套接字，
             //    那是另一套东西，.NET 连不上去 —— 所以上面的命名管道分支在前。
             Socket socket = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-            await socket.ConnectAsync(new UnixDomainSocketEndPoint(actual), cancellationToken)
-                .ConfigureAwait(false);
-
-            return new SshAgentClient(new NetworkStream(socket, ownsSocket: true), actual);
+            try
+            {
+                await socket.ConnectAsync(new UnixDomainSocketEndPoint(endpoint), cancellationToken)
+                    .ConfigureAwait(false);
+                return new NetworkStream(socket, ownsSocket: true);
+            }
+            catch (Exception)
+            {
+                socket.Dispose();
+                throw;
+            }
+        }
+        catch (TimeoutException ex)
+        {
+            throw new SshAgentException(SshFailureReason.AgentNotRunning,
+                $"ssh-agent 的命名管道（{endpoint}）在 {PipeConnectTimeout.TotalSeconds:0} 秒内没有出现 —— agent 服务多半没在跑。" +
+                "用 `Get-Service ssh-agent` 看状态，`Start-Service ssh-agent` 起它。", ex);
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressNotAvailable or SocketError.ConnectionRefused)
+        {
+            // 前者是套接字文件不在（ENOENT），后者是文件还在、没人监听 —— agent 退出时没删掉它。
+            throw new SshAgentException(SshFailureReason.AgentNotRunning,
+                $"ssh-agent 的套接字（{endpoint}）不存在或没人监听 —— agent 多半已经退出：{ex.SocketErrorCode}。", ex);
         }
         catch (Exception ex) when (ex is not SshAgentException and not OperationCanceledException)
         {
-            throw new SshAgentException(SshFailureReason.AgentUnavailable, $"连不上 ssh-agent（{actual}）：{ex.Message}", ex);
+            throw new SshAgentException(SshFailureReason.AgentUnavailable, $"连不上 ssh-agent（{endpoint}）：{ex.Message}", ex);
         }
     }
 
@@ -377,6 +426,130 @@ public sealed class SshAgentClient : IAsyncDisposable
         ];
     }
 
+    // ------------------------------------------------------------ 会话声明
+
+    /// <summary>
+    /// 向 agent 声明这条 agent 连接属于哪个 SSH 会话、拿来做什么（<c>session-bind@openssh.com</c>）。
+    /// </summary>
+    /// <param name="proof">首次密钥交换里服务端的身份证明。</param>
+    /// <param name="purpose">认证还是转发 —— 决定 <c>is_forwarding</c>。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>agent 接受了声明时为 <see langword="true"/>；agent 不支持或拒绝时为 <see langword="false"/>。</returns>
+    /// <remarks>
+    /// <para>
+    /// 〔spec/07 §7.4〕agent 靠它执行 <c>ssh-add -h</c> 给钥加的目的地约束。不声明的连接在 agent 看来就是
+    /// 「本机自己在用」—— 经我们转发出去之后，远端拿受约束的钥也能当成源头机器来用，约束形同虚设。
+    /// </para>
+    /// <para>
+    /// <b>声明失败不是错误</b>：agent 回 FAILURE（不认识这个扩展、或拒绝这次声明）时照常列钥、签名，
+    /// 只是约束不生效 —— 与 OpenSSH 的客户端一致。同一个会话只发一次，重复调用交回第一次的结果。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>agent 因为这条声明断开连接时</b>（个别实现收到不认识的报文就断），由 <see cref="ConnectAsync"/>
+    /// 连上的客户端会重开连接、不再声明，交回 <see langword="false"/>：后面的列钥与签名不能跟着一起失败。
+    /// <see cref="FromStream"/> 交来的流不知道怎么重开，那时照常抛 <see cref="SshAgentException"/>，由调用方重连。
+    /// </para>
+    /// </remarks>
+    internal async ValueTask<bool> DeclareSessionAsync(
+        SshSessionProof proof, SshAgentConnectionPurpose purpose, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(proof);
+
+        if (_declaredSessionId is { } declared && declared.AsSpan().SequenceEqual(proof.SessionId))
+        {
+            return _declarationAccepted;
+        }
+
+        ArrayBufferWriter<byte> request = new();
+        SshDataWriter writer = new(request);
+        writer.WriteByte(SshAgentMessage.Extension);
+        writer.WriteUtf8String(SshAgentMessage.SessionBindExtension);
+        writer.WriteString(proof.HostKeyBlob);
+        writer.WriteString(proof.SessionId);
+        writer.WriteString(proof.Signature);
+        writer.WriteBoolean(purpose == SshAgentConnectionPurpose.Forwarding);
+
+        bool accepted;
+        try
+        {
+            byte[] response = await ExchangeAsync(request.WrittenMemory, cancellationToken).ConfigureAwait(false);
+
+            // 只有 SUCCESS 算接受。FAILURE（5）、EXTENSION_FAILURE（28）以及任何别的回答都按「不支持」处理。
+            accepted = response[0] == SshAgentMessage.Success;
+        }
+        catch (SshAgentException ex) when (ex.Reason == SshFailureReason.AgentUnavailable && _canReopen)
+        {
+            await ReopenAsync(cancellationToken).ConfigureAwait(false);
+            accepted = false;
+        }
+
+        _declaredSessionId = proof.SessionId;
+        _declarationAccepted = accepted;
+        return accepted;
+    }
+
+    /// <summary>把远端那一跳经转发发来的会话声明原样交给 agent，交回 agent 的应答。</summary>
+    /// <param name="request">一条完整的 agent 报文（不含长度前缀），必须是 <c>session-bind@openssh.com</c> 扩展。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <remarks>
+    /// 〔spec/07 §7.4〕转发链上的每一跳都要把自己的声明接在我们的声明后面，agent 才认得出整条路径。
+    /// 这里只放行这一个扩展：声明只会让 agent 对这条连接<b>更严</b>，而别的扩展能做什么我们说不准。
+    /// </remarks>
+    internal ValueTask<byte[]> RelaySessionDeclarationAsync(ReadOnlyMemory<byte> request, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (!IsSessionDeclaration(request.Span))
+        {
+            throw new ArgumentException("只转交 session-bind@openssh.com 扩展。", nameof(request));
+        }
+
+        return ExchangeAsync(request, cancellationToken);
+    }
+
+    /// <summary>这条 agent 报文是不是一条会话声明（<c>SSH_AGENTC_EXTENSION</c> + <c>session-bind@openssh.com</c>）。</summary>
+    internal static bool IsSessionDeclaration(ReadOnlySpan<byte> request)
+    {
+        if (request.Length < 5 || request[0] != SshAgentMessage.Extension)
+        {
+            return false;
+        }
+
+        uint nameLength = BinaryPrimitives.ReadUInt32BigEndian(request[1..]);
+        ReadOnlySpan<byte> expected = SshAgentMessage.SessionBindExtensionUtf8;
+        return nameLength == expected.Length
+            && request.Length >= 5 + expected.Length
+            && request.Slice(5, expected.Length).SequenceEqual(expected);
+    }
+
+    /// <summary>声明把连接弄断之后重开（只有 <see cref="ConnectAsync"/> 连上的才走到这里）。</summary>
+    private async ValueTask ReopenAsync(CancellationToken cancellationToken)
+    {
+        Stream fresh = await OpenStreamAsync(Endpoint, cancellationToken).ConfigureAwait(false);
+
+        await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        Stream broken;
+        try
+        {
+            broken = _stream;
+            _stream = fresh;
+        }
+        finally
+        {
+            _lock.Release();
+        }
+
+        try
+        {
+            await broken.DisposeAsync().ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 它本来就断了。
+        }
+    }
+
     // ------------------------------------------------------------ 收发
 
     private async ValueTask<byte[]> ExchangeAsync(
@@ -426,7 +599,7 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// 那会弹窗。为一把服务端根本不认的密钥去打扰使用者是不可接受的，
     /// 所以公钥认证会先探测再签。
     /// </remarks>
-    private sealed class AgentSigner(SshAgentClient client, SshAgentIdentity identity) : ISshSigner
+    private sealed class AgentSigner(SshAgentClient client, SshAgentIdentity identity) : ISshSigner, ISessionAwareSigner
     {
         public SshPublicKey PublicKey => identity.PublicKey;
 
@@ -437,6 +610,11 @@ public sealed class SshAgentClient : IAsyncDisposable
         public ValueTask<byte[]> SignAsync(
             ReadOnlyMemory<byte> data, string algorithm, CancellationToken cancellationToken = default) =>
             client.SignAsync(identity.PublicKey.Blob, data, algorithm, cancellationToken);
+
+        /// <remarks>同一个 agent 客户端上的几把钥共用一次声明（见 <see cref="DeclareSessionAsync"/>）。</remarks>
+        public async ValueTask PrepareForSessionAsync(SshSessionProof proof, CancellationToken cancellationToken) =>
+            await client.DeclareSessionAsync(proof, SshAgentConnectionPurpose.Authentication, cancellationToken)
+                .ConfigureAwait(false);
     }
 
     /// <summary>写进一块固定缓冲、写满即抛的写入器。</summary>

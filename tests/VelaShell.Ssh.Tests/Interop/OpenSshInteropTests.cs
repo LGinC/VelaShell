@@ -724,6 +724,124 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>
+    /// 会话声明（<c>session-bind@openssh.com</c>）交给<b>真实的 OpenSSH agent</b>，并让 <c>ssh-add -h</c> 的约束真的起作用
+    /// （velashell-docs/zh/ssh/spec/07 §7.4）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 单元测试里的 <c>TestAgent</c> 与实现出自对规格的同一份理解，这里让真 agent 来裁决：
+    /// 在服务端起一个 agent，用 <c>ssh-add -h</c> 加一把只许用于 <c>dest.example</c> 的钥，再经 <c>direct-streamlocal</c> 接上去。
+    /// </para>
+    /// <list type="number">
+    ///   <item>声明成 <c>dest.example</c> 的会话：agent 回 SUCCESS，替这个会话的认证请求签名；</item>
+    ///   <item>签名被篡改的声明：agent 拒绝 —— 说明它真的拿主机公钥验了签名，前一条的 SUCCESS 不是走过场；</item>
+    ///   <item>声明成别的主机的会话：同一把钥拒签 —— 约束真的生效了。</item>
+    /// </list>
+    /// </remarks>
+    [TestMethod]
+    public async Task 会话声明经得起真实OpenSSH_agent的校验且目的地约束生效()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        string socket = $"/tmp/vela-agent-{Guid.NewGuid():N}.sock";
+        string scratch = $"/tmp/vela-bind-{Guid.NewGuid():N}";
+        SshCommandResult started = await connection.RunAsync($"ssh-agent -s -a {socket}");
+        Assert.AreEqual(0, started.ExitCode, started.StandardError);
+        string pid = started.StandardOutput.Split("SSH_AGENT_PID=")[1].Split(';')[0];
+
+        // 「目的地」的主机密钥在本地造：agent 只按声明里的主机公钥验签名、查约束。
+        using var destination = InMemorySshSigner.GenerateEd25519();
+        using var elsewhere = InMemorySshSigner.GenerateEd25519();
+
+        try
+        {
+            SshCommandResult prepared = await connection.RunAsync(
+                $"mkdir -p {scratch} && ssh-keygen -q -t ed25519 -N '' -f {scratch}/id && " +
+                $"printf 'dest.example %s\\n' '{destination.PublicKey.ToOpenSshFormat()}' > {scratch}/known_hosts && " +
+                $"SSH_AUTH_SOCK={socket} ssh-add -H {scratch}/known_hosts -h dest.example {scratch}/id && cat {scratch}/id.pub");
+            Assert.AreEqual(0, prepared.ExitCode, prepared.StandardError);
+            SshPublicKey userKey = SshPublicKey.Parse(prepared.StandardOutput.Trim().Split('\n')[^1]);
+
+            // ① 声明成 dest.example 的会话，替它的认证请求签名。
+            SshSessionProof toDestination = await ProofAsync(destination);
+            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            {
+                Assert.IsTrue(
+                    await agent.DeclareSessionAsync(toDestination, SshAgentConnectionPurpose.Authentication),
+                    "真 agent 不接受我们的声明：三个字段的编码或签名不对");
+
+                byte[] signature = await agent.SignAsync(
+                    userKey.Blob, UserAuthRequest(toDestination.SessionId, userKey), SshAlgorithmNames.SshEd25519);
+                Assert.IsNotEmpty(signature);
+            }
+
+            // ② 篡改过签名的声明：agent 必须拒绝。
+            SshSessionProof forged = toDestination with { Signature = [.. toDestination.Signature[..^1], (byte)(toDestination.Signature[^1] ^ 0xFF)] };
+            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            {
+                Assert.IsFalse(await agent.DeclareSessionAsync(forged, SshAgentConnectionPurpose.Authentication));
+            }
+
+            // ③ 声明成别的主机的会话：受约束的钥拒签。
+            SshSessionProof toElsewhere = await ProofAsync(elsewhere);
+            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            {
+                Assert.IsTrue(await agent.DeclareSessionAsync(toElsewhere, SshAgentConnectionPurpose.Authentication));
+
+                SshAgentException refused = await Assert.ThrowsExactlyAsync<SshAgentException>(
+                    async () => await agent.SignAsync(
+                        userKey.Blob, UserAuthRequest(toElsewhere.SessionId, userKey), SshAlgorithmNames.SshEd25519));
+                Assert.AreEqual(SshFailureReason.AgentRefused, refused.Reason);
+            }
+
+            // 不声明时 agent 怎么对待受约束的钥 —— 只记下来，不断言（这正是本库曾经的样子）。
+            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            {
+                string unbound;
+                try
+                {
+                    await agent.SignAsync(userKey.Blob, UserAuthRequest(toDestination.SessionId, userKey), SshAlgorithmNames.SshEd25519);
+                    unbound = "签了";
+                }
+                catch (SshAgentException ex)
+                {
+                    unbound = $"拒签（{ex.Reason}）";
+                }
+                Console.WriteLine($"不声明会话时，真实 agent 对 ssh-add -h 约束过的钥：{unbound}");
+            }
+        }
+        finally
+        {
+            await connection.RunAsync($"kill {pid}; rm -rf {socket} {scratch}");
+        }
+
+        static async Task<SshSessionProof> ProofAsync(InMemorySshSigner hostKey)
+        {
+            byte[] sessionId = RandomNumberGenerator.GetBytes(32);
+            byte[] signature = await hostKey.SignAsync(sessionId, SshAlgorithmNames.SshEd25519);
+            return new SshSessionProof(hostKey.PublicKey.Blob.ToArray(), sessionId, signature);
+        }
+
+        // RFC 4252 §7 的签名输入：string session_id ‖ USERAUTH_REQUEST(publickey, has_signature = true)。
+        static byte[] UserAuthRequest(byte[] sessionId, SshPublicKey key)
+        {
+            ArrayBufferWriter<byte> buffer = new();
+            SshDataWriter writer = new(buffer);
+            writer.WriteString(sessionId);
+            writer.WriteByte((byte)SshMessageNumber.UserAuthRequest);
+            writer.WriteUtf8String("vela");
+            writer.WriteUtf8String(SshProtocolNames.ServiceConnection);
+            writer.WriteUtf8String(SshProtocolNames.AuthPublicKey);
+            writer.WriteBoolean(true);
+            writer.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+            writer.WriteString(key.Blob.Span);
+            return buffer.WrittenSpan.ToArray();
+        }
+    }
+
     [TestMethod]
     public async Task 保活探测能被真实服务端应答()
     {

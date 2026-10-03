@@ -149,7 +149,7 @@ internal static class XAuthority
     /// <returns>找到返回 cookie，否则 <see langword="null"/>。</returns>
     /// <remarks>
     /// <para>
-    /// 匹配规则：协议名必须是 <c>MIT-MAGIC-COOKIE-1</c>；显示号要对上
+    /// 匹配规则：协议名必须是 <c>MIT-MAGIC-COOKIE-1</c>，cookie 不能为空；显示号要对上
     /// （按十进制<b>数值</b>比，<c>"05"</c> 与显示 5 算对上；记录里的显示号是空串时当通配；
     /// 带符号、空白或其它字符而解析不了的不匹配）；地址族是
     /// <see cref="FamilyWild"/> 时不看地址。
@@ -188,7 +188,9 @@ internal static class XAuthority
         {
             // 〔velashell-docs/zh/ssh/spec/07 §7.5.7〕只认 MIT-MAGIC-COOKIE-1，
             // XDM-AUTHORIZATION-1 一律跳过（与 OpenSSH 一致）。
-            if (!string.Equals(entry.Name, MitMagicCookie1, StringComparison.Ordinal))
+            // 〔velashell-docs/zh/ssh/spec/07 §7.5.7〕cookie 为空的记录跳过、接着往下找：空 cookie 开不了任何门，
+            // 拿它当真 cookie 换进建立报文，后面那条有效的就被它挡住了。
+            if (!string.Equals(entry.Name, MitMagicCookie1, StringComparison.Ordinal) || entry.Data.Length == 0)
             {
                 continue;
             }

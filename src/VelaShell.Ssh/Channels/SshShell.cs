@@ -59,24 +59,26 @@ public sealed class SshShell : IAsyncDisposable
         SshTerminalSize size,
         X11Forwarder? x11 = null,
         AgentForwarder? agent = null,
-        SshForwardException? x11SetupFailure = null)
+        SshForwardException? x11SetupFailure = null,
+        SshForwardException? agentSetupFailure = null)
     {
         Channel = channel;
         Size = size;
         X11 = x11;
         Agent = agent;
         X11SetupFailure = x11SetupFailure;
+        AgentSetupFailure = agentSetupFailure;
     }
 
     /// <summary>底层通道。</summary>
     public SshChannel Channel { get; }
 
-    /// <summary>这个 shell 的 X11 转发；没请求过、或尽力而为的请求没成时是 <see langword="null"/>。</summary>
+    /// <summary>这个 shell 的 X11 转发；没请求过、或按 <see cref="ForwardFailureMode.Continue"/> 请求而没成时是 <see langword="null"/>。</summary>
     public X11Forwarder? X11 { get; }
 
     /// <summary>
-    /// 尽力而为的 X11 请求（<see cref="X11ForwardOptions.BestEffort"/>）没成时的原因；
-    /// 其余情况（成了、没请求、或者请求是严格的 —— 严格的失败直接抛）都是 <see langword="null"/>。
+    /// 按 <see cref="ForwardFailureMode.Continue"/> 请求的 X11（<see cref="X11ForwardOptions.FailureMode"/>）没成时的原因；
+    /// 其余情况（成了、没请求、或者请求是 <see cref="ForwardFailureMode.Fail"/> —— 那种失败直接抛）都是 <see langword="null"/>。
     /// </summary>
     /// <remarks>
     /// 〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕连接级开关打开的 X11 失败时「记日志，照常启动」。
@@ -85,8 +87,15 @@ public sealed class SshShell : IAsyncDisposable
     /// </remarks>
     public SshForwardException? X11SetupFailure { get; }
 
-    /// <summary>这个 shell 的 agent 转发；没请求过就是 <see langword="null"/>。</summary>
+    /// <summary>这个 shell 的 agent 转发；没请求过、或按 <see cref="ForwardFailureMode.Continue"/> 请求而没成时是 <see langword="null"/>。</summary>
     public AgentForwarder? Agent { get; }
+
+    /// <summary>
+    /// 按 <see cref="ForwardFailureMode.Continue"/> 请求的 agent 转发（<see cref="AgentForwardOptions.FailureMode"/>）
+    /// 没成时的原因 —— 本机 agent 连不上，或者服务端拒绝；其余情况都是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>语义与 <see cref="X11SetupFailure"/> 相同。</remarks>
+    public SshForwardException? AgentSetupFailure { get; }
 
     /// <summary>终端输出（<b>stdout 与 stderr 已经由伪终端合并</b>）。</summary>
     public PipeReader StandardOutput => Channel.StandardOutput;

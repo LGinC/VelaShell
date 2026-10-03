@@ -16,6 +16,7 @@ using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Crypto.Kex;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
+using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Transport;
 
@@ -27,12 +28,26 @@ namespace VelaShell.Ssh.Session;
 /// <param name="SessionId">会话标识（首次交换的 <c>H</c>，此后不变）。</param>
 /// <param name="HostKey">服务端出示并已通过验证的主机公钥。</param>
 /// <param name="StrictKeyExchange">本次连接是否启用了严格 KEX。</param>
+/// <param name="HostKeySignature">服务端在本次交换的应答里对 <c>H</c> 的签名 blob（已验过）。</param>
 internal sealed record SshKeyExchangeResult(
     SshNegotiatedAlgorithms Algorithms,
     byte[] ExchangeHash,
     byte[] SessionId,
     SshPublicKey HostKey,
-    bool StrictKeyExchange);
+    bool StrictKeyExchange,
+    byte[] HostKeySignature)
+{
+    /// <summary>给 ssh-agent 的会话声明用的身份证明（spec/07 §7.4）。</summary>
+    /// <exception cref="InvalidOperationException">这不是首次交换的结果。</exception>
+    /// <remarks>
+    /// 只有首次交换给得出来：会话标识是首次的 <c>H</c>，重协商的签名签的是那一轮自己的 <c>H</c>，
+    /// agent 拿主机公钥一验就对不上。
+    /// </remarks>
+    public SshSessionProof CreateSessionProof() =>
+        ExchangeHash.AsSpan().SequenceEqual(SessionId)
+            ? new SshSessionProof(HostKey.Blob.ToArray(), SessionId, HostKeySignature)
+            : throw new InvalidOperationException("只有首次密钥交换的结果能给出会话声明用的身份证明。");
+}
 
 /// <summary>执行一次完整的密钥交换（客户端侧）。</summary>
 /// <remarks>
@@ -290,7 +305,7 @@ internal sealed class SshKeyExchangeRunner
                 .ConfigureAwait(false);
 
             return new SshKeyExchangeResult(
-                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange);
+                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange, signature);
         }
         finally
         {

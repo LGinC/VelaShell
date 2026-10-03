@@ -521,7 +521,7 @@ public sealed class X11ForwardTests
         await using Fixture fixture = await Fixture.StartAsync(grantX11: false);
 
         await using SshShell shell = await fixture.Harness.Connection.OpenShellAsync(
-            new SshShellOptions { X11Forwarding = fixture.Options with { BestEffort = true } },
+            new SshShellOptions { X11Forwarding = fixture.Options with { FailureMode = ForwardFailureMode.Continue } },
             fixture.Harness.Token);
 
         Assert.IsNull(shell.X11, "没开成就不该有转发器");
@@ -544,7 +544,7 @@ public sealed class X11ForwardTests
     {
         await using Fixture fixture = await Fixture.StartAsync(grantX11: false);
 
-        Assert.IsFalse(fixture.Options.BestEffort, "默认必须是严格的");
+        Assert.AreEqual(ForwardFailureMode.Fail, fixture.Options.FailureMode, "默认必须是严格的");
 
         SshForwardException error = await Assert.ThrowsExactlyAsync<SshForwardException>(
             async () => await fixture.Harness.Connection.OpenShellAsync(
@@ -562,7 +562,7 @@ public sealed class X11ForwardTests
 
         await using SshCommand command = await fixture.Harness.Connection.ExecuteAsync(
             "xclock",
-            new SshCommandOptions { X11Forwarding = UnrunnableXAuth(fixture.Options) with { BestEffort = true } },
+            new SshCommandOptions { X11Forwarding = UnrunnableXAuth(fixture.Options) with { FailureMode = ForwardFailureMode.Continue } },
             fixture.Harness.Token);
 
         Assert.IsNull(command.X11);

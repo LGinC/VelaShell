@@ -419,7 +419,7 @@ public sealed class X11Forwarder : IAsyncDisposable
             // 临时文件里只有刚生成的那一条；按显示匹配不上时（显示名的写法与
             // 地址族的对应并不总是一目了然）就取其中唯一的 MIT-MAGIC-COOKIE-1。
             return XAuthority.FindCookie(entries, display)
-                ?? entries.FirstOrDefault(static e => e.Name == XAuthority.MitMagicCookie1)?.Data
+                ?? entries.FirstOrDefault(static e => e.Name == XAuthority.MitMagicCookie1 && e.Data.Length > 0)?.Data
                 ?? throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
                     $"{xauth} generate 跑完了，但没有生成 {display.XAuthName} 的 cookie。");
         }

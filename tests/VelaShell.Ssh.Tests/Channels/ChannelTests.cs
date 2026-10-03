@@ -103,6 +103,10 @@ public sealed class ChannelTests
 
         public async ValueTask DisposeAsync()
         {
+            // 与 TestSshServerHost 同一条规矩：先声明客户端要走了。用例结尾释放通道只发 CLOSE、不等对端回，
+            // 紧接着这里释放连接 —— 服务端那时才回的 CLOSE 撞上已经关掉的读取端，那是拆场的时序，不是服务端故障。
+            // 漏了这一句，调度慢一点的机器（macOS CI）上就偶发「测试服务端的收包循环挂了」。
+            ChannelServer.Observation.ClientGone = true;
             await _cts.CancelAsync();
             await Connection.DisposeAsync();
             try

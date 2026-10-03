@@ -19,6 +19,14 @@ internal static class SshAgentMessage
     public const byte SignResponse = 14;
     public const byte AddIdentity = 17;
     public const byte AddIdentityConstrained = 25;
+    public const byte Extension = 27;
+    public const byte ExtensionFailure = 28;
+
+    /// <summary>OpenSSH 的会话声明扩展名（<c>PROTOCOL.agent</c> §1）。</summary>
+    public const string SessionBindExtension = "session-bind@openssh.com";
+
+    /// <summary><see cref="SessionBindExtension"/> 的字节形式，给不想先解码字符串的比较用。</summary>
+    public static ReadOnlySpan<byte> SessionBindExtensionUtf8 => "session-bind@openssh.com"u8;
 
     /// <summary>约束：到期自动删除，参数 uint32 秒。</summary>
     public const byte ConstrainLifetime = 1;

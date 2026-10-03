@@ -32,18 +32,27 @@ public sealed class SshCommand : IAsyncDisposable
         SshChannel channel,
         X11Forwarder? x11 = null,
         AgentForwarder? agent = null,
-        SshForwardException? x11SetupFailure = null)
+        SshForwardException? x11SetupFailure = null,
+        SshForwardException? agentSetupFailure = null)
     {
         Channel = channel;
         X11 = x11;
         Agent = agent;
         X11SetupFailure = x11SetupFailure;
+        AgentSetupFailure = agentSetupFailure;
     }
 
-    /// <summary>这条命令的 agent 转发；没请求过就是 <see langword="null"/>。</summary>
+    /// <summary>这条命令的 agent 转发；没请求过、或按 <see cref="ForwardFailureMode.Continue"/> 请求而没成时是 <see langword="null"/>。</summary>
     public AgentForwarder? Agent { get; }
 
-    /// <summary>这条命令的 X11 转发；没请求过、或尽力而为的请求没成时是 <see langword="null"/>。</summary>
+    /// <summary>
+    /// 按 <see cref="ForwardFailureMode.Continue"/> 请求的 agent 转发（<see cref="AgentForwardOptions.FailureMode"/>）
+    /// 没成时的原因；其余情况都是 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>语义见 <see cref="SshShell.X11SetupFailure"/>。</remarks>
+    public SshForwardException? AgentSetupFailure { get; }
+
+    /// <summary>这条命令的 X11 转发；没请求过、或按 <see cref="ForwardFailureMode.Continue"/> 请求而没成时是 <see langword="null"/>。</summary>
     /// <remarks>
     /// 交出来是为了能看计数（接受了几条、拒绝了几条）——
     /// <c>RejectedChannels</c> 非零意味着有人拿着错的 cookie 在敲门。
@@ -51,7 +60,7 @@ public sealed class SshCommand : IAsyncDisposable
     public X11Forwarder? X11 { get; }
 
     /// <summary>
-    /// 尽力而为的 X11 请求（<see cref="X11ForwardOptions.BestEffort"/>）没成时的原因；
+    /// 按 <see cref="ForwardFailureMode.Continue"/> 请求的 X11（<see cref="X11ForwardOptions.FailureMode"/>）没成时的原因；
     /// 其余情况都是 <see langword="null"/>。
     /// </summary>
     /// <remarks>语义见 <see cref="SshShell.X11SetupFailure"/>。</remarks>

@@ -15,10 +15,35 @@ using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Tests.TestKit;
 
+/// <summary>测试 agent 收到会话声明（<c>session-bind@openssh.com</c>）时怎么回。</summary>
+internal enum TestDeclarationReply
+{
+    /// <summary>回 SUCCESS。</summary>
+    Accept,
+
+    /// <summary>回 FAILURE —— 不支持这个扩展的 agent 就这么回。</summary>
+    Reject,
+
+    /// <summary>不回、直接断开这条连接 —— 个别 agent 收到不认识的报文就这么干。</summary>
+    Disconnect,
+}
+
+/// <summary>测试 agent 收到的一条会话声明。</summary>
+/// <param name="Connection">在第几条 agent 连接上收到的（从 1 起）。</param>
+/// <param name="HostKeyBlob">声明里的主机公钥。</param>
+/// <param name="SessionId">声明里的会话标识。</param>
+/// <param name="IsForwarding">声明里的 <c>is_forwarding</c>。</param>
+/// <param name="SignatureVerified">声明里的签名能不能用主机公钥对会话标识验过 —— 真 agent 会这么验。</param>
+internal sealed record TestSessionDeclaration(
+    int Connection, byte[] HostKeyBlob, byte[] SessionId, bool IsForwarding, bool SignatureVerified);
+
 /// <summary>在一条流上说 agent 协议的测试 agent。</summary>
 internal sealed class TestAgent
 {
     private const int MaxMessage = 256 * 1024;
+
+    private readonly List<TestSessionDeclaration> _declarations = [];
+    private int _connections;
 
     private readonly List<(InMemorySshSigner Signer, string Comment)> _keys = [];
 
@@ -50,6 +75,27 @@ internal sealed class TestAgent
     /// <summary>最近一次带的有效期约束（秒）。</summary>
     public uint? LastLifetimeSeconds { get; private set; }
 
+    /// <summary>收到会话声明时怎么回。</summary>
+    public TestDeclarationReply DeclarationReply { get; set; } = TestDeclarationReply.Accept;
+
+    /// <summary>收到的会话声明，按到达顺序。</summary>
+    public IReadOnlyList<TestSessionDeclaration> Declarations
+    {
+        get
+        {
+            lock (_declarations)
+            {
+                return [.. _declarations];
+            }
+        }
+    }
+
+    /// <summary>收到的、不是会话声明的扩展请求次数。</summary>
+    public int OtherExtensionRequests { get; private set; }
+
+    /// <summary>服务过几条连接。</summary>
+    public int Connections => Volatile.Read(ref _connections);
+
     /// <summary>agent 里现有的密钥与注释。</summary>
     public IReadOnlyList<(SshPublicKey Key, string Comment)> Keys =>
         [.. _keys.Select(k => (k.Signer.PublicKey, k.Comment))];
@@ -72,6 +118,7 @@ internal sealed class TestAgent
     public async Task ServeAsync(Stream stream, CancellationToken cancellationToken)
     {
         byte[] header = new byte[4];
+        int connection = Interlocked.Increment(ref _connections);
 
         try
         {
@@ -88,7 +135,16 @@ internal sealed class TestAgent
                 byte[] request = new byte[length];
                 await stream.ReadExactlyAsync(request, cancellationToken);
 
-                byte[] response = await HandleAsync(request, cancellationToken);
+                byte[]? response = request is [27, ..]
+                    ? HandleExtension(request, connection)
+                    : await HandleAsync(request, cancellationToken);
+
+                if (response is null)
+                {
+                    // 模拟「收到不认识的报文就断开」的 agent。
+                    await stream.DisposeAsync();
+                    return;
+                }
 
                 BinaryPrimitives.WriteUInt32BigEndian(header, (uint)response.Length);
                 await stream.WriteAsync(header, cancellationToken);
@@ -108,6 +164,53 @@ internal sealed class TestAgent
         {
             // 同上。
         }
+    }
+
+    /// <summary>
+    /// <c>SSH_AGENTC_EXTENSION</c>：只认 <c>session-bind@openssh.com</c>，按 <see cref="DeclarationReply"/> 回；
+    /// 返回 <see langword="null"/> 表示断开连接。
+    /// </summary>
+    private byte[]? HandleExtension(byte[] request, int connection)
+    {
+        SshDataReader reader = new(new ReadOnlySequence<byte>(request));
+        reader.ReadByte();
+        string name = reader.ReadUtf8String(MaxMessage);
+
+        if (name != "session-bind@openssh.com")
+        {
+            OtherExtensionRequests++;
+            return [5];
+        }
+
+        byte[] hostKey = reader.ReadStringAsArray(MaxMessage);
+        byte[] sessionId = reader.ReadStringAsArray(MaxMessage);
+        byte[] signature = reader.ReadStringAsArray(MaxMessage);
+        bool isForwarding = reader.ReadBoolean();
+
+        // 与真 agent 一样：用声明里的主机公钥验它对会话标识的签名。
+        bool verified;
+        try
+        {
+            SshDataReader signatureReader = new(new ReadOnlySequence<byte>(signature));
+            string algorithm = signatureReader.ReadUtf8String(MaxMessage);
+            verified = SshPublicKey.Decode(hostKey).VerifySignature(signature, sessionId, algorithm);
+        }
+        catch (Exception)
+        {
+            verified = false;
+        }
+
+        lock (_declarations)
+        {
+            _declarations.Add(new TestSessionDeclaration(connection, hostKey, sessionId, isForwarding, verified));
+        }
+
+        return DeclarationReply switch
+        {
+            TestDeclarationReply.Accept => [6],
+            TestDeclarationReply.Reject => [5],
+            _ => null,
+        };
     }
 
     private async Task<byte[]> HandleAsync(byte[] request, CancellationToken cancellationToken)

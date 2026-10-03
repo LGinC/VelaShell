@@ -139,6 +139,21 @@ public sealed class X11PrimitiveTests
     }
 
     [TestMethod]
+    public void cookie为空的记录跳过_接着找后面有效的那条()
+    {
+        // 空 cookie 开不了任何门：拿它当真 cookie 换进建立报文，后面那条有效的就被它挡住了。
+        byte[] cookie = [1, 2, 3, 4];
+        byte[] file =
+        [
+            .. Entry(XAuthority.FamilyWild, "", "0", XAuthority.MitMagicCookie1, []),
+            .. Entry(XAuthority.FamilyLocal, "myhost", "0", XAuthority.MitMagicCookie1, cookie),
+        ];
+
+        Assert.AreSequenceEqual(
+            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!, hostName: "myhost"));
+    }
+
+    [TestMethod]
     public void 本机主机名带域名也能匹配()
     {
         // .Xauthority 里存的是 gethostname() 的完整值；Environment.MachineName 在类 Unix 上会截到第一个点。
