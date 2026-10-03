@@ -48,6 +48,15 @@ public sealed record AgentForwardOptions
     /// <summary>同时允许几条 agent 通道。</summary>
     public int MaxConnections { get; init; } = 8;
 
+    /// <summary>开会话时 agent 转发没开成（本机 agent 连不上、服务端拒绝），这次启动怎么办。</summary>
+    /// <remarks>
+    /// <b>默认 <see cref="ForwardFailureMode.Fail"/></b>，与 X11 同一条规矩（<see cref="X11ForwardOptions.FailureMode"/>）：
+    /// 显式要求的失败就抛；连接级开关打开的（<c>ssh_config</c> 的 <c>ForwardAgent yes</c>、宿主的连接配置）
+    /// 用 <see cref="ForwardFailureMode.Continue"/>，原因放在 <see cref="Channels.SshShell.AgentSetupFailure"/> /
+    /// <see cref="Channels.SshCommand.AgentSetupFailure"/> 上。
+    /// </remarks>
+    public ForwardFailureMode FailureMode { get; init; }
+
     /// <summary>本机 agent 的位置；<see langword="null"/> 取 <c>SSH_AUTH_SOCK</c> / Windows 的 OpenSSH agent 管道。</summary>
     public string? AgentEndpoint { get; init; }
 

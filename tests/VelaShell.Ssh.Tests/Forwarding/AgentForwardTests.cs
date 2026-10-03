@@ -7,10 +7,12 @@
 // **签任何东西**。所以这一组里最要紧的不是「能转发」，
 // 而是那三条安全约束确实拦得住。
 
+using System.Buffers;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
@@ -500,6 +502,266 @@ public sealed class AgentForwardTests
 
         Assert.IsNull(channel, "没登记处理器的通道类型必须被明确拒绝");
         Assert.IsTrue(harness.Connection.IsAlive, "拒绝一条通道不该连累会话");
+    }
+
+    // ------------------------------------------------------------ 本机 agent 不在（spec/07 §7.1）
+
+    /// <summary>一个永远连不上的本机 agent（Windows 上服务没起、其它平台 SSH_AUTH_SOCK 没设）。</summary>
+    private static ValueTask<SshAgentClient> NoAgent(CancellationToken cancellationToken) =>
+        ValueTask.FromException<SshAgentClient>(
+            new SshAgentException(SshFailureReason.AgentNotRunning, "测试：本机 agent 没在跑。"));
+
+    [TestMethod]
+    public async Task 本机agent连不上时不宣告转发()
+    {
+        await using Harness harness = await Harness.StartAsync();
+        SshChannel session = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        SshForwardException error = await Assert.ThrowsExactlyAsync<SshForwardException>(
+            async () => await AgentForwarder.RequestAsync(
+                harness.Connection, session, AgentForwardOptions.Default with { LocalConnector = NoAgent }, harness.Token));
+
+        Assert.AreEqual(SshFailureReason.AgentNotRunning, error.Reason, "原因沿用 agent 那边的，宿主据此给出本地化的提示");
+        Assert.AreEqual(0, harness.ChannelServer.Observation.AgentForwardRequests,
+            "宣告了的话，远端的 SSH_AUTH_SOCK 就指向一个永远连不通的 agent");
+
+        Stream? sneaky = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelAuthAgent, default, harness.Token);
+        Assert.IsNull(sneaky, "没宣告就不该接 agent 通道");
+    }
+
+    [TestMethod]
+    public async Task Continue模式下本机agent连不上时shell照常启动并交出原因()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        await using SshShell shell = await harness.Connection.OpenShellAsync(
+            new SshShellOptions
+            {
+                AgentForwarding = new AgentForwardOptions { LocalConnector = NoAgent, FailureMode = ForwardFailureMode.Continue },
+            },
+            harness.Token);
+
+        Assert.IsNull(shell.Agent, "没开成就不该有转发器");
+        Assert.IsNotNull(shell.AgentSetupFailure, "没开成的原因要交给调用方");
+        Assert.AreEqual(SshFailureReason.AgentNotRunning, shell.AgentSetupFailure.Reason);
+        Assert.Contains("shell", harness.ChannelServer.Observation.Requests);
+        Assert.AreEqual(0, harness.ChannelServer.Observation.AgentForwardRequests);
+    }
+
+    [TestMethod]
+    public async Task Continue模式下服务端拒绝时shell照常启动并交出原因()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            CloseAfterScript = false,
+            ExitCode = null,
+            RejectAgentForward = true,
+        });
+
+        await using SshShell shell = await harness.Connection.OpenShellAsync(
+            new SshShellOptions
+            {
+                AgentForwarding = new AgentForwardOptions
+                {
+                    LocalConnector = harness.ConnectAgentAsync,
+                    FailureMode = ForwardFailureMode.Continue,
+                },
+            },
+            harness.Token);
+
+        Assert.IsNull(shell.Agent);
+        Assert.AreEqual(SshFailureReason.ForwardRejected, shell.AgentSetupFailure?.Reason);
+        Assert.Contains("shell", harness.ChannelServer.Observation.Requests);
+
+        // 吞掉的失败不能在连接上留下半挂的处理器。
+        Stream? sneaky = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelAuthAgent, default, harness.Token);
+        Assert.IsNull(sneaky);
+    }
+
+    [TestMethod]
+    public async Task 默认Fail模式下本机agent连不上时shell不启动()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        Assert.AreEqual(ForwardFailureMode.Fail, AgentForwardOptions.Default.FailureMode, "默认必须是严格的");
+
+        SshForwardException error = await Assert.ThrowsExactlyAsync<SshForwardException>(
+            async () => await harness.Connection.OpenShellAsync(
+                new SshShellOptions { AgentForwarding = new AgentForwardOptions { LocalConnector = NoAgent } },
+                harness.Token));
+
+        Assert.AreEqual(SshFailureReason.AgentNotRunning, error.Reason);
+        Assert.DoesNotContain("shell", harness.ChannelServer.Observation.Requests);
+    }
+
+    [TestMethod]
+    public async Task 通道到来时本机agent连不上就回OPEN_FAILURE而不是先接再关()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        using var key = InMemorySshSigner.GenerateEd25519();
+        harness.Agent.Add(key, "k");
+
+        // 请求时 agent 还在（试连通过），之后停了。
+        bool agentUp = true;
+        ValueTask<SshAgentClient> Connector(CancellationToken cancellationToken) =>
+            Volatile.Read(ref agentUp) ? harness.ConnectAgentAsync(cancellationToken) : NoAgent(cancellationToken);
+
+        SshChannel session = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        AgentForwarder forwarder = await AgentForwarder.RequestAsync(
+            harness.Connection, session, AgentForwardOptions.Default with { LocalConnector = Connector }, harness.Token);
+
+        Volatile.Write(ref agentUp, false);
+        Stream? refused = await harness.ChannelServer
+            .OpenChannelToClientAsync(SshProtocolNames.ChannelAuthAgent, default, harness.Token)
+            .WaitAsync(TimeSpan.FromSeconds(10), harness.Token);
+        Assert.IsNull(refused, "本机 agent 连不上时，远端当场就该知道 —— 而不是拿到一条接下来又被关掉的通道");
+        Assert.IsTrue(harness.Connection.IsAlive);
+
+        // 被拒的那次要把并发名额还回去：agent 回来之后照常能开。
+        Volatile.Write(ref agentUp, true);
+        Stream? accepted = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelAuthAgent, default, harness.Token);
+        Assert.IsNotNull(accepted);
+        await using (accepted)
+        {
+            Assert.HasCount(1, await TestRemoteAgentClient.ListAsync(accepted, harness.Token));
+        }
+
+        await forwarder.DisposeAsync();
+    }
+
+    // ------------------------------------------------------------ 会话声明（spec/07 §7.4）
+
+    [TestMethod]
+    public async Task 转发用的agent连接先声明会话()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        using var key = InMemorySshSigner.GenerateEd25519();
+        harness.Agent.Add(key, "k");
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness);
+        await using (remote)
+        {
+            Assert.HasCount(1, await TestRemoteAgentClient.ListAsync(remote, harness.Token));
+        }
+
+        TestSessionDeclaration declaration = Assert.ContainsSingle(harness.Agent.Declarations);
+        Assert.IsTrue(declaration.IsForwarding, "转发用的连接 is_forwarding 必须为真");
+        Assert.IsTrue(declaration.SignatureVerified, "签名必须是首次交换里服务端对会话标识的那一个 —— agent 会验");
+        Assert.AreSequenceEqual(harness.Connection.SessionId.ToArray(), declaration.SessionId);
+        Assert.AreSequenceEqual(harness.Connection.HostKey.Blob.ToArray(), declaration.HostKeyBlob);
+
+        await forwarder.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task 远端那一跳的会话声明照转给本机agent()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness);
+        await using (remote)
+        {
+            // 远端主机上的 ssh 连下一跳时，会经转发的 agent 把它自己的声明接在我们的后面。
+            using var nextHop = InMemorySshSigner.GenerateEd25519();
+            byte[] nextSessionId = new byte[32];
+            Random.Shared.NextBytes(nextSessionId);
+            byte[] nextSignature = await nextHop.SignAsync(nextSessionId, SshAlgorithmNames.SshEd25519, harness.Token);
+
+            byte[] response = await TestRemoteAgentClient.ExchangeAsync(
+                remote,
+                SessionDeclaration(nextHop.PublicKey.Blob.ToArray(), nextSessionId, nextSignature, isForwarding: false),
+                harness.Token);
+
+            Assert.AreSequenceEqual(new byte[] { 6 }, response, "agent 的应答原样交回远端");
+
+            IReadOnlyList<TestSessionDeclaration> declarations = harness.Agent.Declarations;
+            Assert.HasCount(2, declarations);
+            Assert.IsTrue(declarations[0].IsForwarding, "我们的声明在前");
+            Assert.AreSequenceEqual(nextSessionId, declarations[1].SessionId, "远端的接在后面");
+            Assert.AreEqual(declarations[0].Connection, declarations[1].Connection, "必须在同一条 agent 连接上，agent 才连得成一条路径");
+        }
+
+        await forwarder.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task 会话声明以外的扩展一律不转()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness);
+        await using (remote)
+        {
+            ArrayBufferWriter<byte> buffer = new();
+            SshDataWriter writer = new(buffer);
+            writer.WriteByte(27);
+            writer.WriteUtf8String("query");
+
+            byte[] response = await TestRemoteAgentClient.ExchangeAsync(remote, buffer.WrittenSpan.ToArray(), harness.Token);
+
+            Assert.AreSequenceEqual(new byte[] { 5 }, response);
+        }
+
+        Assert.AreEqual(0, harness.Agent.OtherExtensionRequests, "别的扩展根本不该到达本机 agent");
+        await forwarder.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task agent不支持会话声明时照常转发()
+    {
+        await using Harness harness = await Harness.StartAsync();
+        harness.Agent.DeclarationReply = TestDeclarationReply.Reject;
+
+        using var key = InMemorySshSigner.GenerateEd25519();
+        harness.Agent.Add(key, "k");
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness);
+        await using (remote)
+        {
+            Assert.HasCount(1, await TestRemoteAgentClient.ListAsync(remote, harness.Token));
+        }
+
+        await forwarder.DisposeAsync();
+    }
+
+    [TestMethod]
+    public async Task agent因为会话声明断开时重连一次不再声明()
+    {
+        // 个别 agent 收到不认识的报文就断。远端不能为一个可有可无的扩展付出「agent 不可用」的代价。
+        await using Harness harness = await Harness.StartAsync();
+        harness.Agent.DeclarationReply = TestDeclarationReply.Disconnect;
+
+        using var key = InMemorySshSigner.GenerateEd25519();
+        harness.Agent.Add(key, "k");
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness);
+        await using (remote)
+        {
+            Assert.HasCount(1, await TestRemoteAgentClient.ListAsync(remote, harness.Token));
+        }
+
+        Assert.HasCount(1, harness.Agent.Declarations, "重连之后不再声明");
+        Assert.AreEqual(3, harness.Agent.Connections, "试连一次、声明时断一次、重连一次");
+        await forwarder.DisposeAsync();
+    }
+
+    /// <summary>拼一条 <c>session-bind@openssh.com</c> 扩展请求（OpenSSH PROTOCOL.agent §1）。</summary>
+    private static byte[] SessionDeclaration(byte[] hostKey, byte[] sessionId, byte[] signature, bool isForwarding)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter writer = new(buffer);
+        writer.WriteByte(27);
+        writer.WriteUtf8String("session-bind@openssh.com");
+        writer.WriteString(hostKey);
+        writer.WriteString(sessionId);
+        writer.WriteString(signature);
+        writer.WriteBoolean(isForwarding);
+        return buffer.WrittenSpan.ToArray();
     }
 
     [TestMethod]

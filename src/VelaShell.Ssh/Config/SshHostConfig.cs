@@ -144,8 +144,47 @@ public sealed class SshHostConfig
     /// <summary>是否只用显式给出的密钥（<c>IdentitiesOnly yes</c>）。</summary>
     public bool IdentitiesOnly => IsYes(First("IdentitiesOnly"));
 
-    /// <summary><c>ForwardAgent</c>。</summary>
-    public bool ForwardAgent => IsYes(First("ForwardAgent"));
+    /// <summary><c>ForwardAgent</c> 开着没有：<c>yes</c>、给了 agent 套接字路径、给了设着的 <c>$环境变量</c> 都算开。</summary>
+    public bool ForwardAgent => TryGetForwardedAgent(out _);
+
+    /// <summary>按 <c>ForwardAgent</c> 的值决定要不要转发、转发哪个 agent。</summary>
+    /// <param name="endpoint">要转发的 agent；<see langword="null"/> 是默认的那个（<c>SSH_AUTH_SOCK</c> / Windows 的 OpenSSH agent 管道）。</param>
+    /// <returns>要转发时为 <see langword="true"/>。</returns>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕ssh_config(5) 的写法有四种：<c>yes</c> / <c>no</c>（大小写均可）、
+    /// 一个 agent 套接字的路径（展开 <c>~</c> 与 <c>%d %u %h %r</c>）、以 <c>$</c> 开头的环境变量名（变量的值是路径）。
+    /// 曾经只认 <c>yes</c>：写了路径的配置被当成 <c>no</c>，转发悄悄没开。
+    /// </para>
+    /// <para>
+    /// 环境变量没设或为空时不转发 —— 没有一个可转发的 agent，宣告出去也只是让远端白连一次。
+    /// </para>
+    /// </remarks>
+    internal bool TryGetForwardedAgent(out string? endpoint)
+    {
+        endpoint = null;
+        string? value = First("ForwardAgent")?.Trim();
+
+        if (string.IsNullOrEmpty(value) || string.Equals(value, "no", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(value, "yes", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        if (value.StartsWith('$'))
+        {
+            string? fromEnvironment = value.Length > 1 ? Environment.GetEnvironmentVariable(value[1..]) : null;
+            endpoint = string.IsNullOrEmpty(fromEnvironment) ? null : fromEnvironment;
+            return endpoint is not null;
+        }
+
+        endpoint = SshConfigFile.ExpandPath(value, HostName, User);
+        return endpoint is not null;
+    }
 
     /// <summary><c>Compression</c>。</summary>
     public bool Compression => IsYes(First("Compression"));
@@ -200,19 +239,26 @@ public sealed class SshHostConfig
     /// 模板里已经显式设了的不会被覆盖。
     /// </para>
     /// <para>
-    /// 〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕<c>ForwardX11 yes</c> 产生的 X11 选项是
-    /// <b>尽力而为</b>的（<see cref="X11ForwardOptions.BestEffort"/>）：本机没有显示、没有 <c>xauth</c>、
-    /// 服务端拒绝时 shell 照常启动，原因见 <see cref="SshShell.X11SetupFailure"/> ——
-    /// 一份存量配置不该让所有会话都起不来。模板里调用方自己给的 X11 选项保持原样（显式的，失败就抛）。
+    /// 〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕<c>ForwardX11 yes</c> 与 <c>ForwardAgent</c> 产生的选项都按
+    /// <see cref="ForwardFailureMode.Continue"/> 请求：本机没有显示、没有 <c>xauth</c>、本机 agent 没在跑、
+    /// 服务端拒绝时 shell 照常启动，原因见 <see cref="SshShell.X11SetupFailure"/> / <see cref="SshShell.AgentSetupFailure"/> ——
+    /// 一份存量配置不该让所有会话都起不来。模板里调用方自己给的选项保持原样（显式的，失败就抛）。
     /// </para>
     /// </remarks>
     public SshShellOptions ApplyToShell(SshShellOptions? template = null)
     {
         SshShellOptions options = template ?? SshShellOptions.Default;
 
-        if (ForwardAgent && options.AgentForwarding is null)
+        if (options.AgentForwarding is null && TryGetForwardedAgent(out string? agentEndpoint))
         {
-            options = options with { AgentForwarding = AgentForwardOptions.Default };
+            options = options with
+            {
+                AgentForwarding = new AgentForwardOptions
+                {
+                    AgentEndpoint = agentEndpoint,
+                    FailureMode = ForwardFailureMode.Continue,
+                },
+            };
         }
 
         if (ForwardX11 && options.X11Forwarding is null)
@@ -222,7 +268,7 @@ public sealed class SshHostConfig
                 X11Forwarding = new X11ForwardOptions
                 {
                     Trusted = ForwardX11Trusted,
-                    BestEffort = true,
+                    FailureMode = ForwardFailureMode.Continue,
                     Timeout = ForwardX11Timeout ?? X11ForwardOptions.Default.Timeout,
                 },
             };

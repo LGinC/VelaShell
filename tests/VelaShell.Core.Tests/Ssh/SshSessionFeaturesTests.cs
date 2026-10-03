@@ -100,7 +100,7 @@ public class SshSessionFeaturesTests
     /// 时 shell 照开,原因走 <c>SshShell.X11SetupFailure</c> —— 否则开 shell 会被它整个拦下。
     /// </summary>
     [TestMethod]
-    public void X11_IsBestEffort()
+    public void X11_ContinuesWithoutItOnFailure()
     {
         List<ShellStreamNotice> notices = [];
 
@@ -108,7 +108,7 @@ public class SshSessionFeaturesTests
             new SshSessionOptions { X11Forwarding = true, X11Display = "127.0.0.1:1.0" }, notices);
 
         Assert.IsNotNull(options);
-        Assert.IsTrue(options.BestEffort);
+        Assert.AreEqual(ForwardFailureMode.Continue, options.FailureMode);
     }
 
     /// <summary>
@@ -209,6 +209,18 @@ public class SshSessionFeaturesTests
 
         Assert.IsNull(policy.AllowedKeys, "没限定时交 null：整个 agent 可见（空列表在库里表示一把都不给）");
         Assert.IsNull(policy.ConfirmEachSignature);
+    }
+
+    /// <summary>
+    /// 与 X11 同一条理由:本机 agent 没在跑、服务端 <c>AllowAgentForwarding no</c> 都很常见,
+    /// shell 照开,原因走 <c>SshShell.AgentSetupFailure</c> —— 曾经是被拒之后去掉 agent 把整个 shell 重开一次。
+    /// </summary>
+    [TestMethod]
+    public void Agent_ContinuesWithoutItOnFailure()
+    {
+        AgentForwardOptions policy = SshForwardingOptions.Agent(new SshSessionOptions { AgentForwarding = true }, [])!;
+
+        Assert.AreEqual(ForwardFailureMode.Continue, policy.FailureMode);
     }
 
     [TestMethod]

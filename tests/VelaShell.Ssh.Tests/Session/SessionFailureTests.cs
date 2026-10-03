@@ -52,7 +52,7 @@ public sealed class SessionFailureTests
         /// <summary>裸对端不跑握手；连接只要一份形式上完整的密钥交换结果（本组用例不重协商）。</summary>
         private static readonly SshKeyExchangeResult UnusedKeyExchange = new(
             default, new byte[32], new byte[32],
-            SshPublicKey.Decode(TestHostKey.Create("ssh-ed25519").PublicKeyBlob), StrictKeyExchange: false);
+            SshPublicKey.Decode(TestHostKey.Create("ssh-ed25519").PublicKeyBlob), StrictKeyExchange: false, HostKeySignature: []);
 
         public static RawPeer Start(SshKeepAlivePolicy? keepAlive = null, SshConnectionLimits? limits = null)
         {

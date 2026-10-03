@@ -32,7 +32,7 @@ namespace VelaShell.Ssh.Keys;
 /// PKCS#11、HSM 都行,证书不改变这一点。
 /// </para>
 /// </remarks>
-public sealed class SshCertificateSigner : ISshSigner, IDisposable
+public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDisposable
 {
     private readonly ISshSigner _inner;
 
@@ -108,6 +108,11 @@ public sealed class SshCertificateSigner : ISshSigner, IDisposable
     public ValueTask<byte[]> SignAsync(
         ReadOnlyMemory<byte> data, string algorithm, CancellationToken cancellationToken = default) =>
         _inner.SignAsync(data, SshPublicKey.StripCertificateSuffix(algorithm), cancellationToken);
+
+    /// <inheritdoc />
+    /// <remarks>内层是 agent 里的钥时，会话声明照样要发 —— 证书不改变私钥在哪里。</remarks>
+    ValueTask ISessionAwareSigner.PrepareForSessionAsync(SshSessionProof proof, CancellationToken cancellationToken) =>
+        _inner is ISessionAwareSigner aware ? aware.PrepareForSessionAsync(proof, cancellationToken) : ValueTask.CompletedTask;
 
     /// <summary>释放内层的签名器（持有私钥材料时清零）。</summary>
     public void Dispose() => (_inner as IDisposable)?.Dispose();

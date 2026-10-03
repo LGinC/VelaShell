@@ -47,11 +47,10 @@ public abstract record SshSessionRequestOptions
     /// 等于把本机所有图形会话的输入输出交给远端（<c>velashell-docs/zh/ssh/spec/07</c> §7.5.1）。
     /// </para>
     /// <para>
-    /// 〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕在这里显式要求的，<b>失败就抛</b> ——
-    /// 调用方明确要 X11，静默降级等于骗他。例外是
-    /// <see cref="X11ForwardOptions.BestEffort"/> 为 <see langword="true"/> 的选项
-    /// （连接级开关打开的，比如 <c>ssh_config</c> 的 <c>ForwardX11 yes</c>）：失败时不开 X11、
-    /// 命令 / shell 照常启动，原因放在结果对象的 <c>X11SetupFailure</c> 上。
+    /// 〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕没开成时怎么办看 <see cref="X11ForwardOptions.FailureMode"/>：
+    /// 默认 <see cref="ForwardFailureMode.Fail"/>，<b>失败就抛</b> —— 调用方明确要 X11，静默降级等于骗他；
+    /// <see cref="ForwardFailureMode.Continue"/>（连接级开关打开的，比如 <c>ssh_config</c> 的 <c>ForwardX11 yes</c>）
+    /// 不开 X11、命令 / shell 照常启动，原因放在结果对象的 <c>X11SetupFailure</c> 上。
     /// </para>
     /// </remarks>
     public X11ForwardOptions? X11Forwarding { get; init; }
@@ -60,7 +59,9 @@ public abstract record SshSessionRequestOptions
     /// <remarks>
     /// <b>默认不请求。</b> agent 转发让远端能用本机 agent 里的钥签名 ——
     /// 远端的 root 同样能用。<see cref="AgentForwardOptions.AllowedKeys"/> /
-    /// <see cref="AgentForwardOptions.ConfirmEachSignature"/> 就是为这个存在的。显式要求而服务端拒绝时抛出。
+    /// <see cref="AgentForwardOptions.ConfirmEachSignature"/> 就是为这个存在的。
+    /// 没开成（本机 agent 连不上、服务端拒绝）时与 X11 同一条规矩，看 <see cref="AgentForwardOptions.FailureMode"/>，
+    /// 原因放在结果对象的 <c>AgentSetupFailure</c> 上。
     /// </remarks>
     public AgentForwardOptions? AgentForwarding { get; init; }
 

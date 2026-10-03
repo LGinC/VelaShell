@@ -106,6 +106,7 @@ public sealed partial class SshConnection
             {
                 BannerHandler = options.BannerHandler,
                 AllowSha1RsaSignatures = options.AllowSha1RsaSignatures,
+                SessionProof = kex.CreateSessionProof(),
             };
 
             List<SshCredential> credentials = [.. options.Credentials];

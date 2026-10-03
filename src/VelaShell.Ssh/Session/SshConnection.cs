@@ -86,6 +86,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         ArgumentNullException.ThrowIfNull(kex);
         _transport = transport ?? throw new ArgumentNullException(nameof(transport));
         _sessionId = kex.SessionId;
+        SessionProof = kex.CreateSessionProof();
         Algorithms = kex.Algorithms;
         HostKey = kex.HostKey;
         _limits = limits ?? SshConnectionLimits.Default;
@@ -103,6 +104,9 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// 只交出只读视图：重协商拿的就是这份字节去算哈希，交出可写的数组等于让调用方能改坏下一次重协商。
     /// </remarks>
     public ReadOnlyMemory<byte> SessionId => _sessionId;
+
+    /// <summary>首次密钥交换里服务端的身份证明 —— agent 转发给本机 agent 发会话声明时用（spec/07 §7.4）。</summary>
+    internal Keys.SshSessionProof SessionProof { get; }
 
     /// <summary>这条会话实际协商出来的算法。</summary>
     /// <remarks>

@@ -5,6 +5,7 @@ using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Session;
@@ -209,21 +210,14 @@ internal static class SshConnectionAssembler
         return socket is not null && socket.StartsWith(@"\\.\pipe\", StringComparison.Ordinal) ? socket : null;
     }
 
-    /// <summary>连本机 agent 的上限。</summary>
+    /// <summary>连本机 agent。</summary>
     /// <remarks>
-    /// Windows 上 agent 服务没起时命名管道根本不存在,而不带超时的管道连接会<b>一直重试</b>
-    /// 直到管道出现 —— 用户看到的是连接转圈转到整条连接超时,原因只字不提。
-    /// 本机 IPC 用不了多久,三秒足够分辨「在跑」与「没在跑」。
+    /// Windows 上 agent 服务没起时命名管道根本不存在 —— 等它出现的时限在库里
+    /// (<c>SshAgentClient.PipeConnectTimeout</c>),到点以 <see cref="SshFailureReason.AgentNotRunning" /> 报出,
+    /// agent 转发那一路也走同一个时限。宿主不再另套一层计时。
     /// </remarks>
-    private static readonly TimeSpan AgentConnectTimeout = TimeSpan.FromSeconds(3);
-
-    /// <summary>连本机 agent,带 <see cref="AgentConnectTimeout" /> 上限;超时以 <see cref="OperationCanceledException" /> 报出。</summary>
-    internal static async ValueTask<SshAgentClient> ConnectLocalAgentAsync(CancellationToken cancellationToken)
-    {
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(AgentConnectTimeout);
-        return await SshAgentClient.ConnectAsync(AgentEndpoint(), timeout.Token).ConfigureAwait(false);
-    }
+    internal static ValueTask<SshAgentClient> ConnectLocalAgentAsync(CancellationToken cancellationToken) =>
+        SshAgentClient.ConnectAsync(AgentEndpoint(), cancellationToken);
 
     private static async ValueTask<SshAgentClient> ConnectAgentAsync(CancellationToken cancellationToken)
     {
@@ -233,12 +227,7 @@ internal static class SshConnectionAssembler
         }
         catch (SshAgentException ex)
         {
-            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", ex.Message), ex);
-        }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new VelaSshAuthenticationException(
-                Strings.Format("SshErr_AgentUnavailable", Strings.Get("SshErr_AgentNotRunning")), ex);
+            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", SshInterop.Localize(ex)), ex);
         }
     }
 

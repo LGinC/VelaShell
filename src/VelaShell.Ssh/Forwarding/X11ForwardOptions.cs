@@ -72,17 +72,15 @@ public sealed record X11ForwardOptions
     /// <summary>同时允许的 X11 通道数上限。</summary>
     public int MaxConnections { get; init; } = 16;
 
-    /// <summary>
-    /// 尽力而为：开会话时 X11 设置失败就不开 X11、会话照常启动，而不是抛异常。
-    /// </summary>
+    /// <summary>开会话时 X11 没开成，这次启动怎么办。</summary>
     /// <remarks>
     /// <para>
-    /// <b>默认 <see langword="false"/>（严格）。</b>〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕
+    /// <b>默认 <see cref="ForwardFailureMode.Fail"/>。</b>〔<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8〕
     /// 调用方在这一次执行上显式要求的 X11，失败就抛 —— 他明确要 X11，静默降级等于骗他。
     /// </para>
     /// <para>
     /// 只有 X11 是由<b>连接级开关</b>打开的时候（比如 <c>ssh_config</c> 里的 <c>ForwardX11 yes</c>，
-    /// 见 <see cref="Config.SshHostConfig.ApplyToShell"/>）才设成 <see langword="true"/>：
+    /// 见 <see cref="Config.SshHostConfig.ApplyToShell"/>）才用 <see cref="ForwardFailureMode.Continue"/>：
     /// 否则一份存量配置会让这台主机上的所有会话都起不来。
     /// </para>
     /// <para>
@@ -92,7 +90,7 @@ public sealed record X11ForwardOptions
     /// 并计入转发的错误计数（<see cref="ForwardMetrics.MeterName"/>）。取消照常抛出。
     /// </para>
     /// </remarks>
-    public bool BestEffort { get; init; }
+    public ForwardFailureMode FailureMode { get; init; }
 
     /// <summary>
     /// 本机显示的连接器:设了它,<c>x11</c> 通道不再去连 <see cref="Display" /> 的套接字,而是调它拿一条双工流

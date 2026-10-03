@@ -114,6 +114,15 @@ public enum SshFailureReason
     /// <summary>找不到或连不上 ssh-agent，或者它的端点不可信。</summary>
     AgentUnavailable,
 
+    /// <summary>
+    /// 本机没有在跑 ssh-agent：<c>SSH_AUTH_SOCK</c> 没设、套接字不存在或没人监听、Windows 的命名管道在时限内没有出现。
+    /// </summary>
+    /// <remarks>
+    /// 从 <see cref="AgentUnavailable"/> 里单独分出来，因为它是最常见的那一种，而且下一步很明确（把 agent 起来）——
+    /// 宿主据此给出本地化的提示，不必去解析消息句子。
+    /// </remarks>
+    AgentNotRunning,
+
     /// <summary>ssh-agent 拒绝了请求（拒签、拒绝加钥 —— 常见于 <c>ssh-add -c</c> 的确认被拒、agent 被锁）。</summary>
     AgentRefused,
 

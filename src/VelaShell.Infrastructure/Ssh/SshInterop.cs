@@ -123,6 +123,9 @@ internal static class SshInterop
             SshFailureReason.KeyPassphraseRequired => "SshErr_KeyPassphraseRequired",
             SshFailureReason.KeyPassphraseIncorrect => "SshErr_KeyPassphraseIncorrect",
             SshFailureReason.AgentRefused => "SshErr_AgentRefused",
+            // agent 没在跑:原因码足以说清下一步(把它起来)。库的消息里带着套接字路径 / 管道名,这里不需要。
+            // AgentUnavailable 不翻:它包括「管道属主不可信」(消息里有 SID)与各种 IO 错误,具体信息只在原文里。
+            SshFailureReason.AgentNotRunning => "SshErr_AgentNotRunning",
             SshFailureReason.ChannelRequestRejected => "SshErr_ChannelRequestRejected",
             SshFailureReason.ForwardRejected => "SshErr_ForwardRejected",
             _ => null,

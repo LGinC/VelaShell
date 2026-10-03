@@ -104,7 +104,8 @@ public static class SshConnectionExtensions
                     "或者 sshd_config 里配了 ForceCommand）。");
             }
 
-            return new SshCommand(channel, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure);
+            return new SshCommand(
+                channel, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure, forwarding.AgentSetupFailure);
         }
         catch (Exception)
         {
@@ -118,10 +119,10 @@ public static class SshConnectionExtensions
     /// <remarks>
     /// 请求的时序是 <c>pty-req</c> → <c>x11-req</c> → <c>auth-agent-req</c> → <c>env</c> →
     /// （<see cref="SshSessionRequestOptions.BeforeStart"/>）→ <c>shell</c>（<c>velashell-docs/zh/ssh/spec/07</c> §7.5.3）。
-    /// X11 与 agent 转发只在选项里显式要求时才请求；要求了而服务端拒绝时抛出，不静默降级。
-    /// 唯一的例外是标了 <see cref="X11ForwardOptions.BestEffort"/> 的 X11 选项（连接级开关打开的，
-    /// <c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）：它的设置失败时 shell 照常启动、
-    /// <see cref="SshShell.X11"/> 为空，原因见 <see cref="SshShell.X11SetupFailure"/>。
+    /// X11 与 agent 转发只在选项里显式要求时才请求；没开成时按各自的 <see cref="ForwardFailureMode"/> 处理
+    /// （<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）：默认 <see cref="ForwardFailureMode.Fail"/> 抛出，不静默降级；
+    /// <see cref="ForwardFailureMode.Continue"/>（连接级开关打开的）照常启动 shell，对应的转发为空，
+    /// 原因见 <see cref="SshShell.X11SetupFailure"/> / <see cref="SshShell.AgentSetupFailure"/>。
     /// </remarks>
     public static async ValueTask<SshShell> OpenShellAsync(
         this SshConnection connection,
@@ -179,7 +180,8 @@ public static class SshConnectionExtensions
             }
 
             return new SshShell(
-                channel, effective.Size, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure);
+                channel, effective.Size, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure,
+                forwarding.AgentSetupFailure);
         }
         catch (Exception)
         {
@@ -318,13 +320,15 @@ public static class SshConnectionExtensions
     }
 
     /// <summary>一个会话请求到的转发，失败时一并收拾。</summary>
-    /// <param name="X11">X11 转发；没请求、或尽力而为的请求没成时为空。</param>
-    /// <param name="Agent">agent 转发。</param>
-    /// <param name="X11SetupFailure">尽力而为的 X11 请求没成的原因。</param>
+    /// <param name="X11">X11 转发；没请求、或按 <see cref="ForwardFailureMode.Continue"/> 请求而没成时为空。</param>
+    /// <param name="Agent">agent 转发；同上。</param>
+    /// <param name="X11SetupFailure">按 <see cref="ForwardFailureMode.Continue"/> 请求的 X11 没成的原因。</param>
+    /// <param name="AgentSetupFailure">按 <see cref="ForwardFailureMode.Continue"/> 请求的 agent 转发没成的原因。</param>
     private readonly record struct SessionForwarding(
         X11Forwarder? X11,
         AgentForwarder? Agent,
-        SshForwardException? X11SetupFailure) : IAsyncDisposable
+        SshForwardException? X11SetupFailure,
+        SshForwardException? AgentSetupFailure) : IAsyncDisposable
     {
         public async ValueTask DisposeAsync()
         {
@@ -341,6 +345,13 @@ public static class SshConnectionExtensions
     }
 
     /// <summary>按选项依次请求 X11 与 agent 转发（<c>x11-req</c> 在前）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/07 §7.5.8〕两项各按自己的 <see cref="ForwardFailureMode"/> 处理失败：
+    /// <see cref="ForwardFailureMode.Continue"/> 记下原因、照常启动 —— 否则一份存量的 <c>ForwardX11 yes</c> /
+    /// <c>ForwardAgent yes</c> 会让这台主机上所有会话都起不来；其余一律抛。
+    /// 只接 <see cref="SshForwardException"/>（本机这一侧准备失败、服务端拒绝）：取消与通道本身的故障照常抛。
+    /// 两个 <c>RequestAsync</c> 失败时都已经把自己从连接上摘掉了，这条连接不会因此留下一个接通道的半挂转发。
+    /// </remarks>
     private static async ValueTask<SessionForwarding> RequestForwardingAsync(
         SshConnection connection,
         SshChannel channel,
@@ -359,27 +370,31 @@ public static class SshConnectionExtensions
                         .RequestAsync(connection, channel, x11Options, cancellationToken)
                         .ConfigureAwait(false);
                 }
-                catch (SshForwardException ex) when (x11Options.BestEffort)
+                catch (SshForwardException ex) when (x11Options.FailureMode == ForwardFailureMode.Continue)
                 {
-                    // 〔velashell-docs/zh/ssh/spec/07 §7.5.8〕连接级开关打开的 X11：记下原因，照常启动 ——
-                    // 否则一份存量的 ForwardX11 yes 会让这台主机上所有会话都起不来。
-                    // 只接 SshForwardException（拿不到显示 / cookie、xauth 失败、服务端拒绝）：
-                    // 取消与通道本身的故障照常抛。RequestAsync 失败时已经把自己从 X11 路由上摘掉了，
-                    // 这条连接不会因此留下一个接 x11 通道的半挂转发。
                     x11Failure = ex;
-                    ForwardEvents.RecordError(ForwardKind.X11, ForwardErrorReason.X11SetupSkipped);
+                    ForwardEvents.RecordError(ForwardKind.X11, ForwardErrorReason.SetupSkipped);
                 }
             }
 
             AgentForwarder? agent = null;
+            SshForwardException? agentFailure = null;
             if (options.AgentForwarding is { } agentOptions)
             {
-                agent = await AgentForwarder
-                    .RequestAsync(connection, channel, agentOptions, cancellationToken)
-                    .ConfigureAwait(false);
+                try
+                {
+                    agent = await AgentForwarder
+                        .RequestAsync(connection, channel, agentOptions, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (SshForwardException ex) when (agentOptions.FailureMode == ForwardFailureMode.Continue)
+                {
+                    agentFailure = ex;
+                    ForwardEvents.RecordError(ForwardKind.Agent, ForwardErrorReason.SetupSkipped);
+                }
             }
 
-            return new SessionForwarding(x11, agent, x11Failure);
+            return new SessionForwarding(x11, agent, x11Failure, agentFailure);
         }
         catch (Exception)
         {

@@ -74,8 +74,10 @@ public sealed class AuthenticationTests
             TestAuthServer authServer = new(server.Transport, handshake.ExchangeHash, policy);
             Task<bool> serverAuth = authServer.RunAsync(cts.Token);
 
-            SshAuthenticator authenticator =
-                (authenticatorFactory ?? DefaultAuthenticator)(clientTransport, userName, kex.SessionId);
+            // 与连接工厂一样带上会话证明：背后是 agent 的钥签名之前要拿它向 agent 声明会话。
+            SshAuthenticator authenticator = authenticatorFactory is null
+                ? new SshAuthenticator(clientTransport, userName, kex.SessionId) { SessionProof = kex.CreateSessionProof() }
+                : authenticatorFactory(clientTransport, userName, kex.SessionId);
 
             SshAuthenticationResult? result = null;
             SshAuthenticationException? error = null;
@@ -100,10 +102,6 @@ public sealed class AuthenticationTests
             await clientTransport.DisposeAsync();
         }
     }
-
-    private static SshAuthenticator DefaultAuthenticator(
-        SshPacketTransport transport, string userName, byte[] sessionId) =>
-        new(transport, userName, sessionId);
 
     // ------------------------------------------------------------ 密码
 
@@ -306,6 +304,68 @@ public sealed class AuthenticationTests
             a => a.CredentialLabel == "坏掉的私钥文件"
                                             && a.Outcome == SshAuthOutcome.SkippedNoMaterial, run.Succeeded.Attempts,
             "「私钥读不出来」与「服务端不认这把钥」是两件事，记录里必须分得开");
+    }
+
+    [TestMethod]
+    public async Task agent里的钥签名之前先向agent声明会话()
+    {
+        // 〔spec/04 §4.1、spec/07 §7.4〕不声明的话 agent 执行不了 ssh-add -h 给钥加的目的地约束。
+        TestAgent agent = new();
+        using var rejected = InMemorySshSigner.GenerateEd25519();
+        using var accepted = InMemorySshSigner.GenerateEd25519();
+        agent.Add(rejected, "服务端不认的");
+        agent.Add(accepted, "id_ed25519");
+
+        (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Task serving = agent.ServeAsync(theirs, cts.Token);
+        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        {
+            AuthRun run = await RunAsync(
+                await client.GetCredentialsAsync(cts.Token),
+                new TestAuthPolicy
+                {
+                    RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                    AcceptedPublicKeys = [accepted.PublicKey.Blob.ToArray()],
+                });
+
+            Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        }
+
+        TestSessionDeclaration declaration = Assert.ContainsSingle(agent.Declarations, "探测没过的钥不签，声明只在第一次签名之前发一次");
+        Assert.IsFalse(declaration.IsForwarding, "认证用的连接 is_forwarding 为假");
+        Assert.IsTrue(declaration.SignatureVerified, "签名必须是首次交换里服务端对会话标识的那一个");
+
+        await cts.CancelAsync();
+        await serving;
+    }
+
+    [TestMethod]
+    public async Task agent不支持会话声明时照常签名认证()
+    {
+        TestAgent agent = new() { DeclarationReply = TestDeclarationReply.Reject };
+        using var key = InMemorySshSigner.GenerateEd25519();
+        agent.Add(key, "id_ed25519");
+
+        (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Task serving = agent.ServeAsync(theirs, cts.Token);
+        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        {
+            AuthRun run = await RunAsync(
+                await client.GetCredentialsAsync(cts.Token),
+                new TestAuthPolicy
+                {
+                    RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                    AcceptedPublicKeys = [key.PublicKey.Blob.ToArray()],
+                });
+
+            Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method, "声明被拒不该让认证失败");
+        }
+
+        Assert.AreEqual(1, agent.SignRequests);
+        await cts.CancelAsync();
+        await serving;
     }
 
     [TestMethod]

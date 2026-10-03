@@ -161,12 +161,19 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
                 ? agentOptions with { AgentEndpoint = SshConnectionAssembler.AgentEndpoint() }
                 : null;
 
-            SshShell shell = await OpenShellWithFallbackAsync(
-                connection, options, x11, agent, notices, cancellationToken).ConfigureAwait(false);
+            // 转发是附带功能:两项都按「没开成就不开」请求(见 SshForwardingOptions),
+            // 失败时库不抛、shell 照常一次开成,原因在结果对象上,这里转成提示。
+            SshShell shell = await connection
+                .OpenShellAsync(options with { X11Forwarding = x11, AgentForwarding = agent }, cancellationToken)
+                .ConfigureAwait(false);
 
             if (shell.X11SetupFailure is { } x11Failure)
             {
                 notices.Add(ForwardFailed("Ssh_X11ForwardFailed", x11Failure));
+            }
+            if (shell.AgentSetupFailure is { } agentFailure)
+            {
+                notices.Add(ForwardFailed("Ssh_AgentForwardFailed", agentFailure));
             }
             if (shell.X11 is { } forwarder)
             {
@@ -230,43 +237,6 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
             modes = modes.With((byte)mode, argument);
         }
         return modes;
-    }
-
-    /// <summary>
-    /// 开 shell;agent 转发被拒时去掉它再开,原因记进 <paramref name="notices" />。
-    /// </summary>
-    /// <remarks>
-    /// <para>
-    /// 转发是附带功能:服务端 <c>X11Forwarding no</c>、没装 xauth、<c>AllowAgentForwarding no</c>
-    /// 都很常见,为它们让整条会话连不上是本末倒置。
-    /// </para>
-    /// <para>
-    /// X11 是尽力而为的(见 <see cref="SshForwardingOptions.X11" />):它失败时库不抛,
-    /// 原因在 <see cref="SshShell.X11SetupFailure" /> 上,由调用方转成提示。所以这里能接到的
-    /// <see cref="SshForwardException" /> 只可能来自 agent —— 去掉 agent、保留 X11 重开一次就够了,
-    /// 不再需要「挨个去掉来定位是哪一项被拒」的多轮重试。
-    /// </para>
-    /// </remarks>
-    private static async Task<SshShell> OpenShellWithFallbackAsync(
-        SshConnection connection,
-        SshShellOptions options,
-        X11ForwardOptions? x11,
-        AgentForwardOptions? agent,
-        List<ShellStreamNotice> notices,
-        CancellationToken cancellationToken)
-    {
-        ValueTask<SshShell> Open(AgentForwardOptions? withAgent) =>
-            connection.OpenShellAsync(options with { X11Forwarding = x11, AgentForwarding = withAgent }, cancellationToken);
-
-        try
-        {
-            return await Open(agent).ConfigureAwait(false);
-        }
-        catch (SshForwardException agentFailure) when (agent is not null)
-        {
-            notices.Add(ForwardFailed("Ssh_AgentForwardFailed", agentFailure));
-            return await Open(null).ConfigureAwait(false);
-        }
     }
 
     /// <summary>「某项转发没开成」的提示:本地化的标题 + 按原因码本地化的原因(见 <see cref="SshInterop.Localize" />)。</summary>

@@ -13,6 +13,7 @@
 
 using System.Buffers;
 using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Transport;
 
@@ -103,6 +104,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
     /// <summary>横幅回调。文本来自**未认证**的对端，是注入面。</summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
+
+    /// <summary>首次密钥交换里服务端的身份证明；背后是 ssh-agent 的签名器拿它向 agent 声明会话（spec/07 §7.4）。</summary>
+    /// <remarks><see langword="null"/> 时不声明 —— 只有绕过连接工厂直接跑认证的测试会这样。</remarks>
+    public SshSessionProof? SessionProof { get; init; }
 
     /// <summary>执行认证。</summary>
     /// <param name="credentials">凭据，按偏好排序。</param>
@@ -421,6 +426,18 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         SshDataWriter signedWriter = new(signedData);
         signedWriter.WriteString(_sessionId);
         signedWriter.WriteRaw(request.WrittenSpan);
+
+        // 〔velashell-docs/zh/ssh/spec/04 §4.1、spec/07 §7.4〕钥在 ssh-agent 里：签之前先告诉 agent 这是哪个会话，
+        // 它才能执行 ssh-add -h 给钥加的目的地约束。agent 不支持声明时照常签，所以这一步本身不会让认证失败。
+        if (SessionProof is { } proof && credential.Signer is ISessionAwareSigner sessionAware)
+        {
+            _ = await FromCredentialAsync(async () =>
+                {
+                    await sessionAware.PrepareForSessionAsync(proof, cancellationToken).ConfigureAwait(false);
+                    return true;
+                })
+                .ConfigureAwait(false);
+        }
 
         // 探测的应答（PK_OK）已经读完，这里没有请求在途 —— 签名失败可以放心地换下一条凭据。
         byte[] signature = await FromCredentialAsync(

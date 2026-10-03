@@ -11,8 +11,8 @@ namespace VelaShell.Ssh.Keys;
 
 /// <summary>连不上 agent、agent 拒绝了请求，或者 agent 的应答不合协议。</summary>
 /// <remarks>
-/// 具体是哪一种看 <see cref="SshException.Reason"/>：<see cref="SshFailureReason.AgentUnavailable"/>、
-/// <see cref="SshFailureReason.AgentRefused"/>、<see cref="SshFailureReason.ProtocolError"/>、
+/// 具体是哪一种看 <see cref="SshException.Reason"/>：<see cref="SshFailureReason.AgentNotRunning"/>、
+/// <see cref="SshFailureReason.AgentUnavailable"/>、<see cref="SshFailureReason.AgentRefused"/>、<see cref="SshFailureReason.ProtocolError"/>、
 /// <see cref="SshFailureReason.LimitExceeded"/>。
 /// </remarks>
 public sealed class SshAgentException : SshException

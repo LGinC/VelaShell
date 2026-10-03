@@ -26,6 +26,9 @@ public enum ForwardErrorReason
     /// <summary>搬运途中出错（连接被重置、隧道断了）。</summary>
     Relay,
 
-    /// <summary>尽力而为的 X11 请求没成，会话照常启动（<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）。</summary>
-    X11SetupSkipped,
+    /// <summary>
+    /// 开会话时请求的 X11 / agent 转发没开成，按 <see cref="ForwardFailureMode.Continue"/> 照常启动了会话
+    /// （<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）。是哪一项看 <see cref="ForwardKind"/> 标签。
+    /// </summary>
+    SetupSkipped,
 }

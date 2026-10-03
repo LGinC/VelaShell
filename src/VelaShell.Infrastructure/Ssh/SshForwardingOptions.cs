@@ -33,7 +33,7 @@ internal static class SshForwardingOptions
     /// 只会让人以为转发坏了。PuTTY / MobaXterm 也都是整条会话有效。
     /// </para>
     /// <para>
-    /// <b>尽力而为</b>(<see cref="X11ForwardOptions.BestEffort" />)。配置里的开关是连接级的,
+    /// <b>没开成就不开</b>(<see cref="ForwardFailureMode.Continue" />)。配置里的开关是连接级的,
     /// 本机没开 X 服务器、没装 xauth、服务端 <c>X11Forwarding no</c> 都很常见,为它们让会话开不起来是本末倒置。
     /// 设置失败时库不抛、shell 照常启动,原因在 <see cref="VelaShell.Ssh.Channels.SshShell.X11SetupFailure" /> 上,
     /// 由 <see cref="VelaSshClientWrapper" /> 转成终端里的提示 —— 不必为了 X11 重开一次 shell。
@@ -75,7 +75,7 @@ internal static class SshForwardingOptions
             Display = display,
             Trusted = features.X11Trusted,
             Timeout = TimeSpan.Zero,
-            BestEffort = true,
+            FailureMode = ForwardFailureMode.Continue,
             LocalConnector = fromLocalServer && features.X11Trusted ? localServerConnector : null,
         };
     }
@@ -92,6 +92,11 @@ internal static class SshForwardingOptions
     /// <remarks>
     /// <para>
     /// 默认(不限定、不确认)与 <c>ssh -A</c> 一致。
+    /// </para>
+    /// <para>
+    /// <b>没开成就不开</b>(<see cref="ForwardFailureMode.Continue" />),与 X11 同一条理由:本机 agent 没在跑、
+    /// 服务端 <c>AllowAgentForwarding no</c> 都很常见。原因在 <see cref="VelaShell.Ssh.Channels.SshShell.AgentSetupFailure" /> 上,
+    /// 由 <see cref="VelaSshClientWrapper" /> 转成终端里的提示 —— 曾经是被拒之后去掉 agent 把整个 shell 重开一次。
     /// </para>
     /// <para>
     /// <b>限定了密钥却一把都解析不出来时不转发</b>,并提示用户 —— 库把空的 <see cref="AgentForwardOptions.AllowedKeys" />
@@ -128,6 +133,7 @@ internal static class SshForwardingOptions
 
         return new AgentForwardOptions
         {
+            FailureMode = ForwardFailureMode.Continue,
             AllowedKeys = allowed,
             ConfirmEachSignature = features.AgentForwardConfirm
                 ? Confirmer(prompt, target, confirmTimeout ?? AgentConfirmTimeout)
