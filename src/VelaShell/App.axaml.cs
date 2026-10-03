@@ -142,6 +142,8 @@ public class App : Application
             .AddSingleton<Infrastructure.XServer.IEmbeddedXServerHost, Services.XServer.AvaloniaXServerHost>()
             .AddSingleton<ILocalizationService, LocalizationService>()
             .AddSingleton<IKeyboardShortcutService, KeyboardShortcutService>()
+            // 生效中的键位表(设置 → 快捷键可改键、解绑):主窗口的 KeyBindings、终端内搜索与命令面板的键位提示都取它。
+            .AddSingleton(sp => new ShortcutKeymapService(sp.GetService<ISettingsService>()))
             // 应用内自动更新:更新源 = 本仓库 GitHub Releases 的 latest.json 清单(无需自己架服务器),
             // 便携式原地换版,不限定安装位置。通道跟随设置页的 stable/preview 开关;
             // beta 阶段(尚无正式版)stable 通道自动放宽到最新预发布。

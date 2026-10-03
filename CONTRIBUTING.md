@@ -218,6 +218,10 @@ README 同理:`README.md` ↔ `README.en.md`。
 
 其中比对文档的那一条(`Doc_ListsEveryCatalogEntry`)要读到文档仓库才跑得起来:把 [velashell-docs](https://github.com/VelaShellLabs/velashell-docs) 检出到本仓库的**同级目录**,或用环境变量 `VELASHELL_DOCS_DIR` 指过去;都没有时它报 Inconclusive 跳过,不会拦住你 —— 但**改快捷键时请务必让它真的跑一次**,否则文档漏行不会有人发现。
 
+全局键位(用户可在设置里改键、解绑)的出厂表在 [`src/VelaShell/Services/ShortcutKeymap.cs`](src/VelaShell/Services/ShortcutKeymap.cs) 的 `ShortcutBindings`,主窗口按它登记 KeyBindings —— `MainWindow.axaml` 里不许写死 `KeyBinding`,新的出厂键位也不许占 `Ctrl+字母` 这类终端控制字符,两条都有测试拦着。
+
+CI 同样检出文档仓库来跑这条比对。改了快捷键,文档改动在 velashell-docs 的另一个 PR 里:**在代码 PR 的正文里引用它**(`velashell-docs#NN` 或它的链接),CI 就检出那个文档 PR 的分支来比对,不必等它先合进去。两个 PR 先合文档、再合代码 —— 推送到 `main` 的检查用的是文档仓库的默认分支。
+
 ---
 
 ## 这些别改

@@ -213,6 +213,12 @@ Shortcuts have a single source of truth: [`src/VelaShell/ViewModels/ShortcutCata
 
 Add a binding without registering it and `ShortcutCatalogTests` fails, printing **ready-to-paste Markdown rows**. Full rules are in the maintenance section of [`velashell-docs en/host/keyboard-shortcuts.md`](https://github.com/VelaShellLabs/velashell-docs/blob/main/en/host/keyboard-shortcuts.md).
 
+The test that compares against the documentation (`Doc_ListsEveryCatalogEntry`) needs the docs repository: check out [velashell-docs](https://github.com/VelaShellLabs/velashell-docs) as a **sibling directory** of this repository, or point the `VELASHELL_DOCS_DIR` environment variable at it. Without either it reports Inconclusive and is skipped, so it will not block you — but **when you change shortcuts, make sure it actually runs once**, or missing rows in the docs go unnoticed.
+
+The factory table for the global bindings (which users can change or unbind in Settings) is `ShortcutBindings` in [`src/VelaShell/Services/ShortcutKeymap.cs`](src/VelaShell/Services/ShortcutKeymap.cs); the main window registers its KeyBindings from it. Do not hardcode a `KeyBinding` in `MainWindow.axaml`, and do not give a new factory binding a `Ctrl+letter` combination that is a terminal control character — tests enforce both.
+
+CI checks out the docs repository for that comparison too. When you change shortcuts, the doc change lives in a separate velashell-docs PR: **reference it in the body of your code PR** (`velashell-docs#NN` or its link) and CI checks out that docs PR's branch for the comparison, without waiting for it to be merged. Merge the docs PR first, then the code PR — the check on a push to `main` uses the docs repository's default branch.
+
 ---
 
 ## Do not touch these

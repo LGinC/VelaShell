@@ -171,7 +171,16 @@ public partial class MainWindow : Window
         {
             HookFileBrowserVisibility();
             HookSidebarCollapsed();
+            ApplyKeymap(_keymapService?.Current ?? ShortcutKeymap.Default);
         };
+        // 全局键位按当前键位表登记(设置 → 快捷键可改键、解绑),设置保存后整表重建。
+        _keymapService = ShortcutKeymapService.Resolve();
+        if (_keymapService is { } keymapService)
+        {
+            Action<ShortcutKeymap> onKeymapChanged = keymap => RunOnUiThread(() => ApplyKeymap(keymap));
+            keymapService.Changed += onKeymapChanged;
+            Closed += (_, _) => keymapService.Changed -= onKeymapChanged;
+        }
         // 窗格移焦(Alt+方向)必须走隧道阶段的**有条件**拦截,不能进 Window.KeyBindings:
         // 后者由 KeyboardDevice 在路由事件分发之前无条件匹配,一旦登记就永远从终端手里抢走 ——
         // 而 Alt+方向在 zsh(向前/向后一个词)与 fish 里都是有人绑的。这里只在确实分屏时吃掉。
@@ -523,6 +532,8 @@ public partial class MainWindow : Window
             {
                 _settings = await settingsService.GetSnapshotAsync();
                 ApplyWindowAppearance(_settings);
+                // 键位表的服务可能早于设置载入就建好了(那时只能给出厂键位),这里补一次。
+                _keymapService?.Update(_settings.Shortcuts);
             }
             catch
             {
@@ -1622,6 +1633,21 @@ public partial class MainWindow : Window
             Strings.Get("Main_PasteMultilineTitle"),
             Strings.Format("Main_PasteMultilineBody", lines.Length, preview)
         );
+    }
+
+    /// <summary>生效中的键位表;取不到(测试、设计器)时按出厂键位登记。</summary>
+    private readonly ShortcutKeymapService? _keymapService;
+
+    /// <summary>
+    /// 把键位表里窗口级的绑定登记进 <c>Window.KeyBindings</c>(整表替换)。解绑的那几条不登记,
+    /// 按键原样交给终端 —— 这正是 #551 要的:KeyBindings 先于终端控件吃键,登记了就再也到不了远端。
+    /// </summary>
+    private void ApplyKeymap(ShortcutKeymap keymap)
+    {
+        if (DataContext is MainWindowViewModel vm)
+        {
+            ShortcutKeyBindings.Apply(KeyBindings, keymap, vm.ShortcutCommand);
+        }
     }
 
     /// <summary>

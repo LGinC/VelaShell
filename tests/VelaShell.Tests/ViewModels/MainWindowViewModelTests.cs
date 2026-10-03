@@ -88,7 +88,8 @@ public class MainWindowViewModelTests
             command,
             "SFTP file manager command must be wired so the panel can be opened."
         );
-        Assert.AreEqual("Ctrl+Shift+F", command.Shortcut);
+        // 键位归键位表管(设置里可改):命令面板显示的是键位表当前生效的那一个。
+        Assert.AreEqual("Ctrl+Shift+F", VelaShell.Services.ShortcutKeymap.Default.HintFor(command.Id, command.Shortcut));
     }
 
     [TestMethod]

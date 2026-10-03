@@ -2707,7 +2707,7 @@ Paste anyway?</value>
     <value>// Event payload: { source, event, message, detail, timestamp }; an unreachable endpoint never affects the connection flow</value>
   </data>
   <data name="SetShortcuts_Subtitle" xml:space="preserve">
-    <value>// Built-in key bindings in this version (read-only)</value>
+    <value>// Every key binding; the ones with a pencil button can be changed or unbound</value>
   </data>
   <data name="SetShortcuts_Title" xml:space="preserve">
     <value>Keyboard Shortcuts</value>
@@ -3276,9 +3276,6 @@ Paste anyway?</value>
   <data name="Sc_NewTabAlias" xml:space="preserve">
     <value>New Tab (same as New Connection)</value>
   </data>
-  <data name="Cmd_GotoTabN" xml:space="preserve">
-    <value>Go to tab N</value>
-  </data>
   <data name="Sc_FocusPane" xml:space="preserve">
     <value>Move focus between panes</value>
   </data>
@@ -3291,14 +3288,8 @@ Paste anyway?</value>
   <data name="Sc_NoteNotPinned" xml:space="preserve">
     <value>Not on pinned tabs</value>
   </data>
-  <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
-    <value>Takes over ^_; use Ctrl+Shift+- to send it</value>
-  </data>
   <data name="Sc_NextTab" xml:space="preserve">
     <value>Next Tab</value>
-  </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>Command Palette (alternate)</value>
   </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>Previous Tab</value>
@@ -4771,7 +4762,7 @@ A routine key rotation and a hijacked publishing identity look exactly the same 
   <data name="Sc_FilterPlaceholder" xml:space="preserve"><value>Search shortcuts</value></data>
   <data name="Sc_NoMatch" xml:space="preserve"><value>No shortcut matches your search.</value></data>
   <data name="Sc_Count" xml:space="preserve"><value>{0} shortcuts in total</value></data>
-  <data name="Sc_MacNote" xml:space="preserve"><value>On macOS the terminal accepts Command in place of Ctrl for copy, paste, new tab, close tab and Settings.</value></data>
+  <data name="Sc_MacNote" xml:space="preserve"><value>On macOS the terminal also takes a set of Command shortcuts: Cmd+C / Cmd+V to copy and paste, Cmd+T / Cmd+W / Cmd+, for new tab, close tab and Settings. They are fixed and do not follow the changes above.</value></data>
   <!-- Xshell 兼容登录:外部拉起确认弹窗与设置项 -->
   <data name="ExtLaunch_Title" xml:space="preserve">
     <value>External login request</value>
@@ -5959,5 +5950,48 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="XHelp_XkbVariant" xml:space="preserve">
     <value>XKB variant. Not set by default.</value>
+  </data>
+  <!-- 快捷键页:可自定义键位(#551) -->
+  <data name="Sc_EditHint" xml:space="preserve">
+    <value>// Click the pencil, then press the new key combination (Esc cancels). An unbound key no longer triggers anything and goes straight to the terminal — nano's ^W or tmux's ^B, for example. Changes apply when you save settings.</value>
+  </data>
+  <data name="Sc_ResetAll" xml:space="preserve">
+    <value>Reset all</value>
+  </data>
+  <data name="Sc_Unbound" xml:space="preserve">
+    <value>Unbound</value>
+  </data>
+  <data name="Sc_RecordPrompt" xml:space="preserve">
+    <value>Press a key combination…</value>
+  </data>
+  <data name="Sc_EditShortcut" xml:space="preserve">
+    <value>Change shortcut</value>
+  </data>
+  <data name="Sc_UnbindShortcut" xml:space="preserve">
+    <value>Unbind (the key goes to the terminal)</value>
+  </data>
+  <data name="Sc_ResetShortcut" xml:space="preserve">
+    <value>Reset to default</value>
+  </data>
+  <data name="Sc_ErrNeedsModifier" xml:space="preserve">
+    <value>Needs Ctrl or Alt; without a modifier only F1–F24 are allowed</value>
+  </data>
+  <data name="Sc_ErrReserved" xml:space="preserve">
+    <value>Already taken by the fixed shortcut “{0}”</value>
+  </data>
+  <data name="Sc_Conflict" xml:space="preserve">
+    <value>{0} is already bound to “{1}”. Replacing it leaves that one unbound.</value>
+  </data>
+  <data name="Sc_Replace" xml:space="preserve">
+    <value>Replace</value>
+  </data>
+  <data name="Sc_WarnControlChar" xml:space="preserve">
+    <value>In the terminal this key sends {0}; while it is bound, remote programs never receive it</value>
+  </data>
+  <data name="Sc_WarnControlCharAlt" xml:space="preserve">
+    <value>In the terminal this key sends {0}; to send {0} to the remote side, press {1}</value>
+  </data>
+  <data name="Sc_WarnTerminalKey" xml:space="preserve">
+    <value>This key would otherwise go to the remote program; while it is bound, it never arrives</value>
   </data>
 </root>

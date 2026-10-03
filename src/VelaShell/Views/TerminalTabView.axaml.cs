@@ -113,8 +113,9 @@ public partial class TerminalTabView : UserControl
             return;
         }
 
-        // Ctrl+F 切换终端内搜索栏(spec §5.3)。
-        if (e is { Key: Key.F, KeyModifiers: Avalonia.Input.KeyModifiers.Control })
+        // 终端内搜索栏(spec §5.3),出厂 Ctrl+F。键位走键位表:解绑之后 ^F 原样交给远端
+        // (vim / less 的下翻页、readline 的前进一个字符)。
+        if ((ShortcutKeymapService.Resolve()?.Current ?? ShortcutKeymap.Default).Matches("search.terminal", e))
         {
             OpenSearch();
             e.Handled = true;

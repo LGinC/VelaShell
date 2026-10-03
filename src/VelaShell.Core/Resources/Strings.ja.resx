@@ -2557,7 +2557,7 @@
     <value>// イベントペイロード:{ source, event, message, detail, timestamp }。エンドポイントに到達できなくても接続処理には影響しません</value>
   </data>
   <data name="SetShortcuts_Subtitle" xml:space="preserve">
-    <value>// 現行バージョンの組み込みキーバインド一覧(読み取り専用)</value>
+    <value>// すべてのキーバインド。鉛筆ボタンのあるものは変更・解除できます</value>
   </data>
   <data name="SetShortcuts_Title" xml:space="preserve">
     <value>キーボードショートカット</value>
@@ -3159,9 +3159,6 @@
   <data name="Sc_NewTabAlias" xml:space="preserve">
     <value>新しいタブ(新規接続と同じ)</value>
   </data>
-  <data name="Cmd_GotoTabN" xml:space="preserve">
-    <value>N 番目のタブへ</value>
-  </data>
   <data name="Sc_FocusPane" xml:space="preserve">
     <value>ペイン間でフォーカス移動</value>
   </data>
@@ -3174,14 +3171,8 @@
   <data name="Sc_NoteNotPinned" xml:space="preserve">
     <value>固定したタブは除く</value>
   </data>
-  <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
-    <value>^_ を占有します。送信するには Ctrl+Shift+- を使ってください</value>
-  </data>
   <data name="Sc_NextTab" xml:space="preserve">
     <value>次のタブ</value>
-  </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>コマンドパレット(同等)</value>
   </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>前のタブ</value>
@@ -4766,7 +4757,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Sc_FilterPlaceholder" xml:space="preserve"><value>ショートカットを検索</value></data>
   <data name="Sc_NoMatch" xml:space="preserve"><value>一致するショートカットはありません。</value></data>
   <data name="Sc_Count" xml:space="preserve"><value>ショートカット合計 {0} 件</value></data>
-  <data name="Sc_MacNote" xml:space="preserve"><value>macOS では、ターミナル内のコピー/貼り付け/新しいタブ/タブを閉じる/設定は Ctrl の代わりに Command を使います。</value></data>
+  <data name="Sc_MacNote" xml:space="preserve"><value>macOS では、ターミナル内で Command のショートカットも使えます:Cmd+C / Cmd+V でコピー/貼り付け、Cmd+T / Cmd+W / Cmd+, で新しいタブ/タブを閉じる/設定。これらは固定で、上の変更には従いません。</value></data>
   <!-- Xshell 兼容登录:外部拉起确认弹窗与设置项 -->
   <data name="ExtLaunch_Title" xml:space="preserve">
     <value>外部からのログイン要求</value>
@@ -5954,5 +5945,48 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="XHelp_XkbVariant" xml:space="preserve">
     <value>XKB バリアント。既定では未設定。</value>
+  </data>
+  <!-- 快捷键页:可自定义键位(#551) -->
+  <data name="Sc_EditHint" xml:space="preserve">
+    <value>// 鉛筆ボタンを押してから新しいキーの組み合わせを押します(Esc で取り消し)。割り当てを解除したキーは何も起動せず、そのまま端末に送られます(nano の ^W や tmux の ^B など)。変更は設定を保存すると有効になります。</value>
+  </data>
+  <data name="Sc_ResetAll" xml:space="preserve">
+    <value>すべて既定に戻す</value>
+  </data>
+  <data name="Sc_Unbound" xml:space="preserve">
+    <value>未割り当て</value>
+  </data>
+  <data name="Sc_RecordPrompt" xml:space="preserve">
+    <value>キーを押してください…</value>
+  </data>
+  <data name="Sc_EditShortcut" xml:space="preserve">
+    <value>キーを変更</value>
+  </data>
+  <data name="Sc_UnbindShortcut" xml:space="preserve">
+    <value>割り当てを解除(キーを端末に送る)</value>
+  </data>
+  <data name="Sc_ResetShortcut" xml:space="preserve">
+    <value>既定に戻す</value>
+  </data>
+  <data name="Sc_ErrNeedsModifier" xml:space="preserve">
+    <value>Ctrl か Alt が必要です。修飾キーなしで使えるのは F1–F24 だけです</value>
+  </data>
+  <data name="Sc_ErrReserved" xml:space="preserve">
+    <value>固定のショートカット「{0}」で使用中です</value>
+  </data>
+  <data name="Sc_Conflict" xml:space="preserve">
+    <value>{0} は「{1}」に割り当て済みです。置き換えるとそちらは未割り当てになります。</value>
+  </data>
+  <data name="Sc_Replace" xml:space="preserve">
+    <value>置き換える</value>
+  </data>
+  <data name="Sc_WarnControlChar" xml:space="preserve">
+    <value>端末ではこのキーは {0} を送ります。割り当て中はリモートのプログラムに届きません</value>
+  </data>
+  <data name="Sc_WarnControlCharAlt" xml:space="preserve">
+    <value>端末ではこのキーは {0} です。リモートに {0} を送るには {1} を押してください</value>
+  </data>
+  <data name="Sc_WarnTerminalKey" xml:space="preserve">
+    <value>このキーは本来リモートのプログラムに送られます。割り当て中は届きません</value>
   </data>
 </root>

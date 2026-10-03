@@ -2816,10 +2816,10 @@
     <value>// 事件負載:{ source, event, message, detail, timestamp };端點無法連線不影響連線流程</value>
   </data>
   <data name="SetShortcuts_Subtitle" xml:space="preserve">
-    <value>// 目前版本的內建鍵位一覽(唯讀)</value>
+    <value>// 全部鍵位一覽;帶鉛筆按鈕的可以變更或解除綁定</value>
   </data>
   <data name="SetShortcuts_Title" xml:space="preserve">
-    <value>快速鍵參考</value>
+    <value>快速鍵</value>
   </data>
   <data name="SetSnippets_Add" xml:space="preserve">
     <value>新增</value>
@@ -3385,9 +3385,6 @@
   <data name="Sc_NewTabAlias" xml:space="preserve">
     <value>新增標籤(同新增連線)</value>
   </data>
-  <data name="Cmd_GotoTabN" xml:space="preserve">
-    <value>跳到第 N 個標籤</value>
-  </data>
   <data name="Sc_FocusPane" xml:space="preserve">
     <value>窗格間移動焦點</value>
   </data>
@@ -3400,14 +3397,8 @@
   <data name="Sc_NoteNotPinned" xml:space="preserve">
     <value>固定的分頁除外</value>
   </data>
-  <data name="Sc_NoteZoomOutTakesUnitSeparator" xml:space="preserve">
-    <value>會佔用 ^_;要傳送它請用 Ctrl+Shift+-</value>
-  </data>
   <data name="Sc_NextTab" xml:space="preserve">
     <value>下一個標籤頁</value>
-  </data>
-  <data name="Sc_PaletteAlt" xml:space="preserve">
-    <value>命令面板(等效)</value>
   </data>
   <data name="Sc_PrevTab" xml:space="preserve">
     <value>上一個標籤頁</value>
@@ -5225,7 +5216,7 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>共 {0} 個快速鍵</value>
   </data>
   <data name="Sc_MacNote" xml:space="preserve">
-    <value>在 macOS 上,終端機內的複製/貼上/新增分頁/關閉分頁/開啟設定改用 Command 取代 Ctrl。</value>
+    <value>在 macOS 上,終端機內另有一組 Command 鍵位:Cmd+C / Cmd+V 複製貼上,Cmd+T / Cmd+W / Cmd+, 新增分頁、關閉分頁、開啟設定。它們是固定的,不隨上面的變更而改變。</value>
   </data>
   <data name="ExtLaunch_Title" xml:space="preserve">
     <value>外部登入請求</value>
@@ -6413,5 +6404,48 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="XHelp_XkbVariant" xml:space="preserve">
     <value>XKB 變體。預設不設定。</value>
+  </data>
+  <!-- 快捷键页:可自定义键位(#551) -->
+  <data name="Sc_EditHint" xml:space="preserve">
+    <value>// 點鉛筆按鈕後直接按下新的組合鍵(Esc 取消)。解除綁定後這個按鍵不再觸發任何動作,原樣交給終端 —— 例如 nano 的 ^W、tmux 的 ^B。變更在儲存設定後生效。</value>
+  </data>
+  <data name="Sc_ResetAll" xml:space="preserve">
+    <value>全部還原預設</value>
+  </data>
+  <data name="Sc_Unbound" xml:space="preserve">
+    <value>未綁定</value>
+  </data>
+  <data name="Sc_RecordPrompt" xml:space="preserve">
+    <value>按下組合鍵…</value>
+  </data>
+  <data name="Sc_EditShortcut" xml:space="preserve">
+    <value>變更按鍵</value>
+  </data>
+  <data name="Sc_UnbindShortcut" xml:space="preserve">
+    <value>解除綁定(按鍵交給終端)</value>
+  </data>
+  <data name="Sc_ResetShortcut" xml:space="preserve">
+    <value>還原預設</value>
+  </data>
+  <data name="Sc_ErrNeedsModifier" xml:space="preserve">
+    <value>需要搭配 Ctrl 或 Alt;不帶修飾鍵的只能用 F1–F24</value>
+  </data>
+  <data name="Sc_ErrReserved" xml:space="preserve">
+    <value>已被固定鍵位「{0}」佔用</value>
+  </data>
+  <data name="Sc_Conflict" xml:space="preserve">
+    <value>{0} 已綁定給「{1}」。取代後那一項會變成未綁定。</value>
+  </data>
+  <data name="Sc_Replace" xml:space="preserve">
+    <value>取代</value>
+  </data>
+  <data name="Sc_WarnControlChar" xml:space="preserve">
+    <value>終端裡這個按鍵是 {0},綁定期間遠端程式收不到它</value>
+  </data>
+  <data name="Sc_WarnControlCharAlt" xml:space="preserve">
+    <value>終端裡這個按鍵是 {0};要把 {0} 送給遠端,請按 {1}</value>
+  </data>
+  <data name="Sc_WarnTerminalKey" xml:space="preserve">
+    <value>這個按鍵原本會送給遠端程式,綁定期間遠端收不到它</value>
   </data>
 </root>

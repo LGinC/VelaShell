@@ -6,7 +6,7 @@ using VelaShell.Services;
 namespace VelaShell.ViewModels;
 
 /// <summary>
-/// 命令面板(Ctrl+P / Ctrl+K):一个支持模糊搜索、以键盘驱动的浮层,
+/// 命令面板(Ctrl+P):一个支持模糊搜索、以键盘驱动的浮层,
 /// 按分类列出会话与动作。条目来源由宿主提供,使面板保持解耦且可单元测试。
 /// </summary>
 public sealed class CommandPaletteViewModel : ReactiveObject

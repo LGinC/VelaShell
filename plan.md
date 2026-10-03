@@ -189,9 +189,9 @@ graph RL
   `BorderOnly` 还丢 `WS_CAPTION`（issue #21160 / #21212）。另一个坑：`VisualRoot as Window` 恒为 null，取窗口要走 `FindLogicalAncestorOfType<Window>()`。
   **以上只管 Win32**：2026-09-26 起 macOS 与 Linux 按平台走原生机制，统一入口 `Views/WindowChrome.cs`，见 §118。
 - 文字菜单栏已整体移除（与命令面板重复，用户决策）；标题栏右侧是功能图标组，全部走命令注册表。
-- **命令面板**（`Ctrl+P` / `Ctrl+K`）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
+- **命令面板**（`Ctrl+P`；`Ctrl+K` 不绑，见 §154）：模糊子序列搜索、分类分组，条目 = 最近会话 + 全局命令。
 - **状态栏跟随激活标签**：连接串 / 状态 / 终端类型 / 编码 / 尺寸 / 延迟。
-- **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键参考（纯展示）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
+- **设置窗口 12 页**：常规 / 外观 / 终端 / 密钥管理 / 快捷键（全局与标签类可改键、解绑，§155）/ 文件传输 / 安全审计 / 网络代理 / 代码片段 / 云同步 / 关于 / 支持与捐赠。
   逐项审计见 velashell-docs `zh/host/settings-audit.md`。
 - **终端配色跟随主题**：未自定义时随具名主题配对的终端方案实时切换（§25、§26）。
 
@@ -253,7 +253,7 @@ graph RL
 
 ### ❌ B. 确认不做(2026-07-10)
 
-连字、自适应标题栏色、系统 Toast、输入脱敏、自定义键位、热切终端类型;理由见 feature-plan.md「确认不做」。
+连字、自适应标题栏色、系统 Toast、输入脱敏、自定义键位、热切终端类型;理由见 feature-plan.md「确认不做」。其中自定义键位 2026-10-03 因 #551 推翻并实现,见 §155。
 
 ### ✅ C. 顺手清掉的技术债
 
@@ -1554,3 +1554,39 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **二、做法**:视图模型在编辑模式下记下这三项(只读字段),`BuildProfile` 原样带回;隧道 id 列表存副本,不与传进来的配置共享。新建连接三项都是默认值(不置顶、没连过、null)。至此 `SessionProfile` 的每个属性在 `BuildProfile` 里都有着落。
 
 **三、验证**:`ConnectionProfileViewModelTests` 新增 `EditingAProfile_KeepsStateTheDialogDoesNotShow`(置顶 + 最近连接时间 + 两条隧道 id 的配置改端口后保存,三项原样带回、列表是副本),修之前在 `IsPinned` 上红;`NewProfile_IsNotPinnedAndHasNeverConnected`。连接对话框与资源管理器相关用例 217 例通过。velashell-docs 的 §4 本来就写着置顶「只改显示位置、不改数据」,这是缺陷修复,不涉及文档同步。
+
+## ✅ 154. 2026-10-03 命令面板不再占 `Ctrl+K`(#551)
+
+**一、问题**:#551:在 nano 里按 `Ctrl+K` 剪切当前行,弹出来的却是命令面板。`Ctrl+K` 是命令面板的别名(另一个是 `Ctrl+P`),登记在 `Window.KeyBindings`。Avalonia 的 `KeyboardDevice` 在分发路由事件**之前**就从焦点元素往上匹配 KeyBindings,命中即 Handled —— 隧道阶段的处理器与终端控件的 `OnKeyDown` 都收不到(headless 实测:按 `Ctrl+K` 只有 KeyBinding 触发;按 `Ctrl+J` 依次走窗口隧道 → 控件 `OnKeyDown`)。于是 `^K` 永远到不了远端:nano 剪切行、bash / zsh 删到行尾、emacs kill-line 一并失灵。
+⚠️ 同样被窗口级键位占掉的还有 `Ctrl+T` / `Ctrl+N` / `Ctrl+W` / `Ctrl+P` / `Ctrl+B` / `Ctrl+-`,`TerminalTabView` 隧道阶段另占 `Ctrl+F`。它们是正经功能的键位,改默认值要动用户的肌肉记忆,这次不动,交给可配置键位。
+
+**二、做法**:
+- 删掉 `MainWindow.axaml` 的 `Ctrl+K` 绑定;`ShortcutCatalog` 全局组只留「命令面板 `Ctrl+P`」一行,`Sc_PaletteAlt` 五份 resx 一起删;命令面板搜索框右侧的键帽徽章改成 `Ctrl+P`;注释、`DESIGN.md` §6.3 与仓库首页、Presentation、AI 插件几份 README 里的「Ctrl+P / Ctrl+K」一并改掉。
+- 守门:`ShortcutCatalogTests.MainWindowKeyBindings_DoNotTakeNewControlCharacters` 扫 `MainWindow.axaml` 的每条 `KeyBinding`:只按 Ctrl、经 `InputEncoder` 编码成单个 C0 控制字节、且这个字节不是键本身就会发的(`Ctrl+Tab` 的 `^I` 单按 Tab 也发),一律报红。判定直接问编码器,与真正发往远端的字节同源。带 Shift 的不算 —— 编码器对 `Ctrl+Shift+字母` 发同一个字节,但不带 Shift 的那一按还在。上面那六条历史遗留列在名单里,**名单只减不增**。
+
+**三、验证**:新用例把 `Ctrl+K` 加回去时红、删掉后绿;`ShortcutCatalogTests`(含与改过的文档逐条比对)与本地化键的几条守卫通过;`VelaShell.Tests` 1694 通过 / 8 跳过。文档同步见 `feature-plan.md`「文档待同步」。
+
+## ✅ 155. 2026-10-03 快捷键可自定义:改键、解绑、恢复默认(#551,推翻「确认不做」)
+
+**一、问题**:§154 只删了 `Ctrl+K` 这个多余的别名。窗口级键位先于终端控件吃键,出厂的 `Ctrl+N` / `Ctrl+T` / `Ctrl+W` / `Ctrl+P` / `Ctrl+B` / `Ctrl+-` 与终端标签里的 `Ctrl+F` 同样各抢走一个控制字符(bash 删词、tmux 前缀、vim / less 翻页……),而 07-10 定下的「不做自定义键位」(§12-B)让用户撞上了也无计可施 —— #551 的报告者在设置里看到「只读」就停了。任何一套出厂键位都会撞上某个远端程序,说得通的只有让用户自己改、自己解绑。
+
+**二、做法**:
+- **出厂表** `Services/ShortcutKeymap.cs` 的 `ShortcutBindings`:30 条 —— 全局、标签与面板两组里除窗格移焦外的全部,终端组的搜索、清屏与三个字号缩放。每条 = 稳定 id + 命令 id + 出厂手势 + 文案键 + 生效范围(窗口 / 终端标签)。跳标签从「一行区间」拆成 8 条,每条能单独解绑(欧洲键盘布局上 AltGr 就是 Ctrl+Alt)。
+- **键位表** `ShortcutKeymap`(不可变)= 出厂表 + `AppSettings.Shortcuts.Overrides`(id → Avalonia 手势,**空串 = 解绑**,只存改过的,出厂键位日后调整时没改过的人自动跟上)。认不出、不合规则的改动按出厂处理;同一手势只归一条:改过的压过出厂的,两条改动撞车按表序先到先得。`ShortcutKeymapService`(DI 单例)持有生效的那一份,设置保存后换新;主窗口载入设置后补一次。
+- **生效**:`MainWindow.axaml` 里 29 条写死的 `KeyBinding` 全删,改由 `ApplyKeymap` 按键位表整表登记(都指向 `MainWindowViewModel.ShortcutCommand`,参数是命令 id;`tab.next` / `tab.prev` 不进命令面板,在 `ExecuteShortcut` 里单独接),键位表换新就重建。终端内搜索(`TerminalTabView` 隧道阶段)改成按键位表匹配。命令面板右侧的键位提示取键位表里当前生效的那个(同一命令两个键位取先绑着的,全解绑则不显示),命令注册里那批写死的提示随之删掉;不归键位表管的复制、粘贴、重连、窗格移焦照旧用注册时的提示。`KeyboardShortcutService` 不再映射 Ctrl 版本的全局键位 —— 留着的话,解绑 `Ctrl+W` 之后焦点落在标签视图上它照样关标签;只留 macOS 的 Command 别名。
+- **改键的规则**(`ShortcutGestures.Check`):要带 Ctrl / Alt / Meta,不带修饰键的只能 F1–F24;不能占固定键位(复制粘贴、`^C`、跳提示符、删词、断线重连、补全、`Alt+方向`、SFTP 的 `Ctrl+L`,macOS 另有 `Cmd+C` / `Cmd+V`)。撞上别的绑定先问,确认替换后那一条写成解绑;恢复默认时出厂键位被别人占着同样先问;录回出厂键位不留记录。
+- **终端冲突提示**(`ShortcutGestures.TerminalBytesLost` / `ShortcutKeymap.TerminalWarning`):直接问 `InputEncoder` —— 这一按本来会发字节,且去掉 Shift 或 Ctrl 后的那一按发的不一样,就算「抢键」。单个控制字符还会指出没人占用的 `Ctrl+Shift+同一个键`(编码器对它发同一个字节),例如出厂 `Ctrl+P` 提示「要把 ^P 发给远端,请按 Ctrl+Shift+P」。原来写死的「缩小字号会占用 ^_」备注随之撤掉。§154 的守门用例改为扫出厂表、用同一个判定,名单补上 `Ctrl+F`。
+- **设置页**:页名「快捷键参考」→「快捷键」,副标题不再写「只读」。可改的行右侧三个图标按钮(改键 / 解绑 / 恢复默认),改过的键帽用强调色,解绑的显示「未绑定」,会抢键的行下方警示色提示;搜索框旁「全部恢复默认」。录键框 `Controls/ShortcutRecorder`:显示即抢焦点;只按修饰键时只显示已按住的修饰键;每个按键都标 Handled(设置窗口的 Esc 关窗、Tab 移焦都不会在录键时动作);不带修饰键的 Esc 或失焦即取消。改动暂存,保存设置才落盘。
+  ⚠️ 提示行的颜色必须走样式类:`TextBlock.row-desc` 这种带类名的样式按「样式触发」优先级生效,会压过数据模板里直接写在 `TextBlock` 上的 `Foreground`(headless 截图里第一版的警示与报错都是灰的)。
+- 文案 14 个新键,五份 resx 齐;`Cmd_GotoTabN`、`Sc_NoteZoomOutTakesUnitSeparator` 删掉;`Sc_MacNote` 改成「另有一组固定的 Command 键位」;新图标 `Icon.rotate-ccw`。
+- `feature-plan.md`「确认不做」删掉自定义键位那一条;vi 复制模式那条里引用它的理由一并标为失效。
+
+**三、验证**:`ShortcutKeymapTests` 21 例(出厂表 id 与手势不重复、出厂手势过得了改键检查、每条命令真实存在、键帽写法、存储写法往返含 `Key` 的同值别名、改键 / 解绑 / 坏值回落 / 撞车规则、固定键位、编码器判定抢键、冲突提示指出替代按法、命令面板显示生效的键位);`ShortcutKeyBindingsUiTests` 3 例走真实的 Avalonia 按键分发(改过的 `Ctrl+Shift+P` 与出厂的 `Ctrl+B` 触发命令,改走的 `Ctrl+P` 与解绑的 `Ctrl+W` 原样到达焦点控件;整表替换;录键框);`SettingsShortcutEditingTests` 13 例(载入、被拒留在录键状态、撞车先问再替换、取消、解绑与恢复默认、恢复默认撞车先问、全部恢复、保存落盘、改键后搜得到新键位);`ShortcutCatalogTests` 改写(`MainWindow.axaml` 不许写死 KeyBinding、出厂表每条在目录里恰好一次、出厂键位不许新占终端按键、固定键位都在页上);`ShortcutOptionsNormalizeTests` 4 例;`KeyboardShortcutServiceTests` 改为 Ctrl 全局键位归键位表。headless 截图核过暗 / 亮两套主题下的录键、报错、替换确认与冲突提示。`VelaShell.Tests` 1729 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 570 通过 / 4 跳过,`VelaShell.Presentation.Tests` 69 通过,`VelaShell.Core.Tests` 629 通过 / 10 跳过 / 1 失败(X11 靶机用例,本机 `ssh-shells` 镜像旧,§152 记过的那条)。文档同步见 `feature-plan.md`「文档待同步」。
+
+## ✅ 156. 2026-10-03 CI:文档仓库检出 PR 正文里引用的那个文档 PR(#554 的 CI 红)
+
+**一、问题**:#554 三个平台都只红在 `Doc_ListsEveryCatalogEntry` —— CI 检出的是 velashell-docs 的默认分支,而对应的文档改动(velashell-docs#83)那时还没合。这不是 #554 独有的:改快捷键的代码 PR 按 AGENTS.md 要与文档 PR 一起合,合并之前文档仓库的默认分支必然是旧的,比对用例必然红。(这一次 #83 在 CI 跑完约一分钟后合了,重跑就绿;改流水线是为了下一次。)
+
+**二、做法**:`ci.yml` 在「检出文档仓库」前加一步「定位文档分支」:只在 `pull_request` 事件上跑,从 PR 正文里找 `velashell-docs#NN` 或 `velashell-docs/pull/NN`,逐个用 `gh api` 查,第一个**开着的、来自文档仓库本身**(不检出 fork)的 PR,检出它的 head 分支;都没有就照旧用默认分支。正文是 PR 作者写的任意文本:经环境变量传入、只从里面抽数字,不拼进脚本;查询失败时 gh 打到 stdout 的错误响应不当结果读。这一步 `continue-on-error`,失败就退回默认分支。推送到 `main` 的检查没有 PR 正文、用默认分支,所以两个 PR 先合文档、再合代码 —— 写进了 `CONTRIBUTING.md` / `CONTRIBUTING.en.md`(英文版顺带补上一直漏掉的「比对用例要读到文档仓库」那段,两份都补上 §155 出厂表的说明)。
+
+**三、验证**:把那段脚本原样抽出来在本地跑:#554 的真实正文(引用的 #83 已合并)→ 默认分支;用替身 `gh` 模拟一个开着的文档 PR → 输出它的分支;fork 来的 PR 跳过;不存在的号码静默跳过;正文里塞 `$(...)` 与反引号不会执行。`ci.yml` 用 YamlDotNet 解析过,步骤顺序与 `ref` 都对。

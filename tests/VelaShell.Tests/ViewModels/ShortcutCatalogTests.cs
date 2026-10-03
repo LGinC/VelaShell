@@ -1,5 +1,6 @@
 using System.Globalization;
-using System.Text.RegularExpressions;
+using VelaShell.Core.Resources;
+using VelaShell.Services;
 using VelaShell.ViewModels;
 
 namespace VelaShell.Tests.ViewModels;
@@ -12,8 +13,8 @@ namespace VelaShell.Tests.ViewModels;
 /// <para>
 /// 快捷键最容易腐坏的地方不是代码,而是「加了绑定却没人记得改表」——
 /// 界面照常工作,只有参考页和文档在悄悄说谎,而说谎的参考页比没有参考页更糟。
-/// 因此这里把 <c>MainWindow.axaml</c> 的 <c>KeyBinding</c> 当作事实,
-/// 反向要求总表登记;文档同理:每一条目录条目都必须能在文档表格里找到同名同键的一行。
+/// 全局键位的事实来源是出厂表 <see cref="ShortcutBindings" />(主窗口按它登记 KeyBindings),
+/// 这里要求它的每一条都在总表里出现;文档同理:每一条目录条目都必须能在文档表格里找到同名同键的一行。
 /// </para>
 /// <para>
 /// 文档在 2026-08-30 那次「文档搬到 velashell-docs」里迁走了,本仓库不再有 <c>docs/</c> ——
@@ -24,54 +25,89 @@ namespace VelaShell.Tests.ViewModels;
 /// </para>
 /// </remarks>
 [TestClass]
-public partial class ShortcutCatalogTests
+public class ShortcutCatalogTests
 {
-    /// <summary>Avalonia 手势里的键名 → 表里展示的写法。</summary>
-    private static readonly Dictionary<string, string> GestureAliases = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["OemComma"] = ",",
-        ["OemPeriod"] = ".",
-        ["OemMinus"] = "-",
-        // OemPlus 是 =/+ 那颗键;我们的绑定不带 Shift,所以表里按未上档的键帽写作 "="
-        // (主流终端的文档也是 Ctrl+= / Ctrl+-)。
-        ["OemPlus"] = "=",
-        // Avalonia 的数字键名是 D0…D9(D 表示 digit),表里按键帽写作 0…9。
-        ["D0"] = "0",
-        ["D1"] = "1",
-        ["D2"] = "2",
-        ["D3"] = "3",
-        ["D4"] = "4",
-        ["D5"] = "5",
-        ["D6"] = "6",
-        ["D7"] = "7",
-        ["D8"] = "8",
-        ["D9"] = "9",
-    };
-
-    [GeneratedRegex(@"<KeyBinding\s+Gesture=""([^""]+)""")]
-    private static partial Regex KeyBindingGesture { get; }
-
     /// <summary>
-    /// <c>MainWindow.axaml</c> 里每一条 <c>KeyBinding</c> 都必须出现在总表里。
-    /// 新加全局键位却忘了登记时,这条会直接点名说是哪个手势。
+    /// <c>MainWindow.axaml</c> 里不许再写死 <c>KeyBinding</c>:全局键位一律进出厂表,
+    /// 由代码按当前键位表登记 —— 写死的那一条用户在设置里改不掉、解不了绑,#551 就又回来了。
     /// </summary>
     [TestMethod]
-    public void EveryMainWindowKeyBinding_IsListedInCatalog()
+    public void MainWindowAxaml_HasNoHardcodedKeyBindings()
     {
         string axaml = File.ReadAllText(Path.Combine(SourceRoot(), "VelaShell", "Views", "MainWindow.axaml"));
-        List<string> gestures = [.. KeyBindingGesture.Matches(axaml).Select(match => Normalize(match.Groups[1].Value))];
-        Assert.IsGreaterThanOrEqualTo(10, gestures.Count,
-                                      $"只在 MainWindow.axaml 里扫到 {gestures.Count} 条 KeyBinding —— 扫描八成失效了,别让这条测试变成空壳。");
 
-        HashSet<string> catalog = CatalogCombos();
-        List<string> missing = [.. gestures.Distinct(StringComparer.OrdinalIgnoreCase)
-            .Where(gesture => !catalog.Contains(gesture))
-            .Order(StringComparer.Ordinal)];
-
-        Assert.IsEmpty(missing,
-                       "以下全局键位已绑定但没登记进 ShortcutCatalog(设置页与 docs/快捷键参考.md 都会漏掉它们):\n" +
-                       string.Join("\n", missing.Select(gesture => $"  {gesture}")));
+        Assert.IsFalse(axaml.Contains("<KeyBinding", StringComparison.Ordinal),
+                       "MainWindow.axaml 里出现了写死的 KeyBinding。全局键位请加进 Services/ShortcutKeymap.cs 的 "
+                       + "ShortcutBindings,再在 ShortcutCatalog 里用 Bound 引用它。");
     }
+
+    /// <summary>
+    /// 出厂表里每一条可自定义键位都必须在总表里<b>恰好</b>出现一次:漏了,快捷键页上就改不到它;
+    /// 重了,改一处另一处跟着变,看起来像两条不同的键位。
+    /// </summary>
+    [TestMethod]
+    public void EveryBinding_AppearsInCatalogExactlyOnce()
+    {
+        List<string> listed = [.. ShortcutCatalog.Flatten(ShortcutCatalog.Build())
+            .Where(item => item.IsEditable)
+            .Select(item => item.BindingId!)];
+
+        List<string> missing = [.. ShortcutBindings.All.Select(binding => binding.Id).Where(id => !listed.Contains(id))];
+        List<string> repeated = [.. listed.GroupBy(id => id).Where(ids => ids.Count() > 1).Select(ids => ids.Key)];
+
+        Assert.IsEmpty(missing, "以下可自定义键位没出现在 ShortcutCatalog 里:\n  " + string.Join("\n  ", missing));
+        Assert.IsEmpty(repeated, "以下可自定义键位在 ShortcutCatalog 里出现了不止一次:\n  " + string.Join("\n  ", repeated));
+    }
+
+    /// <summary>
+    /// 出厂键位不许再新占会从终端手里抢走按键的组合(#551)。
+    /// </summary>
+    /// <remarks>
+    /// 窗口级键位由 KeyboardDevice 在分发路由事件之前就匹配掉,终端控件根本收不到。
+    /// <c>Ctrl+K</c> 当年只是命令面板的一个别名,却让 nano 的剪切行、bash 的删到行尾整条失灵。
+    /// 判定用 <see cref="ShortcutGestures.TerminalBytesLost" />,直接问终端的编码器,与真正发往远端的字节同源。
+    /// 名单里是历史遗留的几条 —— 改出厂值要动用户的肌肉记忆,另行决定;现在至少可以在设置里解绑。
+    /// <b>名单只减不增</b>,而且每一条都必须真的还在抢键,否则说明出厂值改过了,该从名单里删掉。
+    /// </remarks>
+    [TestMethod]
+    public void DefaultBindings_DoNotTakeNewTerminalKeys()
+    {
+        HashSet<string> legacy =
+        [
+            "session.new", "session.new.tab", "session.close", "app.palette", "view.sidebar", "view.zoom.out",
+            "search.terminal",
+        ];
+        List<string> taken = [.. ShortcutBindings.All
+            .Where(binding => !legacy.Contains(binding.Id) && ShortcutGestures.TerminalBytesLost(binding.Default) is not null)
+            .Select(binding => $"{binding.Id}({binding.DefaultGesture})")];
+        List<string> stale = [.. ShortcutBindings.All
+            .Where(binding => legacy.Contains(binding.Id) && ShortcutGestures.TerminalBytesLost(binding.Default) is null)
+            .Select(binding => binding.Id)];
+
+        Assert.IsEmpty(taken,
+                       "以下出厂键位会把一个按键从终端手里抢走(远端程序的对应键位从此失灵),"
+                       + "请改用 Ctrl+Shift / Ctrl+Alt 组合:\n  " + string.Join("\n  ", taken));
+        Assert.IsEmpty(stale, "以下条目已经不再抢键,请从名单里删掉:\n  " + string.Join("\n  ", stale));
+    }
+
+    /// <summary>
+    /// 改键时拦下的固定键位,每一条都得真在快捷键页上(按动作名对),
+    /// 被拒时告诉用户「被谁占着」才说得通;也防止固定键位改了名、这张表却还指着旧的。
+    /// </summary>
+    [TestMethod]
+    public void ReservedGestures_AreFixedRowsInCatalog()
+    {
+        HashSet<string> fixedLabels = [.. ShortcutCatalog.Flatten(ShortcutCatalog.Build())
+            .Where(item => !item.IsEditable)
+            .Select(item => item.Label)];
+
+        List<string> missing = [.. ShortcutGestures.ReservedGestures(isMacOS: true)
+            .Where(reserved => !fixedLabels.Contains(Strings.Get(reserved.LabelKey)))
+            .Select(reserved => $"{reserved.Gesture} → {reserved.LabelKey}")];
+
+        Assert.IsEmpty(missing, "以下固定键位在快捷键页里找不到同名的固定行:\n  " + string.Join("\n  ", missing));
+    }
+
 
     /// <summary>
     /// 同一分组里不得出现「动作名 + 键位」完全相同的两行 —— 那只会是复制粘贴的残留。
@@ -166,48 +202,7 @@ public partial class ShortcutCatalogTests
                             && line.Contains(combo, StringComparison.Ordinal));
     }
 
-    private static HashSet<string> CatalogCombos()
-    {
-        HashSet<string> combos = [];
-        foreach (ShortcutItem item in ShortcutCatalog.Flatten(ShortcutCatalog.Build()))
-        {
-            combos.Add(Combo(item));
-            combos.UnionWith(ExpandRange(item));
-        }
-        return combos;
-    }
-
-    /// <summary>
-    /// 把「Ctrl+Alt+1 … 8」这种<b>区间</b>行展开成它覆盖的每一个具体手势。
-    /// </summary>
-    /// <remarks>
-    /// 跳标签是 8 个手势共用一条说明。总表里写成 8 行纯属噪音(设置页与文档都要读的),
-    /// 写成一行区间才是给人看的形态;但绑定核对是逐条来的,所以这里替它展开。
-    /// 约定:键序列里出现 "…",表示它前后两个键是区间的首尾。
-    /// </remarks>
-    private static IEnumerable<string> ExpandRange(ShortcutItem item)
-    {
-        int ellipsis = Array.IndexOf(item.Keys, "…");
-        if (ellipsis <= 0
-            || ellipsis + 1 >= item.Keys.Length
-            || !int.TryParse(item.Keys[ellipsis - 1], out int from)
-            || !int.TryParse(item.Keys[ellipsis + 1], out int to)
-            || to < from)
-        {
-            yield break;
-        }
-        string prefix = string.Join('+', item.Keys.Take(ellipsis - 1));
-        for (int digit = from; digit <= to; digit++)
-        {
-            yield return prefix.Length > 0 ? $"{prefix}+{digit}" : digit.ToString();
-        }
-    }
-
     private static string Combo(ShortcutItem item) => string.Join('+', item.Keys);
-
-    /// <summary>把 Avalonia 手势串规整成表里的写法(Ctrl+OemComma → Ctrl+,)。</summary>
-    private static string Normalize(string gesture) =>
-        string.Join('+', gesture.Split('+').Select(part => GestureAliases.GetValueOrDefault(part, part)));
 
     /// <summary>形如 Sc_Xxx / Cmd_Xxx / SetVm_Xxx 的裸键名 —— 只可能是取词失败的回退值。</summary>
     private static bool LooksLikeResourceKey(string text) =>

@@ -1,12 +1,12 @@
 using System.Collections.ObjectModel;
 using ReactiveUI;
 using VelaShell.Core.Resources;
+using VelaShell.Services;
 
 namespace VelaShell.ViewModels;
 
 /// <summary>
-/// 快捷键参考页的一个分组(纯展示;产品决定不提供自定义键位)。
-/// 折叠态与快捷命令面板同语言:分组头是 ToggleButton,状态挂在这里。
+/// 快捷键页的一个分组。折叠态与快捷命令面板同语言:分组头是 ToggleButton,状态挂在这里。
 /// </summary>
 /// <param name="id">跨语言稳定的分组标识(取分组标题的资源键)—— 换语言会整表重建,靠它把折叠态搬过去。</param>
 /// <param name="title">已本地化的分组标题。</param>
@@ -33,43 +33,171 @@ public sealed class ShortcutGroup(string id, string title, ShortcutItem[] items)
     } = true;
 }
 
-/// <summary>快捷键参考页的单条记录:一个功能名及其组合键序列。</summary>
-/// <param name="Label">功能说明文本(本地化后的动作名)。</param>
-/// <param name="Keys">组成该快捷键的按键序列(如 ["Ctrl", "N"];鼠标手势里也可以是「双击」「滚轮」这类本地化手势名)。</param>
-/// <param name="Note">生效条件备注(如「仅在会话已断开时」);无条件生效时为 <see langword="null" />。</param>
-public sealed record ShortcutItem(string Label, string[] Keys, string? Note = null)
+/// <summary>
+/// 快捷键页的单条记录:一个功能名及其组合键序列。固定键位只读;
+/// 带 <see cref="BindingId" /> 的是可自定义键位(<see cref="ShortcutBindings" />),改键、解绑后原地刷新。
+/// </summary>
+public sealed class ShortcutItem : ReactiveObject
 {
+    /// <summary>建一条记录。</summary>
+    /// <param name="label">功能说明文本(本地化后的动作名)。</param>
+    /// <param name="keys">
+    /// 组成该快捷键的按键序列(如 ["Ctrl", "N"];鼠标手势里也可以是「双击」「滚轮」这类本地化手势名);解绑时为空。
+    /// </param>
+    /// <param name="note">生效条件备注(如「仅在会话已断开时」);无条件生效时为 null。</param>
+    /// <param name="bindingId">可自定义键位的绑定 id;固定键位为 null。</param>
+    public ShortcutItem(string label, string[] keys, string? note = null, string? bindingId = null)
+    {
+        Label = label;
+        Note = note;
+        BindingId = bindingId;
+        Keys = keys;
+        SearchText = BuildSearchText();
+    }
+
+    /// <summary>功能说明文本(本地化后的动作名)。</summary>
+    public string Label { get; }
+
+    /// <summary>生效条件备注;无条件生效时为 null。</summary>
+    public string? Note { get; }
+
     /// <summary>是否有生效条件备注(模板据此决定要不要占一行备注位)。</summary>
     public bool HasNote => !string.IsNullOrEmpty(Note);
+
+    /// <summary>可自定义键位的绑定 id;固定键位为 null。</summary>
+    public string? BindingId { get; }
+
+    /// <summary>能不能在快捷键页里改键、解绑。</summary>
+    public bool IsEditable => BindingId is not null;
+
+    /// <summary>当前的按键序列;解绑时为空数组。</summary>
+    public string[] Keys
+    {
+        get;
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(IsUnbound));
+            this.RaisePropertyChanged(nameof(HasKeys));
+            this.RaisePropertyChanged(nameof(ShowsUnbound));
+        }
+    } = [];
+
+    /// <summary>有键帽可画(解绑、或正在录键时为 false)。</summary>
+    public bool HasKeys => Keys.Length > 0 && !IsRecording;
+
+    /// <summary>可自定义键位当前是解绑状态(这一按原样交给终端)。</summary>
+    public bool IsUnbound => IsEditable && Keys.Length == 0;
+
+    /// <summary>显示「未绑定」字样(解绑且不在录键)。</summary>
+    public bool ShowsUnbound => IsUnbound && !IsRecording;
+
+    /// <summary>与出厂键位不同(改过键或解了绑)—— 出现「恢复默认」按钮,键帽改用强调色。</summary>
+    public bool IsCustomized
+    {
+        get;
+        private set => this.RaiseAndSetIfChanged(ref field, value);
+    }
+
+    /// <summary>
+    /// 当前键位会从终端手里抢走一个按键时的提示(<see cref="ShortcutKeymap.TerminalWarning" />);不会时为 null。
+    /// </summary>
+    public string? Warning
+    {
+        get;
+        private set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(HasWarning));
+        }
+    }
+
+    /// <summary>是否有终端冲突提示。</summary>
+    public bool HasWarning => !string.IsNullOrEmpty(Warning);
+
+    /// <summary>正在等用户按下新的组合键。</summary>
+    public bool IsRecording
+    {
+        get;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(HasKeys));
+            this.RaisePropertyChanged(nameof(ShowsUnbound));
+        }
+    }
+
+    /// <summary>上一次录键的反馈(被拒的原因,或与谁冲突);没有为 null。</summary>
+    public string? Message
+    {
+        get;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(HasMessage));
+        }
+    }
+
+    /// <summary>是否有录键反馈要显示。</summary>
+    public bool HasMessage => !string.IsNullOrEmpty(Message);
+
+    /// <summary>
+    /// 录到的手势与别的绑定冲突、等用户确认替换时暂存在这里(存储写法);没有待确认的替换为 null。
+    /// </summary>
+    public string? PendingGesture
+    {
+        get;
+        set
+        {
+            this.RaiseAndSetIfChanged(ref field, value);
+            this.RaisePropertyChanged(nameof(HasPendingReplace));
+        }
+    }
+
+    /// <summary>是否在等用户确认「替换」。</summary>
+    public bool HasPendingReplace => PendingGesture is not null;
 
     /// <summary>
     /// 搜索匹配用的合并文本:动作名 + 键位 + 备注,一次过滤全覆盖。
     /// 键位同时收录空格与加号两种拼法 —— 用户照着键帽敲的是 "Ctrl Shift F",
     /// 照着文档敲的是 "Ctrl+Shift+F",两种都得能搜到。
     /// </summary>
-    public string SearchText { get; } =
-        $"{Label} {string.Join(' ', Keys)} {string.Join('+', Keys)} {Note}";
+    public string SearchText { get; private set; }
+
+    /// <summary>按新的键位表刷新键帽、改动标记与终端冲突提示(改键、解绑、恢复默认之后)。</summary>
+    public void Refresh(ShortcutKeymap keymap)
+    {
+        if (BindingId is not { } id)
+        {
+            return;
+        }
+        Keys = keymap.Keycaps(id);
+        IsCustomized = keymap.IsCustomized(id);
+        Warning = keymap.TerminalWarning(id);
+        SearchText = BuildSearchText();
+    }
+
+    private string BuildSearchText() => $"{Label} {string.Join(' ', Keys)} {string.Join('+', Keys)} {Note}";
 }
 
 /// <summary>
-/// 应用内全部快捷键的<b>唯一事实来源</b>:设置 → 快捷键页与 <c>docs/快捷键参考.md</c> 都以本表为准。
+/// 应用内全部快捷键的<b>唯一事实来源</b>:设置 → 快捷键页与 velashell-docs 的 <c>zh/host/快捷键参考.md</c> 都以本表为准。
 /// </summary>
 /// <remarks>
 /// <para>
-/// 每一条都逐一核对过真实绑定,不得列出未绑定的键位。绑定分散在六处,新增键位时按处对应补录:
+/// 每一条都逐一核对过真实绑定,不得列出未绑定的键位。可自定义的那些(<c>Bound</c>)出厂表在
+/// <see cref="ShortcutBindings" />,键帽取自当前键位表;其余是固定键位,绑定分散在这几处:
 /// </para>
 /// <list type="bullet">
-///   <item><c>Views/MainWindow.axaml</c> 的 <c>Window.KeyBindings</c> —— 全局键位;</item>
 ///   <item><c>Services/KeyboardShortcutService</c> —— 终端上下文 + 平台差异(macOS 用 Command);</item>
 ///   <item><c>VelaShell.Terminal/Input/TerminalKeyRouter</c> —— 终端控件内的剪贴板/翻页/编码分流;</item>
 ///   <item><c>VelaShell.Terminal/Rendering/VelaTerminalControl</c> —— 终端鼠标手势(选区、缩放、链接);</item>
-///   <item><c>Views/TerminalTabView.axaml.cs</c> —— 搜索栏、补全弹层、断线态键位;</item>
+///   <item><c>Views/TerminalTabView.axaml.cs</c> —— 补全弹层、断线态键位;</item>
 ///   <item>各视图/对话框自己的 <c>OnKeyDown</c>(命令面板、文件管理器、进程管理器、编辑器、AI 面板等)。</item>
 /// </list>
 /// <para>
-/// <b>新增或修改快捷键时必须同步本表</b> —— <c>ShortcutCatalogTests</c> 会拿
-/// <c>MainWindow.axaml</c> 里的 <c>KeyBinding</c> 手势与本表比对,漏登记直接测试失败。
-/// 文案键统一用 <c>Sc_</c> 前缀;与命令面板同名的动作直接复用其 <c>Cmd_</c> 键,保证两处措辞一致。
+/// <b>新增或修改快捷键时必须同步本表</b> —— <c>ShortcutCatalogTests</c> 要求出厂表里每一条都在这里恰好出现一次,
+/// 并拿文档逐条比对。文案键统一用 <c>Sc_</c> 前缀;与命令面板同名的动作直接复用其 <c>Cmd_</c> 键,保证两处措辞一致。
 /// </para>
 /// </remarks>
 public static class ShortcutCatalog
@@ -79,38 +207,38 @@ public static class ShortcutCatalog
     private const string Alt = "Alt";
 
     /// <summary>按当前界面语言构建完整分组表(语言切换后需重新调用)。</summary>
-    public static ShortcutGroup[] Build() =>
+    /// <param name="keymap">可自定义键位按哪份键位表显示;null = 出厂键位(文档比对与测试用)。</param>
+    public static ShortcutGroup[] Build(ShortcutKeymap? keymap = null)
+    {
+        keymap ??= ShortcutKeymap.Default;
+        return
         [
             Group("Sc_GroupGlobal",
                 [
-                    Item("Cmd_NewSshConnection", [Ctrl, "N"]),
-                    Item("Sc_NewTabAlias", [Ctrl, "T"]),
-                    Item("Sc_CloneSession", [Ctrl, Shift, "N"]),
-                    Item("Cmd_OpenSettings", [Ctrl, ","]),
-                    Item("Cmd_CommandPalette", [Ctrl, "K"]),
-                    Item("Sc_PaletteAlt", [Ctrl, "P"]),
+                    Bound(keymap, "session.new"),
+                    Bound(keymap, "session.new.tab"),
+                    Bound(keymap, "session.clone"),
+                    Bound(keymap, "app.settings"),
+                    Bound(keymap, "app.palette"),
                 ]
             ),
             Group("Sc_GroupTabsAndPanels",
                 [
-                    Item("CloseTab", [Ctrl, "W"]),
-                    Item("Cmd_CloseAllTabs", [Ctrl, Shift, "W"]),
-                    Item("Sc_NextTab", [Ctrl, "Tab"]),
-                    Item("Sc_PrevTab", [Ctrl, Shift, "Tab"]),
-                    // Ctrl+数字 会吃掉 ^@ ^[ ^\ ^] ^^ ^_ 六个控制字符,所以跳标签用 Ctrl+Alt+数字
-                    // (Windows Terminal 同样如此)。数的是**当前标签条**上的第几个,分屏后按组算。
-                    Item("Cmd_GotoTabN", [Ctrl, Alt, "1", "…", "8"]),
-                    Item("Cmd_GotoLastTab", [Ctrl, Alt, "9"]),
-                    Item("Dock_SplitHorizontal", [Ctrl, Shift, "D"]),
-                    Item("Dock_SplitVertical", [Ctrl, Shift, "S"]),
-                    // 用 NeedsSplit 而不是 SplitOnly:这一条是无条件抢下的全局键位,
-                    // 未分屏时它只是没事可做,并不会把按键送去远端(Alt+方向才会)。
-                    Item("Dock_ToggleMaximizePane", [Ctrl, Shift, "X"], "Sc_NoteNeedsSplit"),
+                    Bound(keymap, "session.close"),
+                    Bound(keymap, "session.close.all"),
+                    Bound(keymap, "tab.next"),
+                    Bound(keymap, "tab.prev"),
+                    // 数的是**当前标签条**上的第几个,分屏后按组算。
+                    .. Enumerable.Range(1, 8).Select(slot => Bound(keymap, $"tab.goto.{slot}")),
+                    Bound(keymap, "tab.goto.last"),
+                    Bound(keymap, "split.horizontal"),
+                    Bound(keymap, "split.vertical"),
+                    Bound(keymap, "pane.maximize"),
                     Item("Sc_FocusPane", [Alt, "←", "→", "↑", "↓"], "Sc_NoteSplitOnly"),
-                    Item("Cmd_ToggleSidebar", [Ctrl, "B"]),
-                    Item("Sc_ToggleFileBrowser", [Ctrl, Shift, "F"]),
-                    Item("Cmd_TunnelManager", [Ctrl, Shift, "T"]),
-                    Item("Cmd_ToggleLineGutter", [Ctrl, Shift, "L"]),
+                    Bound(keymap, "view.sidebar"),
+                    Bound(keymap, "tools.files"),
+                    Bound(keymap, "tools.tunnel"),
+                    Bound(keymap, "terminal.linegutter"),
                 ]
             ),
             Group("SetVm_SectionTerminal",
@@ -119,7 +247,7 @@ public static class ShortcutCatalog
                     Item("Cmd_Paste", [Ctrl, Shift, "V"]),
                     Item("Sc_PasteShiftInsert", [Shift, "Insert"]),
                     Item("Sc_SendInterrupt", [Ctrl, "C"], "Sc_NoteCtrlCCopies"),
-                    Item("Sc_SearchTerminal", [Ctrl, "F"]),
+                    Bound(keymap, "search.terminal"),
                     Item("Sc_SearchNext", ["Enter"], "Sc_NoteSearchOpen"),
                     Item("Sc_SearchPrev", [Shift, "Enter"], "Sc_NoteSearchOpen"),
                     Item("Sc_SearchClose", ["Esc"], "Sc_NoteSearchOpen"),
@@ -137,11 +265,10 @@ public static class ShortcutCatalog
                     Item("Sc_Reconnect", ["Enter"], "Sc_NoteDisconnected"),
                     Item("Sc_ReconnectAlt", [Ctrl, "R"], "Sc_NoteDisconnected"),
                     Item("Sc_CloseDisconnectedTab", ["Esc"], "Sc_NoteDisconnected"),
-                    Item("Cmd_ClearScreen", [Ctrl, Shift, "K"]),
-                    // Ctrl+- 会抢走 ^_(emacs undo 的一种按法);要发 ^_ 请用 Ctrl+Shift+-。
-                    Item("Cmd_ZoomIn", [Ctrl, "="]),
-                    Item("Cmd_ZoomOut", [Ctrl, "-"], "Sc_NoteZoomOutTakesUnitSeparator"),
-                    Item("Cmd_ZoomReset", [Ctrl, "0"]),
+                    Bound(keymap, "edit.clear"),
+                    Bound(keymap, "view.zoom.in"),
+                    Bound(keymap, "view.zoom.out"),
+                    Bound(keymap, "view.zoom.reset"),
                 ]
             ),
             Group("Sc_GroupCompletion",
@@ -239,6 +366,7 @@ public static class ShortcutCatalog
                 ]
             ),
         ];
+    }
 
     /// <summary>全部条目的扁平序列(计数与搜索用)。</summary>
     public static IEnumerable<ShortcutItem> Flatten(ShortcutGroup[] groups) => groups.SelectMany(group => group.Items);
@@ -248,6 +376,16 @@ public static class ShortcutCatalog
 
     private static ShortcutItem Item(string labelKey, string[] keys, string? noteKey = null) =>
         new(T(labelKey), keys, noteKey is null ? null : T(noteKey));
+
+    /// <summary>一条可自定义键位:动作名与备注取自出厂表,键帽、改动标记与终端冲突提示取自 <paramref name="keymap" />。</summary>
+    private static ShortcutItem Bound(ShortcutKeymap keymap, string bindingId)
+    {
+        ShortcutBinding binding = ShortcutBindings.Find(bindingId)
+                                  ?? throw new ArgumentException($"ShortcutBindings has no binding '{bindingId}'.", nameof(bindingId));
+        var item = new ShortcutItem(binding.Label, [], binding.NoteKey is null ? null : T(binding.NoteKey), binding.Id);
+        item.Refresh(keymap);
+        return item;
+    }
 
     /// <summary>本地化的手势名(左键/双击/滚轮…),与 Ctrl、Shift 一样占一枚键帽。</summary>
     private static string K(string key) => T(key);
