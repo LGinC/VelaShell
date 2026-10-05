@@ -276,6 +276,53 @@ public sealed class ConnectionTests
     }
 
     [TestMethod]
+    [DataRow(new byte[] { 20, 1, 2, 3 }, DisplayName = "KEXINIT 连 cookie 都不完整")]
+    [DataRow(new byte[] { 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF }, DisplayName = "KEXINIT 的名单长度被截断")]
+    [DataRow(new byte[0], DisplayName = "空载荷的帧")]
+    public async Task 握手时对端发来解不开的东西_报SshProtocolException而不是内部异常(byte[] kexInit)
+    {
+        // 曾经让解析层 internal 的 SshWireFormatException / SshFrameFormatException 原样漏出 ConnectAsync ——
+        // 调用方 catch (SshException) 接不住。会话期间有统一的归类，握手期没有。
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(10));
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = new RawKexInitDialer(kexInit, cts.Token),
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("x")],
+        };
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await SshConnection.ConnectAsync(options, cts.Token));
+
+        Assert.AreEqual(SshFailureReason.ProtocolError, error.Reason);
+        Assert.AreEqual(SshPhase.KeyExchange, error.Phase);
+    }
+
+    /// <summary>服务端在首次交换里发一段写好的「KEXINIT」。</summary>
+    private sealed class RawKexInitDialer(byte[] kexInit, CancellationToken cancellationToken) : ISshTransportDialer
+    {
+        public SshDialKind Kind => SshDialKind.Tcp;
+
+        public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken ct)
+        {
+            (InMemoryDuplexStream client, InMemoryDuplexStream server) = InMemoryTransport.CreatePair();
+            TestSshServer fake = new(server, new TestSshServerOptions { RawInitialKexInit = kexInit });
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await fake.HandshakeAsync(cancellationToken);
+                }
+                catch (Exception)
+                {
+                    // 客户端拒了这次握手 —— 服务端这边失败是预期的。
+                }
+            }, CancellationToken.None);   // 服务端跟着测试的令牌走，不跟这一次拨号的
+            return ValueTask.FromResult<Stream>(client);
+        }
+    }
+
+    [TestMethod]
     public async Task 主机密钥被策略拒绝时连不上()
     {
         await using FakeServer server = new();

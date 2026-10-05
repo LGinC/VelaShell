@@ -52,6 +52,9 @@ internal sealed record TestSshServerOptions
     /// </remarks>
     public bool InjectIgnoreBeforeKexInit { get; init; }
 
+    /// <summary>设了就在首次交换里发这段载荷，代替自己的 <c>KEXINIT</c>（造畸形的 KEXINIT、空载荷之类）。</summary>
+    public byte[]? RawInitialKexInit { get; init; }
+
     /// <summary>把签名故意弄坏，用来验证客户端确实在验签。</summary>
     public bool CorruptSignature { get; init; }
 
@@ -253,7 +256,7 @@ internal sealed class TestSshServer : IAsyncDisposable
             {
                 await send(new byte[] { (byte)SshMessageNumber.Ignore, 0, 0, 0, 0 }, cancellationToken);
             }
-            await send(serverKexInit, cancellationToken);
+            await send(isInitial && _options.RawInitialKexInit is { } raw ? raw : serverKexInit, cancellationToken);
         }
         // 重协商时客户端的 KEXINIT 已经被收包循环读掉了 —— 不能再等一个。
         byte[] clientKexInitPayload = peerKexInitAlreadyRead

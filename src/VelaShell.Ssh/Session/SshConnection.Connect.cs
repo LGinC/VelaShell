@@ -196,6 +196,21 @@ public sealed partial class SshConnection
                 SshFailureReason.ClosedByPeer, phase,
                 $"连 {options.EndPoint} 时连接断了（{phase}）：{PeerText.Sanitize(ex.Message, 256)}", ex);
         }
+        catch (Crypto.SshFrameFormatException ex) when (ex.PeerClosedMidPacket)
+        {
+            await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
+            throw new SshConnectionClosedException(
+                SshFailureReason.ClosedByPeer, phase, $"连 {options.EndPoint} 时对端在一个报文中途断开（{phase}）。", ex);
+        }
+        catch (Exception ex) when (ex is Crypto.SshFrameFormatException or Protocol.SshWireFormatException)
+        {
+            await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
+
+            // 〔velashell-docs/zh/ssh/spec/08 §二〕握手与认证期间对端发来的东西解不开（KEXINIT 的名单被截断、
+            // 收到空载荷的帧……）：与会话期间同一个口径，报协议错误（见 SshConnection.NormalizeFault）。
+            // 曾经让这两个 internal 异常原样漏出 ConnectAsync —— 调用方 catch (SshException) 接不住。
+            throw new SshProtocolException(phase, $"连 {options.EndPoint} 时对端违反了协议（{phase}）：{ex.Message}", ex);
+        }
         catch (Exception)
         {
             await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);

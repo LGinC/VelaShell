@@ -486,9 +486,10 @@ public sealed class SshPacketTransportTests
     }
 
     [TestMethod]
-    public async Task 空载荷报文的消息编号访问会抛出()
+    public async Task 空载荷报文在帧层就被拒收()
     {
-        // 载荷为空的报文在协议里不存在。沉默地返回一个假的编号会让错误跑得更远。
+        // 载荷为空的报文在协议里不存在（spec/01 §5）。沉默地返回一个假的编号会让错误跑得更远；
+        // 曾经是交出去、等上层取消息编号时才抛 —— 握手期那一下没人接，漏出了 ConnectAsync。
         (SshPacketTransport a, SshPacketTransport b) = CreatePair();
         await using (a)
         await using (b)
@@ -496,9 +497,7 @@ public sealed class SshPacketTransportTests
             a.WritePacket([]);
             await a.FlushAsync();
 
-            SshInboundPacket packet = await b.ReadPacketAsync();
-            Assert.HasCount(0, packet.Payload);
-            Assert.ThrowsExactly<SshFrameFormatException>(() => _ = packet.MessageNumber);
+            await Assert.ThrowsExactlyAsync<SshFrameFormatException>(async () => await b.ReadPacketAsync());
         }
     }
 }

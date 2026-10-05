@@ -300,10 +300,17 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                     // ⚠️ 解压放在上面那个 try **外面**：reader 在那里已经 AdvanceTo 过了。
                     //    曾经放在里面，解压一失败（压缩炸弹、坏的 zlib 流），catch 就再 AdvanceTo 一次，
                     //    真正的原因被「PipeReader 已经越过这个位置」的 InvalidOperationException 盖掉。
-                    return new SshInboundPacket(
-                        _receiveCompressor.IsActive
-                            ? DecompressPayload(_payloadBuffer.WrittenMemory)
-                            : _payloadBuffer.WrittenMemory);
+                    ReadOnlyMemory<byte> payload = _receiveCompressor.IsActive
+                        ? DecompressPayload(_payloadBuffer.WrittenMemory)
+                        : _payloadBuffer.WrittenMemory;
+
+                    // 〔velashell-docs/zh/ssh/spec/01 §5〕载荷为空的报文在协议里不存在（每个报文至少有一个消息编号字节）：
+                    // 在帧层就拒收，不让它带着一个「取不出消息编号」的载荷往上走。
+                    if (payload.IsEmpty)
+                    {
+                        throw new SshFrameFormatException("报文载荷为空，没有消息编号。");
+                    }
+                    return new SshInboundPacket(payload);
                 }
             }
 
