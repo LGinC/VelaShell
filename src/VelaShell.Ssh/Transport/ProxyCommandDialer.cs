@@ -89,6 +89,12 @@ internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTranspor
     /// 合法的主机名与用户名不以 <c>-</c> 开头（RFC 1123 的主机名以字母或数字开头）。
     /// </para>
     /// </remarks>
+    /// <summary>能不能原样代入交给 shell 的命令行：不以 <c>-</c> 开头，只由字母、数字与 <c>. - _</c> 组成（主机名还可以有 IPv6 的冒号，用户名还可以有 <c>@</c>）。</summary>
+    /// <remarks><c>Match exec</c> 展开记号时用的也是这一套（见 <see cref="Config.SshConfigFile"/>）。</remarks>
+    internal static bool IsShellSafe(string value, bool allowAt) =>
+        !value.StartsWith('-')
+        && value.All(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_' || (c == ':' && !allowAt) || (c == '@' && allowAt));
+
     private static string Checked(string value, string what, bool allowAt)
     {
         if (value.StartsWith('-'))

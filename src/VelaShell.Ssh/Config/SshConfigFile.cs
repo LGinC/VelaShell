@@ -5,6 +5,7 @@
 //   OpenSSH ssh_config(5)
 //   行为规格: velashell-docs/zh/ssh/design/architecture.md §8 第 12 项
 
+using System.Diagnostics;
 using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Config;
@@ -533,18 +534,44 @@ public static partial class SshConfigFile
     /// 按块的出现顺序合并，<b>先出现的值赢</b> —— 这是 <c>ssh_config</c> 的规则，
     /// 与大多数配置格式相反。所以 <c>Host *</c> 要放在文件末尾才起「兜底」的作用。
     /// </remarks>
+    /// <exception cref="ArgumentException">上下文带着 <see cref="SshConfigMatchContext.ExecEvaluator"/>：它是异步的，用 <see cref="ResolveAsync"/>。</exception>
     public static SshHostConfig Resolve(
         IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context)
     {
         ArgumentNullException.ThrowIfNull(blocks);
         ArgumentNullException.ThrowIfNull(context);
+        if (context.ExecEvaluator is not null)
+        {
+            throw new ArgumentException("带 ExecEvaluator 的上下文要用 ResolveAsync —— 求值器是异步的。", nameof(context));
+        }
 
+        // 没有求值器时整个求值同步完成（不碰任何 await 点）。
+        ValueTask<SshHostConfig> resolved = ResolveCoreAsync(blocks, context, CancellationToken.None);
+        Debug.Assert(resolved.IsCompleted, "没有 exec 求值器时求值应当同步完成");
+        return resolved.Result;
+    }
+
+    /// <summary>算出某台主机最终生效的设置；<c>Match exec</c> 交给上下文里的异步求值器。</summary>
+    /// <param name="blocks">解出来的块。</param>
+    /// <param name="context">主机、用户、本机用户、<c>exec</c> 求值器……</param>
+    /// <param name="cancellationToken">取消令牌，交给 <see cref="SshConfigMatchContext.ExecEvaluator"/>。</param>
+    public static ValueTask<SshHostConfig> ResolveAsync(
+        IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(blocks);
+        ArgumentNullException.ThrowIfNull(context);
+        return ResolveCoreAsync(blocks, context, cancellationToken);
+    }
+
+    private static async ValueTask<SshHostConfig> ResolveCoreAsync(
+        IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context, CancellationToken cancellationToken)
+    {
         string originalHost = context.OriginalHost ?? context.Host;
         SshHostConfig config = new(context.Host, originalHost);
 
         foreach (SshConfigBlock block in blocks)
         {
-            if (!Applies(block, config, context, originalHost))
+            if (!await AppliesAsync(block, config, context, originalHost, cancellationToken).ConfigureAwait(false))
             {
                 continue;
             }
@@ -562,8 +589,9 @@ public static partial class SshConfigFile
     }
 
     /// <summary>一个块此刻生效吗：它自己的条件，加上外层（带条件的 Include）的条件，都要满足。</summary>
-    private static bool Applies(
-        SshConfigBlock block, SshHostConfig config, SshConfigMatchContext context, string originalHost)
+    private static async ValueTask<bool> AppliesAsync(
+        SshConfigBlock block, SshHostConfig config, SshConfigMatchContext context, string originalHost,
+        CancellationToken cancellationToken)
     {
         for (SshConfigBlock? current = block; current is not null; current = current.Enclosing)
         {
@@ -571,11 +599,11 @@ public static partial class SshConfigFile
             // Match originalhost 与 Host 块比的才是使用者输入的那个名字。
             // 曾经 Match host 一律拿输入的别名去比：为真实主机名写的 Match 块永远对不上。
             bool applies = current.Match is { } criteria
-                ? MatchesCriteria(criteria, context with
+                ? await MatchesCriteriaAsync(criteria, context with
                 {
                     Host = config.HostName,   // 前面的块给了 HostName 就用它（其中的 %h 已换成输入的名字）
                     OriginalHost = originalHost,
-                })
+                }, cancellationToken).ConfigureAwait(false)
                 : HostPatterns.MatchesList(current.Patterns, context.Host);
 
             if (!applies)
@@ -594,8 +622,8 @@ public static partial class SshConfigFile
     /// 前面加个 <c>!</c> 就成了「满足」：<c>Match !exec "…"</c> 在我们不执行命令时对所有主机生效，
     /// 那正是写配置的人想排除的情形。判不了就是判不了，不因为一个 <c>!</c> 变成真的。
     /// </remarks>
-    private static bool MatchesCriteria(
-        SshConfigMatchCriteria criteria, SshConfigMatchContext context)
+    private static async ValueTask<bool> MatchesCriteriaAsync(
+        SshConfigMatchCriteria criteria, SshConfigMatchContext context, CancellationToken cancellationToken)
     {
         if (criteria.Conditions.Count == 0)
         {
@@ -604,7 +632,7 @@ public static partial class SshConfigFile
 
         foreach (SshConfigMatchCondition condition in criteria.Conditions)
         {
-            if (EvaluateCondition(condition, context) is not { } result)
+            if (await EvaluateConditionAsync(condition, context, cancellationToken).ConfigureAwait(false) is not { } result)
             {
                 return false;
             }
@@ -619,9 +647,14 @@ public static partial class SshConfigFile
     }
 
     /// <returns>满足 / 不满足；<see langword="null"/> 表示判不了（信息不足、不支持、不执行）。</returns>
-    private static bool? EvaluateCondition(
-        SshConfigMatchCondition condition, SshConfigMatchContext context)
+    private static async ValueTask<bool?> EvaluateConditionAsync(
+        SshConfigMatchCondition condition, SshConfigMatchContext context, CancellationToken cancellationToken)
     {
+        if (condition.Keyword == "exec")
+        {
+            return await EvaluateExecAsync(condition, context, cancellationToken).ConfigureAwait(false);
+        }
+
         return condition.Keyword switch
         {
             "all" => true,
@@ -632,13 +665,67 @@ public static partial class SshConfigFile
             "originalhost" => HostPatterns.MatchesList(condition.Patterns, context.OriginalHost ?? context.Host),
             "user" => context.User is { } user ? HostPatterns.MatchesList(condition.Patterns, user) : null,
             "localuser" => context.LocalUser is { } local ? HostPatterns.MatchesList(condition.Patterns, local) : null,
-            // ⚠️ 默认不执行。没有求值器就判不了 —— 见 SshConfigMatchContext.ExecEvaluator 上的说明。
-            "exec" => context.ExecEvaluator is { } evaluator
-                                ? evaluator(string.Join(',', condition.Patterns))
-                                : null,
             // 不认识的条件判不了。认识错了比不认识更糟：那会让一个本不该生效的块生效。
             _ => null,
         };
+    }
+
+    /// <summary><c>Match exec</c>：交给调用方的求值器（见 <see cref="SshConfigMatchContext.ExecEvaluator"/>）。</summary>
+    /// <returns>满足 / 不满足；没有求值器、或者命令里的记号不能安全地代入时 <see langword="null"/>（判不了）。</returns>
+    /// <remarks>
+    /// 〔FW-D5〕命令里的 <c>%h %n %r %u %%</c> 由库按 <c>ProxyCommand</c> 同一套白名单展开好再交出去（CVE-2023-51385 那一类：
+    /// 主机名、用户名常常不是写配置的人给的）。值不安全、或者有不认识的记号，这一条就判不了、不去问求值器。
+    /// 曾经只交出原样的命令（同步、没有令牌、没有主机与用户）：调用方自己去代入 <c>%h</c>，就回到了那一类问题上。
+    /// </remarks>
+    private static async ValueTask<bool?> EvaluateExecAsync(
+        SshConfigMatchCondition condition, SshConfigMatchContext context, CancellationToken cancellationToken)
+    {
+        if (context.ExecEvaluator is not { } evaluator)
+        {
+            return null;   // ⚠️ 默认不执行。没有求值器就判不了 —— 见 SshConfigMatchContext.ExecEvaluator 上的说明。
+        }
+
+        string command = string.Join(',', condition.Patterns);
+        if (ExpandExecCommand(command, context) is not { } expanded)
+        {
+            return null;
+        }
+
+        SshMatchExecRequest request = new(
+            command, expanded, context.Host, context.OriginalHost ?? context.Host, context.User, context.LocalUser);
+        return await evaluator(request, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>展开 <c>Match exec</c> 命令里的记号；有不认识的、或者值不能安全地交给 shell 时为 <see langword="null"/>。</summary>
+    private static string? ExpandExecCommand(string command, SshConfigMatchContext context)
+    {
+        System.Text.StringBuilder result = new(command.Length + 32);
+        for (int i = 0; i < command.Length; i++)
+        {
+            char c = command[i];
+            if (c != '%' || i + 1 >= command.Length)
+            {
+                result.Append(c);
+                continue;
+            }
+
+            (string? value, bool allowAt) = command[++i] switch
+            {
+                'h' => (context.Host, false),
+                'n' => (context.OriginalHost ?? context.Host, false),
+                'r' => (context.User, true),
+                'u' => (context.LocalUser, true),
+                '%' => ("%", false),
+                _ => (null, false),
+            };
+
+            if (value is null || (value != "%" && !Transport.ProxyCommandDialer.IsShellSafe(value, allowAt)))
+            {
+                return null;
+            }
+            result.Append(value);
+        }
+        return result.ToString();
     }
 
     /// <summary>去掉注释：<c>#</c> 在行首、或者前面是空白且不在引号里，才开始一段注释。</summary>
