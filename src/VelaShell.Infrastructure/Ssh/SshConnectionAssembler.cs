@@ -295,7 +295,7 @@ internal static class SshConnectionAssembler
     /// agent 里一把钥都没有时直接说清楚,而不是把一个空凭据列表交给库 ——
     /// 那样用户拿到的是一句笼统的「认证方法已用尽」,看不出问题在本机。
     /// </remarks>
-    private static async ValueTask<IReadOnlyList<SshCredential>> AgentCredentialsAsync(
+    internal static async ValueTask<IReadOnlyList<SshCredential>> AgentCredentialsAsync(
         SshAgentClient agent, CancellationToken cancellationToken)
     {
         IReadOnlyList<SshCredential> credentials;
@@ -305,7 +305,8 @@ internal static class SshConnectionAssembler
         }
         catch (SshAgentException ex)
         {
-            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", ex.Message), ex);
+            // 与连 agent 失败同一条提示、同样按原因码本地化;曾经这里直接塞库的消息(写给开发者看的中文)。
+            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", SshInterop.Localize(ex)), ex);
         }
         return credentials.Count > 0
             ? credentials
