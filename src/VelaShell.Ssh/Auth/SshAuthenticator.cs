@@ -952,9 +952,14 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             return usable[0];
         }
 
+        // 〔AU-E6〕证书按去掉后缀的名字比：server-sig-algs 列的是签名算法（RFC 8308 §3.1），
+        // 证书的签名算法就是不带后缀的那个（rsa-sha2-256-cert-v01@openssh.com 签出来的是 rsa-sha2-256）。
+        // 曾经只按原样比，证书永远比不中、永远取第一偏好：只认 rsa-sha2-256 的服务端照样收到 512，
+        // 允许 SHA-1 时只认 ssh-rsa 的服务端也收不到 SHA-1。带后缀列出来的照样认。
         foreach (string candidate in usable)
         {
-            if (_serverSignatureAlgorithms.Contains(candidate, StringComparer.Ordinal))
+            if (_serverSignatureAlgorithms.Contains(candidate, StringComparer.Ordinal)
+                || _serverSignatureAlgorithms.Contains(HostKeys.SshPublicKey.StripCertificateSuffix(candidate), StringComparer.Ordinal))
             {
                 return candidate;
             }

@@ -1210,6 +1210,50 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
 "ssh-rsa-cert-v01@openssh.com", run.Observation.PublicKeySignatureAlgorithms, "默认不用 SHA-1 —— 证书也一样");
     }
 
+    /// <summary>
+    /// 〔AU-E6〕server-sig-algs 列的是签名算法（不带证书后缀）：只认 rsa-sha2-256 的服务端，RSA 证书就用 rsa-sha2-256 那一种。
+    /// 曾经按带后缀的名字原样比、永远比不中，证书一律用第一偏好（512）。
+    /// </summary>
+    [TestMethod]
+    public async Task 服务端只认rsa_sha2_256时RSA证书用它()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-rsa");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.Certificate.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha256],
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(["rsa-sha2-256-cert-v01@openssh.com"], run.Observation.PublicKeySignatureAlgorithms);
+        Assert.IsTrue(run.Observation.AllSignaturesValid);
+    }
+
+    /// <summary>〔AU-E6〕允许 SHA-1 时，只认 ssh-rsa 的服务端收到的 RSA 证书签名就是 SHA-1 那一种（曾经对证书不起作用）。</summary>
+    [TestMethod]
+    public async Task 允许SHA1且服务端只认ssh_rsa时RSA证书用SHA1()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-rsa");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.Certificate.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.SshRsa],
+            },
+            authenticatorFactory: (t, u, s) => new SshAuthenticator(t, u, s) { AllowSha1RsaSignatures = true });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(["ssh-rsa-cert-v01@openssh.com"], run.Observation.PublicKeySignatureAlgorithms);
+        Assert.IsTrue(run.Observation.AllSignaturesValid);
+    }
+
     /// <summary>证书走的仍然是 publickey，没有第三种认证方法。</summary>
     [TestMethod]
     public async Task 证书认证用的仍是publickey方法()
