@@ -719,6 +719,12 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return (methods, partial);
     }
 
+    /// <summary>认证器已经读过的报文数（判断 <c>EXT_INFO</c> 是不是首次 <c>NEWKEYS</c> 之后的第一个报文）。</summary>
+    private int _packetsRead;
+
+    /// <summary>收到了不在第一个位置的 <c>EXT_INFO</c>：下一个报文必须是 <c>USERAUTH_SUCCESS</c>。</summary>
+    private bool _extInfoAwaitingSuccess;
+
     /// <summary>读下一个报文，顺手处理横幅、扩展信息与断开。</summary>
     private async ValueTask<SshInboundPacket> ReadAsync(CancellationToken cancellationToken)
     {
@@ -747,6 +753,16 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                     "对端在认证期间关闭了连接。");
             }
 
+            bool firstPacket = _packetsRead++ == 0;
+            if (_extInfoAwaitingSuccess && packet.MessageNumber != SshMessageNumber.UserAuthSuccess)
+            {
+                throw new SshProtocolException(
+                    SshPhase.Authenticating,
+                    $"服务端在认证中途发了 EXT_INFO，后面跟的却是 {packet.MessageNumber} —— " +
+                    "EXT_INFO 只能是首次 NEWKEYS 之后的第一个报文，或者紧挨着 USERAUTH_SUCCESS（RFC 8308 §2.4）。");
+            }
+            _extInfoAwaitingSuccess = false;
+
             switch (packet.MessageNumber)
             {
                 case SshMessageNumber.UserAuthBanner:
@@ -754,6 +770,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                     continue;
 
                 case SshMessageNumber.ExtInfo:
+                    // 〔velashell-docs/zh/ssh/spec/04 §7.1〕只有两个位置合法：首次 NEWKEYS 之后的第一个报文；
+                    // 紧挨着 USERAUTH_SUCCESS 之前（下一个报文才知道是不是，所以先记下、读下一个时核对）。
+                    // 曾经任何位置都照收，后到的整体覆盖 server-sig-algs —— 认证中途就能改掉 RSA 签名算法的选择。
+                    _extInfoAwaitingSuccess = !firstPacket;
                     HandleExtensionInfo(packet.Payload);
                     continue;
 

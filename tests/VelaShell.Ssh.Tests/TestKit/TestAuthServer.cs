@@ -69,6 +69,12 @@ internal sealed record TestAuthPolicy
     /// </summary>
     public IReadOnlyList<string> BannersBeforeSuccess { get; init; } = [];
 
+    /// <summary>紧挨着 <c>USERAUTH_SUCCESS</c> 之前再发一个 <c>EXT_INFO</c>（RFC 8308 §2.4 的第二个合法位置）。</summary>
+    public IReadOnlyList<string>? ExtInfoBeforeSuccess { get; init; }
+
+    /// <summary>第一次回 <c>USERAUTH_FAILURE</c> 之前插一个 <c>EXT_INFO</c>（不合法的位置）。</summary>
+    public IReadOnlyList<string>? ExtInfoBeforeFirstFailure { get; init; }
+
     /// <summary>
     /// 回 <c>USERAUTH_SUCCESS</c> 之前由服务端发起一次密钥重协商（模拟用户输动态码太久、服务端按时间 RekeyLimit 发起）。
     /// 要求认证服务端拿得到 <see cref="TestAuthServer.SshServer"/>。
@@ -262,6 +268,11 @@ internal sealed class TestAuthServer
         foreach (string banner in _policy.BannersBeforeSuccess)
         {
             await SendBannerAsync(banner, cancellationToken);
+        }
+
+        if (_policy.ExtInfoBeforeSuccess is { } lateExtInfo)
+        {
+            await SendExtensionInfoAsync(lateExtInfo, cancellationToken);
         }
 
         if (_policy.RekeyBeforeSuccess && SshServer is { } ssh)
@@ -562,8 +573,16 @@ internal sealed class TestAuthServer
         await _transport.FlushAsync(cancellationToken);
     }
 
+    private bool _failureSent;
+
     private async Task SendFailureAsync(bool partialSuccess, CancellationToken cancellationToken)
     {
+        if (!_failureSent && _policy.ExtInfoBeforeFirstFailure is { } misplaced)
+        {
+            await SendExtensionInfoAsync(misplaced, cancellationToken);
+        }
+        _failureSent = true;
+
         // partial_success 为真时，只列还没过的那些 —— 客户端据此挑下一个方法。
         string[] remaining = partialSuccess
             ? [.. _policy.RequiredMethods.Where(m => !_passed.Contains(m))]

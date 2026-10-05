@@ -437,6 +437,39 @@ public sealed class AuthenticationTests
 SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
     }
 
+    /// <summary>
+    /// 〔RFC 8308 §2.4、spec/04 §7.1〕EXT_INFO 只有两个合法位置；认证中途（后面跟的不是 SUCCESS）收到就是协议错误。
+    /// 曾经任何位置都照收，后到的整体覆盖 server-sig-algs —— 认证中途就能改掉 RSA 签名算法的选择。
+    /// </summary>
+    [TestMethod]
+    public async Task 认证中途的EXT_INFO是协议错误()
+    {
+        await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new PasswordCredential("wrong"), new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                ExtInfoBeforeFirstFailure = [SshAlgorithmNames.RsaSha256],
+            }));
+    }
+
+    /// <summary>紧挨着 USERAUTH_SUCCESS 的那个 EXT_INFO 是合法的第二个位置。</summary>
+    [TestMethod]
+    public async Task 紧挨着SUCCESS的EXT_INFO照收()
+    {
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha512],
+                ExtInfoBeforeSuccess = [SshAlgorithmNames.RsaSha256],
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha256], run.Succeeded.ServerSignatureAlgorithms.ToArray());
+    }
+
     [TestMethod]
     public async Task 没有server_sig_algs时用我们自己的第一偏好()
     {
