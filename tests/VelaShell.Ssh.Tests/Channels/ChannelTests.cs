@@ -1473,6 +1473,26 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
     // ------------------------------------------------------------ 关闭
 
     /// <summary>
+    /// 底层流的读不理会取消（Windows 上 ProxyCommand 的匿名管道就是这样）：释放照样在时限内返回。
+    /// 曾经先等收发循环、后释放传输，且不设时限 —— 卡着的读永远等不到释放，释放就永远挂着。
+    /// </summary>
+    [TestMethod]
+    public async Task 底层流的读不理会取消时释放照样在时限内返回()
+    {
+        Harness harness = await Harness.StartAsync(
+            new TestChannelScript { CloseAfterScript = false, ExitCode = null },
+            wrapClient: inner => new CancellationDeafStream(inner));
+        try
+        {
+            await harness.Connection.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(15), harness.Token);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    /// <summary>
     /// 正常释放连接：先冲刷、发 DISCONNECT(BY_APPLICATION) 再停收发。曾经直接取消，对端日志里只有「Connection closed」，
     /// 已入队的帧也作废了。
     /// </summary>

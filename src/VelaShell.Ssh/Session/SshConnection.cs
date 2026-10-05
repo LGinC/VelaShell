@@ -1422,6 +1422,27 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>发 <c>DISCONNECT</c> 时最多等多久。</summary>
     private static readonly TimeSpan DisconnectFlushTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>释放时等收发循环收工最多等多久（到点先释放传输再等一次，见 <see cref="DisposeAsync"/>）。</summary>
+    private static readonly TimeSpan LoopShutdownTimeout = TimeSpan.FromSeconds(2);
+
+    /// <summary>等 <paramref name="task"/> 结束，最多 <paramref name="timeout"/>；它自己失败了也算结束。不抛。</summary>
+    private static async ValueTask<bool> CompletesWithinAsync(Task task, TimeSpan timeout)
+    {
+        try
+        {
+            await task.WaitAsync(timeout).ConfigureAwait(false);
+            return true;
+        }
+        catch (TimeoutException)
+        {
+            return false;
+        }
+        catch (Exception)
+        {
+            return true;   // 循环自己的失败早已经由 Fault 交代过了
+        }
+    }
+
     /// <summary>因这个失败断开时，告诉对端的原因码；不必（或者发了也没人收）时为 <see langword="null"/>。</summary>
     /// <remarks>
     /// 帧层的失败一律报 <see cref="SshDisconnectReason.ProtocolError"/>，不区分「完整性校验失败」与「格式不对」——
@@ -1596,7 +1617,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         _disposed = true;
         SignalDisconnected();
 
-        // 〔velashell-docs/zh/ssh/spec/05 §九〕正常收工：先限时冲刷已入队的帧、发 DISCONNECT(BY_APPLICATION)，再停收发。
+        // 〔velashell-docs/zh/ssh/spec/08 §六〕正常收工：先限时冲刷已入队的帧、发 DISCONNECT(BY_APPLICATION)，再停收发。
         // DISCONNECT 排在发送队列的末尾，它出去了就说明前面的帧都出去了 —— 关标签页之前的最后一次输入不会丢；
         // 服务端日志里也有了原因。曾经直接取消：已入队的帧作废，对端只看到连接没了。
         if (Volatile.Read(ref _fault) is null)
@@ -1628,21 +1649,15 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         // 本端释放的：读端拿到 ObjectDisposedException —— 使用者据此分得清「自己拆的」与「断线」。
         CloseAllChannels(DisposedReason());
 
-        foreach (Task? loop in new[] { _receiveLoop, _keepAliveLoop, _rekeyMonitorLoop, _sendPump })
+        // 等收发循环收工要有时限：底层流的读写不一定响应取消（Windows 上 ProxyCommand 的匿名管道
+        // 在线程池上阻塞完成，architecture.md §11.2.19），曾经那时释放就一直挂着。
+        // 到点先释放传输（关掉底层流，卡着的读写随之结束），再等一次。
+        Task loops = Task.WhenAll(
+            new[] { _receiveLoop, _keepAliveLoop, _rekeyMonitorLoop, _sendPump }.OfType<Task>());
+        if (!await CompletesWithinAsync(loops, LoopShutdownTimeout).ConfigureAwait(false))
         {
-            if (loop is null)
-            {
-                continue;
-            }
-
-            try
-            {
-                await loop.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // 同上。
-            }
+            await _transport.DisposeAsync().ConfigureAwait(false);
+            _ = await CompletesWithinAsync(loops, LoopShutdownTimeout).ConfigureAwait(false);
         }
 
         await _transport.DisposeAsync().ConfigureAwait(false);
