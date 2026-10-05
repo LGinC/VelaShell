@@ -350,7 +350,9 @@ public static partial class SshConfigFile
             foreach (string raw in content.Split('\n'))
             {
                 string line = StripComment(raw);
-                (string key, string value) = line.Length == 0 ? ("", "") : SplitKeyValue(line);
+
+                // 引号留着：Include 的参数要按引号切词（带空格的路径写成 "~/my dir/x"）。
+                (string key, string value) = line.Length == 0 ? ("", "") : SplitKeyValue(line, unquote: false);
 
                 if (!string.Equals(key, "Include", StringComparison.OrdinalIgnoreCase))
                 {
@@ -460,17 +462,18 @@ public static partial class SshConfigFile
 
     /// <summary>把一条 <c>Include</c> 的参数展开成实际的文件列表。</summary>
     /// <remarks>
-    /// 支持三件事：一行里写多个路径（空格分隔）、<c>~</c> 展开、
+    /// 支持三件事：一行里写多个路径（空格分隔，引号里的空格不算 —— <c>"~/my dir/x"</c> 是一个路径）、<c>~</c> 展开、
     /// 以及最后一段里的 <c>*</c> / <c>?</c> 通配。
     /// 相对路径按<b>包含它的那个文件所在的目录</b>解析。
+    /// 〔FW-E15〕曾经先去掉整行的引号再按空格切：带空格的路径被切成了两个。
     /// </remarks>
     internal static IReadOnlyList<string> ExpandIncludePaths(string spec, string baseDirectory)
     {
         List<string> result = [];
 
-        foreach (string one in spec.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (string one in TokenizeRespectingQuotes(spec))
         {
-            string candidate = one.Trim('"');
+            string candidate = one;
 
             if (candidate.StartsWith('~'))
             {
@@ -638,13 +641,32 @@ public static partial class SshConfigFile
         };
     }
 
+    /// <summary>去掉注释：<c>#</c> 在行首、或者前面是空白且不在引号里，才开始一段注释。</summary>
+    /// <remarks>
+    /// 〔FW-E15〕曾经一行里任何位置的 <c>#</c> 都当注释：<c>IdentityFile ~/.ssh/id_#work</c> 被截成 <c>~/.ssh/id_</c>。
+    /// 词中间的 <c>#</c> 是值的一部分；<c>Port 22 # 说明</c> 这种行尾注释照旧去掉。
+    /// </remarks>
     private static string StripComment(string line)
     {
-        int hash = line.IndexOf('#', StringComparison.Ordinal);
-        return (hash >= 0 ? line[..hash] : line).Trim();
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c == '"')
+            {
+                quoted = !quoted;
+            }
+            else if (c == '#' && !quoted && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+            {
+                return line[..i].Trim();
+            }
+        }
+        return line.Trim();
     }
 
-    private static (string Key, string Value) SplitKeyValue(string line)
+    /// <param name="line">去掉注释之后的一行。</param>
+    /// <param name="unquote">值整个用引号括着时去掉引号。<c>Include</c> 要留着，自己按引号切词。</param>
+    private static (string Key, string Value) SplitKeyValue(string line, bool unquote = true)
     {
         // ssh_config 允许 `Key Value`、`Key=Value`、以及 `Key = Value`。
         int separator = line.IndexOfAny([' ', '\t', '=']);
@@ -657,7 +679,7 @@ public static partial class SshConfigFile
         string value = line[(separator + 1)..].TrimStart(' ', '\t', '=').Trim();
 
         // 带引号的值去掉引号（路径里有空格时会这么写）。
-        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+        if (unquote && value.Length >= 2 && value[0] == '"' && value[^1] == '"')
         {
             value = value[1..^1];
         }

@@ -657,4 +657,46 @@ public sealed class SshConfigTests
         // 第一次用的机器上它本来就不存在。那不是错误。
         Assert.IsEmpty(blocks);
     }
+
+    /// <summary>
+    /// 〔FW-E15〕<c>#</c> 只在行首、或前面是空白时才开始注释：词中间的是值的一部分（<c>id_#work</c>），行尾注释照旧去掉。
+    /// </summary>
+    [TestMethod]
+    public void 词中间的井号不当注释_行尾注释照旧去掉()
+    {
+        SshHostConfig config = Resolve("""
+            # 整行注释
+            Host x
+                IdentityFile ~/.ssh/id_#work
+                Port 2222 # 行尾注释
+                User "a # b"
+            """, "x");
+
+        Assert.AreSequenceEqual(["~/.ssh/id_#work"], config.IdentityFiles.ToArray());
+        Assert.AreEqual(2222, config.Port);
+        Assert.AreEqual("a # b", config.User, "引号里的 # 不是注释");
+    }
+
+    /// <summary>〔FW-E15〕带空格的 Include 路径用引号括起来：是一个路径，不被切成两个。</summary>
+    [TestMethod]
+    public async Task Include的带空格路径用引号括起来时是一个路径()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"velashell-include-{Guid.NewGuid():N}", "my dir");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string included = Path.Combine(directory, "x.conf");
+            await File.WriteAllTextAsync(included, "Host q\n    Port 2022\n", CancellationToken.None);
+            string main = Path.Combine(directory, "..", "config");
+            await File.WriteAllTextAsync(main, $"Include \"{included}\"\n", CancellationToken.None);
+
+            IReadOnlyList<SshConfigBlock> blocks = await SshConfigFile.LoadAsync(main, cancellationToken: CancellationToken.None);
+
+            Assert.AreEqual(2022, SshConfigFile.Resolve(blocks, "q").Port);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(directory)!, recursive: true);
+        }
+    }
 }
