@@ -256,6 +256,37 @@ public sealed class RelayTests
         Assert.AreEqual("会话断了", result.Error.Message);
     }
 
+    /// <summary>
+    /// 〔FW-E8〕中止收场的搬运照实报搬过的字节数（下载到一半链路断了，面板上要看得到已经下了多少）。
+    /// 曾经只看正常结束的方向，出错的那次报 0 / 0。
+    /// </summary>
+    [TestMethod]
+    public async Task 出错收场时照实报已搬的字节数()
+    {
+        FakeEndpoint left = new();
+        FakeEndpoint right = new();
+
+        Task<RelayResult> relay = DuplexRelay.RunAsync(left, right);
+
+        byte[] part = Text("前一半");
+        await right.FeedAsync(part);
+
+        // 等这一段确实搬到了左端，再让右端出错。
+        long arrived = 0;
+        while (arrived < part.Length)
+        {
+            ReadResult read = await left.Received.ReadAsync();
+            arrived += read.Buffer.Length;
+            left.Received.AdvanceTo(read.Buffer.End);
+        }
+        right.FeedFail(new IOException("会话断了"));
+
+        RelayResult result = await relay.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.IsNotNull(result.Error);
+        Assert.AreEqual(part.Length, result.BytesFromRight, "出错前已经搬过去的不能报成 0");
+        Assert.AreEqual(0, result.BytesFromLeft);
+    }
     [TestMethod]
     public async Task 目的端整个关闭时停下往它写的方向()
     {

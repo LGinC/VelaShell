@@ -11,6 +11,7 @@
 using System.Buffers;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 
 namespace VelaShell.Ssh.Forwarding;
 
@@ -117,8 +118,12 @@ internal static class DuplexRelay
 
         // 两个方向**同时**跑。串行搬是死锁的经典写法：
         // 先搬完一个方向再搬另一个，而对面正等着我们读它才肯继续。
-        Task<long> leftToRight = PumpAsync(left, right, onBytesFromLeft, abort);
-        Task<long> rightToLeft = PumpAsync(right, left, onBytesFromRight, abort);
+        // 各自搬了多少记在外面：出错收场的那个方向也照实报（〔FW-E8〕曾经只看正常结束的任务，
+        // 下载 500 MB 时链路断了，ConnectionClosed 报的是 0 / 0）。
+        StrongBox<long> fromLeftCount = new();
+        StrongBox<long> fromRightCount = new();
+        Task leftToRight = PumpAsync(left, right, onBytesFromLeft, fromLeftCount, abort);
+        Task rightToLeft = PumpAsync(right, left, onBytesFromRight, fromRightCount, abort);
 
         try
         {
@@ -130,17 +135,18 @@ internal static class DuplexRelay
             // 而那往往只是被中止的另一个方向（一个取消），不是真正出错的那一边。
         }
 
-        long fromLeft = leftToRight.IsCompletedSuccessfully ? await leftToRight.ConfigureAwait(false) : 0;
-        long fromRight = rightToLeft.IsCompletedSuccessfully ? await rightToLeft.ConfigureAwait(false) : 0;
-
         return new RelayResult(
-            fromLeft, fromRight, TimeSpan.FromMilliseconds(Environment.TickCount64 - start), abort.Failure);
+            fromLeftCount.Value, fromRightCount.Value, TimeSpan.FromMilliseconds(Environment.TickCount64 - start), abort.Failure);
     }
 
-    private static async Task<long> PumpAsync(
-        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes, RelayAbort abort)
+    /// <param name="source">从这一端读。</param>
+    /// <param name="destination">往这一端写。</param>
+    /// <param name="onBytes">每搬一段调用一次。</param>
+    /// <param name="total">搬过的字节数，边搬边记 —— 出错收场时也是准的。</param>
+    /// <param name="abort">两个方向共用的中止。</param>
+    private static async Task PumpAsync(
+        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes, StrongBox<long> total, RelayAbort abort)
     {
-        long total = 0;
         bool finished = false;
 
         // 往 destination 写的这个方向，在 destination 整个结束时停下（见 IRelayEndpoint.Closed）。
@@ -165,7 +171,7 @@ internal static class DuplexRelay
                     }
 
                     int length = (int)buffer.Length;
-                    total += length;
+                    total.Value += length;
 
                     // 计量在**搬运循环里**累加，不在通道层：
                     // 通道层的字节数含协议开销，而面板上要显示的是应用数据量。
@@ -220,8 +226,6 @@ internal static class DuplexRelay
 
             await source.Input.CompleteAsync().ConfigureAwait(false);
         }
-
-        return total;
     }
 
     /// <summary>一次搬运的中止开关：两个方向共用，谁先出错谁拉下。</summary>
