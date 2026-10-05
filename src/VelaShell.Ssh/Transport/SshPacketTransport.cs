@@ -101,10 +101,17 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     public long BytesSent => _counting.BytesWritten;
 
     /// <summary>收到的报文数。</summary>
-    public long PacketsReceived { get; private set; }
+    /// <remarks>
+    /// 写在收包路径上、读在重协商的阈值监视与诊断里 —— 两个线程。64 位计数在 32 位平台上普通读写会撕裂，
+    /// 读到半新半旧的值可能误触发或漏触发重协商；所以与字节数一样走 <see cref="Interlocked"/>（AGENTS 4.3）。
+    /// </remarks>
+    public long PacketsReceived => Interlocked.Read(ref _packetsReceived);
 
-    /// <summary>发出的报文数。</summary>
-    public long PacketsSent { get; private set; }
+    /// <summary>发出的报文数（同 <see cref="PacketsReceived"/> 的说明）。</summary>
+    public long PacketsSent => Interlocked.Read(ref _packetsSent);
+
+    private long _packetsReceived;
+    private long _packetsSent;
 
     /// <summary>当前允许的最大 <c>packet_length</c>。认证成功后由会话放宽。</summary>
     public int MaxPacketLength { get; set; } = SshPacketFormat.PreAuthMaxPacketLength;
@@ -286,7 +293,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                         _reader.AdvanceTo(buffer.GetPosition(consumed));
                         // 序号在**成功取出一帧之后**才推进，与密码套件的约定一致。
                         ReceiveSequenceNumber = unchecked(ReceiveSequenceNumber + 1);
-                        PacketsReceived++;
+                        Interlocked.Increment(ref _packetsReceived);
                         Interlocked.Increment(ref _receivePacketsUnderKey);
                     }
                 }
@@ -365,7 +372,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         }
 
         SendSequenceNumber = unchecked(SendSequenceNumber + 1);
-        PacketsSent++;
+        Interlocked.Increment(ref _packetsSent);
         Interlocked.Increment(ref _sendPacketsUnderKey);
     }
 
