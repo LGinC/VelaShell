@@ -23,7 +23,8 @@ namespace VelaShell.Ssh.Config;
 ///   <item><description>
 ///   <c>Include</c> 只在 <see cref="LoadAsync"/> 里展开（<see cref="Parse"/> 是
 ///   纯文本解析，没有基准目录也不该碰文件系统）。展开时有<b>深度上限与环检测</b> ——
-///   两个文件互相 include 是很容易写出来的，而那会把解析变成死循环。
+///   两个文件互相 include 是很容易写出来的，而那会把解析变成死循环；还有<b>总量上限</b>
+///   （<see cref="MaxIncludedFiles"/>），并且只读不超过 <see cref="MaxConfigFileBytes"/> 的普通文件。
 ///   </description></item>
 ///   <item><description>
 ///   <c>Match exec</c> <b>默认不执行</b>。它意味着「解析一份配置文件就能在本机跑任意程序」，
@@ -252,6 +253,17 @@ public static partial class SshConfigFile
     /// </remarks>
     public const int MaxIncludeDepth = 16;
 
+    /// <summary>一次 <see cref="LoadAsync"/> 最多读多少个文件（含最外层那一份）；用完之后的 <c>Include</c> 不再展开。</summary>
+    /// <remarks>
+    /// 环检测只看当前这条包含链（同一个文件在两个块里各被包含一次是正常写法），深度上限只管「深」不管「宽」：
+    /// N 个文件互相 <c>Include dir/*</c> 时，每一条不成环的链都要走一遍，展开次数是 N!/(N−k)! 的量级 ——
+    /// 10 个文件约一千万次，读配置就成了挂死。真实的配置远用不到这么多文件。
+    /// </remarks>
+    public const int MaxIncludedFiles = 256;
+
+    /// <summary>单个配置文件的大小上限；超过的整个跳过。</summary>
+    public const int MaxConfigFileBytes = 1024 * 1024;
+
     /// <summary>读一份 <c>ssh_config</c>，并展开其中的 <c>Include</c>。</summary>
     /// <param name="path">路径；<see langword="null"/> 取 <see cref="DefaultPath"/>。</param>
     /// <param name="includeDirectory">
@@ -283,7 +295,8 @@ public static partial class SshConfigFile
         HashSet<string> visited = new(StringComparer.OrdinalIgnoreCase);
 #pragma warning restore IDE0028
 
-        await LoadIntoAsync(actual, includeDirectory, blocks, state, visited, depth: 0, cancellationToken)
+        IncludeBudget budget = new();
+        await LoadIntoAsync(actual, includeDirectory, blocks, state, visited, budget, depth: 0, cancellationToken)
             .ConfigureAwait(false);
 
         state.Flush(blocks);
@@ -296,6 +309,7 @@ public static partial class SshConfigFile
         List<SshConfigBlock> blocks,
         ParserState state,
         HashSet<string> visited,
+        IncludeBudget budget,
         int depth,
         CancellationToken cancellationToken)
     {
@@ -314,14 +328,19 @@ public static partial class SshConfigFile
         //    没有这一步就是死循环 —— 而那表现为「读配置的时候整个进程不动了」。
         //    只看**当前这条 include 链**：同一个文件在两个 Host 块里各被 include 一次是正常写法，
         //    按「读过就不再读」算的话，第二次会被当成环悄悄跳过。
-        if (!File.Exists(full) || !visited.Add(full))
+        if (!File.Exists(full) || budget.FilesLeft <= 0 || !visited.Add(full))
         {
             return;
         }
+        budget.FilesLeft--;
 
         try
         {
-            string content = await File.ReadAllTextAsync(full, cancellationToken).ConfigureAwait(false);
+            if (await ReadConfigFileAsync(full, cancellationToken).ConfigureAwait(false) is not { } content)
+            {
+                return;
+            }
+
             string baseDirectory = includeDirectory ?? Path.GetDirectoryName(full) ?? ".";
 
             // Include 是**就地展开**的：被包含文件里的设置排在 Include 那一行的位置上，
@@ -357,7 +376,7 @@ public static partial class SshConfigFile
 
                 foreach (string included in ExpandIncludePaths(value, baseDirectory))
                 {
-                    await LoadIntoAsync(included, includeDirectory, blocks, state, visited, depth + 1, cancellationToken)
+                    await LoadIntoAsync(included, includeDirectory, blocks, state, visited, budget, depth + 1, cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -371,6 +390,71 @@ public static partial class SshConfigFile
         finally
         {
             visited.Remove(full);
+        }
+    }
+
+    /// <summary>一次 <see cref="LoadAsync"/> 还能读几个文件（见 <see cref="MaxIncludedFiles"/>）。</summary>
+    private sealed class IncludeBudget
+    {
+        public int FilesLeft { get; set; } = MaxIncludedFiles;
+    }
+
+    /// <summary>读一个配置文件：只读普通文件，超过 <see cref="MaxConfigFileBytes"/> 的不读。</summary>
+    /// <returns>文本；空文件、不是普通文件、太大时为 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>先看大小、再打开。</b>设备文件与 FIFO 报的大小是 0：<c>Include /dev/zero</c> 会无上限地读下去，
+    /// 打开一个 FIFO 则一直阻塞到有人往里写 —— 两种情形取消令牌都管不到。按大小为 0 一律不打开，
+    /// 真正的空文件本来也没有设置，跳过没有损失。
+    /// </para>
+    /// <para>
+    /// 读的时候仍然按上限截住：大小是打开之前看的，文件在这中间变大或被换掉也不会无上限地读。
+    /// 编码与 <see cref="File.ReadAllTextAsync(string, CancellationToken)"/> 一致：认 BOM，默认 UTF-8。
+    /// </para>
+    /// </remarks>
+    private static async ValueTask<string?> ReadConfigFileAsync(string path, CancellationToken cancellationToken)
+    {
+        FileInfo info = new(path);
+        if (!info.Exists || info.Length is 0 or > MaxConfigFileBytes)
+        {
+            return null;
+        }
+
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxConfigFileBytes + 1);
+        try
+        {
+            int total = 0;
+            await using (FileStream stream = new(path, new FileStreamOptions
+            {
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.ReadWrite | FileShare.Delete,
+                Options = FileOptions.Asynchronous,
+            }))
+            {
+                int read;
+                while (total <= MaxConfigFileBytes
+                       && (read = await stream.ReadAsync(buffer.AsMemory(total, MaxConfigFileBytes + 1 - total), cancellationToken)
+                           .ConfigureAwait(false)) > 0)
+                {
+                    total += read;
+                }
+            }
+
+            if (total > MaxConfigFileBytes)
+            {
+                return null;
+            }
+
+            using StreamReader reader = new(
+                new MemoryStream(buffer, 0, total, writable: false),
+                System.Text.Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true);
+            return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

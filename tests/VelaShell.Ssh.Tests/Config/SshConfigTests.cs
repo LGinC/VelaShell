@@ -519,6 +519,68 @@ public sealed class SshConfigTests
     }
 
     [TestMethod]
+    public async Task 一组文件互相通配包含也有总量上限()
+    {
+        // ⚠️ 挂死防护。环检测只看当前这条包含链：9 个文件互相 `Include *.conf`，
+        // 每一条不成环的链都要走一遍 —— 近一百万次读文件。深度上限管不到这种「宽」的爆炸。
+        string root = Path.Combine(Path.GetTempPath(), $"velashell-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            for (int i = 1; i <= 9; i++)
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, $"{i}.conf"), $"Include *.conf\n\nHost h{i}\n    User u{i}\n");
+            }
+            await File.WriteAllTextAsync(Path.Combine(root, "config"), "Include *.conf\n");
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            IReadOnlyList<SshConfigBlock> blocks =
+                await SshConfigFile.LoadAsync(Path.Combine(root, "config"), cancellationToken: timeout.Token);
+
+            for (int i = 1; i <= 9; i++)
+            {
+                Assert.AreEqual($"u{i}", SshConfigFile.Resolve(blocks, $"h{i}").User, "每个文件都至少读到一次");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task 超过大小上限的配置文件整个跳过()
+    {
+        // `Include /dev/zero` 那一类：读不完的文件不能把读配置拖死。大小超限的整个不读，配置的其余部分照常可用。
+        string root = Path.Combine(Path.GetTempPath(), $"velashell-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            System.Text.StringBuilder big = new("Host big\n    User 太大了\n");
+            while (big.Length <= SshConfigFile.MaxConfigFileBytes)
+            {
+                big.Append("# padding padding padding padding padding padding padding\n");
+            }
+            await File.WriteAllTextAsync(Path.Combine(root, "big.conf"), big.ToString());
+            await File.WriteAllTextAsync(Path.Combine(root, "empty.conf"), "");
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "config"), "Include big.conf empty.conf\n\nHost ok\n    User 照常\n");
+
+            IReadOnlyList<SshConfigBlock> blocks = await SshConfigFile.LoadAsync(Path.Combine(root, "config"));
+
+            Assert.IsNull(SshConfigFile.Resolve(blocks, "big").User);
+            Assert.AreEqual("照常", SshConfigFile.Resolve(blocks, "ok").User);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task Include的通配结果是排好序的()
     {
         // 目录枚举的顺序在不同文件系统上不一样，而 ssh_config 是
