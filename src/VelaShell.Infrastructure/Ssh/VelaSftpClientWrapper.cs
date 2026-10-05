@@ -65,9 +65,10 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     /// (最多到 <c>MaxPipelineDepth</c>),那时回退就不够了,错的方向是续传出一个坏文件。
     /// </para>
     /// <para>
-    /// 更好的做法是用库的 <c>SftpFileStream.DurableLength</c>(已**连续**确认的偏移),
-    /// 那能精确到字节、完全不用回退。但那要改 <see cref="ISftpClientWrapper" /> 的契约
-    /// 与 <c>SftpService</c> 的续传流程,不在这次换库的范围里 —— 记在 feature-plan。
+    /// 这只是兜底:上传被打断时库交出精确的续传点(<c>SftpTransferInterruptedException.DurableLength</c>,
+    /// 经 <see cref="SshInterop" /> 翻成 <see cref="VelaSftpTransferInterruptedException" />),<c>SftpService</c> 记下它,
+    /// 下一次续传同一个路径时直接从那里接着传、一个字节都不回退。只有没有记下的时候(进程重启过、续的是别的会话留下的半截)
+    /// 才按这个窗口回退。
     /// </para>
     /// </remarks>
     public long ResumeSafetyMargin =>

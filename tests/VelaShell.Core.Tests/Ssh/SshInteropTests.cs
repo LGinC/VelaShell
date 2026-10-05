@@ -207,6 +207,16 @@ public sealed class SshInteropTests
         Assert.IsInstanceOfType<VelaSftpPathNotFoundException>(translated);
     }
 
+    /// <summary>写入中断带着精确的续传点过来:翻译之后它还在,上层据此续传而不是盲退一个在途窗口。</summary>
+    [TestMethod]
+    public void Translate_SftpTransferInterrupted_KeepsDurableLength()
+    {
+        Exception? translated = SshInterop.Translate(new SftpTransferInterruptedException(123_456, "中断"));
+
+        VelaSftpTransferInterruptedException interrupted = Assert.IsInstanceOfType<VelaSftpTransferInterruptedException>(translated);
+        Assert.AreEqual(123_456, interrupted.DurableLength);
+    }
+
     /// <summary>v4 起的「路径不存在」(10):多版本服务端在 v3 会话里也会回它,同样分到「没这个文件」。</summary>
     [TestMethod]
     public void Translate_SftpNoSuchPath_MapsToPathNotFound()

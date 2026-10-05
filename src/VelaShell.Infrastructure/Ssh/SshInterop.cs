@@ -51,7 +51,7 @@ internal static class SshInterop
             SshAuthenticationException auth => new VelaSshAuthenticationException(Describe(auth), auth),
             SshPrivateKeyException key => TranslatePrivateKey(key),
             SshCertificateException cert => new VelaSshAuthenticationException(Localize(cert), cert),
-            SftpTransferInterruptedException sftp => new VelaSftpOperationException(sftp.Message, sftp),
+            SftpTransferInterruptedException sftp => new VelaSftpTransferInterruptedException(sftp.Message, sftp.DurableLength, sftp),
             SftpException sftp => TranslateSftp(sftp),
             SshNegotiationException negotiation => new VelaSshConnectionException(Describe(negotiation), negotiation),
             SshChannelException channel => new VelaSshClientException(Localize(channel), channel),

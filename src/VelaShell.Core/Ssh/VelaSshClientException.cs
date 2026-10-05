@@ -38,6 +38,20 @@ public class VelaSftpOperationException(string message, Exception? innerExceptio
 /// <summary>SFTP 服务器返回权限拒绝(SSH_FX_PERMISSION_DENIED)。</summary>
 public class VelaSftpPermissionDeniedException(string message, Exception? innerException = null) : VelaSftpOperationException(message, innerException);
 
+/// <summary>
+/// 写入中断(断线、服务端拒写、本端释放),带着**精确**的续传点:远端文件从开头起连续确认落盘了多少字节。
+/// </summary>
+/// <remarks>
+/// 流水线写入的应答不按偏移顺序回来,中断时远端的文件长度只是「已确认的最高偏移」,它之前可能还有空洞;
+/// <see cref="DurableLength" /> 才是从这里续传不会续出坏文件的那个位置。
+/// </remarks>
+public class VelaSftpTransferInterruptedException(string message, long durableLength, Exception? innerException = null)
+    : VelaSftpOperationException(message, innerException)
+{
+    /// <summary>远端文件从开头起连续确认落盘的字节数。</summary>
+    public long DurableLength { get; } = durableLength;
+}
+
 /// <summary>SFTP 路径不存在(SSH_FX_NO_SUCH_FILE)。</summary>
 public class VelaSftpPathNotFoundException(string message, Exception? innerException = null) : VelaSftpOperationException(message, innerException);
 

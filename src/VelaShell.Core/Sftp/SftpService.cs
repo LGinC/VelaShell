@@ -27,6 +27,12 @@ public class SftpService : ISftpService
     /// <summary>开不出第二条 SFTP 通道的会话(服务端 MaxSessions 太小之类):传输回到浏览用的那一条上。</summary>
     private readonly ConcurrentDictionary<Guid, bool> _singleChannelSessions = new();
 
+    /// <summary>
+    /// 上一次被打断的上传留下的精确续传点(库交出来的 DurableLength),按会话与远端路径记;
+    /// 下一次续传这个路径时用它,而不是按远端长度盲退一个在途窗口(见 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, Stream, long, long?, CancellationToken)" />)。
+    /// </summary>
+    private readonly ConcurrentDictionary<(Guid Session, string Path), long> _durableUploads = new();
+
     /// <summary>属主/属组的数字 id → 名称翻译(按会话缓存,见 RemoteIdentityResolver)。</summary>
     private readonly RemoteIdentityResolver _identities;
 
@@ -100,9 +106,10 @@ public class SftpService : ISftpService
         (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         // 以此刻的远端状态重新核实续传起点;核实不通过会抛错,核实为"无可续"则整份重传。
+        long? durable = TakeDurableHint(sessionId, remotePath);
         if (resumeOffset > 0)
         {
-            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, localPath, totalBytes, cancellationToken).ConfigureAwait(false);
+            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, localPath, totalBytes, durable, cancellationToken).ConfigureAwait(false);
         }
 
         // 续传与全新上传只差一个偏移量参数,其余(限速包装、收尾上报)完全一致。
@@ -110,13 +117,21 @@ public class SftpService : ISftpService
         Stream fileStream = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
         try
         {
-            if (resumeOffset > 0)
+            try
             {
-                await client.UploadAsync(fileStream, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                if (resumeOffset > 0)
+                {
+                    await client.UploadAsync(fileStream, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await client.UploadAsync(fileStream, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                }
             }
-            else
+            catch (VelaSftpTransferInterruptedException interrupted)
             {
-                await client.UploadAsync(fileStream, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                RememberDurable(sessionId, remotePath, interrupted);
+                throw;
             }
 
             // 节流会丢弃最后一个时间片内的上报,不强制收尾进度条会停在 99%。
@@ -180,9 +195,10 @@ public class SftpService : ISftpService
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
         (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
 
+        long? durable = TakeDurableHint(sessionId, remotePath);
         if (resumeOffset > 0)
         {
-            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, source, length, cancellationToken).ConfigureAwait(false);
+            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, source, length, durable, cancellationToken).ConfigureAwait(false);
             // 核实时两边都被定位过;整份重传要从头读(续传由下面的 UploadAsync 自己定位到起点)。
             if (resumeOffset == 0)
             {
@@ -195,13 +211,21 @@ public class SftpService : ISftpService
         Stream input = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
         try
         {
-            if (resumeOffset > 0)
+            try
             {
-                await client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                if (resumeOffset > 0)
+                {
+                    await client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                }
+                else
+                {
+                    await client.UploadAsync(input, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                }
             }
-            else
+            catch (VelaSftpTransferInterruptedException interrupted)
             {
-                await client.UploadAsync(input, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                RememberDurable(sessionId, remotePath, interrupted);
+                throw;
             }
             reporter.ReportFinal(length);
             if (preserveTimestamps && lastWriteTime is { } mtime && mtime != default)
@@ -709,6 +733,10 @@ public class SftpService : ISftpService
         // 在下面的早退之前丢弃:即使本会话从未建过 SFTP 客户端,查表缓存也可能已存在。
         _identities.Invalidate(sessionId);
         _singleChannelSessions.TryRemove(sessionId, out _);
+        foreach ((Guid Session, string Path) key in _durableUploads.Keys.Where(k => k.Session == sessionId))
+        {
+            _durableUploads.TryRemove(key, out _);
+        }
 
         // 这里原先要 Task.Run 把释放甩到线程池 —— 因为那时释放是同步阻塞的,
         // 在调用线程上做会卡住关标签页这个动作。现在释放本身就是异步的,直接 await。
@@ -773,20 +801,25 @@ public class SftpService : ISftpService
         string remotePath,
         string localPath,
         long localLength,
+        long? durable,
         CancellationToken cancellationToken)
     {
         await using Stream local = OpenLocalRead(localPath);
-        return await ResolveUploadResumeAsync(client, remotePath, local, localLength, cancellationToken).ConfigureAwait(false);
+        return await ResolveUploadResumeAsync(client, remotePath, local, localLength, durable, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// 同上,只是源换成了调用方给的可 Seek 的流(双栏远程之间的中转:源是另一台机器上的文件)。
     /// 源流由调用方负责释放;这里会移动它的位置,调用方按返回值重新定位。
     /// </summary>
+    /// <remarks>
+    /// <c>durable</c> 是上一次被打断时库交出来的精确续传点;给了就从它续(不超过此刻的远端长度),不必盲退一个在途窗口。
+    /// </remarks>
     private static async Task<long> ResolveUploadResumeAsync(ISftpClientWrapper client,
         string remotePath,
         Stream source,
         long sourceLength,
+        long? durable,
         CancellationToken cancellationToken)
     {
         long localLength = sourceLength;
@@ -798,10 +831,13 @@ public class SftpService : ISftpService
             return 0;
         }
 
-        // 回退一整个在途写入窗口:文件长度只是"已确认的最高偏移",它之前可能还留着未落盘的空洞
+        // 上一次被打断时记下了精确续传点(从开头起连续确认落盘的字节数):从它续,一个字节都不用重传。
+        // 否则只能回退一整个在途写入窗口:文件长度只是"已确认的最高偏移",它之前可能还留着未落盘的空洞
         // (见 ISftpClientWrapper.ResumeSafetyMargin)。不回退的话尾部比对会落在已写入的那段上
         // 顺利通过,却从一个带洞的位置接着传 —— 那正是"续传出来的文件是坏的"的成因。
-        long candidate = remoteLength - client.ResumeSafetyMargin;
+        long candidate = durable is { } exact
+            ? Math.Min(exact, remoteLength)
+            : remoteLength - client.ResumeSafetyMargin;
         if (candidate <= 0)
         {
             return 0;
@@ -814,8 +850,16 @@ public class SftpService : ISftpService
         return candidate;
     }
 
+    /// <summary>取走这个路径上一次被打断时记下的续传点(只用一次:之后的上传各记各的)。</summary>
+    private long? TakeDurableHint(Guid sessionId, string remotePath) =>
+        _durableUploads.TryRemove((sessionId, remotePath), out long durable) ? durable : null;
+
+    /// <summary>记下这次被打断的上传精确落盘到了哪里,供下一次续传用。</summary>
+    private void RememberDurable(Guid sessionId, string remotePath, VelaSftpTransferInterruptedException interrupted) =>
+        _durableUploads[(sessionId, remotePath)] = interrupted.DurableLength;
+
     /// <summary>
-    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, string, long, CancellationToken)" />:
+    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, string, long, long?, CancellationToken)" />:
     /// 以"此刻本地文件的实际长度"为准,并比对尾部确认本地那半截确实是远端文件的前缀。
     /// </summary>
     /// <returns>经核实的续传偏移量;返回 0 表示应整份重下(覆盖本地残留)。</returns>

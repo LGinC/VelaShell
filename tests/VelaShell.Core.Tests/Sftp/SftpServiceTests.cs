@@ -1173,6 +1173,38 @@ public class SftpServiceTests
     }
 
     /// <summary>
+    /// 上一次被打断时库交出了精确的续传点(DurableLength):续传从那里接着传,不按远端长度盲退一个在途窗口。
+    /// </summary>
+    [TestMethod]
+    public async Task UploadFileAsync_ResumeAfterInterruption_UsesTheExactDurableLength()
+    {
+        string localPath = Path.GetTempFileName();
+        byte[] content = CreatePattern(500_000);
+        await File.WriteAllBytesAsync(localPath, content);
+        const long remoteLength = 300_000;   // 已确认的最高偏移
+        const long durable = 280_000;        // 从开头起连续确认落盘的字节数
+        const string remotePath = "/home/user/exact.bin";
+
+        _sftpClient.ResumeSafetyMargin.Returns(64 * 1024);
+        _sftpClient.GetFileSizeAsync(remotePath, Arg.Any<CancellationToken>()).Returns(remoteLength);
+        _sftpClient.OpenAsync(remotePath, FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>())
+                   .Returns(_ => Task.FromResult<Stream>(new MemoryStream(content[..(int)remoteLength], false)));
+
+        // 第一次上传中途断了:库报出精确的续传点。
+        _sftpClient.UploadAsync(Arg.Any<Stream>(), remotePath, Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromException(new VelaSftpTransferInterruptedException("中断", durable)));
+        await Assert.ThrowsExactlyAsync<VelaSftpTransferInterruptedException>(
+            () => _sftpService.UploadFileAsync(_sessionId, localPath, remotePath));
+
+        // 续传:从 280_000 接着传,而不是 300_000 - 64 KiB。
+        await _sftpService.UploadFileAsync(_sessionId, localPath, remotePath, null, resumeOffset: 1);
+
+        await _sftpClient.Received(1).UploadAsync(Arg.Any<Stream>(), remotePath, durable,
+            Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        File.Delete(localPath);
+    }
+
+    /// <summary>
     /// 底层库并发写多个缓冲区,中断后文件尾部可能留有空洞:文件长度只是"已确认的最高偏移"。
     /// 续传起点必须从长度处回退一整个在途写入窗口,否则尾部比对会落在已写入的那段上顺利通过,
     /// 却从一个带洞的位置接着传 —— 产出静默损坏的文件。
