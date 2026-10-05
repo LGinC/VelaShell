@@ -53,9 +53,19 @@ internal sealed class ZlibCompressor : ISshCompressor
 
     private readonly BufferWriterStream _deflateSink = new();
     private readonly SequenceStream _inflateSource = new();
-    private readonly ZLibStream _deflater;
-    private readonly ZLibStream _inflater;
+    private readonly int _level;
     private bool _disposed;
+
+    /// <summary>压缩用的 zlib 流 —— 第一次压缩时才建。</summary>
+    /// <remarks>
+    /// 一个压缩器只用在一个方向上：发送方向只压、接收方向只解。曾经两个 zlib 流在构造时都建：
+    /// 开压缩的连接每个方向都白占一份用不上的原生 zlib 状态（deflate 那份最大，约两三百 KiB），
+    /// 每次重协商再建一对，多标签页时累加。
+    /// </remarks>
+    private ZLibStream? _deflater;
+
+    /// <summary>解压用的 zlib 流 —— 第一次解压时才建（见 <see cref="_deflater"/>）。</summary>
+    private ZLibStream? _inflater;
 
     /// <summary>建一个 zlib 压缩器。</summary>
     /// <param name="level">压缩级别，1–9。OpenSSH 用 6。</param>
@@ -63,13 +73,7 @@ internal sealed class ZlibCompressor : ISshCompressor
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(level, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(level, 9);
-
-        _deflater = new ZLibStream(
-            _deflateSink,
-            new ZLibCompressionOptions { CompressionLevel = level },
-            leaveOpen: true);
-
-        _inflater = new ZLibStream(_inflateSource, CompressionMode.Decompress, leaveOpen: true);
+        _level = level;
     }
 
     /// <inheritdoc />
@@ -80,6 +84,11 @@ internal sealed class ZlibCompressor : ISshCompressor
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(output);
+
+        _deflater ??= new ZLibStream(
+            _deflateSink,
+            new ZLibCompressionOptions { CompressionLevel = _level },
+            leaveOpen: true);
 
         _deflateSink.Output = output;
         try
@@ -101,6 +110,7 @@ internal sealed class ZlibCompressor : ISshCompressor
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(output);
 
+        _inflater ??= new ZLibStream(_inflateSource, CompressionMode.Decompress, leaveOpen: true);
         _inflateSource.Data = payload;
         byte[] buffer = ArrayPool<byte>.Shared.Rent(ChunkSize);
         long total = 0;
@@ -165,8 +175,8 @@ internal sealed class ZlibCompressor : ISshCompressor
         }
         _disposed = true;
 
-        _deflater.Dispose();
-        _inflater.Dispose();
+        _deflater?.Dispose();
+        _inflater?.Dispose();
         _deflateSink.Dispose();
         _inflateSource.Dispose();
     }
