@@ -697,6 +697,53 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task WriteAsync返回之后取消它的令牌_在途的写照样落盘并记账()
+    {
+        // WriteAsync 返回时 WRITE 还在路上。曾经它带着这一次调用的令牌：令牌之后被取消，已经发出的 WRITE 照样落盘，
+        // 本端却不再记账（DurableLength 偏小），流还被标成写入故障 —— Flush / 关闭抛「传输中断」而不是成功。
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { DelayWriteReplies = TimeSpan.FromMilliseconds(200) });
+
+        byte[] payload = new byte[(harness.Sftp.BlockSize * 2) + 100];
+        Random.Shared.NextBytes(payload);
+
+        await using (SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/up.bin", cancellationToken: harness.Token))
+        {
+            using (CancellationTokenSource perCall = new())
+            {
+                await stream.WriteAsync(payload, perCall.Token);
+                await perCall.CancelAsync();   // WriteAsync 已经返回，整块的 WRITE 还在等应答
+            }
+
+            await stream.FlushAsync(harness.Token);
+            Assert.AreEqual(payload.Length, stream.DurableLength, "在途的写照样被确认、记账");
+        }
+
+        Assert.AreSequenceEqual(payload, [.. harness.SftpServer.Nodes["/home/joe/up.bin"].Content]);
+    }
+
+    [TestMethod]
+    public async Task FlushAsync被取消只是不再等_之后照常冲完()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { DelayWriteReplies = TimeSpan.FromMilliseconds(300) });
+
+        byte[] payload = new byte[harness.Sftp.BlockSize * 2];
+        Random.Shared.NextBytes(payload);
+
+        await using SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/up.bin", cancellationToken: harness.Token);
+        await stream.WriteAsync(payload, harness.Token);
+
+        using (CancellationTokenSource impatient = new(TimeSpan.FromMilliseconds(20)))
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(async () => await stream.FlushAsync(impatient.Token));
+        }
+
+        await stream.FlushAsync(harness.Token);
+        Assert.AreEqual(payload.Length, stream.DurableLength, "取消 Flush 不是写入失败");
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>

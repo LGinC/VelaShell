@@ -103,6 +103,9 @@ internal sealed record TestSftpOptions
     /// <remarks>模拟慢盘、网络文件系统：客户端在等句柄时取消了，句柄晚到。</remarks>
     public TimeSpan DelayOpenReplies { get; init; }
 
+    /// <summary><c>WRITE</c> 的应答等这么久才发（数据在收到请求时就已经写下）—— 让一次写在 <c>WriteAsync</c> 返回之后还在路上。</summary>
+    public TimeSpan DelayWriteReplies { get; init; }
+
     /// <summary>设了就对每个 <c>CLOSE</c> 回这个失败码（句柄照样关掉）—— 模拟到关闭时才报出来的写入错误。</summary>
     public SftpStatusCode? FailCloseWith { get; init; }
 
@@ -193,7 +196,6 @@ internal sealed class TestSftpServer
         return node;
     }
 
-    /// <summary>跑服务端循环。</summary>
     /// <summary>让这个 sftp-server 退出（模拟崩溃，或服务端按 <c>ChannelTimeout</c> 关掉闲置通道）：输出收尾，通道随之 EOF + CLOSE。</summary>
     public void Exit()
     {
@@ -204,6 +206,7 @@ internal sealed class TestSftpServer
     private bool _exited;
     private PipeReader? _input;
 
+    /// <summary>跑服务端循环。</summary>
     public async Task RunAsync(PipeReader input, PipeWriter output, CancellationToken cancellationToken)
     {
         Volatile.Write(ref _input, input);
@@ -222,9 +225,11 @@ internal sealed class TestSftpServer
 
                 List<byte[]> replies = [];
                 bool delayReplies = false;
+                bool delayWriteReplies = false;
                 while (SftpWire.TryReadFrame(ref buffer, out SftpFrame frame))
                 {
                     delayReplies |= frame.Type is SftpMessageType.Open or SftpMessageType.OpenDir;
+                    delayWriteReplies |= frame.Type is SftpMessageType.Write;
                     byte[]? reply = Handle(frame);
                     replies.AddRange(_released);
                     _released.Clear();
@@ -240,6 +245,10 @@ internal sealed class TestSftpServer
                 if (delayReplies && _options.DelayOpenReplies > TimeSpan.Zero)
                 {
                     await Task.Delay(_options.DelayOpenReplies, cancellationToken);
+                }
+                if (delayWriteReplies && _options.DelayWriteReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayWriteReplies, cancellationToken);
                 }
 
                 foreach (byte[] reply in Order(replies))

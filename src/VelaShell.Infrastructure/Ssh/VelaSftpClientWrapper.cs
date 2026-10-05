@@ -146,10 +146,10 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
             catch (Exception) when (ct.IsCancellationRequested)
             {
                 // 调用方取消了:如实报取消。
-                // 在途的 WRITE 带着同一个令牌,取消后它们被记成写入失败,于是关流(或此前的 Flush)
-                // 会抛「传输中断,已确认 N 字节,从这里续传」。若照 await using 的写法让关流的异常往外冒,
-                // 它会顶掉真正的原因 —— 用户按的是取消,看到的却是一条中断、还说能续传(续不续由上层的设置决定,
-                // 双栏远程之间的中转就根本不续)。关流照做(要发 CLOSE 还句柄),它的异常不再往外报。
+                // 已经入队的 WRITE 不带这个令牌(库让它们跟着流走,见 spec/06 §6.4),关流会等它们落地再发 CLOSE。
+                // 关流若恰好也报了错(比如通道同时断了),照 await using 的写法让它往外冒会顶掉真正的原因 ——
+                // 用户按的是取消,看到的却是一条中断、还说能续传(续不续由上层的设置决定,双栏远程之间的中转
+                // 就根本不续)。关流照做(要发 CLOSE 还句柄),它的异常不再往外报。
                 await CloseQuietlyAsync(remote).ConfigureAwait(false);
                 throw new OperationCanceledException(ct);
             }

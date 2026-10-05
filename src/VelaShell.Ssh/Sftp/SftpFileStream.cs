@@ -52,6 +52,7 @@ public sealed class SftpFileStream : Stream
     private Exception? _writeFault;
     private bool _closed;
 
+
     // ---- 流水线写的攒块：不足一块的尾巴留在本端，凑满一块再发（velashell-docs/zh/ssh/spec/06 §5.2）----
 
     /// <summary>攒块缓冲（租来的，至少一块大）；还没攒过时为 <see langword="null"/>。</summary>
@@ -582,14 +583,19 @@ public sealed class SftpFileStream : Stream
         // 读写同一个句柄时，预读到的内容可能正好被这一次写盖掉。
         ResetReadAhead();
 
-        // 在途写的数量就是背压。满了就等，不报错。
+        // 在途写的数量就是背压。满了就等，不报错。调用方的令牌只管「等写槽」这一段。
         await _writeSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         // 调用方的缓冲在我们返回之后就可能被复用 —— 必须先复制。
         byte[] rented = ArrayPool<byte>.Shared.Rent(data.Length);
         data.CopyTo(rented);
 
-        Task write = SendWriteAsync(offset, rented, data.Length, cancellationToken);
+        // 〔velashell-docs/zh/ssh/spec/06 §6.4〕
+        // ⚠️ 入队的 WRITE 不带这一次 WriteAsync 的令牌：WriteAsync 返回时它还在路上，
+        //    令牌之后被取消的话，已经发出的 WRITE 照样落盘，本端却不再记账（DurableLength 偏小），
+        //    流还被标成写入故障，之后 Flush / 关闭抛「传输中断，从 N 续传」而不是取消。
+        //    要打断等待，用 FlushAsync(ct)。它只会以应答或流水线收工（通道断了会把在途请求一次性收尾）结束。
+        Task write = SendWriteAsync(offset, rented, data.Length);
 
         lock (_pendingLock)
         {
@@ -602,18 +608,18 @@ public sealed class SftpFileStream : Stream
         if (WriteMode == SftpWriteMode.Sequential)
         {
             // 顺序模式的承诺是「任何时刻文件都是一个完整前缀」——
-            // 那就必须等这一块确认了才返回。
-            await write.ConfigureAwait(false);
+            // 那就必须等这一块确认了才返回。取消只是不再等，这一块照样会被确认、记账。
+            await write.WaitAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
-    private async Task SendWriteAsync(long offset, byte[] rented, int length, CancellationToken cancellationToken)
+    private async Task SendWriteAsync(long offset, byte[] rented, int length)
     {
         try
         {
             using SftpResponse response = await _pipeline.SendAsync(
                 (output, id) => SftpWire.WriteWrite(output, id, _handle, (ulong)offset, rented.AsSpan(0, length)),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
             response.ThrowIfError(Path, SftpOperation.Write);
 
@@ -664,6 +670,9 @@ public sealed class SftpFileStream : Stream
     /// <exception cref="SftpTransferInterruptedException">
     /// 有写入失败。异常里带着<b>精确</b>的 <c>DurableLength</c>。
     /// </exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> 取消了：只是不再等，在途的写入照样会被确认、记账。
+    /// </exception>
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
         // 不足一块的尾巴还在本端：先发出去，再一起等确认。
@@ -675,9 +684,14 @@ public sealed class SftpFileStream : Stream
             pending = [.. _pendingWrites];
         }
 
+        Task all = Task.WhenAll(pending);
         try
         {
-            await Task.WhenAll(pending).ConfigureAwait(false);
+            await all.WaitAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !all.IsCompleted)
+        {
+            throw;   // 调用方不等了 —— 这不是写入失败
         }
         catch (Exception ex)
         {
