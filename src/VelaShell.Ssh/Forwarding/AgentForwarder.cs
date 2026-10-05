@@ -41,6 +41,9 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
     /// <summary>agent 通道的接收窗口：一整条最长报文（4 字节长度 + 内容）。</summary>
     internal const int AgentChannelWindowBytes = 4 + MaxAgentMessageLength;
 
+    /// <summary>一条 agent 通道上最多记几条验过的会话声明；转发链再长也用不了这么多，多出来的挤掉最早的。</summary>
+    internal const int MaxSessionBindingsPerChannel = 16;
+
     private readonly Session.SshConnection _connection;
     private readonly Func<CancellationToken, ValueTask<SshAgentClient>> _connectAgent;
     private readonly AgentForwardOptions _options;
@@ -309,6 +312,10 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
         PipeReader input = channel.StandardOutput;
         PipeWriter output = channel.StandardInput;
 
+        // 远端那一跳在这条通道上声明过的会话（验过签名的），给逐次确认认出「要登录哪里」。
+        // 跟着通道走：远端的 ssh 每次连下一跳都开一条新的 agent 连接，声明与签名在同一条上。
+        List<AgentSignedData.SessionBinding> bindings = [];
+
         while (!cancellationToken.IsCancellationRequested)
         {
             byte[]? request = await ReadAgentMessageAsync(input, cancellationToken).ConfigureAwait(false);
@@ -325,7 +332,7 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
                 return;
             }
 
-            byte[] response = await HandleAgentRequestAsync(request, agent, cancellationToken)
+            byte[] response = await HandleAgentRequestAsync(request, agent, bindings, cancellationToken)
                 .ConfigureAwait(false);
 
             byte[] framed = new byte[4 + response.Length];
@@ -338,7 +345,10 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
     }
 
     private async ValueTask<byte[]> HandleAgentRequestAsync(
-        byte[] request, SshAgentClient agent, CancellationToken cancellationToken)
+        byte[] request,
+        SshAgentClient agent,
+        List<AgentSignedData.SessionBinding> bindings,
+        CancellationToken cancellationToken)
     {
         if (request.Length == 0)
         {
@@ -350,18 +360,39 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
             SshAgentMessage.RequestIdentities =>
                 await HandleListAsync(agent, cancellationToken).ConfigureAwait(false),
             SshAgentMessage.SignRequest =>
-                await HandleSignAsync(request, agent, cancellationToken).ConfigureAwait(false),
+                await HandleSignAsync(request, agent, bindings, cancellationToken).ConfigureAwait(false),
 
             // 〔velashell-docs/zh/ssh/spec/07 §7.4〕远端那一跳自己的会话声明照转：转发链上每一跳都把声明接在
             // 我们的声明后面，agent 才认得出整条路径、执行 ssh-add -h 的约束。声明只会让 agent 对这条连接更严，
             // 放行它不放大远端的权限 —— 别的扩展我们说不准它能做什么，一律不转。
             SshAgentMessage.Extension when SshAgentClient.IsSessionDeclaration(request) =>
-                await agent.RelaySessionDeclarationAsync(request, cancellationToken).ConfigureAwait(false),
+                await RelaySessionDeclarationAsync(request, agent, bindings, cancellationToken).ConfigureAwait(false),
 
             // 增删密钥、锁定 agent 之类的请求**一律不转发**。
             // 远端没有任何理由改动我们本机 agent 的状态。
             _ => [SshAgentMessage.Failure],
         };
+    }
+
+    /// <summary>照转远端的会话声明；开着逐次确认时，验过签名的那些顺手记下来。</summary>
+    private ValueTask<byte[]> RelaySessionDeclarationAsync(
+        byte[] request,
+        SshAgentClient agent,
+        List<AgentSignedData.SessionBinding> bindings,
+        CancellationToken cancellationToken)
+    {
+        // 只有确认框用得上：没开逐次确认就不花这次验签。
+        if (_options.ConfirmEachSignature is not null
+            && AgentSignedData.TryReadSessionBinding(request) is { } binding)
+        {
+            if (bindings.Count == MaxSessionBindingsPerChannel)
+            {
+                bindings.RemoveAt(0);
+            }
+            bindings.Add(binding);
+        }
+
+        return agent.RelaySessionDeclarationAsync(request, cancellationToken);
     }
 
     private async ValueTask<byte[]> HandleListAsync(SshAgentClient agent, CancellationToken cancellationToken)
@@ -399,7 +430,10 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
     }
 
     private async ValueTask<byte[]> HandleSignAsync(
-        byte[] request, SshAgentClient agent, CancellationToken cancellationToken)
+        byte[] request,
+        SshAgentClient agent,
+        IReadOnlyList<AgentSignedData.SessionBinding> bindings,
+        CancellationToken cancellationToken)
     {
         Interlocked.Increment(ref _signatureRequests);
 
@@ -454,8 +488,11 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
                 }
             }
 
-            bool approved = await confirm(new AgentSignatureRequest(key, comment), cancellationToken)
-                .ConfigureAwait(false);
+            // 〔velashell-docs/zh/ssh/spec/07 §7.2.1〕只给钥和注释，使用者分不出这是自己在远端敲的 git pull，
+            // 还是那台机器上有人在拿这把钥登录别处：被签的数据认得出来时，把「以谁登录、登录哪台」一并交上去。
+            AgentSignatureRequest context = AgentSignedData.Describe(key, comment, data, bindings);
+
+            bool approved = await confirm(context, cancellationToken).ConfigureAwait(false);
 
             if (!approved)
             {

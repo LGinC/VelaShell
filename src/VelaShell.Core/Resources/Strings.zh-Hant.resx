@@ -5817,6 +5817,27 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>金鑰</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>以「{0}」身分登入 SSH 伺服器</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>資料簽章(命名空間 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>無法辨識的資料 —— 不是 SSH 登入</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>目的主機</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>不在已知主機中({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>無法核實 —— 遠端沒有證明要登入哪台主機</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒內未回應將自動拒絕。</value>
   </data>
@@ -5830,7 +5851,7 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>本工作階段內允許</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>在這個工作階段關閉之前,這把金鑰不再詢問</value>
+    <value>在這個工作階段關閉之前,這把金鑰用於同一用途(同一使用者、同一目的主機)時不再詢問</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>只轉送選取的金鑰</value>

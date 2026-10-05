@@ -34,6 +34,7 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
     private readonly SshSessionOptions? _features;
     private readonly ILocalXServer? _localXServer;
     private readonly IAgentSignPrompt? _agentPrompt;
+    private readonly IHostKeyService? _hostKeys;
     private readonly string _target;
     private SshConnection? _connection;
     private bool _disposed;
@@ -53,18 +54,21 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
     /// </param>
     /// <param name="agentPrompt">agent 转发开了「逐次确认」时用来问用户;<see langword="null" /> 时一律拒签。</param>
     /// <param name="target">确认框里给用户看的「哪条会话」,<c>用户@主机:端口</c>。</param>
+    /// <param name="hostKeys">已知主机;确认框拿它把远端要登录的目的主机认成主机名。</param>
     public VelaSshClientWrapper(
         Func<CancellationToken, ValueTask<SshConnection>> connect,
         TimeSpan connectTimeout,
         SshSessionOptions? features = null,
         ILocalXServer? localXServer = null,
         IAgentSignPrompt? agentPrompt = null,
-        string target = "")
+        string target = "",
+        IHostKeyService? hostKeys = null)
     {
         _connect = connect ?? throw new ArgumentNullException(nameof(connect));
         _features = features;
         _localXServer = localXServer;
         _agentPrompt = agentPrompt;
+        _hostKeys = hostKeys;
         _target = target;
         ConnectionTimeout = connectTimeout;
     }
@@ -157,7 +161,7 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
             List<ShellStreamNotice> notices = [];
             XServerDisplayResolution? localServer = await ResolveLocalXServerAsync(notices, cancellationToken).ConfigureAwait(false);
             X11ForwardOptions? x11 = SshForwardingOptions.X11(_features, notices, localServer?.Display, localServer?.Connector);
-            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target) is { } agentOptions
+            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target, hostKeys: _hostKeys) is { } agentOptions
                 ? agentOptions with { AgentEndpoint = SshConnectionAssembler.AgentEndpoint() }
                 : null;
 

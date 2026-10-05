@@ -89,6 +89,7 @@ internal static class SshForwardingOptions
     /// <param name="prompt">逐次确认的弹窗;<see langword="null" /> 时开了确认就一律拒签(fail-closed)。</param>
     /// <param name="target">给用户看的「哪条会话在要」,<c>用户@主机:端口</c>。</param>
     /// <param name="confirmTimeout">确认等多久;<see langword="null" /> 为 <see cref="AgentConfirmTimeout" />。</param>
+    /// <param name="hostKeys">已知主机;确认框拿它把目的主机的指纹认成主机名。<see langword="null" /> 时只摆指纹。</param>
     /// <remarks>
     /// <para>
     /// 默认(不限定、不确认)与 <c>ssh -A</c> 一致。
@@ -103,9 +104,11 @@ internal static class SshForwardingOptions
     /// 解释为「一把都不给」,转发开了也没用;没限定时交 <see langword="null" />(整个 agent 可见)。
     /// </para>
     /// <para>
-    /// <b>逐次确认</b>:同一条会话里用户选了「本次会话内允许」的钥之后不再问;
+    /// <b>逐次确认</b>:同一条会话里用户选了「本次会话内允许」之后,这把钥<b>做同一件事</b>不再问 ——
+    /// 同一个用户登录同一台目的主机,或同一个命名空间的数据签名。批准了自己 <c>git pull</c> 到 github,
+    /// 不等于也批准了那台机器上的人拿这把钥登录别处。
     /// <paramref name="confirmTimeout" /> 内没人应答按拒绝 —— 远端的 ssh 会报「agent 拒绝签名」,
-    /// 比无限期挂着好(用户可能根本不在电脑前,而后台会话里的脚本正在用他的身份)。
+    /// 比无限期挂着好(用户可能根本不在电脑前,而后台会话里的脚本正在用这个身份)。
     /// </para>
     /// </remarks>
     public static AgentForwardOptions? Agent(
@@ -113,7 +116,8 @@ internal static class SshForwardingOptions
         List<ShellStreamNotice> notices,
         IAgentSignPrompt? prompt = null,
         string target = "",
-        TimeSpan? confirmTimeout = null)
+        TimeSpan? confirmTimeout = null,
+        IHostKeyService? hostKeys = null)
     {
         if (features is not { AgentForwarding: true })
         {
@@ -136,7 +140,7 @@ internal static class SshForwardingOptions
             FailureMode = ForwardFailureMode.Continue,
             AllowedKeys = allowed,
             ConfirmEachSignature = features.AgentForwardConfirm
-                ? Confirmer(prompt, target, confirmTimeout ?? AgentConfirmTimeout)
+                ? Confirmer(prompt, target, confirmTimeout ?? AgentConfirmTimeout, hostKeys)
                 : null,
         };
     }
@@ -172,18 +176,20 @@ internal static class SshForwardingOptions
     }
 
     private static Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>> Confirmer(
-        IAgentSignPrompt? prompt, string target, TimeSpan timeout)
+        IAgentSignPrompt? prompt, string target, TimeSpan timeout, IHostKeyService? hostKeys)
     {
         // 「本次会话内允许」记在这里:闭包跟着这一条 shell 的转发器走,会话关了就没了。
-        HashSet<string> allowedForSession = [with(StringComparer.Ordinal)];
+        HashSet<SignScope> allowedForSession = [];
         Lock gate = new();
 
         return async (request, cancellationToken) =>
         {
             string fingerprint = request.Key.Sha256Fingerprint;
+            string? destination = request.DestinationHostKey?.Sha256Fingerprint;
+            SignScope scope = SignScope.Of(fingerprint, request, destination);
             lock (gate)
             {
-                if (allowedForSession.Contains(fingerprint))
+                if (allowedForSession.Contains(scope))
                 {
                     return true;
                 }
@@ -197,12 +203,18 @@ internal static class SshForwardingOptions
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(timeout);
 
+            AgentSignRequest shown = new(target, request.Key.KeyType, fingerprint, request.Comment, timeout)
+            {
+                LoginUser = request.UserName,
+                DestinationFingerprint = destination,
+                DestinationHosts = destination is null ? [] : await KnownAsAsync(hostKeys, destination, deadline.Token).ConfigureAwait(false),
+                SignatureNamespace = request.SignatureNamespace,
+            };
+
             AgentSignDecision decision;
             try
             {
-                decision = await prompt
-                    .ConfirmAsync(new AgentSignRequest(target, request.Key.KeyType, fingerprint, request.Comment, timeout), deadline.Token)
-                    .ConfigureAwait(false);
+                decision = await prompt.ConfirmAsync(shown, deadline.Token).ConfigureAwait(false);
             }
             catch (Exception)
             {
@@ -219,10 +231,55 @@ internal static class SshForwardingOptions
             {
                 lock (gate)
                 {
-                    allowedForSession.Add(fingerprint);
+                    allowedForSession.Add(scope);
                 }
             }
             return decision != AgentSignDecision.Deny;
+        };
+    }
+
+    /// <summary>已知主机里哪些条目是这把主机密钥;读不到就当没有,绝不因此挡住确认框。</summary>
+    private static async Task<IReadOnlyList<string>> KnownAsAsync(
+        IHostKeyService? hostKeys, string fingerprint, CancellationToken cancellationToken)
+    {
+        if (hostKeys is null)
+        {
+            return [];
+        }
+
+        try
+        {
+            List<KnownHost> known = await hostKeys.GetKnownHostsAsync(cancellationToken).ConfigureAwait(false);
+            return
+            [
+                .. known
+                    .Where(h => string.Equals(h.Fingerprint, fingerprint, StringComparison.Ordinal))
+                    .Select(h => h.Port == 22 ? h.Host : $"{h.Host}:{h.Port}")
+                    .Distinct(StringComparer.Ordinal),
+            ];
+        }
+        catch (OperationCanceledException)
+        {
+            return [];   // 期限到了:接着弹窗那一步照样按拒绝收场
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
+            return [];
+        }
+    }
+
+    /// <summary>「本次会话内允许」管到哪儿:这把钥 + 这件事。</summary>
+    /// <param name="Key">钥的指纹。</param>
+    /// <param name="Purpose">登录(连同用户名)、某个命名空间的数据签名,或认不出来的数据。</param>
+    /// <param name="Destination">登录的目的主机指纹;核实不了或不是登录时为 <see langword="null" />。</param>
+    private readonly record struct SignScope(string Key, string Purpose, string? Destination)
+    {
+        public static SignScope Of(string key, AgentSignatureRequest request, string? destination) => request switch
+        {
+            { UserName: { } user } => new(key, "login:" + user, destination),
+            { SignatureNamespace: { } ns } => new(key, "sshsig:" + ns, null),
+            _ => new(key, "", null),
         };
     }
 

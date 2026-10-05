@@ -5817,6 +5817,27 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>密钥</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>以「{0}」身份登录 SSH 服务器</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>数据签名(命名空间 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>无法识别的数据 —— 不是 SSH 登录</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>目的主机</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>不在已知主机里({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>无法核实 —— 远端没有证明要登录哪台主机</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒内不作答将自动拒绝。</value>
   </data>
@@ -5830,7 +5851,7 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>本次会话内允许</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>这条会话关闭之前,这把密钥不再询问</value>
+    <value>这条会话关闭之前,这把密钥用于同一用途(同一用户、同一目的主机)时不再询问</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>只转发选中的密钥</value>

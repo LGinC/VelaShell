@@ -435,6 +435,71 @@ public sealed class AgentForwardTests
     }
 
     [TestMethod]
+    public async Task 确认框说得出以谁登录哪台主机()
+    {
+        // 远端被攻破时，对方拿转发过去的 agent 登录别处 —— 确认框里只有钥和注释的话，
+        // 使用者分不出这是不是自己刚敲的 git pull。
+        await using Harness harness = await Harness.StartAsync();
+
+        using var key = InMemorySshSigner.GenerateEd25519();
+        harness.Agent.Add(key, "~/.ssh/id_ed25519");
+
+        List<AgentSignatureRequest> asked = [];
+        AgentForwardOptions policy = new()
+        {
+            ConfirmEachSignature = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult(true);
+            },
+        };
+
+        (AgentForwarder forwarder, Stream remote) = await SetUpAsync(harness, policy);
+        await using (remote)
+        {
+            // 远端的 ssh 连下一跳：先经 agent 声明那条会话，再请求签登录请求。
+            using var nextHop = InMemorySshSigner.GenerateEd25519();
+            byte[] sessionId = new byte[32];
+            Random.Shared.NextBytes(sessionId);
+            byte[] hostSignature = await nextHop.SignAsync(sessionId, SshAlgorithmNames.SshEd25519, harness.Token);
+
+            await TestRemoteAgentClient.ExchangeAsync(
+                remote,
+                SessionDeclaration(nextHop.PublicKey.Blob.ToArray(), sessionId, hostSignature, isForwarding: false),
+                harness.Token);
+
+            byte[]? signature = await TestRemoteAgentClient.SignAsync(
+                remote, key.PublicKey, UserAuthSignedData(sessionId, "deploy", key.PublicKey), 0, harness.Token);
+            Assert.IsNotNull(signature);
+
+            AgentSignatureRequest request = Assert.ContainsSingle(asked);
+            Assert.IsTrue(request.IsUserAuthentication);
+            Assert.AreEqual("deploy", request.UserName);
+            Assert.AreEqual("ssh-connection", request.Service);
+            Assert.IsNotNull(request.DestinationHostKey, "会话声明验过、会话标识对得上，就该认出目的主机");
+            Assert.AreSequenceEqual(nextHop.PublicKey.Blob.ToArray(), request.DestinationHostKey.Blob.ToArray());
+        }
+
+        await forwarder.DisposeAsync();
+    }
+
+    /// <summary>拼一份 RFC 4252 §7 的 publickey 签名输入。</summary>
+    private static byte[] UserAuthSignedData(byte[] sessionId, string user, SshPublicKey key)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter writer = new(buffer);
+        writer.WriteString(sessionId);
+        writer.WriteByte(50);
+        writer.WriteUtf8String(user);
+        writer.WriteUtf8String("ssh-connection");
+        writer.WriteUtf8String("publickey");
+        writer.WriteBoolean(true);
+        writer.WriteUtf8String(key.KeyType);
+        writer.WriteString(key.Blob.Span);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    [TestMethod]
     public async Task 改动agent状态的请求一律不转发()
     {
         await using Harness harness = await Harness.StartAsync();

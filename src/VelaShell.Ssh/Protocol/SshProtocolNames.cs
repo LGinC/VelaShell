@@ -43,6 +43,12 @@ internal static class SshProtocolNames
     /// <summary>公钥认证（含证书）。</summary>
     public const string AuthPublicKey = "publickey";
 
+    /// <summary>
+    /// 绑定主机密钥的公钥认证（OpenSSH PROTOCOL）：签名输入末尾多一个服务端的主机密钥。
+    /// 我们自己登录不用它；agent 转发时认得它，好从远端要签的数据里读出目的主机。
+    /// </summary>
+    public const string AuthPublicKeyHostBound = "publickey-hostbound-v00@openssh.com";
+
     /// <summary>键盘交互认证（2FA / OTP 走这条）。</summary>
     public const string AuthKeyboardInteractive = "keyboard-interactive";
 

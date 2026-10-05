@@ -5358,6 +5358,27 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>鍵</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>「{0}」として SSH サーバーにログイン</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>データ署名(名前空間 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>認識できないデータ(SSH ログインではありません)</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>接続先</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>既知のホストにありません({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>確認できません。リモート側はログイン先のホストを証明していません</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒以内に応答がない場合は自動的に拒否します。</value>
   </data>
@@ -5371,7 +5392,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>このセッション中は許可</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>このセッションを閉じるまで、この鍵については確認しません</value>
+    <value>このセッションを閉じるまで、この鍵を同じ用途(同じユーザー・同じ接続先)に使うときは確認しません</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>選択した鍵だけを転送する</value>

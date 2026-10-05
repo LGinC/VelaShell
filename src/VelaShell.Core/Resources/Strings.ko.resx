@@ -5358,6 +5358,27 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>키</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>용도</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>&quot;{0}&quot; 사용자로 SSH 서버에 로그인</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>데이터 서명(네임스페이스 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>알 수 없는 데이터(SSH 로그인이 아님)</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>대상 호스트</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>알려진 호스트에 없음({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>확인할 수 없음. 원격 측이 어느 호스트에 로그인하는지 증명하지 않았습니다</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0}초 안에 응답하지 않으면 자동으로 거부합니다.</value>
   </data>
@@ -5371,7 +5392,7 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
     <value>이 세션 동안 허용</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>이 세션이 닫힐 때까지 이 키에 대해서는 다시 묻지 않습니다</value>
+    <value>이 세션이 닫힐 때까지 이 키를 같은 용도(같은 사용자, 같은 대상 호스트)로 쓸 때는 다시 묻지 않습니다</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>선택한 키만 전달</value>

@@ -284,6 +284,67 @@ public class SshSessionFeaturesTests
         Assert.AreEqual("C:/keys/id", shown.Comment);
     }
 
+    /// <summary>
+    /// 确认框要说得出「以谁登录哪台」:目的主机在已知主机里时摆主机名,用户才认得出是不是自己刚敲的 git pull。
+    /// </summary>
+    [TestMethod]
+    public async Task Agent_Confirm_ShowsLoginUserAndKnownDestination()
+    {
+        using var key = InMemorySshSigner.GenerateEd25519();
+        using var github = InMemorySshSigner.GenerateEd25519();
+        FakeSignPrompt prompt = new(AgentSignDecision.AllowOnce);
+        FakeKnownHosts known = new(
+            new KnownHost { Host = "github.com", Port = 22, Fingerprint = github.PublicKey.Sha256Fingerprint },
+            new KnownHost { Host = "10.0.0.9", Port = 2222, Fingerprint = github.PublicKey.Sha256Fingerprint },
+            new KnownHost { Host = "other", Port = 22, Fingerprint = key.PublicKey.Sha256Fingerprint });
+
+        Assert.IsTrue(await ConfirmOf(prompt, hostKeys: known)(Login(key, "git", github), CancellationToken.None));
+
+        AgentSignRequest shown = prompt.LastRequest!;
+        Assert.AreEqual("git", shown.LoginUser);
+        Assert.AreEqual(github.PublicKey.Sha256Fingerprint, shown.DestinationFingerprint);
+        Assert.AreSequenceEqual(new[] { "github.com", "10.0.0.9:2222" }, shown.DestinationHosts.ToArray());
+        Assert.IsNull(shown.SignatureNamespace);
+    }
+
+    /// <summary>已知主机读不出来:照样弹窗,只是摆不出主机名 —— 绝不因此挡住确认。</summary>
+    [TestMethod]
+    public async Task Agent_Confirm_KnownHostsLookupFails_StillAsks()
+    {
+        using var key = InMemorySshSigner.GenerateEd25519();
+        using var host = InMemorySshSigner.GenerateEd25519();
+        FakeSignPrompt prompt = new(AgentSignDecision.AllowOnce);
+
+        Assert.IsTrue(await ConfirmOf(prompt, hostKeys: new FakeKnownHosts { Throws = true })(Login(key, "git", host), CancellationToken.None));
+
+        Assert.AreEqual(host.PublicKey.Sha256Fingerprint, prompt.LastRequest!.DestinationFingerprint);
+        Assert.IsEmpty(prompt.LastRequest.DestinationHosts);
+    }
+
+    /// <summary>
+    /// 「本次会话内允许」只管同一件事:批准了以 git 登录 github,不等于也批准了拿这把钥登录别的机器、换个用户,或者签别的东西。
+    /// </summary>
+    [TestMethod]
+    public async Task Agent_Confirm_AllowForSession_OnlyCoversSameUserAndDestination()
+    {
+        using var key = InMemorySshSigner.GenerateEd25519();
+        using var github = InMemorySshSigner.GenerateEd25519();
+        using var elsewhere = InMemorySshSigner.GenerateEd25519();
+        FakeSignPrompt prompt = new(AgentSignDecision.AllowForSession);
+        Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>> confirm = ConfirmOf(prompt);
+
+        Assert.IsTrue(await confirm(Login(key, "git", github), CancellationToken.None));
+        Assert.IsTrue(await confirm(Login(key, "git", github), CancellationToken.None));
+        Assert.AreEqual(1, prompt.Calls, "同一用户登录同一台:不再问");
+
+        prompt.Next = AgentSignDecision.Deny;
+        Assert.IsFalse(await confirm(Login(key, "git", elsewhere), CancellationToken.None), "换了目的主机要重新问");
+        Assert.IsFalse(await confirm(Login(key, "root", github), CancellationToken.None), "换了用户要重新问");
+        Assert.IsFalse(await confirm(Login(key, "git", destination: null), CancellationToken.None), "核实不了目的主机的也要重新问");
+        Assert.IsFalse(await confirm(Request(key) with { SignatureNamespace = "git" }, CancellationToken.None), "签别的东西要重新问");
+        Assert.AreEqual(5, prompt.Calls);
+    }
+
     [TestMethod]
     public async Task Agent_Confirm_DenyAndMissingPrompt_Refuse()
     {
@@ -340,11 +401,35 @@ public class SshSessionFeaturesTests
 
     private static AgentSignatureRequest Request(InMemorySshSigner key) => new(key.PublicKey, "C:/keys/id");
 
+    private static AgentSignatureRequest Login(InMemorySshSigner key, string user, InMemorySshSigner? destination) =>
+        Request(key) with { UserName = user, Service = "ssh-connection", DestinationHostKey = destination?.PublicKey };
+
     private static Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>> ConfirmOf(
-        IAgentSignPrompt? prompt, TimeSpan? timeout = null) =>
+        IAgentSignPrompt? prompt, TimeSpan? timeout = null, IHostKeyService? hostKeys = null) =>
         SshForwardingOptions.Agent(
             new SshSessionOptions { AgentForwarding = true, AgentForwardConfirm = true },
-            [], prompt, "joe@10.0.0.1:22", timeout)!.ConfirmEachSignature!;
+            [], prompt, "joe@10.0.0.1:22", timeout, hostKeys)!.ConfirmEachSignature!;
+
+    /// <summary>只答「全部已知主机」;别的用不上。</summary>
+    private sealed class FakeKnownHosts(params KnownHost[] hosts) : IHostKeyService
+    {
+        public bool Throws { get; init; }
+
+        public Task<List<KnownHost>> GetKnownHostsAsync(CancellationToken cancellationToken = default) =>
+            Throws ? throw new IOException("库文件坏了") : Task.FromResult(hosts.ToList());
+
+        public Task<HostKeyVerification> VerifyHostKeyAsync(string host, int port, string keyType, string fingerprint, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task<KnownHost?> FindKnownHostAsync(string host, int port, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task TrustHostKeyAsync(string host, int port, string keyType, string fingerprint, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+
+        public Task RemoveKnownHostAsync(string host, int port, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+    }
 
     private sealed class FakeSignPrompt(AgentSignDecision decision) : IAgentSignPrompt
     {

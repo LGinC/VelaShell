@@ -5363,6 +5363,27 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>Key</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>Purpose</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>Sign in to an SSH server as &quot;{0}&quot;</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>Data signature (namespace {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>Unrecognized data — not an SSH sign-in</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>Destination</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>Not in your known hosts ({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>Cannot be verified — the remote side did not prove which host it is signing in to</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>If you do not answer within {0} seconds, the request is denied.</value>
   </data>
@@ -5376,7 +5397,7 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>Allow for this session</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>Stop asking about this key until this session is closed</value>
+    <value>Until this session is closed, do not ask again when this key is used for the same purpose (same user and destination)</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>Only forward the selected keys</value>

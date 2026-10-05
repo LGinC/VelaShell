@@ -36,6 +36,9 @@
       <Setter Property="FontSize" Value="{DynamicResource VelaFontSize12}" />
       <Setter Property="TextWrapping" Value="Wrap" />
     </Style>
+    <Style Selector="TextBlock.info-value.unfamiliar">
+      <Setter Property="Foreground" Value="{DynamicResource VelaWarning}" />
+    </Style>
   </Window.Styles>
 
   <Border Classes="window-card"
@@ -105,6 +108,17 @@
             <Grid ColumnDefinitions="100,*">
               <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize AgentSign_Session}" />
               <TextBlock Grid.Column="1" Classes="info-value" Text="{Binding Target}" />
+            </Grid>
+            <!-- 签来做什么、登录哪台:用户靠这两行分辨「自己刚敲的 git pull」与「有人拿这把钥登录别处」 -->
+            <Grid ColumnDefinitions="100,*">
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize AgentSign_Purpose}" />
+              <TextBlock Grid.Column="1" Classes="info-value" Text="{Binding Purpose}" />
+            </Grid>
+            <Grid ColumnDefinitions="100,*" IsVisible="{Binding IsLogin}">
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize AgentSign_Destination}" />
+              <TextBlock Grid.Column="1" Classes="info-value"
+                         Classes.unfamiliar="{Binding IsDestinationUnfamiliar}"
+                         Text="{Binding Destination}" />
             </Grid>
             <Grid ColumnDefinitions="100,*">
               <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize AgentSign_KeyType}" />
