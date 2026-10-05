@@ -248,8 +248,8 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         {
             // 已经发出去了，取消或失败：**请求仍然留在账本里**。
             // 摘掉它的话，迟到的应答会被当成「未知 id」丢弃，
-            // 而它可能带着一个需要关闭的句柄。
-            pending.MarkAbandoned();
+            // 而它可能带着一个需要关闭的句柄。应答若恰好已经交付，Abandon 接手善后。
+            pending.Abandon();
             throw;
         }
         catch (Exception)
@@ -471,31 +471,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         }
 
         _inFlight.Release();
-        SftpResponse response = Materialize(frame.Type, requestId, payload);
 
-        if (pending.IsAbandoned)
-        {
-            // 请求已经被取消了，但应答还是来了。**必须善后** ——
-            // OPEN 被取消而服务端已经打开了文件的话，那个句柄不关就泄漏在服务端。
-            try
-            {
-                pending.OnLateResponse?.Invoke(response);
-            }
-            catch (Exception)
-            {
-                // 善后失败没有进一步的补救动作可做。
-            }
-            finally
-            {
-                response.Dispose();
-            }
-            return;
-        }
-
-        if (!pending.Completion.TrySetResult(response))
-        {
-            response.Dispose();
-        }
+        // 交给等的人；请求已经被取消了的话就地善后（见 PendingRequest）。
+        pending.Deliver(Materialize(frame.Type, requestId, payload));
     }
 
     private static SftpResponse Materialize(SftpMessageType type, uint requestId, ReadOnlySequence<byte> payload)
@@ -615,16 +593,80 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         Session.Lifecycle.CancelInBackground(_lifetime);
     }
 
-    private sealed class PendingRequest(Action<SftpResponse>? onLateResponse)
+    /// <summary>一个在途请求：等应答的人与收应答的循环之间，谁拿到应答由一个原子状态说了算。</summary>
+    /// <remarks>
+    /// <para>
+    /// 曾经是一个普通的布尔「已放弃」：收包循环先看它、再把应答交给 <see cref="Completion"/>；
+    /// 等应答的一方 <c>WaitAsync</c> 被取消之后才把它设上。取消与应答同时到达时，收包循环看到的还是「没放弃」，
+    /// 应答（带着服务端已经打开的句柄）就留在一个再也没人读的任务里 —— 句柄泄漏在服务端，租来的缓冲也不还池。
+    /// </para>
+    /// <para>
+    /// 现在两边用比较并交换抢同一个状态：收包循环抢到「已交付」就交给等的人；
+    /// 放弃的一方抢到「已放弃」，收包循环就去善后；放弃的一方晚了一步（应答已经交付），由它接手善后。
+    /// </para>
+    /// </remarks>
+    internal sealed class PendingRequest(Action<SftpResponse>? onLateResponse)
     {
+        private const int Waiting = 0;
+        private const int Delivered = 1;
+        private const int Abandoned = 2;
+
+        private int _state;
+
         public TaskCompletionSource<SftpResponse> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Action<SftpResponse>? OnLateResponse { get; } = onLateResponse;
+        /// <summary>已经被放弃（等的人走了，应答到了要善后）。</summary>
+        public bool IsAbandoned => Volatile.Read(ref _state) == Abandoned;
 
-        public bool IsAbandoned { get; private set; }
+        /// <summary>收包循环：把应答交给等的人。等的人已经走了就由这里善后。</summary>
+        public void Deliver(SftpResponse response)
+        {
+            if (Interlocked.CompareExchange(ref _state, Delivered, Waiting) == Waiting)
+            {
+                if (!Completion.TrySetResult(response))
+                {
+                    response.Dispose();
+                }
+                return;
+            }
 
-        public void MarkAbandoned() => IsAbandoned = true;
+            HandleLate(response);
+        }
+
+        /// <summary>等的人不等了（取消或失败）。应答要是已经交付了，就在这里接手善后。</summary>
+        public void Abandon()
+        {
+            if (Interlocked.CompareExchange(ref _state, Abandoned, Waiting) == Waiting)
+            {
+                return;   // 应答还没到，收包循环会善后
+            }
+
+            // 应答已经（或马上就会）落在 Completion 上，而等它的人已经走了。
+            _ = Completion.Task.ContinueWith(
+                static (task, state) => ((PendingRequest)state!).HandleLate(task.Result),
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        /// <summary>请求已经被取消了，但应答还是来了。<b>必须善后</b>：OPEN 的句柄不关就泄漏在服务端。</summary>
+        private void HandleLate(SftpResponse response)
+        {
+            try
+            {
+                onLateResponse?.Invoke(response);
+            }
+            catch (Exception)
+            {
+                // 善后失败没有进一步的补救动作可做。
+            }
+            finally
+            {
+                response.Dispose();
+            }
+        }
     }
 
     /// <inheritdoc />

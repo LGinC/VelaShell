@@ -96,6 +96,10 @@ internal sealed record TestSftpOptions
     /// </remarks>
     public long? HoldReadReplyAtOffset { get; init; }
 
+    /// <summary><c>OPEN</c> / <c>OPENDIR</c> 的应答等这么久才发（句柄在收到请求时就已经打开）。</summary>
+    /// <remarks>模拟慢盘、网络文件系统：客户端在等句柄时取消了，句柄晚到。</remarks>
+    public TimeSpan DelayOpenReplies { get; init; }
+
     /// <summary>设了就对每个 <c>CLOSE</c> 回这个失败码（句柄照样关掉）—— 模拟到关闭时才报出来的写入错误。</summary>
     public SftpStatusCode? FailCloseWith { get; init; }
 
@@ -198,8 +202,10 @@ internal sealed class TestSftpServer
                 SequencePosition consumed = buffer.Start;
 
                 List<byte[]> replies = [];
+                bool delayReplies = false;
                 while (SftpWire.TryReadFrame(ref buffer, out SftpFrame frame))
                 {
+                    delayReplies |= frame.Type is SftpMessageType.Open or SftpMessageType.OpenDir;
                     byte[]? reply = Handle(frame);
                     replies.AddRange(_released);
                     _released.Clear();
@@ -211,6 +217,11 @@ internal sealed class TestSftpServer
                 }
 
                 input.AdvanceTo(consumed, buffer.End);
+
+                if (delayReplies && _options.DelayOpenReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayOpenReplies, cancellationToken);
+                }
 
                 foreach (byte[] reply in Order(replies))
                 {

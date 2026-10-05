@@ -889,6 +889,31 @@ public sealed class SftpTests
         stream.Flush();
     }
 
+    /// <summary>
+    /// 等句柄时取消了 OPEN：服务端照样打开了文件，句柄晚到 —— 它必须被关掉，不能泄漏在服务端
+    /// （sftp-server 的句柄数有上限，积多了新的 OPEN 会失败）。
+    /// </summary>
+    [TestMethod]
+    public async Task 等句柄时取消打开_迟到的句柄被关掉()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/慢.txt", Text("内容")),
+            sftpOptions: new TestSftpOptions { DelayOpenReplies = TimeSpan.FromMilliseconds(300) });
+
+        using (CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(50)))
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await harness.Sftp.OpenReadAsync("/home/joe/慢.txt", cancel.Token));
+        }
+
+        for (int i = 0; i < 200 && harness.SftpServer.OpenHandleCount != 0; i++)
+        {
+            await Task.Delay(10, harness.Token);
+        }
+
+        Assert.AreEqual(0, harness.SftpServer.OpenHandleCount, "被取消的 OPEN 迟到的句柄没有关掉");
+    }
+
     /// <summary>同步释放不阻塞调用线程，句柄照样在后台关掉。</summary>
     [TestMethod]
     public async Task 同步释放不阻塞且句柄最终关闭()
