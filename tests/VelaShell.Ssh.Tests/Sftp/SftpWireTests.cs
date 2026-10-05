@@ -229,6 +229,19 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 时间超出32位秒时报错_不绕回1901年()
+    {
+        DateTimeOffset now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        DateTimeOffset after2038 = new(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(now, after2038));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(after2038, now));
+
+        DateTimeOffset last = DateTimeOffset.FromUnixTimeSeconds(int.MaxValue);
+        Assert.AreEqual(int.MaxValue, SftpFileAttributes.WithTimes(now, last).ModifyTime, "边界上的那一秒照常表示");
+    }
+
+    [TestMethod]
     public void 属主与属组共用一个标志位()
     {
         // draft-02 §5：两者共用 0x02。只写一个会让后面所有字段错位。

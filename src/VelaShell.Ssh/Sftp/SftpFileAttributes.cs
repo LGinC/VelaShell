@@ -78,12 +78,28 @@ public readonly record struct SftpFileAttributes
     /// 两个时间**必须一起给** —— 它们共用一个标志位，
     /// 只给一个的话另一个会被服务端当成 0（1970 年）。
     /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// 时间超出 v3 能表示的范围（有符号 32 位秒：1901-12-13 到 2038-01-19，见 velashell-docs/zh/ssh/spec/06 §4.2）。
+    /// </exception>
     public static SftpFileAttributes WithTimes(DateTimeOffset accessTime, DateTimeOffset modifyTime) => new()
     {
         Flags = SftpAttributeFields.Times,
-        AccessTime = (int)accessTime.ToUnixTimeSeconds(),
-        ModifyTime = (int)modifyTime.ToUnixTimeSeconds(),
+        AccessTime = ToWireSeconds(accessTime, nameof(accessTime)),
+        ModifyTime = ToWireSeconds(modifyTime, nameof(modifyTime)),
     };
+
+    /// <summary>换成线上的有符号 32 位秒；装不下就抛，不悄悄绕回去。</summary>
+    /// <remarks>
+    /// 曾经直接 <c>(int)</c> 截断：2038 年之后的时间被写成 1901 年 —— 宿主「保留时间戳」时会把它写到服务端。
+    /// </remarks>
+    private static int ToWireSeconds(DateTimeOffset time, string parameter)
+    {
+        long seconds = time.ToUnixTimeSeconds();
+        return seconds is >= int.MinValue and <= int.MaxValue
+            ? (int)seconds
+            : throw new ArgumentOutOfRangeException(
+                parameter, time, "SFTP v3 的时间是有符号 32 位秒，只能表示 1901-12-13 到 2038-01-19 之间的时刻。");
+    }
 
     /// <summary>长度是否有效。</summary>
     public bool HasSize => (Flags & SftpAttributeFields.Size) != 0;
