@@ -52,6 +52,21 @@ internal static class ProxyDialing
         {
             return await handshake(stream, cancellationToken).ConfigureAwait(false);
         }
+        catch (OperationCanceledException ex) when (target.Deadline is { IsExpired: true })
+        {
+            await DisposeQuietlyAsync(stream).ConfigureAwait(false);
+
+            // 〔velashell-docs/zh/ssh/spec/09 §2.2〕代理接下了 TCP、却迟迟不回握手：连接的计时器到点了。
+            // 原样当取消往外传的话，建连出口只知道自己在「拨号」，报的是「建立 TCP 连接超时」——
+            // 而 TCP 早就连上了，卡住的是代理。与跳板同一个做法：说清是哪一跳。
+            string detail = $"{kindName} {proxy} 接下了连接，却一直没有回应握手。";
+            throw new SshConnectException(
+                SshFailureReason.Timeout, SshPhase.Dialing,
+                $"经{kindName} {proxy} 连 {target.EndPoint} 时在代理握手这一步超时：{detail}", ex)
+            {
+                Hops = [reachedProxy, DialHops.Hop(kind, target.EndPoint, succeeded: false, handshakeStartedAt, "超时")],
+            };
+        }
         catch (Exception ex) when (ex is SshException or IOException)
         {
             await DisposeQuietlyAsync(stream).ConfigureAwait(false);

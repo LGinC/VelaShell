@@ -394,6 +394,33 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         Assert.IsFalse(ex.Hops[^1].Succeeded);
     }
 
+    /// <summary>
+    /// 代理接下了 TCP、却一直不回握手。连接计时器先到：不能报成「建立 TCP 连接超时」—— TCP 早连上了，
+    /// 卡住的是代理。与跳板同一个做法：报超时并说清是哪一跳。
+    /// </summary>
+    [TestMethod]
+    public async Task 代理接下连接却不回握手时报超时并说清是哪一跳()
+    {
+        SshConnectionOptions options = new($"joe@{TargetHost}:22")
+        {
+            Dialer = DialerChain.Socks5("proxy.example", 1080, via: InMemoryTransport.CreateDialer((_, _, _) => ValueTask.CompletedTask)),
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+            ConnectTimeout = TimeSpan.FromMilliseconds(500),
+        };
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(options));
+
+        Assert.AreEqual(SshFailureReason.Timeout, ex.Reason);
+        Assert.AreEqual(SshPhase.Dialing, ex.Phase);
+        Assert.Contains("代理握手", ex.Message);
+        Assert.HasCount(2, ex.Hops);
+        Assert.IsTrue(ex.Hops[0].Succeeded, "到代理那一跳是通的");
+        Assert.AreEqual(SshDialKind.Socks5, ex.Hops[1].Kind);
+        Assert.IsFalse(ex.Hops[1].Succeeded);
+    }
+
     // ------------------------------------------------------------ 代理命令
 
     [TestMethod]
