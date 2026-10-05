@@ -174,6 +174,11 @@ internal sealed class TestSftpServer
     /// <summary>收到的报文类型，按顺序。</summary>
     public List<SftpMessageType> ReceivedTypes { get; } = [];
 
+    /// <summary>收到过几个 <c>READDIR</c>（可以在服务端还在跑的时候读，不必枚举 <see cref="ReceivedTypes"/>）。</summary>
+    public int ReadDirRequests => Volatile.Read(ref _readDirRequests);
+
+    private int _readDirRequests;
+
     /// <summary>同时打开过的句柄峰值。</summary>
     public int PeakOpenHandles { get; private set; }
 
@@ -349,6 +354,10 @@ internal sealed class TestSftpServer
     private byte[]? Handle(SftpFrame frame)
     {
         ReceivedTypes.Add(frame.Type);
+        if (frame.Type == SftpMessageType.ReadDir)
+        {
+            Interlocked.Increment(ref _readDirRequests);
+        }
         _receivedRequests++;
 
         if (frame.Type == SftpMessageType.Init)

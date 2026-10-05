@@ -550,18 +550,22 @@ public sealed class SftpFileSystem : IAsyncDisposable
             throw;
         }
 
+        Task<IReadOnlyList<SftpNameEntry>?> next = ReadDirectoryBatchAsync(handle, path, cancellationToken).AsTask();
         try
         {
             int emptyBatches = 0;
             while (true)
             {
-                IReadOnlyList<SftpNameEntry>? batch =
-                    await ReadDirectoryBatchAsync(handle, path, cancellationToken).ConfigureAwait(false);
+                IReadOnlyList<SftpNameEntry>? batch = await next.ConfigureAwait(false);
 
                 if (batch is null)
                 {
                     yield break;   // STATUS = EOF：目录读完了
                 }
+
+                // 〔velashell-docs/zh/ssh/spec/06 §4.4〕预取：这一批到了就把下一个 READDIR 发出去 ——
+                // 补链接、交给调用方的同时它已经在路上。曾经要等这一批处理完才发，大目录每批都白等一轮往返。
+                next = ReadDirectoryBatchAsync(handle, path, cancellationToken).AsTask();
 
                 // 〔velashell-docs/zh/ssh/spec/06 §4.4〕READDIR 要么给至少一项、要么回 EOF。一直给空批的服务端会让这里
                 // 永远转下去（曾经就是这样，直到调用方取消）—— 连着空了这么多批就判协议错误。
@@ -588,6 +592,20 @@ public sealed class SftpFileSystem : IAsyncDisposable
         }
         finally
         {
+            // 调用方中途不要了（break、取消）：预取的那一个可能还在路上 —— 看一眼它的结局，不留未观察的异常。
+            if (!next.IsCompleted)
+            {
+                _ = next.ContinueWith(
+                    static task => _ = task.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+            }
+            else if (next.IsFaulted)
+            {
+                _ = next.Exception;
+            }
+
             await CloseHandleQuietlyAsync(handle).ConfigureAwait(false);
             ReleaseHandleSlot();
         }

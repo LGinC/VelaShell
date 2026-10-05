@@ -873,6 +873,31 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 列目录预取下一批_调用方还在处理这一批时下一个READDIR已经发出()
+    {
+        await using Harness harness = await Harness.StartAsync(server =>
+        {
+            for (int i = 0; i < 7; i++)
+            {
+                server.AddFile($"/home/joe/f{i}.txt", Text("x"));
+            }
+        });
+
+        int seen = 0;
+        await foreach (SftpDirectoryEntry _ in harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+        {
+            if (seen++ == 0)
+            {
+                // 还停在第一批的第一项上：曾经要等这一批处理完才发下一个 READDIR，这里会一直等不到。
+                using CancellationTokenSource patience = new(TimeSpan.FromSeconds(5));
+                await EventuallyAsync(() => harness.SftpServer.ReadDirRequests >= 2, patience.Token);
+            }
+        }
+
+        Assert.AreEqual(7, seen);
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>
