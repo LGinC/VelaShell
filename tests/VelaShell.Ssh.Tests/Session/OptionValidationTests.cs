@@ -8,7 +8,7 @@ using VelaShell.Ssh.Session;
 
 namespace VelaShell.Ssh.Tests.Session;
 
-/// <summary>配置的非法值在设值时就抛，而不是等连上了才以一种难以理解的方式出事。</summary>
+/// <summary>配置的非法值在设值时就抛、成员不可变 —— 而不是等连上了才以一种难以理解的方式出事。</summary>
 [TestClass]
 [TestCategory("Session")]
 public sealed class OptionValidationTests
@@ -35,6 +35,30 @@ public sealed class OptionValidationTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new SshChannelOptions { ReceiveMaxPacketBytes = 0 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new SshChannelOptions { ReceiveMaxPacketBytes = -1 });
         Assert.AreEqual(1, new SshChannelOptions { ReceiveMaxPacketBytes = 1 }.ReceiveMaxPacketBytes);
+    }
+
+    /// <summary>
+    /// 环境变量设值时复制一份：之后改传进来的字典不影响选项；静态默认值不可写。
+    /// 曾经默认值是经 <c>Default</c> 共享的可写 <c>Dictionary</c>，一处改动改掉全局默认。
+    /// </summary>
+    [TestMethod]
+    public void 环境变量选项不可变且不跟着传入的字典变()
+    {
+        IDictionary<string, string> shared = (IDictionary<string, string>)SshCommandOptions.Default.Environment;
+        Assert.IsTrue(shared.IsReadOnly);
+        Assert.ThrowsExactly<NotSupportedException>(() => shared["LANG"] = "C");
+        Assert.IsEmpty(SshShellOptions.Default.Environment);
+
+        Dictionary<string, string> source = new() { ["B"] = "2", ["A"] = "1" };
+        SshShellOptions options = new() { Environment = source };
+        source["C"] = "3";
+        source["A"] = "changed";
+
+        CollectionAssert.AreEqual(
+            new[] { new KeyValuePair<string, string>("B", "2"), new KeyValuePair<string, string>("A", "1") },
+            options.Environment.ToArray(),
+            "复制时保留原来的顺序，之后的改动不影响");
+        Assert.ThrowsExactly<ArgumentNullException>(() => new SshCommandOptions { Environment = null! });
     }
 
     /// <summary>曾经超过约 24.8 天的间隔让保活循环里的 <c>(int)</c> 溢出，循环静默退出 —— 设了保活等于没设。</summary>

@@ -6,6 +6,7 @@
 //   RFC 4254 §6.4  env
 //   行为规格:      velashell-docs/zh/ssh/spec/05-connection.md §5.2;velashell-docs/zh/ssh/spec/07-forwarding.md §7.5.3、§7.5.8
 
+using System.Collections.ObjectModel;
 using VelaShell.Ssh.Forwarding;
 
 namespace VelaShell.Ssh.Channels;
@@ -36,9 +37,20 @@ public abstract record SshSessionRequestOptions
     /// 绝大多数服务端的 <c>AcceptEnv</c> 只放行少数变量，被拒是常态而不是错误；
     /// 要求回复只会让每设一个变量多一个 RTT，并且把一个正常情况报成失败。
     /// 设失败的后果由使用者在远端自行观察。
+    /// <para>
+    /// 设值时复制一份（按序号比较变量名、保留原来的顺序）：之后再改传进来的字典不影响这里。
+    /// 〔AGENTS 4.3〕曾经默认值是一个可写的 <c>Dictionary</c>，经静态的 <c>Default</c> 分给所有人 ——
+    /// 任何一处把它转回 <c>Dictionary</c> 改一项，都会改掉全局默认。
+    /// </para>
     /// </remarks>
-    public IReadOnlyDictionary<string, string> Environment { get; init; } =
-        new Dictionary<string, string>(StringComparer.Ordinal);
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public IReadOnlyDictionary<string, string> Environment
+    {
+        get;
+        init => field = value is null
+            ? throw new ArgumentNullException(nameof(Environment))
+            : new ReadOnlyDictionary<string, string>(new Dictionary<string, string>(value, StringComparer.Ordinal));
+    } = ReadOnlyDictionary<string, string>.Empty;
 
     /// <summary>请求 X11 转发（<c>ssh -X</c> / <c>-Y</c>）；<see langword="null"/> 表示不请求。</summary>
     /// <remarks>
