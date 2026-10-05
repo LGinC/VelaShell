@@ -6,6 +6,7 @@
 //   RFC 4254 §6.10  exit-status / exit-signal
 //   行为规格:       velashell-docs/zh/ssh/spec/05-connection.md §5.2、§5.4、§7.1
 
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
 using VelaShell.Ssh.Forwarding;
@@ -125,25 +126,40 @@ public sealed class SshCommand : IAsyncDisposable
         StringBuilder text = new();
         Decoder decoder = Encoding.UTF8.GetDecoder();
 
-        while (true)
+        // 解码用的字符缓冲租一块、按需换大的，不再每个段新分配一个 char[]（输出多、段碎的时候那是一串小垃圾）。
+        char[] chars = ArrayPool<char>.Shared.Rent(4096);
+        try
         {
-            ReadResult read = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-            foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+            while (true)
             {
-                // 逐段解码并保留状态 —— 一个多字节字符可能横跨两个段，
-                // 每段各自 GetString 会把它切成两个乱码字符。
-                char[] chars = new char[segment.Length];
-                int count = decoder.GetChars(segment.Span, chars, flush: false);
-                text.Append(chars, 0, count);
-            }
+                ReadResult read = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
 
-            reader.AdvanceTo(read.Buffer.End);
+                foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+                {
+                    // 逐段解码并保留状态 —— 一个多字节字符可能横跨两个段，
+                    // 每段各自 GetString 会把它切成两个乱码字符。
+                    // 一个字节至多解出一个 char，再加上解码器里攒着的几个字节可能吐出的那两个。
+                    int needed = segment.Length + 2;
+                    if (chars.Length < needed)
+                    {
+                        ArrayPool<char>.Shared.Return(chars);
+                        chars = ArrayPool<char>.Shared.Rent(needed);
+                    }
+                    int count = decoder.GetChars(segment.Span, chars, flush: false);
+                    text.Append(chars, 0, count);
+                }
 
-            if (read.IsCompleted)
-            {
-                break;
+                reader.AdvanceTo(read.Buffer.End);
+
+                if (read.IsCompleted)
+                {
+                    break;
+                }
             }
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(chars);
         }
 
         // 流读完了：把解码器里攒着的不完整序列冲出来（成为 U+FFFD）。曾经不冲 ——
