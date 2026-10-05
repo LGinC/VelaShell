@@ -630,6 +630,14 @@ public sealed class SftpFileSystem : IAsyncDisposable
     {
         string fullPath = CombinePath(directory, entry.Name);
 
+        // 〔velashell-docs/zh/ssh/spec/06 §4.4〕READDIR 没给权限位，就分不出是目录、链接还是文件 —— 曾经一律当成文件，
+        // 宿主进不了这样的目录。补一次不跟随链接的 stat（悄悄版本：还是拿不到就照旧）。
+        if (!entry.Attributes.HasPermissions
+            && await LinkStatQuietlyAsync(fullPath, cancellationToken).ConfigureAwait(false) is { HasPermissions: true } better)
+        {
+            entry = entry with { Attributes = better };
+        }
+
         if (!entry.Attributes.IsSymbolicLink)
         {
             return new SftpDirectoryEntry(
@@ -667,6 +675,22 @@ public sealed class SftpFileSystem : IAsyncDisposable
         try
         {
             return await ReadSymbolicLinkAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SftpException)
+        {
+            return null;
+        }
+        catch (SshProtocolException) when (!_pipeline.IsFaulted)
+        {
+            return null;
+        }
+    }
+
+    private async Task<SftpFileAttributes?> LinkStatQuietlyAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GetLinkAttributesAsync(path, cancellationToken).ConfigureAwait(false);
         }
         catch (SftpException)
         {

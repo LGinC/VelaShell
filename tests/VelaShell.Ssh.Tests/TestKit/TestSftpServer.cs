@@ -84,6 +84,9 @@ internal sealed record TestSftpOptions
     /// <summary><c>READDIR</c> 永远回空的一批（count = 0），既不给项也不回 EOF。</summary>
     public bool EmptyReadDirBatches { get; init; }
 
+    /// <summary><c>READDIR</c> 的属性里不带权限位（<c>STAT</c> / <c>LSTAT</c> 照常带）—— 模拟列目录图省事的服务端。</summary>
+    public bool OmitPermissionsInReadDir { get; init; }
+
     /// <summary>每个目录的列表末尾再塞进这些名字（不对应任何节点）—— 模拟一个回 <c>../x</c>、<c>a/b</c>、空名字的服务端。</summary>
     public IReadOnlyList<string> ExtraDirectoryEntryNames { get; init; } = [];
 
@@ -482,7 +485,12 @@ internal sealed class TestSftpServer
             string name = state.Entries[state.DirectoryCursor + i];
             string full = state.Path == "/" ? "/" + name : $"{state.Path}/{name}";
             TestSftpNode? node = _nodes.GetValueOrDefault(full);
-            batch.Add(new SftpNameEntry(name, $"-rw-r--r-- 1 joe joe 0 Jan 1 00:00 {name}", AttributesOf(node)));
+            SftpFileAttributes listed = AttributesOf(node);
+            if (_options.OmitPermissionsInReadDir)
+            {
+                listed = listed with { Flags = listed.Flags & ~SftpAttributeFields.Permissions, Permissions = 0 };
+            }
+            batch.Add(new SftpNameEntry(name, $"-rw-r--r-- 1 joe joe 0 Jan 1 00:00 {name}", listed));
         }
 
         state.DirectoryCursor += take;

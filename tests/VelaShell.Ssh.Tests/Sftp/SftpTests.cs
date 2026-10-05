@@ -948,6 +948,28 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task READDIR不带权限位时补一次LSTAT_目录照样认得出()
+    {
+        // 没有权限位就分不出是不是目录 —— 曾经一律当成文件，宿主进不了这样的目录。
+        await using Harness harness = await Harness.StartAsync(
+            server =>
+            {
+                server.AddDirectory("/home/joe/sub");
+                server.AddFile("/home/joe/a.txt", Text("x"));
+            },
+            new TestSftpOptions { OmitPermissionsInReadDir = true });
+
+        List<SftpDirectoryEntry> entries = [];
+        await foreach (SftpDirectoryEntry entry in harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+        {
+            entries.Add(entry);
+        }
+
+        Assert.IsTrue(entries.Single(e => e.Name == "sub").IsDirectory);
+        Assert.IsFalse(entries.Single(e => e.Name == "a.txt").IsDirectory);
+    }
+
+    [TestMethod]
     public async Task 符号链接保留是链接这个事实()
     {
         await using Harness harness = await Harness.StartAsync(server =>
