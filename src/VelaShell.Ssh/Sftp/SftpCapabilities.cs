@@ -5,6 +5,8 @@
 //   OpenSSH PROTOCOL  limits@openssh.com 与其它 SFTP 扩展
 //   行为规格:         velashell-docs/zh/ssh/spec/06-sftp.md §5.2、§七
 
+using System.Collections.Frozen;
+
 namespace VelaShell.Ssh.Sftp;
 
 /// <summary>这台服务端支持什么。</summary>
@@ -24,7 +26,8 @@ public sealed class SftpCapabilities
     internal SftpCapabilities(uint serverVersion, IReadOnlyDictionary<string, byte[]> rawExtensions)
     {
         ServerVersion = serverVersion;
-        RawExtensions = rawExtensions.ToDictionary(
+        // 冻结的字典：曾经交出去的是 Dictionary，下转型就能改 —— 改了 RawExtensions，HasPosixRename 跟着变。
+        RawExtensions = rawExtensions.ToFrozenDictionary(
             static pair => pair.Key, static pair => (ReadOnlyMemory<byte>)pair.Value, StringComparer.Ordinal);
         Limits = SftpLimits.Conservative;
     }

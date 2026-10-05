@@ -176,10 +176,10 @@ public readonly record struct SftpFileAttributes
         {
             IReadOnlyList<SftpExtendedField> extended = Extended;
             writer.WriteUInt32((uint)extended.Count);
-            foreach ((string type, string data) in extended)
+            foreach ((string type, ReadOnlyMemory<byte> data) in extended)
             {
                 writer.WriteUtf8String(type);
-                writer.WriteUtf8String(data);
+                writer.WriteString(data.Span);
             }
         }
     }
@@ -234,7 +234,7 @@ public readonly record struct SftpFileAttributes
                 {
                     extended.Add(new SftpExtendedField(
                         reader.ReadUtf8String(SftpProtocol.MaxPathLength),
-                        reader.ReadUtf8String(SftpProtocol.MaxPathLength)));
+                        reader.ReadStringAsArray(SftpProtocol.MaxPathLength)));
                 }
                 else
                 {
@@ -253,7 +253,8 @@ public readonly record struct SftpFileAttributes
             Permissions = permissions,
             AccessTime = accessTime,
             ModifyTime = modifyTime,
-            Extended = extended,
+            // 只读视图交出去：曾经直接交出 List，下转型就能改一个「只读」属性背后的内容。
+            Extended = extended.Count == 0 ? [] : extended.AsReadOnly(),
         };
     }
 }

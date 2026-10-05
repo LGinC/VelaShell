@@ -406,6 +406,43 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 扩展属性的数据按字节原样往返_交出去的是只读视图()
+    {
+        // extended_data 在 draft-02 里是二进制：曾经按 UTF-8 解成字符串，非法的字节解出来就变了。
+        byte[] binary = [0xFF, 0x00, 0xC3, 0x28];
+        ArrayBufferWriter<byte> payload = new();
+        Ssh.Protocol.SshDataWriter writer = new(payload);
+        writer.WriteUInt32((uint)SftpAttributeFields.Extended);
+        writer.WriteUInt32(1);
+        writer.WriteUtf8String("acl@example.com");
+        writer.WriteString(binary);
+
+        SftpFileAttributes attributes = SftpWire.ReadAttrs(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()));
+
+        SftpExtendedField field = Assert.ContainsSingle(attributes.Extended);
+        Assert.AreSequenceEqual(binary, field.Data.ToArray());
+        Assert.IsNotInstanceOfType<List<SftpExtendedField>>(attributes.Extended, "下转型就能改一个「只读」属性背后的内容");
+
+        ArrayBufferWriter<byte> written = new();
+        Ssh.Protocol.SshDataWriter back = new(written);
+        attributes.Write(ref back);
+        Assert.AreSequenceEqual(payload.WrittenSpan.ToArray(), written.WrittenSpan.ToArray(), "写回去还是原来那串字节");
+    }
+
+    [TestMethod]
+    public void 服务端宣告的扩展是只读的_改不动能力位()
+    {
+        SftpCapabilities capabilities = new(3, new Dictionary<string, byte[]> { [SftpExtensionNames.PosixRename] = [0x31] });
+
+        Assert.IsTrue(capabilities.HasPosixRename);
+
+        // 曾经交出去的是 Dictionary：下转型一改，HasPosixRename 就跟着变。
+        var asMutable = (IDictionary<string, ReadOnlyMemory<byte>>)capabilities.RawExtensions;
+        Assert.ThrowsExactly<NotSupportedException>(() => asMutable.Remove(SftpExtensionNames.PosixRename));
+        Assert.IsTrue(capabilities.HasPosixRename);
+    }
+
+    [TestMethod]
     public void 扩展属性超过上限时多出来的读掉_下一项照常解析()
     {
         // 曾经读到 1024 对就停，剩下的字节留在原地 —— NAME 应答里的下一项从它们中间开始解析。
