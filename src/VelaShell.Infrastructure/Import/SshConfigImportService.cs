@@ -80,7 +80,7 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
                 continue;
             }
 
-            int port = options.Port is > 0 and <= 65535 ? options.Port : 22;
+            int port = options.Port;   // SSH 库已经把配得不对的端口换成 22
             string user = Value(options.User) ?? string.Empty;
             string? keyPath = ResolveIdentityFile(Value(options.First("IdentityFile")), baseDirectory);
             string? jump = SshConfigFile.ParseProxyJump(options.ProxyJump) is [.., SshProxyJumpHop last]

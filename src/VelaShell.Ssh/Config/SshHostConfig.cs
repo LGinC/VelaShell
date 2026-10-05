@@ -65,11 +65,17 @@ public sealed class SshHostConfig
         return result.ToString();
     }
 
-    /// <summary>端口。</summary>
-    public int Port =>
-        int.TryParse(First("Port"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int port)
-            ? port
-            : 22;
+    /// <summary>端口；没配、或者配的不是 1–65535 之间的整数时是 22。</summary>
+    /// <remarks>
+    /// 〔FW-E14〕配得不对的端口在建连时（<see cref="SshConfigFile.CreateConnectionOptionsAsync"/>）当成配置错误报出来；
+    /// 这里只交出一个能用的值。曾经 <c>Port -1</c> / <c>Port 99999</c> 原样交出去，建连时抛的是 BCL 的参数异常，
+    /// 宿主导入时又自己夹了一次。
+    /// </remarks>
+    public int Port => TryParsePort(First("Port"), out int port) ? port : 22;
+
+    /// <summary>是不是 1–65535 之间的整数（不带正负号、不带空白）。</summary>
+    internal static bool TryParsePort(string? text, out int port) =>
+        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out port) && port is >= 1 and <= 65535;
 
     /// <summary>用户名。</summary>
     public string? User => First("User");

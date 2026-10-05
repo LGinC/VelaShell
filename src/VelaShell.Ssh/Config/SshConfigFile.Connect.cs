@@ -81,6 +81,18 @@ public static partial class SshConfigFile
         // 跳板规格里显式写的用户与端口（ProxyJump bob@jump:2222）优先于那台主机的配置。
         string user = userOverride ?? config.User ?? settings.DefaultUserName ?? Environment.UserName;
 
+        // 〔FW-E14〕端口配得不对是配置错误：说清是哪台主机、哪个值。曾经原样交给连接参数，抛的是 BCL 的参数异常。
+        if (portOverride is { } jumpPort && jumpPort is < 1 or > 65535)
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"ProxyJump 里 {host} 的端口 {jumpPort} 不在 1–65535 之间。");
+        }
+        if (portOverride is null && config.First("Port") is { } configuredPort && !SshHostConfig.TryParsePort(configuredPort, out _))
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里 Port 是「{PeerText.Sanitize(configuredPort, 32)}」，不是 1–65535 之间的整数。");
+        }
+
         SshConnectionOptions options = new(user, config.HostName, portOverride ?? config.Port)
         {
             Credentials =

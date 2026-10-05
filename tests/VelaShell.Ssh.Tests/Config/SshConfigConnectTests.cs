@@ -161,6 +161,44 @@ public sealed class SshConfigConnectTests
         Assert.AreEqual("bastion.corp", jump.JumpHost.Host);
         Assert.IsInstanceOfType<TcpTransportDialer>(jump.JumpHost.Dialer, "跳板自己直连");
     }
+    /// <summary>〔FW-E14〕端口配得不对（越界、带符号、不是数字）：建连时报配置错误、说清是哪台主机；Port 属性交出 22。</summary>
+    [TestMethod]
+    [DataRow("-1")]
+    [DataRow("0")]
+    [DataRow("99999")]
+    [DataRow("ssh")]
+    public async Task 端口配得不对时报配置错误(string port)
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+            Host web
+                Port {port}
+            Host via
+                ProxyJump web:{port}
+            """);
+
+        Assert.AreEqual(22, SshConfigFile.Resolve(blocks, "web").Port);
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.Contains("web", error.Message);
+    }
+
+    /// <summary>〔FW-E14〕ProxyJump 规格里的端口越界：同样报配置错误。</summary>
+    [TestMethod]
+    public async Task 跳板规格里的端口越界时报配置错误()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host target
+                ProxyJump bastion:70000
+            """);
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.Contains("70000", error.Message);
+    }
+
     [TestMethod]
     public async Task 跳板链有环时明确报错()
     {
