@@ -292,6 +292,24 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         Assert.AreEqual($"{TargetHost}:22", tunnelTargets.Single());
     }
 
+    /// <summary>
+    /// 〔FW-D4〕跳板认证没过：仍然是认证失败（SshAuthenticationException），逐条尝试记录与服务端给的方法留在最外层，
+    /// 消息里说清是哪一跳。曾经改写成 SshConnectException，那些结构化信息只剩在 InnerException 里。
+    /// </summary>
+    [TestMethod]
+    public async Task 跳板认证失败时仍报认证失败且带着尝试记录()
+    {
+        await using JumpHost jump = new([]);
+
+        SshAuthenticationException ex = await Assert.ThrowsExactlyAsync<SshAuthenticationException>(
+            async () => await ConnectAsync(new SshJumpDialer(jump.Options with { Credentials = [new PasswordCredential("wrong")] })));
+
+        Assert.IsNotEmpty(ex.Attempts, "尝试记录要留在最外层");
+        Assert.Contains(VelaShell.Ssh.Protocol.SshProtocolNames.AuthPassword, ex.ServerOffered);
+        Assert.Contains("跳板", ex.Message);
+        Assert.Contains("jump.example", ex.Message);
+    }
+
     [TestMethod]
     public async Task 跳板拒绝转发时报ProxyRefused且说清哪一跳()
     {

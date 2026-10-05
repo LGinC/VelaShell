@@ -5,6 +5,7 @@
 //   RFC 4254 §7.2  direct-tcpip:经跳板主机到达目标
 //   行为规格:      velashell-docs/zh/ssh/spec/09-dialing.md §5
 
+using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Session;
@@ -91,7 +92,15 @@ internal sealed class SshJumpDialer : ISshTransportDialer
             // 报出来的是「建立 TCP 连接超时」—— 可卡住的是跳板的握手。说清是哪一跳。
             throw OuterTimeout(jump, $"经跳板 {_jumpName} 建连时超时", startedAt, ex);
         }
-        catch (SshException ex)
+        catch (SshAuthenticationException ex) when (ex.InnerException is not SshAuthenticationException)
+        {
+            // 〔FW-D4〕跳板自己的认证没过：仍然是认证失败，逐条尝试记录与服务端给的方法留在最外层，
+            // 只在消息里说清是哪一跳。曾经改写成 SshConnectException，Attempts / ServerOffered 只剩在 InnerException 里，
+            // 宿主据此把它当成「连不上」而不是「认证失败」。更深一跳已经这样改写过的（内层就是认证失败）原样往外传。
+            throw new SshAuthenticationException(
+                ex.Reason, $"跳板 {_jumpName} 认证失败：{ex.Message}", ex.Attempts, ex.ServerOffered, ex.PartialSuccessAchieved, ex);
+        }
+        catch (SshException ex) when (ex is not SshAuthenticationException)
         {
             IReadOnlyList<SshHopInfo> hops = ex is SshConnectException { Hops.Count: > 0 } connect
                 ? [.. connect.Hops, DialHops.Hop(SshDialKind.SshJump, jump, succeeded: false, startedAt, ex.Message)]
