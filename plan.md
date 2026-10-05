@@ -1645,3 +1645,15 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 文档:velashell-docs `zh/` 与 `en/` 的 spec/07(§7.1 重写、新 §7.4、§7.5.7、§7.5.8、§八)、spec/04、05、08、09,getting-started(顺带把早已 internal 的 `AgentForwarder.RequestAsync` 示例换成选项写法),architecture.md §5.10 与新 §11.2.25,以及 host《交互与界面规格》。
 
 **三、验证**:SSH 库 `AgentForwardTests` 补 10 例(连不上不宣告且不留处理器、`Continue` 下连不上 / 被拒都照常开 shell 并交出原因、默认 `Fail` 不开 shell、通道到来时连不上回 OPEN_FAILURE 且名额还回去、转发连接先声明且 `is_forwarding` 为真、签名能用主机公钥验过、远端声明照转在同一条连接上、别的扩展不转、agent 拒绝声明照常转发、agent 因声明断开时重连一次不再声明);`AgentSessionDeclarationTests` 4 例(字段与只发一次、FAILURE 交回 false 后照常可用、经真实 Unix 套接字连上的客户端在断开后重开、扩展名判定);`AgentConnectTests` 3 例(空端点、套接字不存在、命名管道不存在时 3 秒内报 `AgentNotRunning`);`AuthenticationTests` 2 例(签名前声明且 `is_forwarding` 为假、探测没过的钥不声明;agent 拒绝声明照常认证);`SshConfigConnectTests` 1 例(`ForwardAgent` 四种写法)、`X11PrimitiveTests` 1 例(空 cookie 跳过);测试 agent 学会了收声明并用主机公钥验签名。互操作 `会话声明经得起真实OpenSSH_agent的校验且目的地约束生效`(对 `velashell-test-shells`,OpenSSH 9.9p2):真 agent 接受声明、拒绝篡改的签名、声明成别的主机时受 `ssh-add -h` 约束的钥拒签,并记下「不声明时它也拒签」;整组互操作对它跑了一遍,能跑的全部通过。宿主 `SshSessionFeaturesTests` 改 1 例、补 1 例。全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`;`VelaShell.Ssh.Tests` 784 通过 / 22 跳过,`VelaShell.Tests` 1778 通过 / 8 跳过,`VelaShell.Infrastructure.Tests` 594 通过 / 4 跳过,`VelaShell.Presentation.Tests` 84 通过,`VelaShell.Core.Tests` 677 通过 / 10 跳过 / 1 失败(X11 靶机用例:跑着的 `velashell-test-shells` 容器建于 09-23 04:25,早于 Dockerfile 里给 `vela-dash` 加 `X11Forwarding no` 的那次提交,`sshd_config` 里没有那段 `Match`,与本次改动无关;重建靶机即可),其中 Docker 靶机上真 OpenSSH 的 agent 转发用例通过。
+
+## ✅ 160. 2026-10-05 SSH 库:连接计时器停表时预算已经用完,当场判超时,不再去问
+
+**一、问题**:做了一次净室对照(做法同 velashell-docs architecture.md §11.2.23:独立的分析会话只交回行为描述),对照两件事:建连期间等人的那段时间怎么算进连接超时、重协商时主机密钥怎么验。大部分本库已经有,或者做得更稳妥:裁决期间停表、裁决与认证各有计时器、跳板上的裁决与认证都让外层停表、续表放在 `finally` 里、先验签再问策略、重协商钉住首次的主机密钥并把算法收窄到同一类型(会话中途不会弹窗)、本库没有隐式建连。有问题的只有一处:`SshConnectDeadline` 借 `CancelAfter` 计时,停表时只看令牌取消了没有。到点的回调还排在线程池里没执行时停表,计时器按剩 0 冻住,裁决照样把指纹拿去问用户;用户点完「信任」,一续表就到点,报密钥交换超时。线程池忙的时候,这个窗口不止几毫秒。这个计时器的状态机也没有直接的单元测试。
+
+**二、做法**:
+- `SshConnectDeadline` 改用自己的 `ITimer`(经 `TimeProvider`,默认系统时钟)。停表按实际用掉的时间结账,用完了(含刚好用完)当场取消令牌、判超时;停着表时才跑到的到点回调不作数(账在停表时已经结过);外层照样跟着停,续表时配对。「限不限时」用单独的标志,不看 `_timer` —— 预算很短时回调可能比赋值先跑。
+- `SshKeyExchangeRunner.ApplyHostKeyPolicyAsync` 停表之后先看一眼连接的令牌,到点或调用方已取消就不再去问;`ConnectAsync` 照旧把它报成「密钥交换」这一步的 `Timeout`。
+- `SshConnectionOptions` 加 internal 的 `TimeProvider`(只有测试会换),`ConnectAsync` 交给计时器。
+- 文档:velashell-docs `zh/` 与 `en/` 的 spec/03 §5.3、spec/09 §2.4,architecture.md 新 §11.2.26(含核对过不动的与考虑过不做的:「能不能交互」标志、认证期间停表、重协商换另一把受信任的钥)。
+
+**三、验证**:新 `ConnectDeadlineTests` 13 例,用 `TestKit/ManualTimeProvider`(手动拨的时钟,到点的回调先排队、可以晚些执行,摆得出「到点了、回调还没执行」那一刻):到点、不限时、停表续表、累计扣减不补满、嵌套停表、多余的续表、停表时已经用完 / 刚好用完、到点后停表续表、停着表时调用方取消不算到点、外层跟着停、外层用完时里面停表判外层超时、释放之后不抛。`ConnectionTests` 补 2 例端到端:拨通后把时钟拨过连接超时(回调不执行),策略一次也没被问、报 `Timeout` / `KeyExchange`;拨到还剩 1 秒,照常问一次、照常连上。变异检验:把「停表时用完就判超时」退回旧行为(剩 0 冻住),恰好是瞄准的 4 例变红。全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`;`VelaShell.Ssh.Tests` 799 通过 / 23 跳过(跳过的是要 Docker 靶机或环境变量的互操作用例)。
