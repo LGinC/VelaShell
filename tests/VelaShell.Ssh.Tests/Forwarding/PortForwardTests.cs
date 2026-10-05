@@ -563,6 +563,23 @@ public sealed class PortForwardTests
         Assert.AreEqual(ForwardErrorReason.SocksHandshake, errors[0].Reason);
     }
 
+    /// <summary>〔FW-E17〕在已经断开的连接上起本地 / 动态转发：照实失败（与远程转发一致），而不是「成功」返回一个不工作的转发器。</summary>
+    [TestMethod]
+    public async Task 在已断开的连接上起本地转发照实失败()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript());
+        await harness.DropServerAsync();
+        await WaitUntilAsync(() => !harness.Connection.IsAlive, harness.Token);
+
+        Assert.Throws<Diagnostics.SshException>(() => LocalPortForwarder.Start(harness.Connection, "t", 1));
+        Assert.Throws<Diagnostics.SshException>(() => LocalPortForwarder.StartDynamic(harness.Connection));
+        await Assert.ThrowsAsync<Diagnostics.SshException>(
+            async () => await RemotePortForwarder.StartAsync(harness.Connection, "127.0.0.1", 1, cancellationToken: harness.Token));
+
+        await harness.Connection.DisposeAsync();
+        Assert.ThrowsExactly<ObjectDisposedException>(() => LocalPortForwarder.Start(harness.Connection, "t", 1));
+    }
+
     [TestMethod]
     public async Task 连接断了之后本地转发放出端口()
     {

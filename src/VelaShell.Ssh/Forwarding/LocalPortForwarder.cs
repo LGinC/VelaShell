@@ -166,6 +166,10 @@ public sealed class LocalPortForwarder : PortForwarder
     private static LocalPortForwarder StartListening(
         SshConnection connection, LocalPortForwardOptions options, ForwardKind kind, string? targetHost, int targetPort)
     {
+        // 〔FW-E17〕连接已经断了（或释放了）就照实失败，与远程转发一致。曾经照样起监听、「成功」返回一个
+        // IsActive = false 的转发器 —— 调用方以为转发生效了，连上来的只会被立刻关掉。
+        connection.ThrowIfUnusable();
+
         Socket listener = Bind(options);
         try
         {

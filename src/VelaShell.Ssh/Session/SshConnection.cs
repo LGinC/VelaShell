@@ -1657,6 +1657,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary><see cref="Disconnected"/> 的回调还在线程池上跑着的那个任务；释放前要等它。</summary>
     private Task? _disconnectedSignal;
 
+    /// <summary>连接已经释放或判死时抛 —— 与开通道、发全局请求时同一种异常（释放了是 <see cref="ObjectDisposedException"/>，判死了是那次故障）。</summary>
+    internal void ThrowIfUnusable()
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ThrowIfFaulted();
+    }
+
     private void ThrowIfFaulted()
     {
         Exception? fault = Volatile.Read(ref _fault);
