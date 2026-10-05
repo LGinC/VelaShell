@@ -655,6 +655,16 @@ public static class SshPrivateKeyFile
         {
             ecdsa.ImportFromPem(pem);
         }
+
+        // PKCS#8 / SEC1 能装任意曲线：SSH 只定义了三条 NIST 曲线（RFC 5656 §10.1），别的报「不支持」而不是「格式不对」。
+        ECCurve curve = ecdsa.ExportParameters(false).Curve;
+        if (InMemorySshSigner.NistCurveOf(curve) is null)
+        {
+            string name = InMemorySshSigner.DescribeCurve(curve);
+            ecdsa.Dispose();
+            throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                $"这把 ECDSA 私钥用的曲线是 {name}，SSH 只支持 NIST P-256 / P-384 / P-521。");
+        }
         return InMemorySshSigner.FromEcdsa(ecdsa);
     }
 

@@ -98,6 +98,60 @@ public sealed class PrivateKeyFileTests
 
     // ------------------------------------------------------------ 格式识别
 
+    /// <summary>造一把 brainpoolP256r1 的钥；平台不支持这条曲线时（macOS）判为不确定。</summary>
+    private static ECDsa CreateBrainpoolKey()
+    {
+        try
+        {
+            return ECDsa.Create(ECCurve.NamedCurves.brainpoolP256r1);
+        }
+        catch (Exception ex) when (ex is PlatformNotSupportedException or CryptographicException)
+        {
+            Assert.Inconclusive($"这个平台不支持 brainpoolP256r1：{ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 256 位但不是 NIST P-256 的曲线不许冒充 nistp256。曾经按位数认曲线：brainpoolP256r1 被标成 nistp256 交给服务端，
+    /// 签名验不过，症状是一句看不出原因的「服务端不接受这把公钥」。
+    /// </summary>
+    [TestMethod]
+    public void 非NIST曲线的ECDSA钥不冒充nistp256()
+    {
+        using ECDsa brainpool = CreateBrainpoolKey();
+
+        Assert.ThrowsExactly<ArgumentException>(() => InMemorySshSigner.FromEcdsa(brainpool));
+    }
+
+    [TestMethod]
+    public void 非NIST曲线的PKCS8私钥报不支持()
+    {
+        using ECDsa brainpool = CreateBrainpoolKey();
+        string pem = brainpool.ExportPkcs8PrivateKeyPem();
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+
+        Assert.AreEqual(SshFailureReason.Unsupported, error.Reason, "曲线 SSH 不认识是「不支持」，不是「格式不对」");
+    }
+
+    [TestMethod]
+    [DataRow(256, SshAlgorithmNames.EcdsaSha2Nistp256)]
+    [DataRow(384, SshAlgorithmNames.EcdsaSha2Nistp384)]
+    [DataRow(521, SshAlgorithmNames.EcdsaSha2Nistp521)]
+    public void NIST曲线照常认出(int bits, string algorithm)
+    {
+        using ECDsa key = ECDsa.Create(bits switch
+        {
+            256 => ECCurve.NamedCurves.nistP256,
+            384 => ECCurve.NamedCurves.nistP384,
+            _ => ECCurve.NamedCurves.nistP521,
+        });
+
+        using InMemorySshSigner signer = SshPrivateKeyFile.Parse(key.ExportPkcs8PrivateKeyPem());
+
+        Assert.AreEqual(algorithm, signer.PublicKey.KeyType);
+    }
     [TestMethod]
     public void 认得出各种PEM头()
     {

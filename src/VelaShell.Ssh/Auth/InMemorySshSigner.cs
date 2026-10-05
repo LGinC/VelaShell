@@ -125,18 +125,17 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
     }
 
     /// <summary>用一把 ECDSA 私钥构造。</summary>
+    /// <exception cref="ArgumentException">曲线不是 NIST P-256 / P-384 / P-521（SSH 只定义了这三条，RFC 5656 §10.1）。</exception>
     public static InMemorySshSigner FromEcdsa(ECDsa ecdsa)
     {
         ArgumentNullException.ThrowIfNull(ecdsa);
         ECParameters p = ecdsa.ExportParameters(false);
 
-        (string name, string curveName, int coordinate) = ecdsa.KeySize switch
+        if (NistCurveOf(p.Curve) is not var (name, curveName, coordinate))
         {
-            256 => (SshAlgorithmNames.EcdsaSha2Nistp256, "nistp256", 32),
-            384 => (SshAlgorithmNames.EcdsaSha2Nistp384, "nistp384", 48),
-            521 => (SshAlgorithmNames.EcdsaSha2Nistp521, "nistp521", 66),
-            _ => throw new ArgumentException($"SSH 不支持 {ecdsa.KeySize} 位的 ECDSA 曲线。", nameof(ecdsa)),
-        };
+            throw new ArgumentException(
+                $"SSH 不支持这条 ECDSA 曲线（{DescribeCurve(p.Curve)}）：只认 NIST P-256 / P-384 / P-521。", nameof(ecdsa));
+        }
 
         byte[] point = new byte[1 + (coordinate * 2)];
         point[0] = 0x04;
@@ -152,6 +151,36 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
 
         return new InMemorySshSigner(SshPublicKey.Decode(blob), [name], null, null, ecdsa, null, coordinate);
     }
+
+    /// <summary>
+    /// 按曲线本身（OID 或名字）认出 SSH 的三条 NIST 曲线；别的曲线为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 曾经按位数认：256 位就当 nistp256 —— secp256k1、brainpoolP256r1 也是 256 位，被标成 nistp256 交给服务端，
+    /// 签名验不过，症状是一句看不出原因的「服务端不接受这把公钥」。
+    /// </remarks>
+    internal static (string Algorithm, string CurveName, int Coordinate)? NistCurveOf(ECCurve curve)
+    {
+        if (!curve.IsNamed || curve.Oid is not { } oid)
+        {
+            return null;
+        }
+
+        return (oid.Value, oid.FriendlyName) switch
+        {
+            ("1.2.840.10045.3.1.7", _) or (_, "nistP256" or "ECDSA_P256" or "secp256r1" or "prime256v1") =>
+                (SshAlgorithmNames.EcdsaSha2Nistp256, "nistp256", 32),
+            ("1.3.132.0.34", _) or (_, "nistP384" or "ECDSA_P384" or "secp384r1") =>
+                (SshAlgorithmNames.EcdsaSha2Nistp384, "nistp384", 48),
+            ("1.3.132.0.35", _) or (_, "nistP521" or "ECDSA_P521" or "secp521r1") =>
+                (SshAlgorithmNames.EcdsaSha2Nistp521, "nistp521", 66),
+            _ => null,
+        };
+    }
+
+    /// <summary>给错误消息用的曲线名。</summary>
+    internal static string DescribeCurve(ECCurve curve) =>
+        curve.Oid is { } oid ? oid.FriendlyName ?? oid.Value ?? "未命名曲线" : "显式参数的曲线";
 
     /// <inheritdoc />
     public ValueTask<byte[]> SignAsync(
