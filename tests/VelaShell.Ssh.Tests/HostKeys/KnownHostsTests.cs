@@ -98,6 +98,23 @@ public sealed class KnownHostsTests
         Assert.IsTrue(entries[1].IsCertificateAuthority);
     }
 
+    /// <summary>
+    /// 认不出的标记整行跳过。曾经它落进普通分支：把 @revoked 写成 @revoke 想吊销一把钥，
+    /// 结果这把钥对模式匹配到的所有主机都成了「已知」—— 与本意正好相反。
+    /// </summary>
+    [TestMethod]
+    [DataRow("@revoke", DisplayName = "拼错的吊销")]
+    [DataRow("@REVOKED", DisplayName = "大小写不对")]
+    [DataRow("@future-marker", DisplayName = "将来新增的标记")]
+    public void 认不出的标记整行跳过而不是当成受信行(string marker)
+    {
+        SshPublicKey key = MakeKey();
+        IReadOnlyList<KnownHostEntry> entries = KnownHostsFile.Parse($"{marker} " + Line("*", key) + "\n");
+
+        Assert.IsEmpty(entries);
+        Assert.AreEqual(KnownHostStatus.Unknown, KnownHostsFile.Lookup(entries, "victim.example.com", 22, key).Status);
+    }
+
     // ------------------------------------------------------------ 查询
 
     [TestMethod]

@@ -86,6 +86,15 @@ public static class KnownHostsFile
         string marker = "";
         if (fields.Length > 0 && fields[0].StartsWith('@'))
         {
+            // ⚠️ 只认 sshd(8) 定义的两个标记，**认不出的整行跳过**。曾经任何 @ 开头的都收作标记，
+            //    却只在完全等于这两个时才特殊处理：管理员想吊销一把钥、把 @revoked 写成 @revoke，
+            //    这一行就落进普通分支，这把钥对模式匹配到的所有主机都成了「已知」—— 与本意正好相反。
+            //    将来新增的标记同理：不懂它的意思，就不能按受信行去用。
+            if (fields[0] is not (KnownHostEntry.RevokedMarker or KnownHostEntry.CertificateAuthorityMarker))
+            {
+                return null;
+            }
+
             marker = fields[0];
             index = 1;
         }

@@ -22,9 +22,15 @@ public sealed record KnownHostEntry(
     ReadOnlyMemory<byte> KeyBlob,
     int LineNumber)
 {
+    /// <summary>吊销标记（sshd(8) 的 SSH_KNOWN_HOSTS 一节）。</summary>
+    internal const string RevokedMarker = "@revoked";
+
+    /// <summary>证书颁发者标记（sshd(8) 的 SSH_KNOWN_HOSTS 一节）。</summary>
+    internal const string CertificateAuthorityMarker = "@cert-authority";
+
     /// <summary>这一条是不是「此密钥已吊销」。</summary>
-    public bool IsRevoked => Marker == "@revoked";
+    public bool IsRevoked => Marker == RevokedMarker;
 
     /// <summary>这一条是不是证书颁发者。</summary>
-    public bool IsCertificateAuthority => Marker == "@cert-authority";
+    public bool IsCertificateAuthority => Marker == CertificateAuthorityMarker;
 }
