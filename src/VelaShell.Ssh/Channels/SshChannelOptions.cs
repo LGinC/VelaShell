@@ -34,8 +34,14 @@ public sealed record SshChannelOptions
     /// <remarks>
     /// 它约束的是**对端**发给我们的；对端宣告的值约束我们发给它的，
     /// 而那个值**必须遵守** —— 超了对端会直接断连。
+    /// 上限（不超过传输层允许的报文长度）在开通道时由会话核对。
     /// </remarks>
-    public int ReceiveMaxPacketBytes { get; init; } = 32 * 1024;
+    /// <exception cref="ArgumentOutOfRangeException">不为正（曾经照样转成 uint 宣告出去，0 或负数都是一个对端无法遵守的值）。</exception>
+    public int ReceiveMaxPacketBytes
+    {
+        get;
+        init => field = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(ReceiveMaxPacketBytes), value, "宣告的 max packet 必须为正。");
+    } = 32 * 1024;
 
     /// <summary>stderr 怎么处理。</summary>
     public SshStderrMode StderrMode { get; init; } = SshStderrMode.Buffer;
