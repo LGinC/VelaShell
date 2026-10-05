@@ -10,6 +10,7 @@
 //   行为规格:             velashell-docs/zh/ssh/design/architecture.md §8 第 5 项
 
 using System.Buffers;
+using System.Formats.Asn1;
 using System.Numerics;
 using System.Security.Cryptography;
 using System.Text;
@@ -36,6 +37,27 @@ public static class SshPrivateKeyFile
     /// </para>
     /// </remarks>
     internal const uint MaxKdfRounds = 4096;
+
+    /// <summary>加密 PKCS#8 的 PBKDF2（以及 PBES1 / PKCS#12 PBE）迭代数上限。</summary>
+    /// <remarks>
+    /// <para>
+    /// 迭代数同样来自文件。<b>.NET 导入加密 PKCS#8 时不设上限</b>（实测 300 万次照常导入）：
+    /// 一个被改成 <c>int.MaxValue</c> 的文件按每秒约七百万次算要跑五分钟，同步、停不下来，
+    /// 而且下面「先按 RSA 试、再按 ECDSA 试」可能算两遍。
+    /// </para>
+    /// <para>
+    /// 常见的取值是 OpenSSL 的 2048、OWASP 建议的 60 万；一千万是后者的十几倍，最坏也就一两秒。
+    /// </para>
+    /// </remarks>
+    internal const int MaxPkcs8Iterations = 10_000_000;
+
+    /// <summary>加密数据不超过这么多字节的 PKCS#8 先按 ECDSA 试。</summary>
+    /// <remarks>
+    /// 加密 PKCS#8 里看不出钥的类型（算法标识在密文里），只能逐个试，而每试一次都要把 KDF 整个跑一遍。
+    /// 椭圆曲线钥连 P-521 带公钥也不到 260 字节，RSA 最小的 512 位钥也有三百四十多字节 ——
+    /// 按大小排个先后，口令对的时候就只算一遍。
+    /// </remarks>
+    private const int EcFirstEncryptedBytes = 320;
 
     /// <summary>认一下这段 PEM 是什么格式。</summary>
     public static SshPrivateKeyFormat DetectFormat(string pem)
@@ -493,13 +515,26 @@ public static class SshPrivateKeyFile
             throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseRequired, $"这把私钥需要口令{where}。");
         }
 
-        // 先按 RSA 试，再按 ECDSA 试 —— PEM 头部不总能区分
-        // （PKCS#8 的 BEGIN PRIVATE KEY 对两者是一样的）。
-        foreach (Func<InMemorySshSigner> attempt in new Func<InMemorySshSigner>[]
+        // 加密 PKCS#8：先看一眼 KDF 的迭代数（来自文件），过大就不交给 BCL 去算（见 MaxPkcs8Iterations）。
+        bool ecdsaFirst = false;
+        if (format == SshPrivateKeyFormat.Pkcs8Encrypted
+            && ReadPkcs8Encryption(DecodePemBody(pem, "ENCRYPTED PRIVATE KEY", where)) is { } encryption)
         {
-            () => LoadRsaFromPem(pem, passphrase, needsPassphrase),
-            () => LoadEcdsaFromPem(pem, passphrase, needsPassphrase),
-        })
+            if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"加密 PKCS#8 私钥的 KDF 迭代数不合理{where}（{encryption.Iterations} 次，上限 {MaxPkcs8Iterations} 次）。" +
+                    "文件可能被改过；确实设过这么多次的话，请用更少的迭代数重新加密这把钥。");
+            }
+            ecdsaFirst = encryption.EncryptedBytes <= EcFirstEncryptedBytes;
+        }
+
+        // 先按 RSA 试，再按 ECDSA 试 —— PEM 头部不总能区分
+        // （PKCS#8 的 BEGIN PRIVATE KEY 对两者是一样的）。加密 PKCS#8 按密文大小排先后（见 EcFirstEncryptedBytes）。
+        Func<InMemorySshSigner> rsa = () => LoadRsaFromPem(pem, passphrase, needsPassphrase);
+        Func<InMemorySshSigner> ecdsa = () => LoadEcdsaFromPem(pem, passphrase, needsPassphrase);
+        Func<InMemorySshSigner>[] attempts = ecdsaFirst ? [ecdsa, rsa] : [rsa, ecdsa];
+        foreach (Func<InMemorySshSigner> attempt in attempts)
         {
             try
             {
@@ -521,6 +556,66 @@ public static class SshPrivateKeyFile
                 ? $"私钥解不开{where} —— 口令多半不对。"
                 : $"私钥读不出来{where}。它可能是 Ed25519 的 PKCS#8 " +
                   "（.NET 尚未支持导入这种），也可能文件已损坏。");
+    }
+
+    /// <summary>读加密 PKCS#8 的 KDF 迭代数与密文长度（RFC 5958 §3、RFC 8018 §6.1 / §6.2 / A.2）。</summary>
+    /// <returns>认不出结构（或不是 PBKDF2 / PBES1 那一类）时为 <see langword="null"/>：交给 BCL 去报错。</returns>
+    /// <remarks>
+    /// <code>
+    /// EncryptedPrivateKeyInfo ::= SEQUENCE { encryptionAlgorithm AlgorithmIdentifier, encryptedData OCTET STRING }
+    /// PBES2:  parameters = SEQUENCE { keyDerivationFunc AlgorithmIdentifier(PBKDF2, SEQUENCE { salt, iterationCount, ... }),
+    ///                                 encryptionScheme AlgorithmIdentifier }
+    /// PBES1 / PKCS#12 PBE:  parameters = SEQUENCE { salt OCTET STRING, iterationCount INTEGER }
+    /// </code>
+    /// </remarks>
+    internal static (BigInteger Iterations, int EncryptedBytes)? ReadPkcs8Encryption(byte[] der)
+    {
+        const string pbes2 = "1.2.840.113549.1.5.13";
+        const string pbkdf2 = "1.2.840.113549.1.5.12";
+
+        try
+        {
+            AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+            AsnReader algorithm = info.ReadSequence();
+            string scheme = algorithm.ReadObjectIdentifier();
+            AsnReader parameters = algorithm.ReadSequence();
+
+            BigInteger iterations;
+            if (scheme == pbes2)
+            {
+                AsnReader kdf = parameters.ReadSequence();
+                if (kdf.ReadObjectIdentifier() != pbkdf2)
+                {
+                    return null;   // scrypt 之类：BCL 本来就不认，交给它去报
+                }
+
+                AsnReader kdfParameters = kdf.ReadSequence();
+                if (kdfParameters.PeekTag().HasSameClassAndValue(Asn1Tag.PrimitiveOctetString))
+                {
+                    kdfParameters.ReadOctetString();
+                }
+                else
+                {
+                    kdfParameters.ReadSequence();   // salt 的另一种写法：otherSource AlgorithmIdentifier
+                }
+                iterations = kdfParameters.ReadInteger();
+            }
+            else
+            {
+                parameters.ReadOctetString();
+                iterations = parameters.ReadInteger();
+            }
+
+            return (iterations, info.ReadOctetString().Length);
+        }
+        catch (AsnContentException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static InMemorySshSigner LoadRsaFromPem(string pem, string? passphrase, bool encrypted)

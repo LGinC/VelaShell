@@ -7,11 +7,13 @@
 // 拼的过程本身就在验证我们对格式的理解，而且能覆盖所有密钥类型。
 
 using System.Buffers;
+using System.Formats.Asn1;
 using System.Security.Cryptography;
 using System.Text;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Security;
 using VelaShell.Ssh.Auth;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 
@@ -366,6 +368,69 @@ public sealed class PrivateKeyFileTests
         byte[] data = Encoding.UTF8.GetBytes("x");
         byte[] signature = await signer.SignAsync(data, SshAlgorithmNames.RsaSha256);
         Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, SshAlgorithmNames.RsaSha256));
+    }
+
+    [TestMethod]
+    public async Task 读出带口令的PKCS8椭圆曲线私钥_只算一遍KDF()
+    {
+        // 加密 PKCS#8 里看不出钥的类型，只能逐个试，而每试一次都要把 KDF 整个跑一遍；
+        // 按密文大小排先后之后，椭圆曲线钥先按 ECDSA 试，读得出来，签名也对。
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP521);
+        PbeParameters pbe = new(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 10_000);
+        string pem = ecdsa.ExportEncryptedPkcs8PrivateKeyPem("口令", pbe);
+
+        byte[] der = Convert.FromBase64String(string.Concat(
+            pem.Split('\n').Where(line => !line.StartsWith("-----", StringComparison.Ordinal)).Select(line => line.Trim())));
+        Assert.IsLessThanOrEqualTo(320, SshPrivateKeyFile.ReadPkcs8Encryption(der)!.Value.EncryptedBytes, "P-521 的密文也该落在「先按 ECDSA 试」那一档");
+
+        InMemorySshSigner signer = SshPrivateKeyFile.Parse(pem, "口令");
+        byte[] data = Encoding.UTF8.GetBytes("x");
+        byte[] signature = await signer.SignAsync(data, SshAlgorithmNames.EcdsaSha2Nistp521);
+        Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, SshAlgorithmNames.EcdsaSha2Nistp521));
+    }
+
+    [TestMethod]
+    public async Task 加密PKCS8的迭代数大得离谱时不去算()
+    {
+        // .NET 导入加密 PKCS#8 不设迭代数上限：一个被改成 int.MaxValue 的文件同步地跑上好几分钟、停不下来。
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        using (writer.PushSequence())
+        {
+            using (writer.PushSequence())
+            {
+                writer.WriteObjectIdentifier("1.2.840.113549.1.5.13");   // PBES2
+                using (writer.PushSequence())
+                {
+                    using (writer.PushSequence())
+                    {
+                        writer.WriteObjectIdentifier("1.2.840.113549.1.5.12");   // PBKDF2
+                        using (writer.PushSequence())
+                        {
+                            writer.WriteOctetString(new byte[16]);
+                            writer.WriteInteger(int.MaxValue);
+                            using (writer.PushSequence())
+                            {
+                                writer.WriteObjectIdentifier("1.2.840.113549.2.9");   // hmacWithSHA256
+                                writer.WriteNull();
+                            }
+                        }
+                    }
+                    using (writer.PushSequence())
+                    {
+                        writer.WriteObjectIdentifier("2.16.840.1.101.3.4.1.42");   // aes256-CBC
+                        writer.WriteOctetString(new byte[16]);
+                    }
+                }
+            }
+            writer.WriteOctetString(new byte[1232]);
+        }
+        string pem = PemEncoding.WriteString("ENCRYPTED PRIVATE KEY", writer.Encode());
+
+        SshPrivateKeyException error = await Assert.ThrowsExactlyAsync<SshPrivateKeyException>(
+            async () => await Task.Run(() => SshPrivateKeyFile.Parse(pem, "口令")).WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("迭代数", error.Message);
     }
 
     [TestMethod]
