@@ -122,7 +122,8 @@ internal static class SshVersionExchange
 
             // 前导行：服务端可以在标识串之前发任意行文本（RFC 4253 §4.2）。
             // 它们不参与交换哈希，但**必须**设上限 —— 否则是一个无成本的内存耗尽面。
-            bannerBytes += line.Length;
+            // 按线上的字节数累计 —— 曾经按 UTF-16 字符数，CJK 文本能超过上限约 3 倍。
+            bannerBytes += raw.Length;
             if (banner.Count >= MaxBannerLines || bannerBytes > MaxBannerBytes)
             {
                 throw new SshConnectException(

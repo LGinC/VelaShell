@@ -221,6 +221,36 @@ public sealed class HandshakeTests
         Assert.AreSequenceEqual(handshake.ExchangeHash, kex.ExchangeHash, "两边算出的交换哈希必须一致");
     }
 
+    /// <summary>〔RFC 4253 §4.2〕标识串含 CRLF 最多 255 字节：255 照收，256 拒绝（曾经差一，256 也能过）。</summary>
+    [TestMethod]
+    [DataRow(253, true)]
+    [DataRow(254, false)]
+    public async Task 标识串含行尾最多255字节(int lengthWithoutCrLf, bool accepted)
+    {
+        (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
+        byte[] identification = [.. "SSH-2.0-"u8, .. Enumerable.Repeat((byte)'x', lengthWithoutCrLf - 8)];
+        await using TestSshServer server = new(serverStream, new TestSshServerOptions { IdentificationBytes = identification });
+        await using SshPacketTransport clientTransport = new(clientStream);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        _ = server.HandshakeAsync(cts.Token);
+
+        if (accepted)
+        {
+            SshVersionExchangeResult versions =
+                await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token);
+            Assert.HasCount(lengthWithoutCrLf, versions.ServerVersionBytes);
+        }
+        else
+        {
+            SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+                async () => await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token));
+            Assert.AreEqual(SshFailureReason.NotAnSshServer, error.Reason);
+        }
+
+        await cts.CancelAsync();
+    }
+
     [TestMethod]
     public async Task 服务端的前导行被收集起来()
     {

@@ -183,12 +183,14 @@ internal sealed class SshPacketTransport : IAsyncDisposable
             SequencePosition? newline = buffer.PositionOf((byte)'\n');
             if (newline is not null)
             {
+                // 〔RFC 4253 §4.2〕255 字节**含行尾**。line 到 \n 为止（不含 \n），所以上限是 254 ——
+                // 曾经写成 > 255，含 CRLF 共 256 字节的行能过。
                 ReadOnlySequence<byte> line = buffer.Slice(0, newline.Value);
-                if (line.Length > MaxIdentificationLineBytes)
+                if (line.Length + 1 > MaxIdentificationLineBytes)
                 {
                     _reader.AdvanceTo(buffer.Start, buffer.End);
                     throw new SshFrameFormatException(
-                        $"标识串行超过 {MaxIdentificationLineBytes} 字节（收到 {line.Length}）。");
+                        $"标识串行（含行尾）超过 {MaxIdentificationLineBytes} 字节（收到 {line.Length + 1}）。");
                 }
 
                 byte[] raw = StripCarriageReturn(line);
@@ -196,7 +198,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                 return raw;
             }
 
-            if (buffer.Length > MaxIdentificationLineBytes)
+            if (buffer.Length >= MaxIdentificationLineBytes)
             {
                 _reader.AdvanceTo(buffer.Start, buffer.End);
                 throw new SshFrameFormatException(
