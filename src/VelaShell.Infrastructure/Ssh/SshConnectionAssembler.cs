@@ -401,11 +401,19 @@ internal static class SshConnectionAssembler
     /// 因为那个底层库**只认 OpenSSH 格式**,用户导入的传统 PEM 会被静默跳过,
     /// 认证以一句 "skipped: publickey" 失败。现在库原生认这些格式,那段转换整个不需要了。
     /// </para>
+    /// <para>
+    /// 整个放到线程池上跑:加密私钥的口令派生(<c>bcrypt_pbkdf</c> 按轮数、Argon2id 按内存)是同步的 CPU 计算,
+    /// 库把切不切线程留给调用方,而建连是从界面线程发起的。曾经直接调用,解密离不离开调用线程全看库里读文件那一步
+    /// 是不是异步完成 —— 实测各平台上都是,所以没卡过;但那是碰巧,库哪天换成同步读、或者加一层缓存,
+    /// 一把轮数大的私钥就会把界面卡住好几秒。
+    /// </para>
     /// </remarks>
-    private static ValueTask<InMemorySshSigner> LoadSignerAsync(
+    internal static async ValueTask<InMemorySshSigner> LoadSignerAsync(
         string path, string? passphrase, CancellationToken cancellationToken) =>
-        SshPrivateKeyFile.LoadAsync(
-            path, string.IsNullOrWhiteSpace(passphrase) ? null : passphrase, cancellationToken);
+        await Task.Run(
+            () => SshPrivateKeyFile.LoadAsync(
+                path, string.IsNullOrWhiteSpace(passphrase) ? null : passphrase, cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
 
     /// <summary>设置 → 密钥管理 →「自动加载密钥到 Agent」。读不到设置时按默认值(关)。</summary>
     private static bool AddKeysToAgent(ISettingsService? settings)

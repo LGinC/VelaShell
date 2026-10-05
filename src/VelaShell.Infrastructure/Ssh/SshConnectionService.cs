@@ -74,6 +74,7 @@ public class SshConnectionService(
     public Task<SshSession> ConnectAsync(ConnectionInfo connectionInfo, CancellationToken cancellationToken = default) =>
         // 建连前的同步前缀(设置构建、凭据包装)均为纯内存操作(无 I/O),
         // 无需 Task.Run 调度;真正的网络 I/O 在 ConnectInternalAsync 的 await 里。
+        // 唯一的重活是读加密私钥(口令派生是 CPU 计算),那一步在 SshConnectionAssembler.LoadSignerAsync 里自己切到线程池。
         // Task.Run(action, cancellationToken) 会导致外层任务取消时内层仍运行,
         // 产生大量未观察的异常并造成调试器输出洪流。
         ConnectInternalAsync(connectionInfo, cancellationToken);
