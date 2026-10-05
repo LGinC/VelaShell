@@ -291,7 +291,7 @@ public class TunnelService(
     /// 把转发通道异常翻译成用户可理解的提示;最常见的是把目标填成了服务器的
     /// 公网地址,而服务只监听 127.0.0.1。
     /// </summary>
-    private static string DescribeForwardError(Exception ex)
+    internal static string DescribeForwardError(Exception ex)
     {
         // 库把底层异常包在 SshForwardException / SshChannelException 里,
         // 宿主的 SshInterop 又会再包一层 —— 所以沿整条 InnerException 链找,而不是只看一层。
@@ -309,16 +309,26 @@ public class TunnelService(
         }
         // 认原因码而不是认文案:库的消息是中文,「administratively prohibited」这串字只在
         // 服务端原文里才有。原因码是协议定死的(RFC 4254 §5.1),不随谁的措辞变。
+        // 曾经匹配不到原因码时还去找消息里的那串英文 —— 宿主唯一一处解析库的句子,删掉;
+        // ConnectFailed(服务端连不上 -L 的目标)也曾没有映射,直接显示原文。
         for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            if (e is SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.AdministrativelyProhibited })
+            switch (e)
             {
-                return Strings.Get("TunnelSvc_ForwardProhibited");
+                case SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.AdministrativelyProhibited }:
+                    return Strings.Get("TunnelSvc_ForwardProhibited");
+                case SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.ConnectFailed }:
+                    return Strings.Get("TunnelSvc_TargetRefused");
             }
         }
-        if (ex.Message.Contains("administratively prohibited", StringComparison.OrdinalIgnoreCase))
+
+        // 其余的按原因码本地化(库的消息是写给开发者看的中文),不认识的才显示原文。
+        for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            return Strings.Get("TunnelSvc_ForwardProhibited");
+            if (e is VelaShell.Ssh.Diagnostics.SshException ssh)
+            {
+                return VelaShell.Infrastructure.Ssh.SshInterop.Localize(ssh);
+            }
         }
         return ex.Message;
     }
