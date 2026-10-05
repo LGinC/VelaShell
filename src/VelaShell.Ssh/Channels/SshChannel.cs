@@ -131,6 +131,13 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary><see cref="MayStillSend"/> 的缓存委托 —— 每一帧都要用，别每次分配。</summary>
     private readonly Func<bool> _mayStillSend;
 
+    /// <summary>发 stdin 数据帧用的放行判定：同 <see cref="_mayStillSend"/>，另把结论记进 <see cref="_dataAdmitted"/>。</summary>
+    /// <remarks>数据帧只有 stdin 泵一个发送方、一帧一帧地发，所以一个字段就够记，不必每帧分配一个闭包。</remarks>
+    private readonly Func<bool> _admitData;
+
+    /// <summary>上一个 stdin 数据帧有没有放行（<see cref="_admitData"/> 写，泵在那一帧发完之后读）。</summary>
+    private bool _dataAdmitted;
+
     /// <summary>这条通道此刻计在会话窗口总预算上的字节数。</summary>
     /// <remarks>
     /// 开通道时会话按初始窗口计了一笔；自适应扩窗、缩窗各自追加或退回。关闭时按这个数退 ——
@@ -149,6 +156,7 @@ public sealed class SshChannel : IAsyncDisposable
         LocalId = localId;
         ChannelType = channelType;
         _mayStillSend = MayStillSend;
+        _admitData = () => _dataAdmitted = MayStillSend();
 
         _windowPolicy = options.WindowPolicy;
         int window = options.WindowPolicy.InitialBytes;
@@ -247,8 +255,14 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>写进去的内容变成 <c>CHANNEL_DATA</c>。</summary>
     /// <remarks>
+    /// <para>
     /// 完成这个 writer（<c>Complete</c> / <c>CompleteAsync</c>）等同于 <see cref="SendEofAsync"/>：
     /// 已写入的内容冲干净之后发 <c>CHANNEL_EOF</c>。要等 EOF 真正入队再往下走，用 <see cref="SendEofAsync"/>。
+    /// </para>
+    /// <para>
+    /// 通道关了之后，<c>FlushAsync</c> / <c>WriteAsync</c> 返回 <see cref="FlushResult.IsCompleted"/> 为真（<see cref="PipeWriter"/>
+    /// 表达「读的一方不要了」的惯用法），不抛异常。这个 writer 归调用方：库不替它完成。
+    /// </para>
     /// </remarks>
     public PipeWriter StandardInput { get; }
 
@@ -1219,7 +1233,12 @@ public sealed class SshChannel : IAsyncDisposable
                         return;   // 通道关了
                     }
 
-                    await SendDataAsync(buffer.Slice(0, chunk), cancellationToken).ConfigureAwait(false);
+                    if (!await SendDataAsync(buffer.Slice(0, chunk), cancellationToken).ConfigureAwait(false))
+                    {
+                        // CLOSE 已经入队，这一帧没有发出去：通道关了。不能计进「已发」——
+                        // 曾经照计，FlushAsync 对被丢掉的数据报了成功。
+                        return;
+                    }
                     buffer = buffer.Slice(chunk);
 
                     Interlocked.Add(ref _stdinSentBytes, chunk);
@@ -1295,7 +1314,9 @@ public sealed class SshChannel : IAsyncDisposable
         }
     }
 
-    private async ValueTask SendDataAsync(ReadOnlySequence<byte> data, CancellationToken cancellationToken)
+    /// <summary>发一个 <c>CHANNEL_DATA</c>。</summary>
+    /// <returns>发出去了（入队了）为 <see langword="true"/>；CLOSE 已经入队、这一帧不再发时为 <see langword="false"/>。</returns>
+    private async ValueTask<bool> SendDataAsync(ReadOnlySequence<byte> data, CancellationToken cancellationToken)
     {
         // 缓冲从池里租：这是上传路径上每一块都要走的一步，曾经每块新分配一个数组（最大一个 max packet），
         // 高速上传时就是每秒几千次分配。发送方的 await 返回时发送泵已经不再引用它
@@ -1309,8 +1330,10 @@ public sealed class SshChannel : IAsyncDisposable
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(rented.AsSpan(5), (uint)length);
             data.CopyTo(rented.AsSpan(9));
 
-            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _mayStillSend, cancellationToken)
+            _dataAdmitted = false;
+            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _admitData, cancellationToken)
                 .ConfigureAwait(false);
+            return _dataAdmitted;
         }
         finally
         {
@@ -1383,11 +1406,16 @@ public sealed class SshChannel : IAsyncDisposable
         _pendingRequests.Close(false);
 
         CompleteReceivePipes(failure);
-        _stdinPipe.Writer.Complete();
 
+        // 〔velashell-docs/zh/ssh/spec/05 §4.4〕stdin 的 writer 归调用方，这里**不替它完成**。
+        // 曾经在这里完成它：调用方随后再写，拿到的是 BCL 的 InvalidOperationException（「writer 已完成」）——
+        // 不是 SshException、不带断开原因；而这里常常跑在接收循环上，调用方可能正在别的线程写，
+        // 本身就是跨线程动了别人的 PipeWriter。改为让 reader 一侧收尾：reader 完成之后，
+        // 写入方的 FlushAsync 返回 IsCompleted（PipeWriter 表达「读的一方不要了」的惯用法）。
+        //
         // stdin 的 reader 在泵起来之后**归泵所有**，这里不能替它完成：
         // 泵可能正读到一半，或者刚 AdvanceTo 完要回头再读 —— 从外面完成 reader
-        // 会让它撞上「reader 完成后不许再读」。完成 writer、取消 _lifetime 之后，
+        // 会让它撞上「reader 完成后不许再读」。取消 _lifetime（下面）、放开发送窗口的闸之后，
         // 泵的每条路径都会退出，并在退出时自己完成 reader。
         // 泵从没起来（通道没开成，或者确认之前就收尾了）时才由这里完成。
         if (!pumpStarted)

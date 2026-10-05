@@ -423,6 +423,53 @@ public sealed class ChannelTests
         await channel.DisposeAsync();
     }
 
+    /// <summary>
+    /// 通道关了之后再写 StandardInput：拿到 <see cref="FlushResult.IsCompleted"/>（PipeWriter 表达「读的一方不要了」的惯用法），不抛。
+    /// 曾经库在收尾时替调用方完成了这个 writer，再写拿到的是 BCL 的 InvalidOperationException ——
+    /// 不是 SshException、不带断开原因，宿主只好专门去接它。
+    /// </summary>
+    [TestMethod]
+    public async Task 通道关闭之后写StandardInput返回已完成而不是抛BCL异常()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        await channel.DisposeAsync();
+
+        // 泵在后台收尾（取消在线程池上执行），收尾之前写进去的只是进了本地管道。
+        FlushResult result = default;
+        for (int i = 0; i < 200 && !result.IsCompleted; i++)
+        {
+            result = await channel.StandardInput.WriteAsync(new byte[16], harness.Token);
+            if (!result.IsCompleted)
+            {
+                await Task.Delay(10, harness.Token);
+            }
+        }
+
+        Assert.IsTrue(result.IsCompleted);
+    }
+
+    /// <summary>通道流（<c>AsStream</c> 那一条）兑现它承诺的 <see cref="IOException"/>。</summary>
+    [TestMethod]
+    public async Task 通道关闭之后写通道流抛IOException()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        await using SshChannelStream stream = new(channel, ownsChannel: false);
+        await channel.DisposeAsync();
+
+        await Assert.ThrowsExactlyAsync<IOException>(async () =>
+        {
+            for (int i = 0; i < 200; i++)
+            {
+                await stream.WriteAsync(new byte[16], harness.Token);
+                await Task.Delay(10, harness.Token);
+            }
+        });
+    }
+
     [TestMethod]
     public async Task 发出EOF之后仍然能收到输出()
     {

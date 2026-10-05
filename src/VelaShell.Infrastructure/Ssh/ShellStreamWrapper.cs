@@ -157,10 +157,11 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
                 _channelClosed = true;
             }
         }
-        catch (Exception ex) when (ex is SshException or ObjectDisposedException
-                                      or InvalidOperationException or IOException)
+        catch (Exception ex) when (ex is SshException or ObjectDisposedException or IOException)
         {
             // 通道已断:后续写入一律短路,不再逐次去撞库内异常(断线时键盘输入仍在入队)。
+            // 不再接 InvalidOperationException:库曾在关通道时替我们完成 StandardInput,再写就是它;
+            // 现在通道关了之后写入返回 IsCompleted(上面那条分支)。
             _channelClosed = true;
         }
     }
