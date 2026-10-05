@@ -499,6 +499,55 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
             [SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms, "开关打开之后才肯用它 —— 为的是还能连上停在 OpenSSH 7.x 的老机器");
     }
 
+    /// <summary>
+    /// 不发 server-sig-algs、只认 ssh-rsa 的老服务器：先试 SHA-2，被拒后降级重试一次 SHA-1。
+    /// 曾经不重试 —— 「允许 SHA-1」只在 server-sig-algs 列了 ssh-rsa 时起作用，
+    /// 而最需要这个开关的老服务器恰恰不发 server-sig-algs。
+    /// </summary>
+    [TestMethod]
+    public async Task 没有server_sig_algs时SHA2被拒就降级重试一次SHA1()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var signer = InMemorySshSigner.FromRsa(rsa);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+                AcceptedPublicKeyAlgorithms = [SshAlgorithmNames.SshRsa],
+            },
+            authenticatorFactory: static (t, u, s) => new SshAuthenticator(t, u, s)
+            {
+                AllowSha1RsaSignatures = true,
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(
+            [SshAlgorithmNames.RsaSha512, SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms);
+    }
+
+    [TestMethod]
+    public async Task 不允许SHA1时不降级()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var signer = InMemorySshSigner.FromRsa(rsa);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+                AcceptedPublicKeyAlgorithms = [SshAlgorithmNames.SshRsa],
+            });
+
+        Assert.IsNotNull(run.Failed);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha512], run.Observation.PublicKeySignatureAlgorithms,
+            "默认不降级：无条件降级会把降级攻击的收益还回去");
+    }
+
     // ------------------------------------------------------------ 键盘交互
 
     [TestMethod]

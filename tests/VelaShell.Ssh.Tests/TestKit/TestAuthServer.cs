@@ -79,6 +79,12 @@ internal sealed record TestAuthPolicy
 
     /// <summary>是否真的验签。</summary>
     public bool VerifyPublicKeySignature { get; init; } = true;
+
+    /// <summary>
+    /// 公钥认证只认这些签名算法（探测与签名请求都看）；<see langword="null"/> 表示都认。
+    /// </summary>
+    /// <remarks>模拟只认 <c>ssh-rsa</c>（SHA-1）的老服务器：它不认 rsa-sha2-*，也不发 server-sig-algs。</remarks>
+    public IReadOnlyList<string>? AcceptedPublicKeyAlgorithms { get; init; }
 }
 
 /// <summary>认证过程中服务端观察到的事实，供断言使用。</summary>
@@ -329,7 +335,9 @@ internal sealed class TestAuthServer
     private async Task<bool> HandlePublicKeyAsync(
         ParsedAuthRequest request, byte[] payload, CancellationToken cancellationToken)
     {
-        bool known = _policy.AcceptedPublicKeys.Any(k => k.AsSpan().SequenceEqual(request.KeyBlob));
+        bool known = _policy.AcceptedPublicKeys.Any(k => k.AsSpan().SequenceEqual(request.KeyBlob))
+            && (_policy.AcceptedPublicKeyAlgorithms is null
+                || _policy.AcceptedPublicKeyAlgorithms.Contains(request.Algorithm, StringComparer.Ordinal));
 
         if (!request.HasSignature)
         {

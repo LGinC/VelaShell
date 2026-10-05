@@ -149,6 +149,9 @@ internal static class SshConnectionAssembler
                 ConnectTimeout = connectTimeout,
                 KeepAlive = KeepAlive(settings, info),
                 Algorithms = Algorithms(info),
+                // 「允许老算法」也要放开用户钥的 SHA-1 签名:只认 ssh-rsa 的老设备上,只放开 KEX / 主机密钥 / MAC
+                // 而不放开这一项,RSA 私钥登录必然失败。库在对端不发 server-sig-algs 时会先试 SHA-2、被拒再降级一次。
+                AllowSha1RsaSignatures = info.Ssh?.LegacyAlgorithms == true,
             };
 
             SshConnection connection;

@@ -398,6 +398,40 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             throw new CredentialMaterialException(ex);
         }
 
+        AuthStepResult step = await TryPublicKeyWithAsync(credential, algorithm, cancellationToken).ConfigureAwait(false);
+
+        // 〔velashell-docs/zh/ssh/spec/04 §4.4〕没收到 server-sig-algs 时先试的是 SHA-2；
+        // 不认 rsa-sha2-* 的老服务器会拒，使用者允许 SHA-1 的话降级重试一次 ssh-rsa。
+        // 曾经不重试：「允许 SHA-1」只在 server-sig-algs 列了 ssh-rsa 时起作用，
+        // 而不发 server-sig-algs 的老服务器（正是要这个开关的那些）照样只收到 rsa-sha2-512。
+        if (step.Outcome == SshAuthOutcome.Failure
+            && Sha1FallbackFor(credential.Signer, algorithm) is { } sha1)
+        {
+            AuthStepResult retry = await TryPublicKeyWithAsync(credential, sha1, cancellationToken).ConfigureAwait(false);
+            string note = $"服务端没有宣告 server-sig-algs，{algorithm} 被拒后降级为 {sha1}（SHA-1）重试";
+            return retry with { Detail = retry.Detail is null ? note : $"{retry.Detail}（{note}）" };
+        }
+
+        return step;
+    }
+
+    /// <summary>该不该、能不能降级为 SHA-1 的 RSA 签名重试一次；能的话给出算法名。</summary>
+    private string? Sha1FallbackFor(ISshSigner signer, string attempted)
+    {
+        if (!AllowSha1RsaSignatures
+            || _serverSignatureAlgorithms.Length > 0
+            || HostKeys.SshPublicKey.StripCertificateSuffix(attempted) is not (SshAlgorithmNames.RsaSha512 or SshAlgorithmNames.RsaSha256))
+        {
+            return null;
+        }
+
+        return signer.SignatureAlgorithms.FirstOrDefault(
+            static a => HostKeys.SshPublicKey.StripCertificateSuffix(a) == SshAlgorithmNames.SshRsa);
+    }
+
+    private async ValueTask<AuthStepResult> TryPublicKeyWithAsync(
+        PublicKeyCredential credential, string algorithm, CancellationToken cancellationToken)
+    {
         // 〔决策 velashell-docs/zh/ssh/spec/04 §4.1〕本地私钥直接签，省一个 RTT；
         // 外部签名（agent / PKCS#11 / HSM）先问「你认这把钥吗」——
         // 为一把服务端根本不认的密钥去让用户按硬件键是不可接受的。
