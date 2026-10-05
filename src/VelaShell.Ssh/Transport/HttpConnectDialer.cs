@@ -10,7 +10,10 @@
 
 using System.Buffers;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
+using VelaShell.Ssh.Diagnostics;
 
 namespace VelaShell.Ssh.Transport;
 
@@ -47,17 +50,20 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
     public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(target);
+
+        // 先拼好请求：主机名放不进请求时，连代理都不必去连。
+        byte[] request = BuildRequest(target.EndPoint, Credentials);
         return ProxyDialing.DialAsync(
             SshDialKind.HttpConnect, "HTTP 代理", Inner, Proxy, target,
-            (stream, ct) => HandshakeAsync(stream, target.EndPoint, ct),
+            (stream, ct) => HandshakeAsync(stream, request, target.EndPoint, ct),
             cancellationToken);
     }
 
     /// <summary>拼 CONNECT 请求。</summary>
+    /// <exception cref="SshConnectException">主机名放不进 HTTP 请求（<see cref="SshFailureReason.InvalidConfiguration"/>）。</exception>
     internal static byte[] BuildRequest(SshEndPoint target, SshProxyCredentials? credentials)
     {
-        // SshEndPoint.ToString 已经给 IPv6 字面量加了方括号 —— 请求目标要的正是这个形式。
-        string authority = target.ToString();
+        string authority = Authority(target);
 
         StringBuilder request = new();
         request.Append(CultureInfo.InvariantCulture, $"CONNECT {authority} HTTP/1.1\r\n");
@@ -75,9 +81,62 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         return Encoding.ASCII.GetBytes(request.ToString());
     }
 
-    private async ValueTask<Stream> HandshakeAsync(Stream stream, SshEndPoint target, CancellationToken cancellationToken)
+    /// <summary>请求目标与 <c>Host</c> 头里的 <c>主机:端口</c>：国际化域名转 Punycode，IPv6 字面量加方括号。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>主机名原样拼进请求行与 <c>Host</c> 头的话，带 <c>\r\n</c> 就能往发给代理的请求里注入头部</b>
+    /// （甚至在同一条连接上再塞一个请求）。主机名常常不是写配置的人给的 —— <c>ssh://</c> 链接、导入的会话、
+    /// 快速连接框里粘进来的一串。SOCKS5 有域名映射兜着、ProxyCommand 有字符白名单，这里同样只放行合法主机名的字符。
+    /// </para>
+    /// <para>
+    /// 非 ASCII 的名字先按 IDNA 转成 Punycode（与 SOCKS5 一致）：请求按 ASCII 编码，直接编码会把它们变成 <c>?</c>，
+    /// 代理拿到的就是另一个（不存在的）名字。
+    /// </para>
+    /// </remarks>
+    internal static string Authority(SshEndPoint target)
     {
-        await stream.WriteAsync(BuildRequest(target, Credentials), cancellationToken).ConfigureAwait(false);
+        string host = target.Host;
+
+        // 带冒号的只能是 IPv6 字面量：按地址解析过、再由它自己格式化，就不会夹带别的字符。
+        if (host.Contains(':', StringComparison.Ordinal))
+        {
+            if (!IPAddress.TryParse(host, out IPAddress? address) || address.AddressFamily != AddressFamily.InterNetworkV6)
+            {
+                throw InvalidHost(host, "带冒号却不是 IPv6 地址");
+            }
+            return $"[{address}]:{target.Port}";
+        }
+
+        string ascii;
+        try
+        {
+            ascii = new IdnMapping().GetAscii(host);
+        }
+        catch (ArgumentException ex)
+        {
+            throw InvalidHost(host, ex.Message);
+        }
+
+        foreach (char c in ascii)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_'))
+            {
+                throw InvalidHost(host, $"含有字符 U+{(int)c:X4}，合法的主机名只由字母、数字与 . - _ 组成");
+            }
+        }
+
+        return $"{ascii}:{target.Port}";
+    }
+
+    /// <remarks>不是「代理拒绝」—— 那一类会被当成可重试的；这里重试多少次都一样，得改输入。</remarks>
+    private static SshConnectException InvalidHost(string host, string why) =>
+        new(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+            $"主机名 {PeerText.Sanitize(host)} 不能放进 HTTP 代理的 CONNECT 请求：{why}。");
+
+    private async ValueTask<Stream> HandshakeAsync(
+        Stream stream, byte[] request, SshEndPoint target, CancellationToken cancellationToken)
+    {
+        await stream.WriteAsync(request, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
         // 响应头的长度事先不知道，只能读到空行为止 —— 那就难免多读。

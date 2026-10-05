@@ -140,6 +140,37 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
     }
 
     [TestMethod]
+    [DataRow("evil.example\r\nX-Injected: 1", DisplayName = "CR LF 注入头部")]
+    [DataRow("evil.example\nHost: other", DisplayName = "LF")]
+    [DataRow("a b", DisplayName = "空格")]
+    [DataRow("host/path", DisplayName = "斜杠")]
+    [DataRow("x:y", DisplayName = "带冒号却不是 IPv6")]
+    public void HTTP代理请求里不放行合法主机名以外的字符(string host)
+    {
+        // 主机名原样拼进请求行与 Host 头的话，带 \r\n 就能往发给代理的请求里注入头部。
+        SshConnectException error = Assert.ThrowsExactly<SshConnectException>(
+            () => HttpConnectDialer.BuildRequest(new SshEndPoint(host, 22), credentials: null));
+
+        // 不是「代理拒绝」—— 那一类会被当成可重试的；这里重试多少次都一样，得改输入。
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.IsFalse(error.IsRetryable);
+        Assert.DoesNotContain("\n", error.Message, "消息里的主机名也要清掉控制字符");
+    }
+
+    [TestMethod]
+    public void HTTP代理请求里国际化域名转Punycode_IPv6加方括号()
+    {
+        // 请求按 ASCII 编码：直接编码会把非 ASCII 字符变成「?」，代理拿到的就是另一个名字。
+        string idn = Encoding.ASCII.GetString(HttpConnectDialer.BuildRequest(new SshEndPoint("例子.测试", 22), null));
+        Assert.StartsWith("CONNECT xn--", idn);
+        Assert.DoesNotContain("?", idn);
+
+        string v6 = Encoding.ASCII.GetString(HttpConnectDialer.BuildRequest(new SshEndPoint("::1", 2222), null));
+        Assert.StartsWith("CONNECT [::1]:2222 HTTP/1.1\r\n", v6);
+        Assert.Contains("Host: [::1]:2222\r\n", v6);
+    }
+
+    [TestMethod]
     public async Task HTTP代理407报ProxyAuthRequired()
     {
         await using var proxy = FakeHttpProxy.Start(
