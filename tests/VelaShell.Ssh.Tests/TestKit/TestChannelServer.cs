@@ -265,6 +265,14 @@ internal sealed class TestChannelObservation
     /// <summary>被拒绝的 <c>CHANNEL_OPEN</c> 次数。</summary>
     public int RejectedOpens { get; set; }
 
+    /// <summary>收到的 <c>CHANNEL_OPEN</c> 次数（拒绝的、还扣着确认的都算）。</summary>
+    public int ReceivedOpens => Volatile.Read(ref _receivedOpens);
+
+    private int _receivedOpens;
+
+    /// <summary>记一次收到的 <c>CHANNEL_OPEN</c>。</summary>
+    public void CountReceivedOpen() => Interlocked.Increment(ref _receivedOpens);
+
     /// <summary>客户端请求隧道到哪些目标（<c>host:port</c> 或套接字路径）。</summary>
     public List<string> TunnelTargets { get; } = [];
 
@@ -603,6 +611,7 @@ internal sealed class TestChannelServer : IDisposable
         uint clientChannel = reader.ReadUInt32();
         uint clientWindow = reader.ReadUInt32();
         uint clientMaxPacket = reader.ReadUInt32();
+        Observation.CountReceivedOpen();
 
         Observation.ClientAnnounced = (clientWindow, clientMaxPacket);
 

@@ -1773,6 +1773,71 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         await channel.DisposeAsync();
     }
 
+    /// <summary>
+    /// 开通道的人取消之后对端才拒绝：那个拒绝没人等了，也不能成为一个没人观察的任务异常（宿主据此写崩溃日志）。
+    /// 曾经取消路径只接「确认下来就关掉」那一种结局，拒绝与断线的异常留在任务上没人看。
+    /// </summary>
+    [TestMethod]
+    public async Task 取消之后对端才拒绝的打开不留下没人观察的异常()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        List<Exception> unobserved = [];
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x is SshChannelException { PeerDescription: { } said } && said == marker))
+            {
+                lock (unobserved)
+                {
+                    unobserved.Add(e.Exception);
+                }
+            }
+        };
+
+        TaskCompletionSource never = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { HoldOpenConfirmationUntil = never.Task });
+
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            await CancelThenRejectAsync(harness, marker);
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+            never.SetResult();
+        }
+
+        Assert.IsEmpty(unobserved, "取消之后才到的拒绝成了没人观察的任务异常");
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static async Task CancelThenRejectAsync(Harness harness, string marker)
+    {
+        using CancellationTokenSource cancel = new();
+        Task<SshChannel> opening = harness.Connection.OpenSessionChannelAsync(null, cancel.Token).AsTask();
+        await WaitUntilAsync(() => harness.ChannelServer.Observation.ReceivedOpens == 1, harness.Token);   // CHANNEL_OPEN 已经上线
+
+        await cancel.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await opening);
+
+        ArrayBufferWriter<byte> failure = new();
+        SshDataWriter writer = new(failure);
+        writer.WriteMessageNumber(SshMessageNumber.ChannelOpenFailure);
+        writer.WriteUInt32(0);   // 新连接上第一条通道的号是 0
+        writer.WriteUInt32((uint)SshChannelOpenFailureReason.ResourceShortage);
+        writer.WriteUtf8String(marker);
+        writer.WriteUtf8String("");
+        await harness.ChannelServer.SendRawAsync(failure.WrittenMemory, harness.Token);
+
+        // 拒绝处理完了：号已经还掉。
+        await WaitUntilAsync(() => harness.Connection.ChannelCount == 0, harness.Token);
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>

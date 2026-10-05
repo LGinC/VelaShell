@@ -487,10 +487,23 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             //    之后再开通道全都失败。所以让应答照常走完：确认下来的通道立刻关掉；
             //    对端拒绝、连接断开或释放时，通道已经由那几条路径收尾了。
             //    「确认刚到、取消紧跟着到」的竞态也落在这里 —— 那时 completion 已经带着结果。
+            //
+            //    拒绝与断线这两种结局也要接住：没人等了，它们的异常留在任务上就是一个没人观察的任务异常，
+            //    宿主据此写崩溃日志。曾经这里只接「确认下来」那一种（OnlyOnRanToCompletion）。
             _ = completion.Task.ContinueWith(
-                static opened => opened.Result.DisposeAsync().AsTask(),
+                static opened =>
+                {
+                    if (opened.IsCompletedSuccessfully)
+                    {
+                        _ = opened.Result.DisposeAsync().AsTask();
+                    }
+                    else
+                    {
+                        _ = opened.Exception;   // 看一眼，标成已观察
+                    }
+                },
                 CancellationToken.None,
-                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
             throw;
         }
