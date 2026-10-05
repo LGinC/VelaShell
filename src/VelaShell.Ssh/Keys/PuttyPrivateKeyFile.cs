@@ -542,20 +542,31 @@ internal static class PuttyPrivateKeyFile
 
     private static InMemorySshSigner BuildEd25519(scoped ref SshDataReader priv)
     {
-        byte[] seed = priv.ReadMpint(256).ToArray();
-
-        // mpint 可能带一个前导零，也可能短于 32 字节 —— 两种都要归一到 32。
-        byte[] normalized = new byte[32];
+        // 〔AU-E2〕PuTTY 把 Ed25519 私钥（RFC 8032 的 32 字节种子，原样的字节）写成**定长 32 字节**，不是 mpint：
+        // 首字节 ≥ 0x80 时也不补前导零 —— 真 puttygen（0.83）的产物如此，样本在测试的 Keys/Fixtures 里。
+        // 曾经按 mpint 读，这样的文件（约一半）被判「mpint 为负」、根本读不进来。
+        // 照 mpint 规矩写的（带一个前导零、或去掉了前导零而短于 32 字节）也照收，归一到 32 字节；
+        // 读错了的话派生出的公钥对不上 Public-Lines，BuildSigner 的核对会当场拦住。
+        byte[] field = priv.ReadStringAsArray(33);
+        byte[] seed = new byte[32];
         try
         {
-            ReadOnlySpan<byte> trimmed = seed.Length > 32 ? seed.AsSpan(seed.Length - 32) : seed;
-            trimmed.CopyTo(normalized.AsSpan(32 - trimmed.Length));
+            ReadOnlySpan<byte> value = field;
+            if (value.Length == 33)
+            {
+                if (value[0] != 0)
+                {
+                    throw new SshWireFormatException("Ed25519 私钥字段是 33 字节，却不是「前导零 + 32 字节」。");
+                }
+                value = value[1..];
+            }
+            value.CopyTo(seed.AsSpan(32 - value.Length));
 
-            return InMemorySshSigner.FromEd25519(normalized);
+            return InMemorySshSigner.FromEd25519(seed);
         }
         finally
         {
-            Clear(seed, normalized);
+            Clear(field, seed);
         }
     }
 

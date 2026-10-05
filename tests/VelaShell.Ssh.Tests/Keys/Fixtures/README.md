@@ -100,3 +100,37 @@ for n in window farfuture noprincipals usertype sha1 rsasha512 othersigned; do r
 
 它们只存在于本仓库的用例里，从未用于任何真实主机，口令也写在上面。
 **不要把它们当成"泄漏的密钥"处理** —— 也不要拿它们去连任何东西。
+
+### PuTTY 的 `.ppk`（`putty-ed25519-*`）
+
+`PuttyKeyTests` 用的 Ed25519 `.ppk` 由**真的 `puttygen`（PuTTY 0.83）**生成，`.pub` 是 `ssh-keygen -y` 从 `puttygen` 导出的
+OpenSSH 私钥里取的 —— 标准答案来自外部，不是我们自己拼的 `.ppk`。`-hi` / `-lo` 是私钥字段首字节 ≥ / < 0x80 的各一把
+（这一点正是曾经读错的地方：PuTTY 把它写成定长 32 字节，不是 mpint）；`-enc` 是同一把 `-hi` 加上口令另存，口令同上。
+没装 PuTTY 时在 Debian 上不用 root 也能拿到：`apt-get download putty-tools && dpkg -x putty-tools_*.deb root`。
+
+```bash
+PG=root/usr/bin/puttygen
+PASS='correct horse battery staple'
+: > empty; printf '%s' "$PASS" > pass
+first() { awk '/^Private-Lines:/{n=$2;next} n>0{print;n--}' "$1" | tr -d '\r\n' | base64 -d | od -An -tu1 -j4 -N1 | tr -d ' '; }
+pick() {   # 版本 hi|lo 名字：一直生成，直到首字节符合要求
+  while :; do
+    $PG -t ed25519 -C "velashell-ssh test key ($3)" --new-passphrase empty --ppk-param version=$1 -o cand.ppk
+    b=$(first cand.ppk)
+    { [ "$2" = hi ] && [ "$b" -ge 128 ]; } || { [ "$2" = lo ] && [ "$b" -lt 128 ]; } && break
+  done
+  mv cand.ppk "$3.ppk"
+}
+for v in 2 3; do
+  pick $v hi putty-ed25519-v$v-hi
+  pick $v lo putty-ed25519-v$v-lo
+  $PG putty-ed25519-v$v-hi.ppk --old-passphrase empty --new-passphrase pass --ppk-param version=$v \
+      -C "velashell-ssh test key (putty-ed25519-v$v-hi-enc)" -o putty-ed25519-v$v-hi-enc.ppk
+done
+for n in putty-ed25519-v2-hi putty-ed25519-v2-lo putty-ed25519-v3-hi putty-ed25519-v3-lo; do
+  $PG $n.ppk --old-passphrase empty -O private-openssh-new -o $n.openssh && chmod 600 $n.openssh
+  ssh-keygen -y -f $n.openssh > $n.pub && rm $n.openssh
+done
+cp putty-ed25519-v2-hi.pub putty-ed25519-v2-hi-enc.pub
+cp putty-ed25519-v3-hi.pub putty-ed25519-v3-hi-enc.pub
+```
