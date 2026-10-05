@@ -906,6 +906,24 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 服务端不再确认写入时关闭有时限_报带续传点的中断而不是一直等()
+    {
+        // 第二块之后服务端不再应答：曾经关闭（释放）一直等下去 —— 关标签页、取消上传都会挂住。
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { FailWritesAfter = 1 },
+            clientOptions: new SftpOptions { CloseTimeout = TimeSpan.FromMilliseconds(300) });
+        int block = harness.Sftp.BlockSize;
+
+        SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/stall.bin", cancellationToken: harness.Token);
+        await stream.WriteAsync(new byte[block * 3], harness.Token);
+
+        SftpTransferInterruptedException error = await Assert.ThrowsExactlyAsync<SftpTransferInterruptedException>(
+            async () => await stream.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.AreEqual(block, error.DurableLength, "只有第一块确认了");
+    }
+
+    [TestMethod]
     public async Task 带CREAT打开时没给权限就补上0644()
     {
         // 不传的话服务端用它自己的默认值（受 umask 影响），结果不可预测 —— 宿主的 Create / CreateNew / OpenOrCreate 都走这条。

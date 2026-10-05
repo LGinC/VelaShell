@@ -94,6 +94,18 @@ public sealed record SftpOptions
         init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(HandshakeTimeout), value, "握手时限必须为正。");
     } = TimeSpan.FromSeconds(30);
 
+    /// <summary>关闭一个文件流时，等在途写入确认与 <c>CLOSE</c> 应答各最多等多久。</summary>
+    /// <remarks>
+    /// 服务端不再应答（卡死、链路半断）时，释放曾经一直等下去 —— 关一个标签页、取消一次上传都会挂住。
+    /// 到点了照样发 <c>CLOSE</c>、还句柄额度，写入没确认完的话报带续传点的中断。
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public TimeSpan CloseTimeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(CloseTimeout), value, "关闭的时限必须为正。");
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>默认参数。</summary>
     public static SftpOptions Default { get; } = new();
 
@@ -951,6 +963,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         {
             LengthKnown = lengthKnown,
             OnHandleClosed = ReleaseHandleSlot,
+            CloseTimeout = _options.CloseTimeout,
         };
     }
 

@@ -165,6 +165,9 @@ public sealed class SftpFileStream : Stream
     /// <summary>句柄关掉之后（不论 CLOSE 成没成）调一次：还文件系统的句柄额度。</summary>
     internal Action? OnHandleClosed { get; init; }
 
+    /// <summary>关闭时等在途写入确认、等 <c>CLOSE</c> 应答各最多多久（见 <see cref="SftpOptions.CloseTimeout"/>）。</summary>
+    internal TimeSpan CloseTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <inheritdoc />
     public override long Position
     {
@@ -865,20 +868,33 @@ public sealed class SftpFileStream : Stream
         // 还在路上的预读：应答到了就释放。CLOSE 排在它们后面发，服务端按顺序处理。
         ResetReadAhead();
 
+        // 〔velashell-docs/zh/ssh/spec/06 §6.5〕两段都有时限：服务端不再应答时，释放曾经一直等下去。
         Exception? failure = null;
-        try
+        using (CancellationTokenSource flushDeadline = new(CloseTimeout))
         {
-            await FlushAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
+            try
+            {
+                await FlushAsync(flushDeadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (flushDeadline.IsCancellationRequested)
+            {
+                failure = new SftpTransferInterruptedException(
+                    DurableLength,
+                    $"关闭 {Path} 时等了 {CloseTimeout.TotalSeconds:0} 秒，服务端还没确认完在途的写入。" +
+                    $"已连续确认 {DurableLength} 字节，从这里续传即可。");
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
         }
 
         try
         {
+            using CancellationTokenSource closeDeadline = new(CloseTimeout);
             using SftpResponse response = await _pipeline.SendAsync(
-                (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.Close, id, _handle))
+                (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.Close, id, _handle),
+                cancellationToken: closeDeadline.Token)
                 .ConfigureAwait(false);
 
             // 看的是打开方式，不是 CanWrite —— 那个在关闭之后已经是假了。
@@ -897,7 +913,8 @@ public sealed class SftpFileStream : Stream
         }
         OnHandleClosed?.Invoke();
 
-        _writeSlots.Dispose();
+        // 写槽不释放：关闭超时的话还有写在路上，它们收尾时要 Release —— 对一个已释放的信号量那是个异常，
+        // 落在一个没人看的任务上。它没有用到等待句柄，不释放也不漏任何非托管资源。
         if (_coalesce is not null)
         {
             ArrayPool<byte>.Shared.Return(_coalesce);
