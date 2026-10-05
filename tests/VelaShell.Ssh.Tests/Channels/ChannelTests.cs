@@ -65,7 +65,8 @@ public sealed class ChannelTests
             TestChannelScript? script = null,
             SshConnectionLimits? limits = null,
             Func<Stream, Stream>? wrapClient = null,
-            SshKeepAlivePolicy keepAlive = default)
+            SshKeepAlivePolicy keepAlive = default,
+            TimeProvider? time = null)
         {
             (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
 
@@ -95,7 +96,7 @@ public sealed class ChannelTests
             TestChannelServer channelServer = new(server.Transport, script);
             Task serverChannels = channelServer.RunAsync(cts.Token);
 
-            SshConnection connection = new(clientTransport, kex, limits) { KeepAlive = keepAlive };
+            SshConnection connection = new(clientTransport, kex, limits) { KeepAlive = keepAlive, Time = time ?? TimeProvider.System };
             connection.Start();
 
             return new Harness(server, clientTransport, connection, channelServer, serverChannels, cts);
@@ -788,6 +789,37 @@ public sealed class ChannelTests
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 〔spec/05 §1 规则 3〕回收的通道号放够 ChannelIdReuseDelay 才复用：差一点不复用，到点就复用。
+    /// 时钟是手动拨的 —— 曾经复用延迟直接按 Environment.TickCount64 算，只能真的等 30 秒。
+    /// </summary>
+    [TestMethod]
+    public async Task 回收的通道号放够复用延迟才复用()
+    {
+        ManualTimeProvider clock = new();
+        await using Harness harness = await Harness.StartAsync(
+            new TestChannelScript { CloseAfterScript = false, ExitCode = null },
+            limits: new SshConnectionLimits { ChannelIdReuseDelay = TimeSpan.FromSeconds(30) },
+            time: clock);
+
+        SshChannel first = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        uint recycled = first.LocalId;
+        await first.CloseAsync(harness.Token);
+        await WaitUntilAsync(() => harness.Connection.ChannelCount == 0, harness.Token);   // 双向 CLOSE 走完，号回收
+        await first.DisposeAsync();
+
+        clock.Advance(TimeSpan.FromSeconds(30) - TimeSpan.FromTicks(1));
+        SshChannel early = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        Assert.AreNotEqual(recycled, early.LocalId, "复用延迟还差一点就复用了");
+
+        clock.Advance(TimeSpan.FromTicks(1));
+        SshChannel onTime = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        Assert.AreEqual(recycled, onTime.LocalId, "放够了复用延迟却没复用");
+
+        await early.DisposeAsync();
+        await onTime.DisposeAsync();
     }
 
     /// <summary>同一个操作码再设一次是替换（留在原位），不是追加出第二条。</summary>
@@ -1501,6 +1533,30 @@ public sealed class ChannelTests
         Assert.IsTrue(alive);
         Assert.Contains(
 SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalRequests);
+    }
+
+    /// <summary>
+    /// 〔spec/05 §6.3〕保活在「距上次收到任何报文」闲够一个间隔的那一刻发出：差一点不发，到点就发。
+    /// 时钟是手动拨的 —— 曾经保活直接用 Environment.TickCount64 / Task.Delay，这种时刻只能拿真实时间去碰。
+    /// </summary>
+    [TestMethod]
+    public async Task 保活在闲够一个间隔时发出_差一点不发()
+    {
+        ManualTimeProvider clock = new();
+        await using Harness harness = await Harness.StartAsync(
+            new TestChannelScript { CloseAfterScript = false, ExitCode = null },
+            keepAlive: new SshKeepAlivePolicy(TimeSpan.FromSeconds(10)),
+            time: clock);
+
+        await clock.WaitUntilArmedAsync(TimeSpan.FromSeconds(10), harness.Token);   // 保活循环睡下了，10 秒后醒
+        clock.Advance(TimeSpan.FromSeconds(10) - TimeSpan.FromTicks(1));
+        await Task.Delay(100, harness.Token);
+        Assert.DoesNotContain(SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalRequests, "还差一点就发了保活");
+
+        clock.Advance(TimeSpan.FromTicks(1));
+        await WaitUntilAsync(
+            () => harness.ChannelServer.Observation.GlobalRequests.Contains(SshProtocolNames.KeepAliveOpenSsh), harness.Token);
+        Assert.IsTrue(harness.Connection.IsAlive);
     }
 
     [TestMethod]

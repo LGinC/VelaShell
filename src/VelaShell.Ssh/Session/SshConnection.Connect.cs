@@ -185,6 +185,7 @@ public sealed partial class SshConnection
                     MinimumRsaKeyBits: SshKeyExchangeRunner.DefaultMinimumRsaKeyBits,
                     options.HostKeyDecisionTimeout),
                 KeepAlive = options.KeepAlive,
+                Time = options.TimeProvider,
                 RekeyPolicy = options.Rekey,
                 RekeyCheckInterval = options.RekeyCheckInterval,
                 RekeyHardPacketLimit = options.RekeyHardPacketLimit,

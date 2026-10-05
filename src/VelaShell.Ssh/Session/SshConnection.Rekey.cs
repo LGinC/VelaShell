@@ -191,7 +191,7 @@ public sealed partial class SshConnection
     {
         try
         {
-            await Task.Delay(RekeyTimeout, _lifetime.Token).ConfigureAwait(false);
+            await Task.Delay(RekeyTimeout, Time, _lifetime.Token).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
         {
@@ -226,7 +226,7 @@ public sealed partial class SshConnection
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                await Task.Delay(tick, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(tick, Time, cancellationToken).ConfigureAwait(false);
 
                 if (ShouldRekey(out string reason))
                 {
@@ -235,7 +235,7 @@ public sealed partial class SshConnection
 
                     // 发起之后先歇一拍：等接收循环把这一轮谈完，
                     // 不然下一次 tick 会看到同一组还没归零的计数。
-                    await Task.Delay(tick, cancellationToken).ConfigureAwait(false);
+                    await Task.Delay(tick, Time, cancellationToken).ConfigureAwait(false);
                 }
             }
         }
@@ -289,10 +289,10 @@ public sealed partial class SshConnection
         TimeSpan interval = policy.MaxInterval;
         if (interval > TimeSpan.Zero)
         {
-            long elapsed = Environment.TickCount64 - Volatile.Read(ref _lastKexTicks);
-            if (elapsed >= (long)interval.TotalMilliseconds)
+            TimeSpan elapsed = Time.GetElapsedTime(Volatile.Read(ref _lastKexAt));
+            if (elapsed >= interval)
             {
-                reason = $"距上次密钥交换已 {elapsed} ms（阈值 {interval.TotalMilliseconds} ms）";
+                reason = $"距上次密钥交换已 {elapsed.TotalMilliseconds:0} ms（阈值 {interval.TotalMilliseconds} ms）";
                 return true;
             }
         }
@@ -308,7 +308,7 @@ public sealed partial class SshConnection
         Volatile.Write(ref _bytesReceivedAtLastKex, _transport.BytesReceived);
         Volatile.Write(ref _packetsAtLastKex, _transport.PacketsSent);
         Volatile.Write(ref _packetsReceivedAtLastKex, _transport.PacketsReceived);
-        Volatile.Write(ref _lastKexTicks, Environment.TickCount64);
+        Volatile.Write(ref _lastKexAt, Time.GetTimestamp());
     }
 
     /// <summary>收到对端的 <c>KEXINIT</c> —— 对端要重协商。</summary>
@@ -390,8 +390,8 @@ public sealed partial class SshConnection
 
             // 交换卡在半路（对端不发 31、不发 NEWKEYS）的话，闸门一直关着、发送一直暂存 ——
             // 给它一个期限，到点就把连接判死，而不是无声地停住。
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            deadline.CancelAfter(RekeyTimeout);
+            using CancellationTokenSource timer = new(RekeyTimeout, Time);
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timer.Token);
 
             // 〔velashell-docs/zh/ssh/spec/03 §8.2〕到点**直接判死**，不只是取消令牌：交换的报文走发送泵，
             // 本端发送卡住（对端不读、链路半断）时「等这一帧发出去」不响应取消 —— 只取消令牌的话这次交换永远等下去，
@@ -521,7 +521,7 @@ public sealed partial class SshConnection
                     return packet;
                 }
 
-                Volatile.Write(ref connection._lastInboundTicks, Environment.TickCount64);
+                Volatile.Write(ref connection._lastInboundAt, connection.Time.GetTimestamp());
 
                 // 1–49 是传输层消息，密钥交换就是靠它们完成的 —— 交回去。
                 // 其余的是会话层报文，就地派发。

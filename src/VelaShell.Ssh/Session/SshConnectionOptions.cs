@@ -73,7 +73,7 @@ public sealed record SshConnectionOptions
     /// <summary>外层连接的计时器（这条连接是另一条连接的跳板那一跳时）。</summary>
     internal SshConnectDeadline? OuterDeadline { get; init; }
 
-    /// <summary>连接计时器用的时钟。</summary>
+    /// <summary>连接计时器用的时钟；连上之后保活、重协商与通道号复用延迟也用它。</summary>
     /// <remarks>只有测试会换成手动拨的时钟 —— 「停表时预算刚好用完」这种时刻靠真实时钟摆不出来。</remarks>
     internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 

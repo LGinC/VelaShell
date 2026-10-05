@@ -71,6 +71,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     /// <param name="rekeyHardPacketLimit">报文数的硬线；验它的用例要把它调小。</param>
     /// <param name="corruptRekeySignature">设了就让服务端在重协商时把签名弄坏。</param>
     /// <param name="wrapClient">把客户端那一头的流包一层（模拟写被卡住之类）。</param>
+    /// <param name="timeProvider">客户端连接用的时钟；验时间阈值的用例传手动拨的那个。</param>
     public static async Task<TestSshServerHost> StartAsync(
         TestChannelScript? script = null,
         SshAlgorithmSet? algorithms = null,
@@ -81,7 +82,8 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         IHostKeyPolicy? hostKeyPolicy = null,
         long? rekeyHardPacketLimit = null,
         bool corruptRekeySignature = false,
-        Func<Stream, Stream>? wrapClient = null)
+        Func<Stream, Stream>? wrapClient = null,
+        TimeProvider? timeProvider = null)
     {
         CancellationTokenSource cts = new(TimeSpan.FromSeconds(25));
 
@@ -152,6 +154,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
             RekeyCheckInterval = rekeyCheckInterval ?? TimeSpan.FromSeconds(5),
             RekeyTimeout = rekeyTimeout ?? TimeSpan.FromMinutes(2),
             RekeyHardPacketLimit = rekeyHardPacketLimit ?? SshRekeyPolicy.MaximumPackets,
+            TimeProvider = timeProvider ?? TimeProvider.System,
         };
 
         SshConnection connection = await SshConnection.ConnectAsync(options, cts.Token);

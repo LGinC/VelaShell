@@ -46,8 +46,8 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>全局请求的应答账本。<b>同样没有 id，靠 FIFO 对齐。</b></summary>
     private readonly FifoRequestLedger<SshGlobalRequestReply> _globalRequests = new();
 
-    /// <summary>已回收、但还不到复用时间的通道号。</summary>
-    private readonly Queue<(uint Id, long ReusableAtTicks)> _recycledIds = new();
+    /// <summary>已回收、但还不到复用时间的通道号，带回收那一刻（<see cref="Time"/> 的时间戳）。</summary>
+    private readonly Queue<(uint Id, long RecycledAt)> _recycledIds = new();
 
     /// <summary>按通道类型登记的入站通道处理器（服务端发起的通道）。</summary>
     /// <remarks>
@@ -155,11 +155,30 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>保活策略。</summary>
     internal SshKeepAlivePolicy KeepAlive { get; init; } = SshKeepAlivePolicy.Disabled;
 
+    /// <summary>保活、重协商（时间阈值、期限）与通道号复用延迟用的时钟；建连时取 <see cref="SshConnectionOptions.TimeProvider"/>。</summary>
+    /// <remarks>
+    /// 只有测试会换成手动拨的时钟 —— 「复用延迟刚好到点」「闲了刚好一个保活间隔」这种时刻靠真实时钟摆不出来。
+    /// 曾经这几处直接用 <c>Environment.TickCount64</c> / <c>Task.Delay</c>，只能拿真实时间去等、去碰运气。
+    /// </remarks>
+    internal TimeProvider Time
+    {
+        get;
+        init
+        {
+            field = value ?? throw new ArgumentNullException(nameof(Time));
+
+            // 两个基准时刻跟着换成这个时钟的口径（字段初值是按系统时钟取的）。
+            long now = value.GetTimestamp();
+            _lastInboundAt = now;
+            _lastKexAt = now;
+        }
+    } = TimeProvider.System;
+
     /// <summary>给人看的描述（<c>user@host:port</c>），进日志与异常。</summary>
     internal string Description { get; init; } = "";
 
-    /// <summary>上一次收到任何入站报文的时刻（<c>Environment.TickCount64</c> 口径）。</summary>
-    private long _lastInboundTicks = Environment.TickCount64;
+    /// <summary>上一次收到任何入站报文的时刻（<see cref="Time"/> 的时间戳）。</summary>
+    private long _lastInboundAt = TimeProvider.System.GetTimestamp();
     private int _rekeyCount;
     private int _sendGateOpensPosted;
 
@@ -173,7 +192,8 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     private long _bytesReceivedAtLastKex;
     private long _packetsAtLastKex;
     private long _packetsReceivedAtLastKex;
-    private long _lastKexTicks = Environment.TickCount64;
+    /// <summary>上一次密钥交换完成的时刻（<see cref="Time"/> 的时间戳）。</summary>
+    private long _lastKexAt = TimeProvider.System.GetTimestamp();
     private string? _lastRekeyReason;
 
     /// <summary>当前占着通道号的通道数。</summary>
@@ -243,6 +263,9 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
     }
 
+    /// <summary>保活循环一次至少睡这么久：闲够之前不会每毫秒醒一次。</summary>
+    private static readonly TimeSpan MinKeepAliveSleep = TimeSpan.FromMilliseconds(50);
+
     /// <summary>保活循环。</summary>
     /// <remarks>
     /// <para>
@@ -262,13 +285,14 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                long idle = Environment.TickCount64 - Volatile.Read(ref _lastInboundTicks);
-                long interval = (long)KeepAlive.Interval.TotalMilliseconds;
+                TimeSpan idle = Time.GetElapsedTime(Volatile.Read(ref _lastInboundAt));
+                TimeSpan interval = KeepAlive.Interval;
 
                 if (idle < interval)
                 {
                     // 还没闲够。睡到「刚好闲够」的那一刻再看。
-                    await Task.Delay((int)Math.Max(interval - idle, 50), cancellationToken)
+                    TimeSpan rest = interval - idle;
+                    await Task.Delay(rest > MinKeepAliveSleep ? rest : MinKeepAliveSleep, Time, cancellationToken)
                         .ConfigureAwait(false);
                     continue;
                 }
@@ -278,7 +302,9 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
                     return;   // 会话已经判死了，没什么可探的
                 }
 
-                long before = Volatile.Read(ref _lastInboundTicks);
+                // 「期间收到了别的报文」看报文计数，不看时间戳：时钟没走（粒度粗、或测试里手动拨的）时，
+                // 新报文写下的时间戳与原来的一样，会被当成什么都没收到。
+                long before = _transport.PacketsReceived;
 
                 // ⚠️ **每一次探测都要有自己的期限。**
                 //    保活要对付的正是半开连接：报文写得进本机的发送缓冲，
@@ -287,11 +313,11 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
                 //
                 //    超时的那一项**仍然留在应答账本里**：应答只是迟到，
                 //    它来的时候必须落在这一项上，后面的应答才对得上号。
-                bool alive = await ProbeAsync(TimeSpan.FromMilliseconds(interval), cancellationToken)
+                bool alive = await ProbeAsync(interval, cancellationToken)
                     .ConfigureAwait(false);
 
                 // 有应答，或者期间收到了别的报文 —— 都算活着。
-                if (alive || Volatile.Read(ref _lastInboundTicks) != before)
+                if (alive || _transport.PacketsReceived != before)
                 {
                     missed = 0;
                     continue;
@@ -341,7 +367,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
         try
         {
-            await reply!.WaitAsync(timeout, cancellationToken).ConfigureAwait(false);
+            await reply!.WaitAsync(timeout, Time, cancellationToken).ConfigureAwait(false);
             return Volatile.Read(ref _fault) is null;
         }
         catch (TimeoutException)
@@ -697,7 +723,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
                 SshInboundPacket packet = await _transport.ReadPacketAsync(cancellationToken).ConfigureAwait(false);
 
                 // 任何入站报文都证明链路活着 —— 不只是保活应答。
-                Volatile.Write(ref _lastInboundTicks, Environment.TickCount64);
+                Volatile.Write(ref _lastInboundAt, Time.GetTimestamp());
 
                 if (packet.IsEndOfStream)
                 {
@@ -1379,11 +1405,10 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <remarks>调用时必须持有 <see cref="_stateLock"/>。</remarks>
     private uint AllocateChannelId()
     {
-        long now = Environment.TickCount64;
-
         // 回收号要放够 ChannelIdReuseDelay 才能再用 —— 对端可能还在路上
         // 发这个号的数据，复用得太早会让那些数据投递到新通道上（串话）。
-        if (_recycledIds.TryPeek(out (uint Id, long ReusableAtTicks) head) && head.ReusableAtTicks <= now)
+        if (_recycledIds.TryPeek(out (uint Id, long RecycledAt) head)
+            && Time.GetElapsedTime(head.RecycledAt) >= _limits.ChannelIdReuseDelay)
         {
             _recycledIds.Dequeue();
             return head.Id;
@@ -1394,7 +1419,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
     /// <remarks>调用时必须持有 <see cref="_stateLock"/>。</remarks>
     private void RecycleChannelId(uint localId) =>
-        _recycledIds.Enqueue((localId, Environment.TickCount64 + (long)_limits.ChannelIdReuseDelay.TotalMilliseconds));
+        _recycledIds.Enqueue((localId, Time.GetTimestamp()));
 
     /// <summary>对端违反了协议：先把 <c>DISCONNECT</c> 送出去，再把会话判死。</summary>
     /// <remarks>

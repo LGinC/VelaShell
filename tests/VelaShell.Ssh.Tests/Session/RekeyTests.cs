@@ -237,6 +237,39 @@ public sealed class RekeyTests
         Assert.AreSequenceEqual([SshAlgorithmNames.SshEd25519], SshKexInitMessage.Decode(sent).ServerHostKeyAlgorithms.ToArray());
     }
 
+    /// <summary>
+    /// 时间阈值按连接的时钟算：差一点不发起，到点后的那次巡检发起。
+    /// 时钟是手动拨的 —— 曾经直接按 Environment.TickCount64 算，验这个阈值只能真的等上一分钟。
+    /// </summary>
+    [TestMethod]
+    public async Task 时间阈值到点才发起重协商()
+    {
+        ManualTimeProvider clock = new();
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            rekey: new SshRekeyPolicy(maxInterval: TimeSpan.FromMinutes(1)),
+            rekeyCheckInterval: TimeSpan.FromSeconds(5),
+            timeProvider: clock);
+
+        // 一拍一拍地拨到 55 秒：每拍等巡检循环睡下（5 秒后醒）再拨，它每一拍都看一次阈值。
+        TimeSpan tick = TimeSpan.FromSeconds(5);
+        for (int second = 5; second <= 55; second += 5)
+        {
+            await clock.WaitUntilArmedAsync(tick, host.Token);
+            clock.Advance(tick);
+        }
+        await clock.WaitUntilArmedAsync(tick, host.Token);   // 55 秒那一拍看完了
+        await Task.Delay(100, host.Token);                    // 真发起了的话，给那次交换走完的时间
+        Assert.AreEqual(0, host.Connection.RekeyCount, "还差 5 秒就发起了重协商");
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        while (host.Connection.RekeyCount == 0)
+        {
+            await Task.Delay(20, host.Token);
+        }
+        Assert.AreEqual(1, host.Connection.RekeyCount);
+    }
+
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
     [TestMethod]
     public async Task 重协商不再询问主机密钥策略()

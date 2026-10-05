@@ -43,6 +43,29 @@ internal sealed class ManualTimeProvider : TimeProvider
         return timer;
     }
 
+    /// <summary>
+    /// 等到有一个定时器恰好在 <paramref name="dueIn"/> 之后到点（用真实时间轮询）—— 用例靠它等某个后台循环「已经睡下」再拨表。
+    /// </summary>
+    /// <remarks>
+    /// 按到点时刻认，不按定时器个数：同一时刻可能还挂着别的定时器（重协商的期限之类），
+    /// 数个数的话等到的未必是要等的那一个。
+    /// </remarks>
+    public async Task WaitUntilArmedAsync(TimeSpan dueIn, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            lock (_lock)
+            {
+                long dueAt = _nowTicks + dueIn.Ticks;
+                if (_armed.Any(timer => timer.DueTicks == dueAt))
+                {
+                    return;
+                }
+            }
+            await Task.Delay(5, cancellationToken);
+        }
+    }
+
     /// <summary>往前拨，并执行到点的回调。</summary>
     public void Advance(TimeSpan by)
     {
