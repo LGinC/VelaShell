@@ -143,7 +143,7 @@ internal static class SshInterop
 
         return ex.StatusCode switch
         {
-            SftpStatusCode.NoSuchFile => new VelaSftpPathNotFoundException(message, ex),
+            SftpStatusCode.NoSuchFile or SftpStatusCode.NoSuchPath => new VelaSftpPathNotFoundException(message, ex),
             SftpStatusCode.PermissionDenied => new VelaSftpPermissionDeniedException(message, ex),
             _ => new VelaSftpOperationException(message, ex),
         };
@@ -168,7 +168,7 @@ internal static class SshInterop
     {
         string? key = ex.StatusCode switch
         {
-            SftpStatusCode.NoSuchFile => "SftpErr_NoSuchFile",
+            SftpStatusCode.NoSuchFile or SftpStatusCode.NoSuchPath => "SftpErr_NoSuchFile",
             SftpStatusCode.PermissionDenied => "SftpErr_PermissionDenied",
             SftpStatusCode.OperationUnsupported => "SftpErr_Unsupported",
             SftpStatusCode.BadMessage => "SftpErr_BadMessage",

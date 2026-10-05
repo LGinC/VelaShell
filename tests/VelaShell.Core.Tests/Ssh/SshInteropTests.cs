@@ -207,6 +207,16 @@ public sealed class SshInteropTests
         Assert.IsInstanceOfType<VelaSftpPathNotFoundException>(translated);
     }
 
+    /// <summary>v4 起的「路径不存在」(10):多版本服务端在 v3 会话里也会回它,同样分到「没这个文件」。</summary>
+    [TestMethod]
+    public void Translate_SftpNoSuchPath_MapsToPathNotFound()
+    {
+        SftpException original = new(SftpStatusCode.NoSuchPath, "No such path", "/tmp/a/b", SftpOperation.Open);
+
+        Assert.IsTrue(original.IsNotFound);
+        Assert.IsInstanceOfType<VelaSftpPathNotFoundException>(SshInterop.Translate(original));
+    }
+
     [TestMethod]
     public void Translate_SftpPermissionDenied_MapsToPermissionDenied()
     {

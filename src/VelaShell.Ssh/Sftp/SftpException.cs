@@ -73,7 +73,7 @@ public sealed class SftpException : SshException
     public SftpOperation Operation { get; }
 
     /// <summary>是不是「文件不存在」。</summary>
-    public bool IsNotFound => StatusCode == SftpStatusCode.NoSuchFile;
+    public bool IsNotFound => StatusCode is SftpStatusCode.NoSuchFile or SftpStatusCode.NoSuchPath;
 
     /// <summary>是不是「权限不足」。</summary>
     public bool IsAccessDenied => StatusCode == SftpStatusCode.PermissionDenied;
@@ -94,7 +94,7 @@ public sealed class SftpException : SshException
     {
         string what = code switch
         {
-            SftpStatusCode.NoSuchFile => "文件或目录不存在",
+            SftpStatusCode.NoSuchFile or SftpStatusCode.NoSuchPath => "文件或目录不存在",
             SftpStatusCode.PermissionDenied => "权限不足",
             SftpStatusCode.OperationUnsupported => "服务端不支持这个操作",
             SftpStatusCode.BadMessage => "服务端说我们发的报文格式不对",
