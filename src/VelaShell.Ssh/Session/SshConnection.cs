@@ -1211,10 +1211,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         writer.WriteUInt32((uint)window);
         writer.WriteUInt32((uint)options.ReceiveMaxPacketBytes);
 
-        // 确认先入队，泵后启动 —— 泵发出的数据在队列里排在确认之后，
-        // 对端一定先认得这条通道，再收到它的数据。
+        // ① 对端的号、窗口与状态在确认发出之前就设好：对端一收到确认就可能 EOF + CLOSE，
+        //    接收循环处理那个 CLOSE 时，回给对端的 CLOSE 要带着它的真实通道号（见 OnOpenAccepted）。
+        // ② 确认先入队，泵后启动 —— 泵发出的数据在队列里排在确认之后，
+        //    对端一定先认得这条通道，再收到它的数据。
+        channel.OnOpenAccepted(senderChannel, initialWindow, maxPacket);
         Post(buffer.WrittenMemory);
-        channel.OnOpenConfirmed(senderChannel, initialWindow, maxPacket);
+        channel.StartPumps();
 
         // 交给处理器时**不等它** —— 它多半要去连一个本地目标，
         // 而接收循环不能停在任何一条通道上。

@@ -588,7 +588,26 @@ public sealed class SshChannel : IAsyncDisposable
 
     // ------------------------------------------------------------ 会话回调
 
+    /// <summary>我们开的通道被对端确认了。</summary>
     internal void OnOpenConfirmed(uint remoteId, uint initialWindow, uint maxPacket)
+    {
+        OnOpenAccepted(remoteId, initialWindow, maxPacket);
+        StartPumps();
+    }
+
+    /// <summary>记下对端的通道号、初始窗口与包上限，通道进入 Open（泵还没起）。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>对端开过来的通道，确认发出去之前就要做完这一步。</b>曾经是先发确认、后设对端的号：
+    /// 对端收到确认立刻 EOF + CLOSE（端口扫描、健康检查），而决定开通道的后台任务恰好在两步之间被抢占，
+    /// 接收循环先处理了那个 CLOSE —— 我们的 CLOSE 带着还是 0 的对端号发了出去，关掉的是对端的 0 号通道
+    /// （往往是用户的第一条 shell），真正那条通道永远收不到 CLOSE。
+    /// </para>
+    /// <para>
+    /// 已经收尾了的（会话断开与确认撞在一起）不改回 Open —— 曾经无条件改，关掉的通道又被「复活」、泵照样起来。
+    /// </para>
+    /// </remarks>
+    internal void OnOpenAccepted(uint remoteId, uint initialWindow, uint maxPacket)
     {
         RemoteId = remoteId;
         RemoteMaxPacketBytes = (int)Math.Min(maxPacket, int.MaxValue);
@@ -596,12 +615,32 @@ public sealed class SshChannel : IAsyncDisposable
 
         lock (_stateLock)
         {
-            _state = SshChannelState.Open;
+            if (_state == SshChannelState.Opening)
+            {
+                _state = SshChannelState.Open;
+            }
+        }
+    }
+
+    /// <summary>起 stdin 泵与回补泵。已经收尾了就不起。</summary>
+    /// <remarks>
+    /// 与 <see cref="FinishClose"/> 在同一把锁里对「泵起没起」达成一致：收尾时泵没起，由收尾替它完成 stdin 的 reader；
+    /// 起了就归泵自己完成 —— 两边各自判断的话，收尾刚完成 reader、泵就起来去读它。
+    /// </remarks>
+    internal void StartPumps()
+    {
+        lock (_stateLock)
+        {
+            if (_state == SshChannelState.Closed)
+            {
+                return;
+            }
+
+            _stdinPump = Task.Run(() => PumpStandardInputAsync(_lifetime.Token));
+            _windowAdjustPump = Task.Run(() => PumpWindowAdjustAsync(_lifetime.Token));
         }
 
         _sendWindowGate.Signal();
-        _stdinPump = Task.Run(() => PumpStandardInputAsync(_lifetime.Token));
-        _windowAdjustPump = Task.Run(() => PumpWindowAdjustAsync(_lifetime.Token));
     }
 
     internal void OnOpenFailed()
@@ -1303,6 +1342,7 @@ public sealed class SshChannel : IAsyncDisposable
 
     private void FinishClose(SshChannelCloseReason reason, Exception? failure = null)
     {
+        bool pumpStarted;
         lock (_stateLock)
         {
             if (_state == SshChannelState.Closed)
@@ -1310,6 +1350,9 @@ public sealed class SshChannel : IAsyncDisposable
                 return;
             }
             _state = SshChannelState.Closed;
+
+            // 与 StartPumps 在同一把锁里看：这之后泵不会再起来。
+            pumpStarted = _stdinPump is not null;
         }
 
         SshChannelEvent.Closed closed = new(reason);
@@ -1328,8 +1371,8 @@ public sealed class SshChannel : IAsyncDisposable
         // 泵可能正读到一半，或者刚 AdvanceTo 完要回头再读 —— 从外面完成 reader
         // 会让它撞上「reader 完成后不许再读」。完成 writer、取消 _lifetime 之后，
         // 泵的每条路径都会退出，并在退出时自己完成 reader。
-        // 泵从没起来（通道没开成）时才由这里完成。
-        if (_stdinPump is null)
+        // 泵从没起来（通道没开成，或者确认之前就收尾了）时才由这里完成。
+        if (!pumpStarted)
         {
             _stdinPipe.Reader.Complete();
         }
