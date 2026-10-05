@@ -47,6 +47,59 @@ internal static class PeerText
         return builder.ToString();
     }
 
+    /// <summary>
+    /// 多行的对端文本（stderr 一类）进消息：每个字符照 <see cref="Sanitize"/> 清，换行收成一个「 ⏎ 」接成一行；
+    /// 超长时留<b>末尾</b>，前面加省略号。
+    /// </summary>
+    /// <remarks>
+    /// 留末尾是因为出错的那一句通常在最后（编译器、包管理器先打一屏进度，最后才说失败在哪）。
+    /// 换行不原样留：消息常常进日志，一个换行就能在日志里伪造一行别的记录。
+    /// </remarks>
+    public static string SanitizeTail(string? text, int maxLength = DefaultMaxLength)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return "";
+        }
+
+        ReadOnlySpan<char> source = text.AsSpan().Trim();
+        bool truncated = source.Length > maxLength;
+        if (truncated)
+        {
+            int start = source.Length - maxLength;
+            if (char.IsLowSurrogate(source[start]))
+            {
+                start++;   // 别从一个代理对的中间切开
+            }
+            source = source[start..];
+        }
+
+        StringBuilder builder = new(source.Length + 8);
+        if (truncated)
+        {
+            builder.Append('…');
+        }
+
+        int contentStart = builder.Length;
+        bool pendingBreak = false;
+        foreach (char c in source)
+        {
+            if (c is '\n' or '\r')
+            {
+                pendingBreak = builder.Length > contentStart;
+                continue;
+            }
+
+            if (pendingBreak)
+            {
+                builder.Append(" ⏎ ");
+                pendingBreak = false;
+            }
+            builder.Append(IsUnsafe(c) ? '?' : c);
+        }
+        return builder.ToString();
+    }
+
     private static bool IsUnsafe(char c) =>
         c is < ' '                                   // C0：ESC、CR、LF、BEL …
         or >= '\u007F' and <= '\u009F'       // DEL 与 C1（\u009B 在一些终端上就是 CSI）

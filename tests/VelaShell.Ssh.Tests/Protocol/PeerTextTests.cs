@@ -83,4 +83,44 @@ public sealed class PeerTextTests
         Assert.AreEqual(SshFailureReason.VersionMismatch, error.Reason);
         AssertClean(error.Message);
     }
+
+    [TestMethod]
+    public void 多行文本留末尾_换行收成一个记号()
+    {
+        string cleaned = PeerText.SanitizeTail("第一行\r\n\r\n第二行\u001b[2J\n最后一行\n", maxLength: 100);
+
+        Assert.AreEqual("第一行 ⏎ 第二行?[2J ⏎ 最后一行", cleaned);
+
+        string tail = PeerText.SanitizeTail(new string('a', 10_000) + "\n出错在这里", maxLength: 20);
+        Assert.EndsWith("出错在这里", tail, "出错的那一句通常在最后，截断时留末尾");
+        Assert.StartsWith("…", tail);
+        Assert.IsLessThanOrEqualTo(21 + 3, tail.Length);
+    }
+
+    [TestMethod]
+    public void 命令失败的消息里stderr清过且截短_原文留在Result()
+    {
+        // stderr 是对端的输出：可以有几 MB，带着终端转义序列。
+        string stderr = new string('x', 5 * 1024 * 1024) + "\n" + Hostile + "\n最后一句";
+        SshCommandResult result = new(new SshExitStatus(1), "", stderr);
+
+        SshCommandFailedException error = Assert.ThrowsExactly<SshCommandFailedException>(() => result.EnsureSuccess("make"));
+
+        AssertClean(error.Message);
+        Assert.IsLessThan(2048, error.Message.Length, "消息里只放摘要");
+        Assert.Contains("最后一句", error.Message);
+        Assert.Contains("退出码 1", error.Message);
+        Assert.AreEqual(stderr, error.Result.StandardError, "原文完整地留在 Result 里");
+    }
+
+    [TestMethod]
+    public void 对端给的信号名进消息之前被清()
+    {
+        SshCommandResult result = new(new SshExitStatus(null, ExitSignalName: Hostile), "", "");
+
+        SshCommandFailedException error = Assert.ThrowsExactly<SshCommandFailedException>(() => result.EnsureSuccess());
+
+        AssertClean(error.Message);
+        Assert.AreEqual(Hostile, error.Result.ExitStatus.ExitSignalName, "原话照样留在结果里");
+    }
 }
