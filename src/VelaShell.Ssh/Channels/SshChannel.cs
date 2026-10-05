@@ -321,36 +321,30 @@ public sealed class SshChannel : IAsyncDisposable
     /// </remarks>
     public SshChannelStream AsStream(bool ownsChannel = true) => new(this, ownsChannel);
 
-    /// <summary>读事件直到通道关闭，收集退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
+    /// <summary>读事件直到通道关闭，交回退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §5.4〕退出状态缓存在通道上（<see cref="_exitEvent"/>），不只活在事件流里 ——
+    /// 事件流是单读者的，读过一次就没了：曾经 <c>ReadToEndAsync</c> 之后再 <c>WaitAsync</c>、或者调用方自己读过事件，
+    /// 再问就是 null。现在调多少次、谁先读过事件，答案都一样。
+    /// </remarks>
     internal async ValueTask<SshExitStatus> WaitForExitAsync(CancellationToken cancellationToken)
     {
-        int? exitCode = null;
-        string? signalName = null;
-        bool coreDumped = false;
-        string? errorMessage = null;
-
-        while (true)
+        while (await ReadEventAsync(cancellationToken).ConfigureAwait(false) is not SshChannelEvent.Closed)
         {
-            switch (await ReadEventAsync(cancellationToken).ConfigureAwait(false))
-            {
-                case SshChannelEvent.ExitStatus status:
-                    exitCode = status.Code;
-                    break;
-
-                case SshChannelEvent.ExitSignal signal:
-                    signalName = signal.SignalName;
-                    coreDumped = signal.CoreDumped;
-                    errorMessage = signal.ErrorMessage;
-                    break;
-
-                case SshChannelEvent.Closed:
-                    // 收到 CLOSE 时可能还没有退出状态 —— 对端实现不规范，
-                    // 或者连接断了。那时 ExitCode 是 null，那不是 bug 而是事实：
-                    // 进程到底怎么结束的，我们不知道。
-                    return new SshExitStatus(exitCode, signalName, coreDumped, errorMessage);
-            }
         }
+
+        // 收到 CLOSE 时可能还没有退出状态 —— 对端实现不规范，或者连接断了。
+        // 那时 ExitCode 是 null，那不是 bug 而是事实：进程到底怎么结束的，我们不知道。
+        return Volatile.Read(ref _exitEvent) switch
+        {
+            SshChannelEvent.ExitStatus status => new SshExitStatus(status.Code, null, false, null),
+            SshChannelEvent.ExitSignal signal => new SshExitStatus(null, signal.SignalName, signal.CoreDumped, signal.ErrorMessage),
+            _ => new SshExitStatus(null, null, false, null),
+        };
     }
+
+    /// <summary>对端报来的那一份退出状态 / 退出信号（只收第一份）。在进事件流之前写下。</summary>
+    private SshChannelEvent? _exitEvent;
 
     /// <summary>给远端进程发信号（<see cref="SshCommand.SendSignalAsync"/> 与 <see cref="SshShell.SendSignalAsync"/> 共用）。</summary>
     internal async ValueTask SendSignalAsync(string signalName, CancellationToken cancellationToken)
@@ -837,7 +831,9 @@ public sealed class SshChannel : IAsyncDisposable
         if (requestType == SshProtocolNames.RequestExitStatus)
         {
             SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
-            _events.Writer.TryWrite(new SshChannelEvent.ExitStatus((int)reader.ReadUInt32()));
+            SshChannelEvent.ExitStatus status = new((int)reader.ReadUInt32());
+            Volatile.Write(ref _exitEvent, status);
+            _events.Writer.TryWrite(status);
             return true;
         }
 
@@ -847,7 +843,9 @@ public sealed class SshChannel : IAsyncDisposable
             string signalName = reader.ReadUtf8String(MaxFieldBytes);
             bool coreDumped = reader.ReadBoolean();
             string message = reader.ReadUtf8String(MaxFieldBytes);
-            _events.Writer.TryWrite(new SshChannelEvent.ExitSignal(signalName, coreDumped, message));
+            SshChannelEvent.ExitSignal signal = new(signalName, coreDumped, message);
+            Volatile.Write(ref _exitEvent, signal);
+            _events.Writer.TryWrite(signal);
             return true;
         }
 

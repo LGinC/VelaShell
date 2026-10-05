@@ -1490,6 +1490,28 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         await WaitUntilAsync(() => harness.ChannelServer.Observation.ReceivedEof, harness.Token);
         await channel.DisposeAsync();
     }
+    /// <summary>
+    /// WaitAsync 是幂等的：ReadToEndAsync 之后再问、问两次、调用方自己先读过事件流，退出码都还在。
+    /// 曾经退出状态只活在单读者的事件流里，读过一次再问就是 null。
+    /// </summary>
+    [TestMethod]
+    public async Task 退出状态问几次都一样()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            StandardOutput = Text("bye"),
+            ExitCode = 3,
+        });
+
+        await using SshCommand command =
+            await harness.Connection.ExecuteAsync("echo bye", cancellationToken: harness.Token);
+
+        SshCommandResult result = await command.ReadToEndAsync(harness.Token);
+        Assert.AreEqual(3, result.ExitStatus.ExitCode);
+        Assert.AreEqual(3, (await command.WaitAsync(harness.Token)).ExitCode, "ReadToEndAsync 之后再 WaitAsync");
+        Assert.AreEqual(3, (await command.WaitAsync(harness.Token)).ExitCode, "再问一次");
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>
