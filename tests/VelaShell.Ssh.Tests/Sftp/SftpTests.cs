@@ -127,6 +127,15 @@ public sealed class SftpTests
 
     private static byte[] Text(string value) => Encoding.UTF8.GetBytes(value);
 
+    /// <summary>等到条件成立（只读流的 CLOSE 在后台发，应答回来之前句柄还开着）；等不到由夹具的时限收尾。</summary>
+    private static async Task EventuallyAsync(Func<bool> condition, CancellationToken cancellationToken)
+    {
+        while (!condition())
+        {
+            await Task.Delay(10, cancellationToken);
+        }
+    }
+
     // ------------------------------------------------------------ 握手
 
     [TestMethod]
@@ -390,7 +399,9 @@ public sealed class SftpTests
         // 后面的操作照常可用 —— 作废的预读没有占着在途额度不还。
         byte[] content = await harness.Sftp.ReadAllBytesAsync("/home/joe/big.bin", harness.Token);
         Assert.HasCount(payload.Length, content);
-        Assert.AreEqual(0, harness.SftpServer.OpenHandleCount);
+
+        // 只读流的 CLOSE 在后台发（不等应答），句柄在服务端处理完它之后才关上。
+        await EventuallyAsync(() => harness.SftpServer.OpenHandleCount == 0, harness.Token);
     }
 
     private static async Task<byte[]> ReadExactlyAsync(
@@ -857,7 +868,8 @@ public sealed class SftpTests
         await using SftpFileStream c = await third.WaitAsync(TimeSpan.FromSeconds(10));
         await b.DisposeAsync();
 
-        Assert.AreEqual(1, harness.Sftp.FreeHandleSlots, "关掉的都还回来了，只剩 c 占着一个");
+        // 只读流的 CLOSE 在后台发，额度等应答回来才还。
+        await EventuallyAsync(() => harness.Sftp.FreeHandleSlots == 1, harness.Token);
     }
 
     [TestMethod]
@@ -921,6 +933,28 @@ public sealed class SftpTests
             async () => await stream.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
 
         Assert.AreEqual(block, error.DurableLength, "只有第一块确认了");
+    }
+
+    [TestMethod]
+    public async Task 只读流关闭不等CLOSE的应答_可写的流照等()
+    {
+        // 只读的流关不上无关紧要（不报），那就不必等这一轮往返 —— 小文件下载省掉一整轮。
+        // 可写的流要看 CLOSE 的状态（有的服务端到关闭时才报出写入失败），照等。
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/a.txt", Text("x")),
+            new TestSftpOptions { DelayCloseReplies = TimeSpan.FromMilliseconds(800) });
+
+        SftpFileStream reading = await harness.Sftp.OpenReadAsync("/home/joe/a.txt", harness.Token);
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        await reading.DisposeAsync();
+        Assert.IsLessThan(500, watch.ElapsedMilliseconds, "只读流的关闭不该等 CLOSE 的应答");
+
+        SftpFileStream writing = await harness.Sftp.OpenWriteAsync("/home/joe/w.bin", cancellationToken: harness.Token);
+        watch.Restart();
+        await writing.DisposeAsync();
+        Assert.IsGreaterThanOrEqualTo(700, watch.ElapsedMilliseconds, "可写的流要等 CLOSE 的状态");
+
+        Assert.AreEqual(2, harness.SftpServer.ReceivedTypes.Count(t => t == SftpMessageType.Close), "只读流的 CLOSE 照样发了");
     }
 
     [TestMethod]

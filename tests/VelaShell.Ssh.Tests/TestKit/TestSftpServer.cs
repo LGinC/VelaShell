@@ -121,6 +121,9 @@ internal sealed record TestSftpOptions
     /// <summary>对 <c>WRITE</c> 回一个 HANDLE（数据照样写下）—— 模拟一个应答类型对不上请求的服务端。</summary>
     public bool WrongWriteReply { get; init; }
 
+    /// <summary><c>CLOSE</c> 的应答等这么久才发（句柄在收到请求时就已经关掉）。</summary>
+    public TimeSpan DelayCloseReplies { get; init; }
+
     /// <summary><c>WRITE</c> 的应答等这么久才发（数据在收到请求时就已经写下）—— 让一次写在 <c>WriteAsync</c> 返回之后还在路上。</summary>
     public TimeSpan DelayWriteReplies { get; init; }
 
@@ -253,8 +256,10 @@ internal sealed class TestSftpServer
                 List<byte[]> replies = [];
                 bool delayReplies = false;
                 bool delayWriteReplies = false;
+                bool delayCloseReplies = false;
                 while (SftpWire.TryReadFrame(ref buffer, out SftpFrame frame))
                 {
+                    delayCloseReplies |= frame.Type is SftpMessageType.Close;
                     delayReplies |= frame.Type is SftpMessageType.Open or SftpMessageType.OpenDir;
                     delayWriteReplies |= frame.Type is SftpMessageType.Write;
                     byte[]? reply = Handle(frame);
@@ -276,6 +281,10 @@ internal sealed class TestSftpServer
                 if (delayWriteReplies && _options.DelayWriteReplies > TimeSpan.Zero)
                 {
                     await Task.Delay(_options.DelayWriteReplies, cancellationToken);
+                }
+                if (delayCloseReplies && _options.DelayCloseReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayCloseReplies, cancellationToken);
                 }
 
                 foreach (byte[] reply in Order(replies))

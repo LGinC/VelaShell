@@ -889,6 +889,50 @@ public sealed class SftpFileStream : Stream
             }
         }
 
+        if (!_writable)
+        {
+            // 〔velashell-docs/zh/ssh/spec/06 §6.5〕只读的流关不上无关紧要（不报），那就不必等 CLOSE 的应答：
+            // 小文件下载省掉一整轮往返。CLOSE 照发，句柄额度等应答回来（或发不出去）之后再还。
+            _ = CloseReadOnlyInBackgroundAsync();
+        }
+        else
+        {
+            failure = await CloseAsync(failure).ConfigureAwait(false);
+        }
+
+        // 写槽不释放：关闭超时的话还有写在路上，它们收尾时要 Release —— 对一个已释放的信号量那是个异常，
+        // 落在一个没人看的任务上。它没有用到等待句柄，不释放也不漏任何非托管资源。
+        if (_coalesce is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_coalesce);
+            _coalesce = null;
+            _coalesceLength = 0;
+        }
+        await base.DisposeAsync().ConfigureAwait(false);
+
+        if (failure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        }
+    }
+
+    /// <summary>只读的流：在后台发 CLOSE、等应答、还句柄额度；什么错都不报。</summary>
+    private async Task CloseReadOnlyInBackgroundAsync()
+    {
+        try
+        {
+            await CloseAsync(failure: null).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // CloseAsync 自己不抛；这里只是不让后台任务留下任何未观察的异常。
+        }
+    }
+
+    /// <summary>发 CLOSE、等应答（有时限），之后还句柄额度。</summary>
+    /// <returns>可写的流上 CLOSE 回了错误状态、而此前没有更早的失败时，交回那个错误；否则交回 <paramref name="failure"/>。</returns>
+    private async Task<Exception?> CloseAsync(Exception? failure)
+    {
         try
         {
             using CancellationTokenSource closeDeadline = new(CloseTimeout);
@@ -912,21 +956,7 @@ public sealed class SftpFileStream : Stream
             // 在释放路径上为此抛异常，只会盖住真正的失败原因。
         }
         OnHandleClosed?.Invoke();
-
-        // 写槽不释放：关闭超时的话还有写在路上，它们收尾时要 Release —— 对一个已释放的信号量那是个异常，
-        // 落在一个没人看的任务上。它没有用到等待句柄，不释放也不漏任何非托管资源。
-        if (_coalesce is not null)
-        {
-            ArrayPool<byte>.Shared.Return(_coalesce);
-            _coalesce = null;
-            _coalesceLength = 0;
-        }
-        await base.DisposeAsync().ConfigureAwait(false);
-
-        if (failure is not null)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
-        }
+        return failure;
     }
 
     /// <summary>续传时，偏移之前的部分由上一次传输确认过了（见 <c>SftpFileSystem.OpenAppendAsync</c>）。</summary>
