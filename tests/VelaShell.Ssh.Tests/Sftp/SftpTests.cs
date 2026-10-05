@@ -370,6 +370,70 @@ public sealed class SftpTests
         Assert.IsGreaterThan(20, harness.SftpServer.WriteCount, "应当被切成多个 WRITE");
     }
 
+    /// <summary>
+    /// 调用方每次写 256 KiB，而服务端的块是 255 KiB（OpenSSH 的 limits）：要按整块发。
+    /// 曾经每次调用各自切成「一大一小」两个 WRITE —— 在途名额按请求个数算，在途字节少了一半。
+    /// </summary>
+    [TestMethod]
+    public async Task 每次写的长度不是块的整数倍时凑满整块再发()
+    {
+        const int Chunk = 256 * 1024;
+        byte[] payload = new byte[10 * Chunk];
+        Random.Shared.NextBytes(payload);
+
+        await using Harness harness = await Harness.StartAsync();
+        int block = harness.Sftp.BlockSize;
+        Assert.AreEqual(261_120, block, "前提：测试服务端宣告的块是 255 KiB");
+
+        await using (SftpFileStream stream = await harness.Sftp.OpenWriteAsync(
+            "/home/joe/up.bin", cancellationToken: harness.Token))
+        {
+            for (int i = 0; i < 10; i++)
+            {
+                await stream.WriteAsync(payload.AsMemory(i * Chunk, Chunk), harness.Token);
+            }
+        }
+
+        Assert.AreSequenceEqual(payload, [.. harness.SftpServer.Nodes["/home/joe/up.bin"].Content]);
+        Assert.AreEqual((payload.Length + block - 1) / block, harness.SftpServer.WriteCount,
+            "除了最后的尾巴，每个 WRITE 都该是整块");
+    }
+
+    [TestMethod]
+    public async Task 攒着的尾巴在读改长度和按偏移写之前发出()
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        await using SftpFileStream stream = await harness.Sftp.OpenAsync(
+            "/home/joe/rw.bin",
+            SftpOpenModes.Read | SftpOpenModes.Write | SftpOpenModes.Create | SftpOpenModes.Truncate,
+            cancellationToken: harness.Token);
+
+        // 不足一块：留在本端。读之前必须先发出去，读到的才是写过的内容。
+        await stream.WriteAsync("hello world"u8.ToArray(), harness.Token);
+        byte[] read = new byte[11];
+        int got = await stream.ReadAtAsync(0, read, harness.Token);
+        Assert.AreEqual(11, got);
+        Assert.AreEqual("hello world", Encoding.UTF8.GetString(read));
+
+        // 尾巴之后跳着写（Seek 过）：接不上的尾巴先发，两段都要落到对的位置。
+        stream.Position = 11;
+        await stream.WriteAsync("!!"u8.ToArray(), harness.Token);
+        stream.Position = 100;
+        await stream.WriteAsync("end"u8.ToArray(), harness.Token);
+
+        // 按偏移写与尾巴重叠：先写的先到。
+        await stream.WriteAtAsync(0, "HELLO"u8.ToArray(), harness.Token);
+
+        // 截断之前尾巴先发出去，截断之后不会被它又撑长。
+        await stream.SetLengthAsync(50, harness.Token);
+        await stream.FlushAsync(harness.Token);
+
+        byte[] content = [.. harness.SftpServer.Nodes["/home/joe/rw.bin"].Content];
+        Assert.HasCount(50, content);
+        Assert.AreEqual("HELLO world!!", Encoding.UTF8.GetString(content, 0, 13));
+    }
+
     [TestMethod]
     public async Task 读写往返一致()
     {
