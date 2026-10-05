@@ -359,6 +359,36 @@ public sealed class PortForwardTests
             [("localhost", 0)], harness.Observed.RemoteForwardBinds, "绑定地址要原样传，不做规范化");
     }
 
+    /// <summary>
+    /// 监听请求已经上线，调用方等应答时取消了；服务端随后批准 —— 它的监听得撤掉。
+    /// 曾经只摘掉本端的处理器：服务端的监听一直开到连接断开，连进来的全被拒，固定端口重试必报「已被占用」。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程转发在应答前被取消_服务端随后批准的监听被撤掉()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            GrantRemoteForwardPort = 34571,
+            DelayRemoteForwardReply = TimeSpan.FromMilliseconds(300),
+        });
+
+        using (CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(50)))
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await RemotePortForwarder.StartAsync(
+                    harness.Connection, "127.0.0.1", 8080,
+                    new RemotePortForwardOptions { BindPort = 34571 }, cancel.Token));
+        }
+
+        for (int i = 0; i < 200 && !harness.Observed.GlobalRequests.Contains("cancel-tcpip-forward"); i++)
+        {
+            await Task.Delay(10, harness.Token);
+        }
+
+        Assert.Contains("cancel-tcpip-forward", harness.Observed.GlobalRequests, "服务端批准的监听没有被撤掉");
+        Assert.IsTrue(harness.Connection.IsAlive);
+    }
+
     [TestMethod]
     public async Task 服务端拒绝远程转发时抛出且不留半挂的转发器()
     {

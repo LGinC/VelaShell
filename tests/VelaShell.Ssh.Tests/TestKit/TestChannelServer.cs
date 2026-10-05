@@ -91,6 +91,12 @@ internal sealed record TestChannelScript
     /// <summary>接受 <c>tcpip-forward</c> 全局请求，并回这个端口（<c>0</c> = 拒绝）。</summary>
     public int GrantRemoteForwardPort { get; init; }
 
+    /// <summary><c>tcpip-forward</c> 的应答等这么久才回（监听在收到请求时就已经开好）。</summary>
+    public TimeSpan DelayRemoteForwardReply { get; init; }
+
+    /// <summary>不回 <c>cancel-tcpip-forward</c> 的应答 —— 模拟半死的链路。</summary>
+    public bool IgnoreCancelForward { get; init; }
+
     /// <summary>
     /// 回完 <c>tcpip-forward</c> 的 <c>REQUEST_SUCCESS</c>，<b>紧接着</b>开一条 <c>forwarded-tcpip</c> 回连 ——
     /// 模拟应答刚发出就有人连上了那个端口。结果在 <see cref="TestChannelObservation.ForwardedOpenAfterGrant"/>。
@@ -836,6 +842,11 @@ internal sealed class TestChannelServer : IDisposable
             uint requestedPort = reader.ReadUInt32();
             Observation.RemoteForwardBinds.Add((bindAddress, (int)requestedPort));
 
+            if (_script.DelayRemoteForwardReply > TimeSpan.Zero)
+            {
+                await Task.Delay(_script.DelayRemoteForwardReply, cancellationToken);
+            }
+
             // 请求端口 0 时，**实际端口在 REQUEST_SUCCESS 的载荷里**。
             ArrayBufferWriter<byte> success = new();
             SshDataWriter successWriter = new(success);
@@ -889,7 +900,7 @@ internal sealed class TestChannelServer : IDisposable
         if (requestType is "cancel-tcpip-forward"
             or SshProtocolNames.RequestCancelStreamLocalForward)
         {
-            if (wantReply)
+            if (wantReply && !_script.IgnoreCancelForward)
             {
                 byte[] success = [(byte)SshMessageNumber.RequestSuccess];
                 await SendAsync(success, cancellationToken);

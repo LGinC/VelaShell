@@ -75,6 +75,13 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
 
     private int _boundPort;
 
+    // 监听请求的应答与「调用方不要了」谁先到，用一个原子状态排定（见 RequestAsync）。
+    private const int RequestPending = 0;
+    private const int RequestAnswered = 1;
+    private const int RequestAbandoned = 2;
+    private int _requestState;
+    private bool _requestGranted;
+
     /// <summary>已经开始释放：服务端的监听已请求取消，宽限期里照常接在途的回连。</summary>
     private int _draining;
 
@@ -109,6 +116,64 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         {
             Volatile.Write(ref _boundPort, (int)BinaryPrimitives.ReadUInt32BigEndian(reply.Payload.Span));
         }
+
+        _requestGranted = reply.Success;
+        if (Interlocked.CompareExchange(ref _requestState, RequestAnswered, RequestPending) == RequestAbandoned
+            && reply.Success)
+        {
+            // 调用方已经不要了（StartAsync 被取消），服务端却开好了监听：撤掉它。
+            CancelListenerInBackground();
+        }
+    }
+
+    /// <summary>调用方不要这个转发了（监听请求已上线之后被取消或失败）。</summary>
+    private void AbandonRequest()
+    {
+        if (Interlocked.CompareExchange(ref _requestState, RequestAbandoned, RequestPending) == RequestAnswered
+            && _requestGranted)
+        {
+            // 应答已经到了、监听已经开着（取消与应答同时到达）：撤掉它。
+            CancelListenerInBackground();
+        }
+    }
+
+    /// <summary>
+    /// 在后台请服务端取消监听，<c>want_reply = false</c>：不登记应答，也就不会挂在一个没人等的应答上。
+    /// </summary>
+    /// <remarks>
+    /// 曾经监听请求上线之后被取消，只摘掉了本端的处理器：服务端回了 SUCCESS，它的监听就一直开到连接断开，
+    /// 连进来的全被拒；固定端口紧接着重试，必报「端口已被占用」。
+    /// </remarks>
+    private void CancelListenerInBackground()
+    {
+        (string request, ReadOnlyMemory<byte> payload) = EncodeCancelRequest();
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await _connection.SendGlobalRequestAsync(request, payload, wantReply: false).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // 连接没了，服务端的监听也随之没了。
+            }
+        });
+    }
+
+    /// <summary>取消监听的全局请求：名字与载荷（RFC 4254 §7.1；OpenSSH PROTOCOL 的 streamlocal 一节）。</summary>
+    private (string Request, ReadOnlyMemory<byte> Payload) EncodeCancelRequest()
+    {
+        ArrayBufferWriter<byte> payload = new();
+        SshDataWriter writer = new(payload);
+        if (IsStreamLocal)
+        {
+            writer.WriteUtf8String(RemoteSocketPath!);
+            return (SshProtocolNames.RequestCancelStreamLocalForward, payload.WrittenMemory);
+        }
+
+        writer.WriteUtf8String(_options.BindAddress);
+        writer.WriteUInt32((uint)BoundPort);
+        return (SshProtocolNames.RequestCancelTcpIpForward, payload.WrittenMemory);
     }
 
     /// <summary>这是不是 Unix 套接字变体。</summary>
@@ -296,6 +361,8 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         }
         catch (Exception)
         {
+            // 请求可能已经上线：服务端随后批准的话，它的监听得撤掉（见 AbandonRequest）。
+            AbandonRequest();
             Unregister();
             throw;
         }
@@ -444,26 +511,12 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
             return;
         }
 
-        ArrayBufferWriter<byte> payload = new();
-        SshDataWriter writer = new(payload);
-        if (IsStreamLocal)
-        {
-            writer.WriteUtf8String(RemoteSocketPath!);
-        }
-        else
-        {
-            writer.WriteUtf8String(_options.BindAddress);
-            writer.WriteUInt32((uint)BoundPort);
-        }
-
-        string cancelRequest = IsStreamLocal
-            ? SshProtocolNames.RequestCancelStreamLocalForward
-            : SshProtocolNames.RequestCancelTcpIpForward;
+        (string cancelRequest, ReadOnlyMemory<byte> payload) = EncodeCancelRequest();
 
         bool connectionAlive = true;
         try
         {
-            await _connection.SendGlobalRequestAsync(cancelRequest, payload.WrittenMemory).ConfigureAwait(false);
+            await _connection.SendGlobalRequestAsync(cancelRequest, payload).ConfigureAwait(false);
         }
         catch (Exception)
         {
