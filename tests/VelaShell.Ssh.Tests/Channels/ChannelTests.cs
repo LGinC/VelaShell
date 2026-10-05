@@ -1557,6 +1557,40 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         never.SetResult();
     }
 
+    /// <summary>
+    /// 发送泵处理一项时抛了异常：那一项的发送方拿到连接关闭的异常，而不是永远等着。
+    /// 曾经它已出队、又没登记进「已发」，完成通知永远不结算 —— NEWKEYS 的话挂住的是接收循环。
+    /// </summary>
+    [TestMethod]
+    public async Task 发送泵处理一项时出错发送方拿到结局而不是一直等()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+
+        // 换上一个一封装就抛的发送套件：下一帧在泵里处理到一半就出错。
+        harness.ClientTransport.SetSendCipherSuite(new ThrowingCipherSuite(), resetSequenceNumber: false);
+
+        byte[] ignore = [(byte)SshMessageNumber.Ignore, 0, 0, 0, 0];
+        await Assert.ThrowsAsync<SshException>(
+            async () => await ((ISshChannelHost)harness.Connection).SendAsync(ignore, () => { }, harness.Token)
+                .AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+
+    private sealed class ThrowingCipherSuite : ISshCipherSuite
+    {
+        public CipherSuiteShape Shape => CipherSuiteShape.Plaintext;
+
+        public void Seal(ReadOnlySpan<byte> payload, uint sequenceNumber, IBufferWriter<byte> output) =>
+            throw new InvalidOperationException("测试：封装失败。");
+
+        public SshOpenStatus TryOpen(
+            ReadOnlySequence<byte> input, uint sequenceNumber, int maxPacketLength, IBufferWriter<byte> payload, out long consumed) =>
+            throw new NotSupportedException();
+
+        public void Dispose()
+        {
+        }
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>

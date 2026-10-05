@@ -440,6 +440,9 @@ public sealed partial class SshConnection
         List<SendCompletion> flushed = [];
         Exception? failure = null;
 
+        // 正在处理的那一项：Process 抛异常时它已经出队、又还没登记进 flushed —— 收尾要单独结算它。
+        OutboundItem? inFlight = null;
+
         try
         {
             while (await reader.WaitToReadAsync(cancellationToken).ConfigureAwait(false))
@@ -450,7 +453,9 @@ public sealed partial class SshConnection
                 while (bytes < BatchBytes && items < BatchItems && TryReadNext(reader, out OutboundItem item))
                 {
                     items++;
+                    inFlight = item;
                     bytes += Process(item, flushed);
+                    inFlight = null;
                 }
 
                 await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
@@ -487,6 +492,16 @@ public sealed partial class SshConnection
         foreach (SendCompletion completion in flushed)
         {
             completion.SetException(reason);
+        }
+
+        // 〔CH-E7〕处理到一半抛了异常的那一项：曾经它的完成通知永远不结算 —— 如果是 NEWKEYS，
+        // 挂住的是等它的接收循环，DisposeAsync 跟着一直等。
+        if (inFlight is { } stuck)
+        {
+            ReleasePendingBytes(stuck.AccountedBytes);
+            stuck.Completion?.SetException(reason);
+            stuck.Suite?.Dispose();
+            stuck.Compressor?.Dispose();
         }
 
         while (TryReadNext(reader, out OutboundItem item))
