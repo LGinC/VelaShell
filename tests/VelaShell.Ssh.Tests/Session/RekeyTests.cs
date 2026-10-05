@@ -181,6 +181,41 @@ public sealed class RekeyTests
         Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "交换没完成就不开闸：暂存的通道数据不能在 NEWKEYS 之前发出去");
     }
 
+    /// <summary>
+    /// 对端发起重协商，而本端的发送卡住了（对端不读、链路半断）：照样按时限断开。
+    /// 曾经「等这一帧发出去」不响应取消，交换永远等下去、闸门永远关着 —— 只有本端发起的那一种有兜底。
+    /// </summary>
+    [TestMethod]
+    public async Task 对端发起重协商而本端发送卡住时照样按时限断开()
+    {
+        GatedWriteStream? gate = null;
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            rekeyTimeout: TimeSpan.FromMilliseconds(300),
+            wrapClient: inner => gate = new GatedWriteStream(inner));
+        host.ServerLoopMayFail = true;
+
+        gate!.Block();
+        _ = host.Channels.RequestRekeyAsync();
+
+        try
+        {
+            while (host.Connection.IsAlive)
+            {
+                await Task.Delay(20, host.Token);
+            }
+
+            SshConnectionClosedException error = await Assert.ThrowsExactlyAsync<SshConnectionClosedException>(
+                async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
+            Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+            Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        }
+        finally
+        {
+            gate.Unblock();
+        }
+    }
+
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
     [TestMethod]
     public async Task 重协商不再询问主机密钥策略()

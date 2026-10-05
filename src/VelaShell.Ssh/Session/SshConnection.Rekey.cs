@@ -387,6 +387,21 @@ public sealed partial class SshConnection
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             deadline.CancelAfter(RekeyTimeout);
 
+            // 〔velashell-docs/zh/ssh/spec/03 §8.2〕到点**直接判死**，不只是取消令牌：交换的报文走发送泵，
+            // 本端发送卡住（对端不读、链路半断）时「等这一帧发出去」不响应取消 —— 只取消令牌的话这次交换永远等下去，
+            // 闸门永远关着。判死会停下发送泵，卡着的那次写随之放出来。曾经只有本端发起、对端一直不回 KEXINIT 那一种
+            // 有兜底（WatchUnansweredKexInitAsync），对端发起的没有。
+            int outcome = 0;   // 0 进行中、1 做完了、2 到点判死了
+            using CancellationTokenRegistration onDeadline = deadline.Token.Register(() =>
+            {
+                if (!cancellationToken.IsCancellationRequested && Interlocked.CompareExchange(ref outcome, 2, 0) == 0)
+                {
+                    Fault(new SshConnectionClosedException(
+                        SshFailureReason.Timeout, SshPhase.Rekeying,
+                        $"密钥重协商在 {RekeyTimeout.TotalSeconds:0} 秒内没有完成。"));
+                }
+            });
+
             SshKeyExchangeResult result;
             try
             {
@@ -409,6 +424,14 @@ public sealed partial class SshConnection
             catch (SshException ex) when (ex.Phase != SshPhase.Rekeying)
             {
                 throw AsRekeyFailure(ex);
+            }
+
+            if (Interlocked.CompareExchange(ref outcome, 1, 0) == 2)
+            {
+                // 交换恰好在判死的同时做完：连接已经判死了，新密钥不再装。
+                throw new SshConnectionClosedException(
+                    SshFailureReason.Timeout, SshPhase.Rekeying,
+                    $"密钥重协商在 {RekeyTimeout.TotalSeconds:0} 秒内没有完成。");
             }
 
             lock (_stateLock)

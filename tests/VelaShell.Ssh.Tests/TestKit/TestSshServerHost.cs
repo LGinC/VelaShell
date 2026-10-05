@@ -70,6 +70,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     /// <param name="hostKeyPolicy">客户端的主机密钥策略；缺省时全部接受。</param>
     /// <param name="rekeyHardPacketLimit">报文数的硬线；验它的用例要把它调小。</param>
     /// <param name="corruptRekeySignature">设了就让服务端在重协商时把签名弄坏。</param>
+    /// <param name="wrapClient">把客户端那一头的流包一层（模拟写被卡住之类）。</param>
     public static async Task<TestSshServerHost> StartAsync(
         TestChannelScript? script = null,
         SshAlgorithmSet? algorithms = null,
@@ -79,7 +80,8 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         string? rekeyHostKeyType = null,
         IHostKeyPolicy? hostKeyPolicy = null,
         long? rekeyHardPacketLimit = null,
-        bool corruptRekeySignature = false)
+        bool corruptRekeySignature = false,
+        Func<Stream, Stream>? wrapClient = null)
     {
         CancellationTokenSource cts = new(TimeSpan.FromSeconds(25));
 
@@ -139,7 +141,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
 
         SshConnectionOptions options = new("joe@test.invalid:22")
         {
-            Dialer = new FixedStreamDialer(clientStream),
+            Dialer = new FixedStreamDialer(wrapClient?.Invoke(clientStream) ?? clientStream),
             HostKeyPolicy = hostKeyPolicy ?? new DangerousAcceptAnyHostKeyPolicy(),
             Credentials = [new PasswordCredential("hunter2")],
             Algorithms = algorithms ?? SshAlgorithmSet.Default,
