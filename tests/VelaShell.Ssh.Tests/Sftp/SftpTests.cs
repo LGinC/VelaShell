@@ -58,6 +58,8 @@ public sealed class SftpTests
 
         public TestSftpServer SftpServer { get; }
 
+        public SshConnection Connection => _connection;
+
         public CancellationToken Token => _cts.Token;
 
         public static async Task<Harness> StartAsync(
@@ -180,6 +182,25 @@ public sealed class SftpTests
             async () => await Harness.StartAsync(sftpOptions: new TestSftpOptions { Version = 2 }));
 
         Assert.Contains("v2", error.Message);
+    }
+
+    [TestMethod]
+    [DataRow(0, DisplayName = "MaxInFlight 为 0")]
+    [DataRow(-1, DisplayName = "MaxInFlight 为负")]
+    public void 非法的SFTP参数在构造时就抛(int maxInFlight) =>
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new SftpOptions { MaxInFlight = maxInFlight });
+
+    [TestMethod]
+    public async Task 参数不自洽时先抛_不留下开了没人关的通道()
+    {
+        // MaxInFlight 300 大于默认的上限 256：曾经是 sftp 通道开了才在建流水线时抛，那条通道一直挂在连接上。
+        await using Harness harness = await Harness.StartAsync();
+        int before = harness.Connection.ChannelCount;
+
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(
+            async () => await SftpFileSystem.ConnectAsync(harness.Connection, new SftpOptions { MaxInFlight = 300 }, harness.Token));
+
+        Assert.AreEqual(before, harness.Connection.ChannelCount, "不该多出一条通道");
     }
 
     [TestMethod]

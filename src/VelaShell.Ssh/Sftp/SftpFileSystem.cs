@@ -31,12 +31,22 @@ public sealed record SftpOptions
     /// 在途请求数 × 块大小就是 SFTP 层的「窗口」。
     /// 和通道窗口一样，太小会在高 RTT 链路上直接封死吞吐。
     /// </remarks>
-    public int MaxInFlight { get; init; } = 64;
+    /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
+    public int MaxInFlight
+    {
+        get;
+        init => field = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(MaxInFlight), value, "在途请求数至少为 1。");
+    } = 64;
 
     /// <summary>
     /// 块大小；<c>0</c> 表示按服务端宣告的 <c>limits@openssh.com</c> 定。
     /// </summary>
-    public int BlockSize { get; init; }
+    /// <exception cref="ArgumentOutOfRangeException">为负。</exception>
+    public int BlockSize
+    {
+        get;
+        init => field = value >= 0 ? value : throw new ArgumentOutOfRangeException(nameof(BlockSize), value, "块大小不能为负（0 表示按服务端宣告的定）。");
+    }
 
     /// <summary>在途请求数是否按「深度有没有成为瓶颈」自动伸缩。</summary>
     /// <remarks>
@@ -45,8 +55,13 @@ public sealed record SftpOptions
     /// </remarks>
     public bool AdaptivePipelineDepth { get; init; } = true;
 
-    /// <summary>自适应时在途请求数的上限。</summary>
-    public int MaxPipelineDepth { get; init; } = 256;
+    /// <summary>自适应时在途请求数的上限；不能小于 <see cref="MaxInFlight"/>（连接时核对）。</summary>
+    /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
+    public int MaxPipelineDepth
+    {
+        get;
+        init => field = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(MaxPipelineDepth), value, "在途请求数的上限至少为 1。");
+    } = 256;
 
     /// <summary>列目录时过滤掉 <c>.</c> 与 <c>..</c>。</summary>
     /// <remarks>它们**会**出现在服务端返回的结果里。</remarks>
@@ -67,6 +82,18 @@ public sealed record SftpOptions
 
     /// <summary>默认参数。</summary>
     public static SftpOptions Default { get; } = new();
+
+    /// <summary>跨字段的核对：在开通道<b>之前</b>做，不自洽就抛，不留下一条开了没人关的通道。</summary>
+    /// <exception cref="ArgumentException">参数不自洽。</exception>
+    internal void Validate()
+    {
+        ArgumentNullException.ThrowIfNull(Channel, nameof(Channel));
+        if (MaxPipelineDepth < MaxInFlight)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(MaxPipelineDepth), MaxPipelineDepth, $"在途请求数的上限不能小于起始值 MaxInFlight（{MaxInFlight}）。");
+        }
+    }
 }
 
 /// <summary>面向使用者的 SFTP 客户端。</summary>
@@ -136,6 +163,10 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(connection);
         SftpOptions effective = options ?? SftpOptions.Default;
 
+        // 〔velashell-docs/zh/ssh/spec/06 §一〕参数先核对、再开通道：曾经是通道开了才在建流水线时抛，
+        // 那条 sftp 通道就一直挂在连接上，没人关。
+        effective.Validate();
+
         SshChannel channel;
         try
         {
@@ -156,8 +187,16 @@ public sealed class SftpFileSystem : IAsyncDisposable
                 "那等于绕过管理员的配置。）", ex);
         }
 
-        SftpRequestPipeline pipeline = new(
-            channel, effective.MaxInFlight, effective.AdaptivePipelineDepth, effective.MaxPipelineDepth);
+        SftpRequestPipeline pipeline;
+        try
+        {
+            pipeline = new(channel, effective.MaxInFlight, effective.AdaptivePipelineDepth, effective.MaxPipelineDepth);
+        }
+        catch (Exception)
+        {
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw;
+        }
         pipeline.Start();
 
         try
