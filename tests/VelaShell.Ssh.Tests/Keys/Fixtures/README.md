@@ -66,6 +66,7 @@ openssl ecparam -name prime256v1 -genkey -noout | openssl ec -aes256 -passout "p
 | `hostcert-key`、`hostcert-ecdsa`、`hostcert-rsa`、`hostcert-rsa1024` | 主机密钥（ed25519 / P-256 / RSA 2048 / RSA 1024，最后一把用来验 RSA 长度下限） |
 | `hostcert-key-cert.pub` | 合格：主体 `server.example,10.0.0.1`，永久有效 |
 | `hostcert-window-cert.pub` | 有效期 2026-01-01 到 2027-01-01（用例传入固定时刻，不会随日期过期） |
+| `hostcert-farfuture-cert.pub` | 有效期从 2^48 秒到 2^62 秒（都在 9999 年以后，超出 `DateTimeOffset` 的范围） |
 | `hostcert-noprincipals-cert.pub` / `hostcert-usertype-cert.pub` | 没列主体 / 用户证书 |
 | `hostcert-sha1-cert.pub` / `hostcert-rsasha512-cert.pub` | RSA CA 用 `ssh-rsa`（SHA-1）/ `rsa-sha2-512` 签 |
 | `hostcert-othersigned-cert.pub` | 别的 CA 签的 |
@@ -77,10 +78,11 @@ k ed25519 hostcert-key; k ecdsa hostcert-ecdsa -b 256
 k rsa hostcert-rsa -b 2048; k rsa hostcert-rsa1024 -b 1024
 
 # 同一把主机钥签多张证书：ssh-keygen 把证书写到「<输入名>-cert.pub」，所以先复制成不同的名字，签完删掉副本。
-for n in window noprincipals usertype sha1 rsasha512 othersigned; do cp hostcert-key.pub hostcert-$n.pub; done
+for n in window farfuture noprincipals usertype sha1 rsasha512 othersigned; do cp hostcert-key.pub hostcert-$n.pub; done
 s() { ssh-keygen -q "$@" </dev/null; }
 s -s hostcert-ca -h -I host-valid -n server.example,10.0.0.1 hostcert-key.pub
 s -s hostcert-ca -h -I host-window -n server.example -V 20260101:20270101 hostcert-window.pub
+s -s hostcert-ca -h -I host-farfuture -n server.example -V 0x1000000000000:0x4000000000000000 hostcert-farfuture.pub
 s -s hostcert-ca -h -I host-noprincipals hostcert-noprincipals.pub
 s -s hostcert-ca -I host-usertype -n server.example hostcert-usertype.pub
 s -s hostcert-ca-rsa -t ssh-rsa -h -I host-sha1 -n server.example hostcert-sha1.pub
@@ -89,7 +91,7 @@ s -s hostcert-other-ca -h -I host-othersigned -n server.example hostcert-othersi
 s -s hostcert-ca -h -I host-ecdsa -n server.example hostcert-ecdsa.pub
 s -s hostcert-ca -h -I host-rsa -n server.example hostcert-rsa.pub
 s -s hostcert-ca -h -I host-rsa1024 -n server.example hostcert-rsa1024.pub
-for n in window noprincipals usertype sha1 rsasha512 othersigned; do rm hostcert-$n.pub; done
+for n in window farfuture noprincipals usertype sha1 rsasha512 othersigned; do rm hostcert-$n.pub; done
 ```
 
 重新生成之后，`HostCertificateTests` 里那条指纹断言（`ssh-keygen -lf hostcert-key-cert.pub` 的输出）要跟着改。

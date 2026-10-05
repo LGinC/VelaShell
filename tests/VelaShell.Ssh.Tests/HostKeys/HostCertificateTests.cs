@@ -118,6 +118,31 @@ public sealed class HostCertificateTests
         Assert.Contains("生效", early.CertificateProblem!);
     }
 
+    /// <summary>
+    /// 有效期字段是任意的 uint64，合法但超出 <see cref="DateTimeOffset"/> 的值（9999 年以后）不许让验证抛异常。
+    /// </summary>
+    /// <remarks>
+    /// hostcert-farfuture 由 <c>ssh-keygen -V 0x1000000000000:0x4000000000000000</c> 签发：从 2^48 秒到 2^62 秒。
+    /// 曾经换算这两个时刻时抛 <see cref="ArgumentOutOfRangeException"/>，从 <c>ConnectAsync</c> 穿出去。
+    /// </remarks>
+    [TestMethod]
+    public void 遥远的有效期不让证书验证抛异常()
+    {
+        string knownHosts = Line("@cert-authority", Host, "hostcert-ca.pub");
+
+        KnownHostLookup lookup = Lookup(knownHosts, "hostcert-farfuture-cert.pub");
+
+        Assert.AreEqual(KnownHostStatus.CertificateInvalid, lookup.Status);
+        Assert.Contains("生效", lookup.CertificateProblem!);
+
+        OpenSshCertificate cert = OpenSshCertificate.Decode(ReadBlob("hostcert-farfuture-cert.pub"));
+        Assert.AreEqual(1UL << 48, cert.ValidAfter);
+        Assert.AreEqual(1UL << 62, cert.ValidBefore);
+        Assert.AreEqual(DateTimeOffset.MaxValue, cert.ValidAfterTime, "9999 年以后才生效：取可表示的最晚时刻");
+        Assert.IsNull(cert.ValidBeforeTime, "9999 年以后才失效：当作不限");
+        Assert.IsFalse(cert.IsTimeValid(DateTimeOffset.MaxValue));
+    }
+
     [TestMethod]
     public void 主体不含这台主机的证书不合格()
     {
