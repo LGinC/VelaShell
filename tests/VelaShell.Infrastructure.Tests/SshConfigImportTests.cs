@@ -79,6 +79,19 @@ public class SshConfigImportTests
         Assert.AreEqual(22, scan.Items[0].Port);
     }
 
+    /// <summary>HostName 里的 <c>%h</c> 换成别名 —— 由 SSH 库展开,宿主不另写一份。</summary>
+    [TestMethod]
+    public async Task Scan_ExpandsPercentHInHostName()
+    {
+        SessionImportScan scan = await ScanAsync(WriteConfig(
+            """
+            Host db1
+                HostName %h.example.com
+            """));
+
+        Assert.HasCount(1, scan.Items);
+        Assert.AreEqual("db1.example.com", scan.Items[0].Host);
+    }
     /// <summary>
     /// 取值规则:具名块里的值胜过后面的 <c>Host *</c> 兜底块,兜底块只补具名块没写的那些键;
     /// 通配块自身不产出会话。

@@ -17,6 +17,26 @@ namespace VelaShell.Ssh.Tests.Config;
 [TestClass]
 public sealed class SshConfigConnectTests
 {
+    /// <summary>
+    /// 〔FW-E2〕<c>HostName</c> 里的 <c>%h</c> 换成输入的名字（<c>Host *.prod</c> 配 <c>HostName %h.example.com</c>），
+    /// <c>%%</c> 换成 <c>%</c>。曾经建连拿字面量 <c>%h.example.com</c> 去连。
+    /// </summary>
+    [TestMethod]
+    public async Task HostName里的百分号h在建连时展开()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *.prod
+                HostName %h.example.com
+            Host odd
+                HostName odd%%name
+            """);
+
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "db1.prod");
+        Assert.AreEqual("db1.prod.example.com", options.Host);
+
+        Assert.AreEqual("odd%name", SshConfigFile.Resolve(blocks, "odd").HostName);
+    }
+
     [TestMethod]
     public async Task 连接层的各项都落到连接参数上()
     {

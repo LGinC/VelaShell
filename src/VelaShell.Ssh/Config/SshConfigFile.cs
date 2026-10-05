@@ -536,8 +536,8 @@ public static partial class SshConfigFile
         ArgumentNullException.ThrowIfNull(blocks);
         ArgumentNullException.ThrowIfNull(context);
 
-        SshHostConfig config = new(context.Host);
         string originalHost = context.OriginalHost ?? context.Host;
+        SshHostConfig config = new(context.Host, originalHost);
 
         foreach (SshConfigBlock block in blocks)
         {
@@ -570,7 +570,7 @@ public static partial class SshConfigFile
             bool applies = current.Match is { } criteria
                 ? MatchesCriteria(criteria, context with
                 {
-                    Host = CurrentHostName(config, originalHost),
+                    Host = config.HostName,   // 前面的块给了 HostName 就用它（其中的 %h 已换成输入的名字）
                     OriginalHost = originalHost,
                 })
                 : HostPatterns.MatchesList(current.Patterns, context.Host);
@@ -584,9 +584,6 @@ public static partial class SshConfigFile
         return true;
     }
 
-    /// <summary>此刻生效的真实主机名：前面的块给了 <c>HostName</c> 就用它（<c>%h</c> 换成输入的名字）。</summary>
-    private static string CurrentHostName(SshHostConfig config, string originalHost) =>
-        config.HostName.Replace("%h", originalHost, StringComparison.Ordinal);
 
     /// <summary><c>Match</c> 块的条件都满足吗（条件之间是与）。</summary>
     /// <remarks>

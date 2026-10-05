@@ -73,9 +73,8 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
             SshHostConfig options = SshConfigFile.Resolve(blocks, alias);
 
             // HostName 缺省即别名本身 —— `Host build01` 不写 HostName 时,ssh 直接连 build01。
-            string host = Value(options.First("HostName")) is { } hostName
-                ? ExpandTokens(hostName, alias)
-                : alias;
+            // 其中的 %h 由 SSH 库展开(SshHostConfig.HostName),宿主不另写一份。
+            string host = Value(options.HostName) ?? alias;
             if (host.Length == 0)
             {
                 continue;
@@ -150,11 +149,6 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
     private static bool IsLiteralAlias(string pattern) =>
         pattern.Length > 0 && !pattern.StartsWith('!') && pattern.AsSpan().IndexOfAny('*', '?') < 0;
 
-    /// <summary>
-    /// 展开 <c>HostName</c> 里的 <c>%h</c>(原始别名);其余记号(<c>%r</c>、<c>%p</c> 等)要到连接时
-    /// 才有值,原样留着比猜一个错的强。
-    /// </summary>
-    private static string ExpandTokens(string value, string alias) => value.Replace("%h", alias, StringComparison.Ordinal);
 
     /// <summary>
     /// 解析 <c>IdentityFile</c>:展开 <c>~</c> 与相对路径。文件不存在也照样带上 ——

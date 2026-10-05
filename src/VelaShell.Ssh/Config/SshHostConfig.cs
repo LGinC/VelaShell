@@ -6,6 +6,7 @@
 //   行为规格:              velashell-docs/zh/ssh/spec/09-dialing.md §7
 
 using System.Globalization;
+using System.Text;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Forwarding;
 
@@ -17,17 +18,52 @@ public sealed class SshHostConfig
     // ⚠️ IDE0028 会建议把它简化成 []。**不能听** —— 那会把
     //    OrdinalIgnoreCase 丢掉，而 ssh_config 的键是不区分大小写的
     //    （`HostName` 与 `hostname` 是同一个键）。
-#pragma warning disable IDE0028
-    private readonly Dictionary<string, List<string>> _settings = new(StringComparer.OrdinalIgnoreCase);
-#pragma warning restore IDE0028
+    private readonly Dictionary<string, List<string>> _settings = [with(StringComparer.OrdinalIgnoreCase)];
 
-    internal SshHostConfig(string host) => QueriedHost = host;
+    /// <param name="host">查的是哪个名字。</param>
+    /// <param name="originalHost">使用者输入的那个名字（<c>HostName</c> 里的 <c>%h</c> 换成它）；缺省就是 <paramref name="host"/>。</param>
+    internal SshHostConfig(string host, string? originalHost = null)
+    {
+        QueriedHost = host;
+        _originalHost = originalHost ?? host;
+    }
+
+    /// <summary>使用者输入的那个名字（<c>HostName</c> 里的 <c>%h</c> 换成它）。</summary>
+    private readonly string _originalHost;
 
     /// <summary>当初查的是哪个名字。</summary>
     public string QueriedHost { get; }
 
     /// <summary>真正要连的主机（<c>HostName</c>，没有就是 <see cref="QueriedHost"/>）。</summary>
-    public string HostName => First("HostName") ?? QueriedHost;
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §七〕<c>HostName</c> 里的 <c>%h</c> 换成使用者输入的名字、<c>%%</c> 换成 <c>%</c>
+    /// （<c>Host *.prod</c> 配 <c>HostName %h.example.com</c> 是常见写法）。曾经原样交出去：建连拿字面量
+    /// <c>%h.example.com</c> 去连，<c>DnsFailure</c>；<c>IdentityFile</c> 等处代入的 <c>%h</c> 也是这个没展开的值。
+    /// </remarks>
+    public string HostName => First("HostName") is { } configured ? ExpandHostTokens(configured, _originalHost) : QueriedHost;
+
+    /// <summary>展开 <c>HostName</c> 认的两个记号：<c>%h</c> 与 <c>%%</c>；别的原样留着。</summary>
+    private static string ExpandHostTokens(string value, string originalHost)
+    {
+        if (!value.Contains('%', StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        StringBuilder result = new(value.Length + originalHost.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] == '%' && i + 1 < value.Length && value[i + 1] is 'h' or '%')
+            {
+                result.Append(value[++i] == 'h' ? originalHost : "%");
+            }
+            else
+            {
+                result.Append(value[i]);
+            }
+        }
+        return result.ToString();
+    }
 
     /// <summary>端口。</summary>
     public int Port =>
