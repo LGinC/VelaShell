@@ -186,6 +186,9 @@ internal sealed class TestSftpServer
     /// <summary>收到过的最长一个 <c>READ</c> 请求的长度。</summary>
     public long LargestReadRequest { get; private set; }
 
+    /// <summary>最近一次 <c>OPEN</c> 里带来的 ATTRS。</summary>
+    public SftpFileAttributes? LastOpenAttributes { get; private set; }
+
     /// <summary>倒着发出去过几批应答（每批至少两条）。</summary>
     public int ReversedBatches { get; private set; }
 
@@ -415,6 +418,7 @@ internal sealed class TestSftpServer
         string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         var mode = (SftpOpenModes)reader.ReadUInt32();
         SftpFileAttributes attributes = ReadAttributes(ref reader);
+        LastOpenAttributes = attributes;
 
         bool exists = _nodes.TryGetValue(path, out TestSftpNode? node);
 

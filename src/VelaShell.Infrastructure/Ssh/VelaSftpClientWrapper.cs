@@ -345,16 +345,29 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
             open |= mode switch
             {
                 FileMode.CreateNew => SftpOpenModes.Create | SftpOpenModes.Exclusive,
-                // Create / Truncate 都要求截断旧内容,否则新内容比旧文件短时会残留旧尾部。
+                // Create 要求截断旧内容,否则新内容比旧文件短时会残留旧尾部。
                 FileMode.Create => SftpOpenModes.Create | SftpOpenModes.Truncate,
-                FileMode.Truncate => SftpOpenModes.Truncate,
                 FileMode.OpenOrCreate => SftpOpenModes.Create,
                 _ => SftpOpenModes.None,
             };
 
-            return await fs.OpenAsync(
-                path, open, cancellationToken: ct)
-                .ConfigureAwait(false);
+            SftpFileStream stream = await fs.OpenAsync(path, open, cancellationToken: ct).ConfigureAwait(false);
+
+            // FileMode.Truncate 是「已有的文件截成 0、不存在就失败」。v3 的 TRUNC 必须配 CREAT(不存在就会建出来),
+            // 所以照字面翻不出来:不带 CREAT 地打开(不存在照样失败),再截成 0。
+            if (mode == FileMode.Truncate)
+            {
+                try
+                {
+                    await stream.SetLengthAsync(0, ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+            return stream;
         }, ct);
 
     /// <inheritdoc />

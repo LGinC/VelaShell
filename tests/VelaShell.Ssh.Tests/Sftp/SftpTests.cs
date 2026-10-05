@@ -906,6 +906,35 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 带CREAT打开时没给权限就补上0644()
+    {
+        // 不传的话服务端用它自己的默认值（受 umask 影响），结果不可预测 —— 宿主的 Create / CreateNew / OpenOrCreate 都走这条。
+        await using Harness harness = await Harness.StartAsync();
+
+        await using (await harness.Sftp.OpenAsync(
+            "/home/joe/new.txt", SftpOpenModes.Write | SftpOpenModes.Create | SftpOpenModes.Truncate, cancellationToken: harness.Token))
+        {
+        }
+
+        SftpFileAttributes sent = harness.SftpServer.LastOpenAttributes!.Value;
+        Assert.IsTrue(sent.HasPermissions);
+        Assert.AreEqual(SftpProtocol.DefaultFilePermissions, sent.PermissionBits);
+    }
+
+    [TestMethod]
+    [DataRow(SftpOpenModes.Write | SftpOpenModes.Truncate, DisplayName = "TRUNC 没配 CREAT")]
+    [DataRow(SftpOpenModes.Write | SftpOpenModes.Exclusive, DisplayName = "EXCL 没配 CREAT")]
+    [DataRow(SftpOpenModes.Create, DisplayName = "既不读也不写")]
+    public async Task 自相矛盾的打开方式在本地就拒(SftpOpenModes flags)
+    {
+        await using Harness harness = await Harness.StartAsync();
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await harness.Sftp.OpenAsync("/home/joe/x", flags, cancellationToken: harness.Token));
+        Assert.IsNull(harness.SftpServer.LastOpenAttributes, "一个 OPEN 都不该发出去");
+    }
+
+    [TestMethod]
     public async Task 按偏移读写也看打开方式_只读流上写不会弄坏关闭()
     {
         await using Harness harness = await Harness.StartAsync(server => server.AddFile("/home/joe/r.txt", Text("内容")));

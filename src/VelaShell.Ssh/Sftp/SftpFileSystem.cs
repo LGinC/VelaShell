@@ -846,9 +846,16 @@ public sealed class SftpFileSystem : IAsyncDisposable
     /// <summary>用任意方式打开文件。</summary>
     /// <param name="path">路径。</param>
     /// <param name="flags">打开方式。流能不能读、能不能写就由它决定（<see cref="SftpOpenModes.Read"/> / <see cref="SftpOpenModes.Write"/>）。</param>
-    /// <param name="attributes">创建文件时的属性；<c>default</c> 表示不带。</param>
+    /// <param name="attributes">
+    /// 创建文件时的属性；带 <see cref="SftpOpenModes.Create"/> 而没给权限时补上 <c>0644</c>
+    /// （<see cref="SftpProtocol.DefaultFilePermissions"/>）。
+    /// </param>
     /// <param name="writeMode">写入方式。</param>
     /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="ArgumentException">
+    /// 打开方式自相矛盾：既不读也不写；<see cref="SftpOpenModes.Truncate"/> / <see cref="SftpOpenModes.Exclusive"/>
+    /// 没有配 <see cref="SftpOpenModes.Create"/>（draft-02 §6.3 要求两者一起用）。
+    /// </exception>
     public async ValueTask<SftpFileStream> OpenAsync(
         string path,
         SftpOpenModes flags,
@@ -860,6 +867,29 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
         bool canRead = (flags & SftpOpenModes.Read) != 0;
         bool canWrite = (flags & (SftpOpenModes.Write | SftpOpenModes.Append)) != 0;
+
+        // 〔velashell-docs/zh/ssh/spec/06 §4.1〕不需要服务端就能查的，在发 OPEN 之前查。
+        if (!canRead && !canWrite)
+        {
+            throw new ArgumentException("打开方式里既没有读也没有写。", nameof(flags));
+        }
+        if ((flags & (SftpOpenModes.Truncate | SftpOpenModes.Exclusive)) != 0 && (flags & SftpOpenModes.Create) == 0)
+        {
+            throw new ArgumentException(
+                "TRUNC / EXCL 必须与 CREAT 一起用（draft-02 §6.3）。只想截短一个已有的文件：以写方式打开，再 SetLengthAsync(0)。",
+                nameof(flags));
+        }
+
+        // 创建时传明确的权限：不传的话服务端用它自己的默认值（受 umask 影响），结果不可预测。
+        // 曾经只有 OpenWriteAsync / OpenAppendAsync 传，宿主的 Create / CreateNew / OpenOrCreate 走的这条都没传。
+        if ((flags & SftpOpenModes.Create) != 0 && !attributes.HasPermissions)
+        {
+            attributes = attributes with
+            {
+                Flags = attributes.Flags | SftpAttributeFields.Permissions,
+                Permissions = SftpProtocol.DefaultFilePermissions,
+            };
+        }
 
         await AcquireHandleSlotAsync(cancellationToken).ConfigureAwait(false);
 
