@@ -463,13 +463,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         // 〔决策 velashell-docs/zh/ssh/spec/04 §4.1〕本地私钥直接签，省一个 RTT；
         // 外部签名（agent / PKCS#11 / HSM）先问「你认这把钥吗」——
         // 为一把服务端根本不认的密钥去让用户按硬件键是不可接受的。
-        if (!credential.Signer.IsLocalAndCheap)
+        if (!credential.Signer.IsLocalAndCheap
+            && await ProbePublicKeyAsync(credential, algorithm, cancellationToken).ConfigureAwait(false) is { } settled)
         {
-            bool accepted = await ProbePublicKeyAsync(credential, algorithm, cancellationToken).ConfigureAwait(false);
-            if (!accepted)
-            {
-                return new AuthStepResult(SshAuthOutcome.Failure, "服务端不接受这把公钥。");
-            }
+            return settled;   // 不接受这把钥；或者服务端对探测直接回了 SUCCESS
         }
 
         // 被签名的数据是：string session_id ‖ 整个请求载荷（从消息编号字节起）。
@@ -518,7 +515,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return await ReadAuthOutcomeAsync(null, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<bool> ProbePublicKeyAsync(
+    /// <summary>问服务端「你认这把公钥吗」（不签名）。</summary>
+    /// <returns>认（<c>PK_OK</c>）、该去签了时为 <see langword="null"/>；否则是这一步的结论。</returns>
+    private async ValueTask<AuthStepResult?> ProbePublicKeyAsync(
         PublicKeyCredential credential, string algorithm, CancellationToken cancellationToken)
     {
         ArrayBufferWriter<byte> request = new();
@@ -533,19 +532,57 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
         bool accepted = false;
         AuthStepResult outcome = await ReadAuthOutcomeAsync(
-            onMethodSpecific: (number, _) =>
+            onMethodSpecific: (number, payload) =>
             {
                 if (number != PublicKeyOk)
                 {
                     return null;
                 }
                 // SSH_MSG_USERAUTH_PK_OK：服务端认这把公钥，可以去签了。
+                CheckPublicKeyOkEcho(payload, algorithm, credential.Signer.PublicKey);
                 accepted = true;
                 return new AuthStepResult(SshAuthOutcome.PartialSuccess);
             },
             cancellationToken).ConfigureAwait(false);
 
-        return accepted && outcome.Outcome == SshAuthOutcome.PartialSuccess;
+        if (accepted)
+        {
+            return null;
+        }
+
+        // 〔AU-E5〕服务端对探测直接回了 SUCCESS（不合规，个别实现会这样）：认证已经完成。
+        // RFC 4252 §5.1 说成功之后的认证请求一律忽略 —— 曾经记成「不接受这把公钥」、接着发下一条请求，
+        // 一直等到认证超时。
+        return outcome.Outcome == SshAuthOutcome.Success
+            ? outcome
+            : new AuthStepResult(SshAuthOutcome.Failure, "服务端不接受这把公钥。");
+    }
+
+    /// <summary><c>PK_OK</c> 回显的必须是我们问的那一把（RFC 4252 §7：算法名与公钥 blob 都取自请求）。</summary>
+    /// <remarks>
+    /// 公钥 blob 对不上是协议错误：签下去的是服务端没认过的那一把。算法名除了请求里的那个，
+    /// 也认这把钥自己的类型名（<c>rsa-sha2-256</c> 的请求回显成 <c>ssh-rsa</c>）—— 说的是同一把钥，签名算法照我们选的。
+    /// 曾经回显什么都不看。
+    /// </remarks>
+    private static void CheckPublicKeyOkEcho(ReadOnlyMemory<byte> payload, string algorithm, HostKeys.SshPublicKey key)
+    {
+        SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+        reader.ReadByte();   // PK_OK
+        string echoedAlgorithm = reader.ReadUtf8String(MaxFieldBytes);
+        byte[] echoedBlob = reader.ReadStringAsArray(MaxFieldBytes);
+
+        if (!echoedBlob.AsSpan().SequenceEqual(key.Blob.Span))
+        {
+            throw new SshProtocolException(
+                SshPhase.Authenticating, "服务端的 PK_OK 回显的公钥不是我们问的那一把。");
+        }
+
+        if (echoedAlgorithm != algorithm && echoedAlgorithm != key.KeyType)
+        {
+            throw new SshProtocolException(
+                SshPhase.Authenticating,
+                $"服务端的 PK_OK 回显的算法是 {PeerText.Sanitize(echoedAlgorithm, 64)}，我们问的是 {algorithm}。");
+        }
     }
 
     private async ValueTask<AuthStepResult> TryKeyboardInteractiveAsync(

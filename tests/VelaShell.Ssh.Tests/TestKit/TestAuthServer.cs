@@ -58,6 +58,15 @@ internal sealed record TestAuthPolicy
     /// <summary>接受的公钥 blob。</summary>
     public IReadOnlyList<byte[]> AcceptedPublicKeys { get; init; } = [];
 
+    /// <summary>对认得的公钥的探测（不带签名）直接回 <c>SUCCESS</c> —— 不合规，个别实现会这样。</summary>
+    public bool SucceedOnPublicKeyProbe { get; init; }
+
+    /// <summary>设了就在 <c>PK_OK</c> 里回显这个公钥 blob，而不是请求里的那个。</summary>
+    public byte[]? PublicKeyOkEchoBlob { get; init; }
+
+    /// <summary>设了就在 <c>PK_OK</c> 里回显这个算法名，而不是请求里的那个。</summary>
+    public string? PublicKeyOkEchoAlgorithm { get; init; }
+
     /// <summary>keyboard-interactive 的剧本，按顺序发出。</summary>
     public IReadOnlyList<TestKeyboardRound> KeyboardRounds { get; init; } = [];
 
@@ -386,12 +395,17 @@ internal sealed class TestAuthServer
                 return false;
             }
 
+            if (_policy.SucceedOnPublicKeyProbe)
+            {
+                return true;   // 回 SUCCESS
+            }
+
             // SSH_MSG_USERAUTH_PK_OK：认这把钥，去签吧。
             ArrayBufferWriter<byte> buffer = new();
             SshDataWriter w = new(buffer);
             w.WriteByte(60);
-            w.WriteUtf8String(request.Algorithm);
-            w.WriteString(request.KeyBlob);
+            w.WriteUtf8String(_policy.PublicKeyOkEchoAlgorithm ?? request.Algorithm);
+            w.WriteString(_policy.PublicKeyOkEchoBlob ?? request.KeyBlob);
             _transport.WritePacket(buffer.WrittenSpan);
             await _transport.FlushAsync(cancellationToken);
 

@@ -262,6 +262,73 @@ public sealed class AuthenticationTests
             "两段式存在的全部意义就是这一条：不认就不签，用户不用白按一次硬件键");
     }
 
+    /// <summary>
+    /// 〔AU-E5〕服务端对探测直接回 SUCCESS（不合规，个别实现会这样）：认证就此完成，不再签名、也不再试下一条凭据。
+    /// 曾经记成「不接受这把公钥」接着发下一条请求 —— 成功之后的请求服务端一律忽略（RFC 4252 §5.1），一直等到认证超时。
+    /// </summary>
+    [TestMethod]
+    public async Task 探测时服务端直接回SUCCESS就算认证完成()
+    {
+        using var inner = InMemorySshSigner.GenerateEd25519();
+        ExpensiveSigner signer = new(inner);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer), new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                AcceptPassword = "hunter2",
+                SucceedOnPublicKeyProbe = true,
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreEqual(0, signer.SignCalls, "认证已经完成，不该再签");
+        Assert.DoesNotContain(SshProtocolNames.AuthPassword, run.Observation.RequestedMethods, "认证已经完成，不该再试下一条凭据");
+    }
+
+    /// <summary>〔AU-E5〕PK_OK 回显的公钥不是我们问的那一把：协议错误 —— 签下去的会是服务端没认过的钥。</summary>
+    [TestMethod]
+    public async Task PK_OK回显的公钥不是我们问的那一把时报协议错误()
+    {
+        using var inner = InMemorySshSigner.GenerateEd25519();
+        using var other = InMemorySshSigner.GenerateEd25519();
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new PublicKeyCredential(new ExpensiveSigner(inner))],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                PublicKeyOkEchoBlob = other.PublicKey.Blob.ToArray(),
+            }));
+
+        Assert.Contains("PK_OK", error.Message);
+    }
+
+    /// <summary>PK_OK 回显的算法名是这把钥自己的类型名（而不是请求里的签名算法）：说的是同一把钥，照常签。</summary>
+    [TestMethod]
+    public async Task PK_OK回显钥的类型名时照常签()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var inner = InMemorySshSigner.FromRsa(rsa);
+        ExpensiveSigner signer = new(inner);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha256],   // 我们请求的是 rsa-sha2-256
+                PublicKeyOkEchoAlgorithm = SshAlgorithmNames.SshRsa,         // 回显的却是钥的类型名
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreEqual(1, signer.SignCalls);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha256], run.Observation.PublicKeySignatureAlgorithms, "签名算法照我们选的");
+    }
+
     [TestMethod]
     public async Task 服务端不认这把公钥时如实记录而不是说密码错()
     {
