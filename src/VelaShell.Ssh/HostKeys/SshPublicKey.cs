@@ -338,6 +338,9 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         {
             algorithm = reader.ReadUtf8String(MaxFieldBytes, strict: true);
             signature = reader.ReadString(MaxFieldBytes);
+
+            // 〔AU-D1〕签名 blob 后面不许还有东西：同一个签名有两种编码，就有两种「都验得过」的字节串。曾经不看。
+            reader.ExpectEnd("签名 blob");
         }
         catch (SshWireFormatException)
         {
@@ -351,6 +354,13 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         if (!string.Equals(algorithm, expectedPlain, StringComparison.Ordinal))
         {
             // 签名算法名与协商结果不符。放过它 = 允许对端把 rsa-sha2-512 降级成 ssh-rsa。
+            return false;
+        }
+
+        // 签名算法必须是这把钥能出的那一类（P-256 的钥不验 nistp384 的签名，RSA 的钥不验 Ed25519 的）。
+        // 曾经只靠下面各分支里「这把钥有没有对应的原生对象」间接成立。
+        if (!SupportsSignatureAlgorithm(algorithm))
+        {
             return false;
         }
 

@@ -123,6 +123,47 @@ public sealed class SshPublicKeyTests
         Assert.IsFalse(key.VerifySignature(signatureBlob, data, SshAlgorithmNames.SshEd25519));
     }
 
+    /// <summary>〔AU-D1〕签名 blob 末尾多出字节：不作数 —— 同一个签名不许有两种都验得过的编码。</summary>
+    [TestMethod]
+    public void 签名blob末尾有多余字节时验不过()
+    {
+        (SshPublicKey key, Ed25519PrivateKeyParameters priv) = CreateEd25519();
+        byte[] data = RandomNumberGenerator.GetBytes(100);
+
+        Ed25519Signer signer = new();
+        signer.Init(true, priv);
+        signer.BlockUpdate(data);
+        byte[] signature = signer.GenerateSignature();
+
+        byte[] exact = Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshEd25519);
+            WriteString(w, signature);
+        });
+        Assert.IsTrue(key.VerifySignature(exact, data, SshAlgorithmNames.SshEd25519));
+        Assert.IsFalse(key.VerifySignature([.. exact, 0], data, SshAlgorithmNames.SshEd25519));
+    }
+
+    /// <summary>签名算法与钥的类型对不上：不作数（RSA 的钥不验 Ed25519 的签名）。</summary>
+    [TestMethod]
+    public void 签名算法与钥的类型对不上时验不过()
+    {
+        using RSA rsa = RSA.Create(2048);
+        SshPublicKey key = SshPublicKey.Decode(Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshRsa);
+            WriteMpint(w, rsa.ExportParameters(false).Exponent!);
+            WriteMpint(w, rsa.ExportParameters(false).Modulus!);
+        }));
+
+        byte[] blob = Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshEd25519);
+            WriteString(w, new byte[64]);
+        });
+        Assert.IsFalse(key.VerifySignature(blob, [1, 2, 3], SshAlgorithmNames.SshEd25519));
+    }
+
     // ------------------------------------------------------------ ECDSA
 
     [TestMethod]
