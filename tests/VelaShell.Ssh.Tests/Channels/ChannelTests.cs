@@ -1607,6 +1607,44 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         Assert.AreEqual("abc\uFFFD", result.StandardOutput);
     }
 
+    /// <summary>
+    /// 对端宣告 max packet 为 0：写 stdin 照实失败（曾经泵悄悄退出、stdin 静默失效）；
+    /// 什么都没写就完成 stdin 的，EOF 照样发出去。
+    /// </summary>
+    [TestMethod]
+    public async Task 对端宣告max_packet为0时写stdin照实失败_EOF照样能发()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { MaxPacket = 0, CloseAfterScript = false, ExitCode = null });
+
+        SshChannel writes = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        await Assert.ThrowsAsync<SshChannelException>(async () =>
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await writes.StandardInput.WriteAsync(new byte[16], harness.Token);
+                await Task.Delay(10, harness.Token);
+            }
+        });
+        await writes.DisposeAsync();
+
+        SshChannel eofOnly = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        await eofOnly.StandardInput.CompleteAsync();
+        await WaitUntilAsync(() => harness.ChannelServer.Observation.ReceivedEof, harness.Token);
+        await eofOnly.DisposeAsync();
+    }
+
+    /// <summary>对端宣告的 max packet 超过本端的上限时按本端上限截断。</summary>
+    [TestMethod]
+    public async Task 对端宣告的超大max_packet按本端上限截断()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { MaxPacket = int.MaxValue, CloseAfterScript = false, ExitCode = null });
+
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        Assert.IsLessThan(SshPacketFormat.DefaultMaxPacketLength, channel.RemoteMaxPacketBytes);
+        await channel.DisposeAsync();
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>

@@ -228,6 +228,9 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary>对端宣告的单个数据段上限。<b>发送时必须遵守</b>。</summary>
     public int RemoteMaxPacketBytes { get; private set; }
 
+    /// <summary>一个 <c>CHANNEL_DATA</c> 的数据段最多多大：本端报文长度上限减去报文头、通道头与最大填充。</summary>
+    private const int MaxSendDataBytes = Crypto.SshPacketFormat.DefaultMaxPacketLength - 512;
+
     /// <summary>我们宣告的单个数据段上限（<c>maximum packet size</c>）：对端发来的每个 DATA / EXTENDED_DATA 都不许超过它。</summary>
     internal int ReceiveMaxPacketBytes { get; }
 
@@ -633,7 +636,10 @@ public sealed class SshChannel : IAsyncDisposable
     internal void OnOpenAccepted(uint remoteId, uint initialWindow, uint maxPacket)
     {
         RemoteId = remoteId;
-        RemoteMaxPacketBytes = (int)Math.Min(maxPacket, int.MaxValue);
+
+        // 对端宣告的 max packet 按本端的上限截断：照单全收的话，宣告 4 GiB 的对端会让 stdin 泵把管道里攒着的
+        // 几 MiB 拼成一个报文发出去 —— 超过任何实现愿意收的报文长度（包括我们自己收的上限）。
+        RemoteMaxPacketBytes = (int)Math.Min(maxPacket, MaxSendDataBytes);
         _sendWindow.Add(initialWindow);
 
         lock (_stateLock)
@@ -1236,6 +1242,14 @@ public sealed class SshChannel : IAsyncDisposable
 
                 while (!buffer.IsEmpty)
                 {
+                    // 对端宣告的 max packet 是 0：它不收任何数据。曾经算出的块是 0、被当成「通道关了」，泵悄悄退出 ——
+                    // stdin 静默失效，之后连 EOF 也不再发。现在照实失败：写入方的 FlushAsync 拿到这个异常。
+                    if (RemoteMaxPacketBytes == 0)
+                    {
+                        throw new SshChannelException(Diagnostics.SshFailureReason.ProtocolError,
+                            $"对端给通道 {LocalId} 宣告的 max packet 是 0 —— 它不收任何数据，写进 stdin 的内容发不出去。");
+                    }
+
                     // 单个数据段**必须**不超过对端宣告的上限 —— 超了对端会断连。
                     int chunk = (int)Math.Min(buffer.Length, RemoteMaxPacketBytes);
 
