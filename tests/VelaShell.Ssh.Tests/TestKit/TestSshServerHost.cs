@@ -69,6 +69,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     /// <param name="rekeyHostKeyType">设了就让服务端在重协商时换一把这种类型的新主机密钥。</param>
     /// <param name="hostKeyPolicy">客户端的主机密钥策略；缺省时全部接受。</param>
     /// <param name="rekeyHardPacketLimit">报文数的硬线；验它的用例要把它调小。</param>
+    /// <param name="corruptRekeySignature">设了就让服务端在重协商时把签名弄坏。</param>
     public static async Task<TestSshServerHost> StartAsync(
         TestChannelScript? script = null,
         SshAlgorithmSet? algorithms = null,
@@ -77,7 +78,8 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         TimeSpan? rekeyTimeout = null,
         string? rekeyHostKeyType = null,
         IHostKeyPolicy? hostKeyPolicy = null,
-        long? rekeyHardPacketLimit = null)
+        long? rekeyHardPacketLimit = null,
+        bool corruptRekeySignature = false)
     {
         CancellationTokenSource cts = new(TimeSpan.FromSeconds(25));
 
@@ -95,6 +97,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         {
             Algorithms = algorithms,
             RekeyHostKeyType = rekeyHostKeyType,
+            CorruptRekeySignature = corruptRekeySignature,
         });
 
         TestChannelServer channels = new(server.Transport, script);

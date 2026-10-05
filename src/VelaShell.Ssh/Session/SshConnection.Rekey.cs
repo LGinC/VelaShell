@@ -406,6 +406,10 @@ public sealed partial class SshConnection
                     SshFailureReason.Timeout, SshPhase.Rekeying,
                     $"密钥重协商在 {RekeyTimeout.TotalSeconds:0} 秒内没有完成。");
             }
+            catch (SshException ex) when (ex.Phase != SshPhase.Rekeying)
+            {
+                throw AsRekeyFailure(ex);
+            }
 
             lock (_stateLock)
             {
@@ -432,6 +436,25 @@ public sealed partial class SshConnection
                 _kexInProgress = false;
             }
         }
+    }
+
+    /// <summary>把密钥交换按首次交换的口径报出的失败，改成「这条已经建好的连接在重协商时断了」。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/08 §2.1〕交换器不分首次与重协商：验签失败、协商不上报的是 <see cref="SshConnectException"/>，
+    /// 阶段一律是 <see cref="SshPhase.KeyExchange"/>。重协商时连接早就建好了 —— 按类型分流的调用方会把它当成「没连上」。
+    /// 原因码不变，阶段改成 <see cref="SshPhase.Rekeying"/>；协议错误仍是 <see cref="SshProtocolException"/>，
+    /// 其余是 <see cref="SshConnectionClosedException"/>。原来的异常挂在内层（协商失败时的双方名单还在它上面）。
+    /// </remarks>
+    private static SshException AsRekeyFailure(SshException ex)
+    {
+        string message = $"密钥重协商失败：{ex.Message}";
+        return ex is SshProtocolException or Crypto.Kex.SshKeyExchangeException
+            ? new SshProtocolException(SshPhase.Rekeying, message, ex)
+            : new SshConnectionClosedException(ex.Reason, SshPhase.Rekeying, message, ex)
+            {
+                DisconnectReason = (ex as SshConnectionClosedException)?.DisconnectReason,
+                PeerDescription = (ex as SshConnectionClosedException)?.PeerDescription,
+            };
     }
 
     /// <summary>重协商期间的密钥交换收发通道。</summary>

@@ -58,6 +58,9 @@ internal sealed record TestSshServerOptions
     /// <summary>把签名故意弄坏，用来验证客户端确实在验签。</summary>
     public bool CorruptSignature { get; init; }
 
+    /// <summary>只在重协商时把签名弄坏（首次交换正常）。</summary>
+    public bool CorruptRekeySignature { get; init; }
+
     /// <summary>
     /// 设了就在重协商时换上一把这种类型的<b>新</b>主机密钥（签名照样是对的）——
     /// 模拟连接中途被换了主机密钥。
@@ -313,7 +316,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         });
 
         byte[] signature = KeyFor(isInitial).Sign(exchangeHash, negotiated.HostKey);
-        if (_options.CorruptSignature)
+        if (_options.CorruptSignature || (!isInitial && _options.CorruptRekeySignature))
         {
             signature[^1] ^= 0xFF;
         }

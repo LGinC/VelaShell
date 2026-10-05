@@ -225,6 +225,32 @@ public sealed class RekeyTests
         Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "失败的交换不开闸");
     }
 
+    /// <summary>
+    /// 重协商时验签失败：连接早就建好了，报的是「连接断了」（原因码照旧、阶段是 Rekeying），
+    /// 不是 SshConnectException —— 按类型分流的调用方会把那当成「没连上」。
+    /// </summary>
+    [TestMethod]
+    public async Task 重协商时验签失败报连接断开而不是没连上()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            corruptRekeySignature: true);
+        host.ServerLoopMayFail = true;
+
+        _ = host.Channels.RequestRekeyAsync();
+
+        while (host.Connection.IsAlive)
+        {
+            await Task.Delay(20, host.Token);
+        }
+
+        SshConnectionClosedException error = await Assert.ThrowsExactlyAsync<SshConnectionClosedException>(
+            async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
+        Assert.AreEqual(SshFailureReason.HostKeyRejected, error.Reason);
+        Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        Assert.IsInstanceOfType<SshConnectException>(error.InnerException);
+    }
+
     private sealed class CountingPolicy : Ssh.HostKeys.IHostKeyPolicy
     {
         private int _evaluations;
