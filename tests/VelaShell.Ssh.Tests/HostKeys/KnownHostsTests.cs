@@ -86,6 +86,20 @@ public sealed class KnownHostsTests
         }
     }
 
+    /// <summary>字段之间用 Tab 分隔的行照样认（曾经只按空格切，这样的行被静默跳过，那台主机一直按「没见过」处理）。</summary>
+    [TestMethod]
+    public void Tab分隔的行照样认出来()
+    {
+        SshPublicKey key = MakeKey();
+        IReadOnlyList<KnownHostEntry> entries =
+            KnownHostsFile.Parse($"@cert-authority\t*.corp\t{key.KeyType} {Convert.ToBase64String(key.Blob.Span)}\n" +
+                                 $"server.example\t{key.KeyType}\t \t{Convert.ToBase64String(key.Blob.Span)}");
+
+        Assert.HasCount(2, entries);
+        Assert.IsTrue(entries[0].IsCertificateAuthority);
+        Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(entries, "server.example", 22, key).Status);
+    }
+
     [TestMethod]
     public void 标记行被认出来()
     {

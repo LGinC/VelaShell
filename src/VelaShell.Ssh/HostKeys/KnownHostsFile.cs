@@ -105,7 +105,9 @@ public static class KnownHostsFile
             return null;
         }
 
-        string[] fields = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        // 字段之间是空白 —— 空格或 Tab 都算（sshd(8) 的 SSH_KNOWN_HOSTS 一节）。
+        // 曾经只按空格切：手工编辑、用 Tab 对齐的行被当成写坏的行静默跳过，那台主机于是一直按「没见过」处理。
+        string[] fields = line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries);
         int index = 0;
 
         string marker = "";
