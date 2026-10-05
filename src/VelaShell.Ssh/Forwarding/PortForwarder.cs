@@ -87,6 +87,18 @@ public abstract class PortForwarder : IAsyncDisposable
         ForwardMetrics.ActiveConnections.Add(1, ForwardEvents.KindTag(Kind));
         ForwardMetrics.TotalConnections.Add(1, ForwardEvents.KindTag(Kind));
 
+        // 活跃数只减一次：正常收尾时在报「关了」之前减，出了异常由 finally 兜底。
+        bool active = true;
+        void Release()
+        {
+            if (active)
+            {
+                active = false;
+                Interlocked.Decrement(ref _activeConnections);
+                ForwardMetrics.ActiveConnections.Add(-1, ForwardEvents.KindTag(Kind));
+            }
+        }
+
         try
         {
             ForwardEvents.Raise(ConnectionOpened, this, new ForwardConnectionEventArgs(connectionId, source, target));
@@ -107,6 +119,9 @@ public abstract class PortForwarder : IAsyncDisposable
                 },
                 cancellationToken).ConfigureAwait(false);
 
+            // 先减活跃数、再报「关了」：订阅者在事件里读到的 ActiveConnections 不该还算着这一条。
+            // 曾经反过来 —— 在 ConnectionClosed 里刷新界面上的连接数，总比实际多一。
+            Release();
             ForwardEvents.Raise(ConnectionClosed, this, new ForwardConnectionEventArgs(
                 connectionId, source, target, result.BytesFromLeft, result.BytesFromRight, result.Duration));
 
@@ -119,8 +134,7 @@ public abstract class PortForwarder : IAsyncDisposable
         }
         finally
         {
-            Interlocked.Decrement(ref _activeConnections);
-            ForwardMetrics.ActiveConnections.Add(-1, ForwardEvents.KindTag(Kind));
+            Release();
         }
     }
 

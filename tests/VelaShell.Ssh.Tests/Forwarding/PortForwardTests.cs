@@ -582,6 +582,31 @@ public sealed class PortForwardTests
         rebind.Bind(new IPEndPoint(IPAddress.Loopback, port));
     }
 
+    /// <summary>ConnectionClosed 触发时，活跃连接数已经不含这一条（订阅者常在这里刷新界面上的连接数）。</summary>
+    [TestMethod]
+    public async Task 报连接关闭时活跃数已经减掉()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            TunnelHandler = UppercaseEchoAsync,
+        });
+
+        await using var forwarder = LocalPortForwarder.Start(harness.Connection, "t", 1);
+        int activeSeenOnClose = -1;
+        forwarder.ConnectionClosed += (_, _) => activeSeenOnClose = forwarder.ActiveConnections;
+
+        using (Socket client = new(SocketType.Stream, ProtocolType.Tcp))
+        {
+            await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+            await client.SendAsync(Text("abc"), harness.Token);
+            client.Shutdown(SocketShutdown.Send);
+            _ = await ReadAllAsync(client, new byte[16], harness.Token);
+        }
+
+        await WaitUntilAsync(() => activeSeenOnClose >= 0, harness.Token);
+        Assert.AreEqual(0, activeSeenOnClose);
+    }
+
     [TestMethod]
     public async Task 事件订阅者抛异常不影响搬运与计数()
     {
