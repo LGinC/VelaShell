@@ -194,13 +194,33 @@ internal static class SftpWire
     public static void WriteRead(
         IBufferWriter<byte> output, uint requestId, ReadOnlySpan<byte> handle, ulong offset, uint length)
     {
-        ArrayBufferWriter<byte> payload = new();
-        SshDataWriter writer = new(payload);
-        writer.WriteUInt32(requestId);
-        writer.WriteString(handle);
-        writer.WriteUInt64(offset);
-        writer.WriteUInt32(length);
-        WriteFrame(output, SftpMessageType.Read, payload.WrittenSpan);
+        // 下载路径上每块一个 READ：与 WriteWrite 一样直接写进 output，不经中转缓冲 ——
+        // 曾经每个请求都 new 一个 ArrayBufferWriter 再整个复制一遍。所有字段的长度都是已知的。
+        int bodyLength =
+            1                        // 类型
+            + 4                      // request-id
+            + 4 + handle.Length      // string handle
+            + 8                      // uint64 offset
+            + 4;                     // uint32 length
+
+        Span<byte> frame = output.GetSpan(4 + bodyLength);
+        int written = 0;
+
+        BinaryPrimitives.WriteUInt32BigEndian(frame[written..], (uint)bodyLength);
+        written += 4;
+        frame[written++] = (byte)SftpMessageType.Read;
+        BinaryPrimitives.WriteUInt32BigEndian(frame[written..], requestId);
+        written += 4;
+        BinaryPrimitives.WriteUInt32BigEndian(frame[written..], (uint)handle.Length);
+        written += 4;
+        handle.CopyTo(frame[written..]);
+        written += handle.Length;
+        BinaryPrimitives.WriteUInt64BigEndian(frame[written..], offset);
+        written += 8;
+        BinaryPrimitives.WriteUInt32BigEndian(frame[written..], length);
+        written += 4;
+
+        output.Advance(written);
     }
 
     /// <summary>按偏移写。</summary>

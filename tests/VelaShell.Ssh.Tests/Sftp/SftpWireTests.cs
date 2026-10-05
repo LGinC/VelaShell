@@ -406,6 +406,26 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void READ请求直接写进输出_与按字段拼的一字节不差()
+    {
+        byte[] handle = [1, 2, 3, 4, 5, 6, 7];
+
+        ArrayBufferWriter<byte> expected = new();
+        Ssh.Protocol.SshDataWriter fields = new(expected);
+        fields.WriteUInt32(77);
+        fields.WriteString(handle);
+        fields.WriteUInt64(0x0102_0304_0506_0708);
+        fields.WriteUInt32(32_768);
+        ArrayBufferWriter<byte> reference = new();
+        SftpWire.WriteFrame(reference, SftpMessageType.Read, expected.WrittenSpan);
+
+        ArrayBufferWriter<byte> actual = new();
+        SftpWire.WriteRead(actual, 77, handle, 0x0102_0304_0506_0708, 32_768);
+
+        Assert.AreSequenceEqual(reference.WrittenSpan.ToArray(), actual.WrittenSpan.ToArray());
+    }
+
+    [TestMethod]
     public void 扩展属性的数据按字节原样往返_交出去的是只读视图()
     {
         // extended_data 在 draft-02 里是二进制：曾经按 UTF-8 解成字符串，非法的字节解出来就变了。

@@ -195,7 +195,9 @@ public readonly record struct SftpFileAttributes
         uint permissions = 0;
         int accessTime = 0;
         int modifyTime = 0;
-        List<SftpExtendedField> extended = [];
+
+        // 列目录时每一项都要解一次 ATTRS，绝大多数不带扩展属性：没带就不分配。
+        List<SftpExtendedField>? extended = null;
 
         if ((flags & SftpAttributeFields.Size) != 0)
         {
@@ -224,6 +226,7 @@ public readonly record struct SftpFileAttributes
         if ((flags & SftpAttributeFields.Extended) != 0)
         {
             uint count = reader.ReadUInt32();
+            extended = [];
 
             // 只留前 MaxExtendedFields 对，但**每一对都要读掉**：曾经读到上限就停，剩下的字节留在原地 ——
             // 在 NAME 应答里，下一项就从这些字节中间开始解析，名字、属性全是错的。
@@ -254,7 +257,7 @@ public readonly record struct SftpFileAttributes
             AccessTime = accessTime,
             ModifyTime = modifyTime,
             // 只读视图交出去：曾经直接交出 List，下转型就能改一个「只读」属性背后的内容。
-            Extended = extended.Count == 0 ? [] : extended.AsReadOnly(),
+            Extended = extended is null or { Count: 0 } ? [] : extended.AsReadOnly(),
         };
     }
 }
