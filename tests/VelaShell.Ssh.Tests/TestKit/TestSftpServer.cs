@@ -103,6 +103,12 @@ internal sealed record TestSftpOptions
     /// <remarks>模拟慢盘、网络文件系统：客户端在等句柄时取消了，句柄晚到。</remarks>
     public TimeSpan DelayOpenReplies { get; init; }
 
+    /// <summary>对 <c>OPEN</c> 回一个 DATA —— 模拟一个应答类型对不上请求的服务端。</summary>
+    public bool WrongOpenReply { get; init; }
+
+    /// <summary>对 <c>WRITE</c> 回一个 HANDLE（数据照样写下）—— 模拟一个应答类型对不上请求的服务端。</summary>
+    public bool WrongWriteReply { get; init; }
+
     /// <summary><c>WRITE</c> 的应答等这么久才发（数据在收到请求时就已经写下）—— 让一次写在 <c>WriteAsync</c> 返回之后还在路上。</summary>
     public TimeSpan DelayWriteReplies { get; init; }
 
@@ -329,6 +335,8 @@ internal sealed class TestSftpServer
             SftpMessageType.RealPath => HandleRealPath(id, rest),
             SftpMessageType.Stat => HandleStat(id, rest, follow: true),
             SftpMessageType.LStat => HandleStat(id, rest, follow: false),
+            SftpMessageType.Open when _options.WrongOpenReply => BuildData(id, [1, 2, 3, 4]),
+            SftpMessageType.Write when _options.WrongWriteReply => WrongWriteReply(id, rest),
             SftpMessageType.Open => HandleOpen(id, rest),
             SftpMessageType.Close => HandleClose(id, rest),
             SftpMessageType.Read => HandleRead(id, rest),
@@ -948,6 +956,21 @@ internal sealed class TestSftpServer
         writer.WriteUtf8String(message);
         writer.WriteUtf8String("");
         return Frame(SftpMessageType.Status, payload.WrittenSpan);
+    }
+
+    private byte[] WrongWriteReply(uint id, ReadOnlySequence<byte> rest)
+    {
+        _ = HandleWrite(id, rest);   // 数据照样写下，只是应答的类型不对
+        return BuildHandle(id, [9, 9, 9, 9]);
+    }
+
+    private static byte[] BuildData(uint id, byte[] data)
+    {
+        ArrayBufferWriter<byte> payload = new();
+        SshDataWriter writer = new(payload);
+        writer.WriteUInt32(id);
+        writer.WriteString(data);
+        return Frame(SftpMessageType.Data, payload.WrittenSpan);
     }
 
     private static byte[] BuildHandle(uint id, byte[] handle)

@@ -765,6 +765,36 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task OPEN收到DATA应答时是协议错误_不把数据当句柄()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/a.txt", Text("x")),
+            new TestSftpOptions { WrongOpenReply = true });
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await harness.Sftp.OpenReadAsync("/home/joe/a.txt", harness.Token));
+
+        Assert.AreEqual(SshFailureReason.ProtocolError, error.Reason);
+    }
+
+    [TestMethod]
+    public async Task WRITE收到非STATUS应答时不算确认()
+    {
+        // 曾经 WRITE 收到任何非 STATUS 的应答都被记成已确认：DurableLength 失真，续传点跨过了没确认的数据。
+        await using Harness harness = await Harness.StartAsync(sftpOptions: new TestSftpOptions { WrongWriteReply = true });
+
+        await using SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/up.bin", cancellationToken: harness.Token);
+        await stream.WriteAsync(new byte[harness.Sftp.BlockSize], harness.Token);
+
+        SftpTransferInterruptedException error = await Assert.ThrowsExactlyAsync<SftpTransferInterruptedException>(
+            async () => await stream.FlushAsync(harness.Token));
+
+        Assert.AreEqual(0, stream.DurableLength, "类型对不上的应答不是确认");
+        Assert.IsInstanceOfType<SshProtocolException>(error.InnerException);
+        await Assert.ThrowsAsync<SshException>(async () => await stream.DisposeAsync());
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>

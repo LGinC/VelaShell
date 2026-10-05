@@ -312,7 +312,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WriteExtended(output, id, SftpExtensionNames.Limits, []),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path: null, SftpOperation.QueryLimits);
+        response.ThrowIfError(path: null, SftpOperation.QueryLimits, SftpMessageType.ExtendedReply);
         return SftpWire.ReadLimits(response.Payload);
     }
 
@@ -327,7 +327,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RealPath, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.RealPath);
+        response.ThrowIfError(path, SftpOperation.RealPath, SftpMessageType.Name);
 
         IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload, _names);
         if (entries.Count != 1)
@@ -360,7 +360,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WritePathRequest(output, type, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.GetAttributes);
+        response.ThrowIfError(path, SftpOperation.GetAttributes, SftpMessageType.Attrs);
         return SftpWire.ReadAttrs(response.Payload);
     }
 
@@ -388,7 +388,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WriteSetStat(output, id, path, attributes, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.SetAttributes);
+        response.ThrowIfError(path, SftpOperation.SetAttributes, SftpMessageType.Status);
     }
 
     /// <summary>改权限。</summary>
@@ -428,7 +428,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WriteMkDir(output, id, path, SftpFileAttributes.WithPermissions(permissions), _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.CreateDirectory);
+        response.ThrowIfError(path, SftpOperation.CreateDirectory, SftpMessageType.Status);
     }
 
     /// <summary>删空目录。</summary>
@@ -440,7 +440,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RmDir, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.RemoveDirectory);
+        response.ThrowIfError(path, SftpOperation.RemoveDirectory, SftpMessageType.Status);
     }
 
     /// <summary>删文件。</summary>
@@ -452,7 +452,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.Remove, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.Remove);
+        response.ThrowIfError(path, SftpOperation.Remove, SftpMessageType.Status);
     }
 
     /// <summary>列目录。</summary>
@@ -512,7 +512,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             onLateResponse: CloseLateHandle,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.OpenDirectory);
+        response.ThrowIfError(path, SftpOperation.OpenDirectory, SftpMessageType.Handle);
         return SftpWire.ReadHandle(response.Payload);
     }
 
@@ -534,6 +534,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             throw new SftpException(code, message, path, SftpOperation.ReadDirectory);
         }
 
+        response.ExpectType(path, SftpOperation.ReadDirectory, SftpMessageType.Name);
         return SftpWire.ReadName(response.Payload, _names);
     }
 
@@ -713,7 +714,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             onLateResponse: CloseLateHandle,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
-            response.ThrowIfError(path, SftpOperation.Open);
+            response.ThrowIfError(path, SftpOperation.Open, SftpMessageType.Handle);
             handle = SftpWire.ReadHandle(response.Payload);
         }
 
@@ -729,7 +730,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
                     (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.FStat, id, handle),
                     cancellationToken: cancellationToken).ConfigureAwait(false);
 
-                stat.ThrowIfError(path, SftpOperation.GetAttributes);
+                stat.ThrowIfError(path, SftpOperation.GetAttributes, SftpMessageType.Attrs);
                 SftpFileAttributes current = SftpWire.ReadAttrs(stat.Payload);
                 if (current.HasSize)
                 {
@@ -893,7 +894,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
                 },
                 cancellationToken: cancellationToken).ConfigureAwait(false);
 
-            response.ThrowIfError(sourcePath, SftpOperation.PosixRename);
+            response.ThrowIfError(sourcePath, SftpOperation.PosixRename, SftpMessageType.Status);
             return;
         }
 
@@ -901,7 +902,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WriteRename(output, id, sourcePath, destinationPath, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        plain.ThrowIfError(sourcePath, SftpOperation.Rename);
+        plain.ThrowIfError(sourcePath, SftpOperation.Rename, SftpMessageType.Status);
     }
 
     /// <summary>读符号链接指向哪里。</summary>
@@ -914,7 +915,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.ReadLink, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(path, SftpOperation.ReadLink);
+        response.ThrowIfError(path, SftpOperation.ReadLink, SftpMessageType.Name);
 
         IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload, _names);
         if (entries.Count != 1)
@@ -944,7 +945,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             (output, id) => SftpWire.WriteSymLink(output, id, targetPath, linkPath, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(linkPath, SftpOperation.CreateSymbolicLink);
+        response.ThrowIfError(linkPath, SftpOperation.CreateSymbolicLink, SftpMessageType.Status);
     }
 
     /// <summary>建硬链接（需要 <c>hardlink@openssh.com</c>）。</summary>
@@ -975,7 +976,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(linkPath, SftpOperation.CreateHardLink);
+        response.ThrowIfError(linkPath, SftpOperation.CreateHardLink, SftpMessageType.Status);
     }
 
     // ------------------------------------------------------------ 内部
