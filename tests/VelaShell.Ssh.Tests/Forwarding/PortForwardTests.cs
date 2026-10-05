@@ -725,6 +725,39 @@ public sealed class PortForwardTests
         await remote.DisposeAsync();
     }
 
+    /// <summary>〔FW-D3〕远程转发的连接事件带着是谁连上了服务端那个端口（forwarded-tcpip 里的 originator）。</summary>
+    [TestMethod]
+    public async Task 远程转发的连接事件带着来源地址()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34571 });
+
+        using Socket target = new(SocketType.Stream, ProtocolType.Tcp);
+        target.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        target.Listen(4);
+        Task<Socket> accepting = target.AcceptAsync(harness.Token).AsTask();
+
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartAsync(
+            harness.Connection, "127.0.0.1", ((IPEndPoint)target.LocalEndPoint!).Port,
+            new RemotePortForwardOptions { BindAddress = "localhost", BindPort = 34571 }, harness.Token);
+        TaskCompletionSource<EndPoint?> opened = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        forwarder.ConnectionOpened += (_, e) => opened.TrySetResult(e.Source);
+
+        ArrayBufferWriter<byte> header = new();
+        SshDataWriter writer = new(header);
+        writer.WriteUtf8String("localhost");
+        writer.WriteUInt32(34571);
+        writer.WriteUtf8String("203.0.113.7");
+        writer.WriteUInt32(51234);
+        Stream? remote = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+        Assert.IsNotNull(remote);
+        using Socket accepted = await accepting.WaitAsync(harness.Token);
+
+        EndPoint? source = await opened.Task.WaitAsync(TimeSpan.FromSeconds(10), harness.Token);
+        Assert.AreEqual(new IPEndPoint(IPAddress.Parse("203.0.113.7"), 51234), source);
+        await remote.DisposeAsync();
+    }
+
     /// <summary>
     /// 〔FW-D2〕远程转发的本机目标连不上：回 CHANNEL_OPEN_FAILURE（connect failed），而不是先确认、再立刻关掉；
     /// 本地照样记一笔 TargetConnect 错误。

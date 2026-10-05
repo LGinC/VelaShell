@@ -10,6 +10,7 @@
 using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Diagnostics;
@@ -28,7 +29,7 @@ public sealed record RemotePortForwardOptions
     /// <remarks>
     /// <c>""</c>、<c>"*"</c>、<c>"0.0.0.0"</c>、<c>"localhost"</c> 在服务端是
     /// <b>不同的语义</b>，所以这里原样传，不做任何规范化 —— 也因此是字符串而不是
-    /// <see cref="System.Net.IPAddress"/>（本地转发绑的是本机套接字，那边才是地址）。
+    /// <see cref="IPAddress"/>（本地转发绑的是本机套接字，那边才是地址）。
     /// 默认 <c>"localhost"</c>：只有服务端本机能连，与 OpenSSH 的
     /// <c>GatewayPorts no</c> 一致。
     /// </remarks>
@@ -548,7 +549,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 stream, () => StreamRelayEndpoint.ShutdownSend(connected), ownsStream: true,
                 abort: () => StreamRelayEndpoint.Reset(connected));
 
-            await RelayAsync(connectionId, null, target, local, channel, cancellationToken).ConfigureAwait(false);
+            await RelayAsync(connectionId, OriginatorOf(typeSpecificPayload), target, local, channel, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -562,6 +563,43 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         {
             outbound?.Dispose();
             _connectionSlots.Release();
+        }
+    }
+
+    /// <summary>
+    /// 是谁连上了服务端那个暴露出来的端口：<c>forwarded-tcpip</c> 载荷里的 originator 地址与端口（RFC 4254 §7.2）。
+    /// </summary>
+    /// <returns>Unix 套接字转发（没有这一段）或者读不出来时为 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// 〔FW-D3〕曾经整个丢掉，<see cref="ForwardConnectionEventArgs.Source"/> 永远是 null —— 面板上本可以显示是谁连进来的。
+    /// 这是对端给的文本：认得出是 IP 地址就给 <see cref="IPEndPoint"/>，否则按主机名给 <see cref="DnsEndPoint"/>（不去解析）。
+    /// </remarks>
+    private EndPoint? OriginatorOf(ReadOnlyMemory<byte> payload)
+    {
+        if (IsStreamLocal)
+        {
+            return null;
+        }
+
+        try
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+            _ = reader.ReadUtf8String(MaxFieldBytes);   // 绑定地址
+            _ = reader.ReadUInt32();                    // 绑定端口
+            string address = reader.ReadUtf8String(MaxFieldBytes);
+            uint port = reader.ReadUInt32();
+            if (port > 65535 || address.Length == 0)
+            {
+                return null;
+            }
+
+            return IPAddress.TryParse(address, out IPAddress? ip)
+                ? new IPEndPoint(ip, (int)port)
+                : new DnsEndPoint(PeerText.Sanitize(address, 255), (int)port);
+        }
+        catch (SshWireFormatException)
+        {
+            return null;
         }
     }
 
