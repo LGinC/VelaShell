@@ -1470,6 +1470,26 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         Assert.Contains("max packet", error.Message);
     }
 
+    /// <summary>
+    /// SendEofAsync 等 stdin 冲干净的时候被取消：只是不再等，EOF 照样在冲干净之后发出去。
+    /// 曾经由它自己在等完之后发 —— 被取消就永远不发了，远端的 cat / sort 一直等输入。
+    /// </summary>
+    [TestMethod]
+    public async Task SendEofAsync被取消EOF照样发出去()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        // 写进一大段（超过对端的初始窗口），让泵在 SendEofAsync 等它的时候还有活要干。
+        await channel.StandardInput.WriteAsync(new byte[256 * 1024], harness.Token);
+
+        using CancellationTokenSource cancelled = new();
+        await cancelled.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(async () => await channel.SendEofAsync(cancelled.Token));
+
+        await WaitUntilAsync(() => harness.ChannelServer.Observation.ReceivedEof, harness.Token);
+        await channel.DisposeAsync();
+    }
     // ------------------------------------------------------------ 关闭
 
     /// <summary>

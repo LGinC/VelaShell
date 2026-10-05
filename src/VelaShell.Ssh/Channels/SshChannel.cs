@@ -468,6 +468,9 @@ public sealed class SshChannel : IAsyncDisposable
 
         // 先把 stdin 里还没发出去的内容冲干净，再发 EOF ——
         // 反过来会让最后一段数据排在 EOF 之后，对端多半已经不读了。
+        // 〔velashell-docs/zh/ssh/spec/05 §4.3〕EOF 由 stdin 泵在冲干净之后发（用通道自己的生命周期，不用这里的令牌）：
+        // 这里被取消只是不再等，EOF 照样会发出去。曾经由这里发：等泵的时候被取消，EOF 就永远不会再发，
+        // 远端的 cat / sort 一直等输入。
         await _stdinPipe.Writer.CompleteAsync().ConfigureAwait(false);
         if (_stdinPump is not null)
         {
@@ -481,10 +484,17 @@ public sealed class SshChannel : IAsyncDisposable
             }
         }
 
-        // 泵收尾期间对端可能已经 CLOSE 了 —— 那时 EOF 不能再发，入队时一并判定。
-        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
-            .ConfigureAwait(false);
+        // 泵正常收尾时已经发了（_eofOwed 已是 0）。泵从没起来（通道还没确认）、或者是出错退出的：在这里补发。
+        // 对端可能已经 CLOSE 了 —— 那时不发，入队时一并判定。
+        if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
+        {
+            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
+
+    /// <summary>本端已经推进到 EOF、而 <c>CHANNEL_EOF</c> 还没发：1；否则 0。谁把它换成 0 谁发（只发一次）。</summary>
+    private int _eofOwed;
 
     /// <summary>把状态推进到「本端已 EOF」；已经 EOF 过或者通道在关，返回 <see langword="false"/>。</summary>
     /// <remarks>
@@ -503,6 +513,7 @@ public sealed class SshChannel : IAsyncDisposable
             _state = _state == SshChannelState.RemoteEof
                 ? SshChannelState.BothEof
                 : SshChannelState.LocalEof;
+            Volatile.Write(ref _eofOwed, 1);
             return true;
         }
     }
@@ -1253,11 +1264,11 @@ public sealed class SshChannel : IAsyncDisposable
 
                 if (read.IsCompleted)
                 {
-                    // 调用方直接完成了 StandardInput（PipeWriter 表达「写完了」的惯用法）——
-                    // 那就是 EOF，照 SendEofAsync 的样子补发。不补的话，远端等着读完的程序
-                    // （cat、sort）会一直挂着。是 SendEofAsync 或关通道完成的 writer 时，
-                    // 状态已经推进过，这里什么也不发。
-                    if (TryMarkLocalEof())
+                    // writer 完成了：调用方直接完成了 StandardInput（PipeWriter 表达「写完了」的惯用法），
+                    // 或者 SendEofAsync 完成了它。两种都是 EOF —— 数据已经冲干净，现在发。
+                    // 不发的话，远端等着读完的程序（cat、sort）会一直挂着。通道在关时状态推进不了，什么也不发。
+                    _ = TryMarkLocalEof();
+                    if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
                     {
                         await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
                             .ConfigureAwait(false);
