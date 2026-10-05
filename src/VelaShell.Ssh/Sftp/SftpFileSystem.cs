@@ -124,6 +124,10 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
     /// <summary>在一条会话上起 SFTP。</summary>
     /// <exception cref="SftpUnavailableException">服务端没有 sftp 子系统，或版本太低。</exception>
+    /// <exception cref="SshChannelException">
+    /// session 通道都没开成（<see cref="SshFailureReason.ChannelOpenFailed"/>：服务端 <c>MaxSessions</c> 满了、
+    /// 管理上禁止，或者本端的通道数 / 窗口预算用尽）—— 原样抛出，可以稍后重试。
+    /// </exception>
     public static async ValueTask<SftpFileSystem> ConnectAsync(
         SshConnection connection,
         SftpOptions? options = null,
@@ -138,8 +142,12 @@ public sealed class SftpFileSystem : IAsyncDisposable
             channel = await connection
                 .OpenSubsystemAsync(SshProtocolNames.SubsystemSftp, effective.Channel, cancellationToken).ConfigureAwait(false);
         }
-        catch (SshChannelException ex)
+        catch (SshChannelException ex) when (ex.Reason == SshFailureReason.ChannelRequestRejected)
         {
+            // 只有「通道开了、subsystem 请求被拒」才是没有 sftp 子系统。通道都没开成（服务端 MaxSessions 满、
+            // 管理上禁止、本端通道数或窗口预算用尽）原样抛出：曾经一律改写成「sshd_config 缺 Subsystem」，
+            // 用户去改一个本来没问题的配置，也丢了「稍后可以重试」这个信息。
+            //
             // 〔决策 velashell-docs/zh/ssh/spec/06 §一〕**不自动回退到 `exec sftp-server`。**
             // 回退等于在管理员明确禁用 subsystem 的情况下绕过他的配置。
             throw new SftpUnavailableException(

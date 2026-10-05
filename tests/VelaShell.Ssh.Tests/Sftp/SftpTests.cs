@@ -12,6 +12,7 @@
 
 using System.Text;
 using VelaShell.Ssh.Auth;
+using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
@@ -62,7 +63,8 @@ public sealed class SftpTests
         public static async Task<Harness> StartAsync(
             Action<TestSftpServer>? arrange = null,
             TestSftpOptions? sftpOptions = null,
-            SftpOptions? clientOptions = null)
+            SftpOptions? clientOptions = null,
+            Func<TestChannelScript, TestChannelScript>? channelScript = null)
         {
             (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
 
@@ -90,10 +92,8 @@ public sealed class SftpTests
             TestSftpServer sftpServer = new(sftpOptions);
             arrange?.Invoke(sftpServer);
 
-            TestChannelServer channelServer = new(server.Transport, new TestChannelScript
-            {
-                SubsystemHandler = sftpServer.RunAsync,
-            });
+            TestChannelScript script = new() { SubsystemHandler = sftpServer.RunAsync };
+            TestChannelServer channelServer = new(server.Transport, channelScript?.Invoke(script) ?? script);
             Task serverChannels = channelServer.RunAsync(cts.Token);
 
             SshConnection connection = new(clientTransport, kex);
@@ -180,6 +180,28 @@ public sealed class SftpTests
             async () => await Harness.StartAsync(sftpOptions: new TestSftpOptions { Version = 2 }));
 
         Assert.Contains("v2", error.Message);
+    }
+
+    [TestMethod]
+    public async Task 服务端拒绝sftp子系统时报SftpUnavailable()
+    {
+        SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+            async () => await Harness.StartAsync(channelScript: script => script with { RejectCommand = true }));
+
+        Assert.Contains("Subsystem", error.Message);
+    }
+
+    [TestMethod]
+    public async Task session通道没开成时原样报ChannelOpenFailed_不改写成没有sftp子系统()
+    {
+        // 服务端 MaxSessions 满了、管理上禁止：用户不该被引去改一个本来没问题的 sshd_config，
+        // 也不该丢了「稍后可以重试」这个信息。
+        SshChannelException error = await Assert.ThrowsExactlyAsync<SshChannelException>(
+            async () => await Harness.StartAsync(
+                channelScript: script => script with { RejectOpenWith = SshChannelOpenFailureReason.ResourceShortage }));
+
+        Assert.AreEqual(SshFailureReason.ChannelOpenFailed, error.Reason);
+        Assert.AreEqual(SshChannelOpenFailureReason.ResourceShortage, error.OpenFailureReason);
     }
 
     [TestMethod]
