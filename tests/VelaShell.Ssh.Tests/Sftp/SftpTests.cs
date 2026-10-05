@@ -840,6 +840,24 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 截短之后DurableLength跟着回退()
+    {
+        // 曾经不回退：之后再断开，报出的续传点会跨过已经被截掉的数据。
+        await using Harness harness = await Harness.StartAsync();
+        int block = harness.Sftp.BlockSize;
+
+        await using SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/t.bin", cancellationToken: harness.Token);
+        await stream.WriteAsync(new byte[block * 3], harness.Token);
+        await stream.FlushAsync(harness.Token);
+        Assert.AreEqual(block * 3, stream.DurableLength);
+
+        await stream.SetLengthAsync(block, harness.Token);
+
+        Assert.AreEqual(block, stream.DurableLength);
+        Assert.AreEqual(block, harness.SftpServer.Nodes["/home/joe/t.bin"].Content.Count);
+    }
+
+    [TestMethod]
     public async Task READDIR一直回空批时判协议错误_不无限循环()
     {
         await using Harness harness = await Harness.StartAsync(sftpOptions: new TestSftpOptions { EmptyReadDirBatches = true });

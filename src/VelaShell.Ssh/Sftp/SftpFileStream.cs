@@ -766,8 +766,8 @@ public sealed class SftpFileStream : Stream
         ArgumentOutOfRangeException.ThrowIfNegative(value);
         ResetReadAhead();
 
-        // 攒着的尾巴先发：截断之后再到的写会把文件又撑长。
-        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
+        // 攒着的尾巴与在途的写都先落地：截断之后才到的写会把文件又撑长（中间留一个空洞）。
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
 
         using SftpResponse response = await _pipeline.SendAsync(
             (output, id) => SftpWire.WriteFSetStat(
@@ -776,6 +776,11 @@ public sealed class SftpFileStream : Stream
 
         response.ThrowIfError(Path, SftpOperation.SetLength, SftpMessageType.Status);
         _knownLength = value;
+
+        // 〔velashell-docs/zh/ssh/spec/06 §6.2〕截掉的那部分不再算「已确认落盘」：曾经 DurableLength 不回退，
+        // 之后再断开，报出的续传点会跨过已经被截掉的数据，续传出一个中间是空洞的文件。
+        // 扩长不动它：服务端补的零不是我们写的数据。
+        _acked.TruncateTo(value);
     }
 
     /// <summary>取当前属性。</summary>

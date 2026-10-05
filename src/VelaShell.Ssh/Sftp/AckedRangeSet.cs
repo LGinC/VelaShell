@@ -69,6 +69,26 @@ internal sealed class AckedRangeSet
         }
     }
 
+    /// <summary>文件被截短到 <paramref name="length"/>：这之后的确认一律作废。</summary>
+    public void TruncateTo(long length)
+    {
+        lock (_lock)
+        {
+            for (int i = _ranges.Count - 1; i >= 0; i--)
+            {
+                (long start, long end) = _ranges[i];
+                if (start >= length)
+                {
+                    _ranges.RemoveAt(i);
+                }
+                else if (end > length)
+                {
+                    _ranges[i] = (start, length);
+                }
+            }
+        }
+    }
+
     /// <summary>并入一个已确认的区间 <c>[offset, offset + length)</c>。</summary>
     public void Add(long offset, long length)
     {

@@ -506,6 +506,25 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 截短时之后的确认作废_跨过截断点的区间被剪短()
+    {
+        AckedRangeSet set = new();
+        set.Add(0, 100);
+        set.Add(150, 50);    // [150, 200)
+        set.Add(300, 10);    // [300, 310)
+
+        set.TruncateTo(170);
+
+        Assert.AreEqual(100, set.DurableLength);
+        Assert.AreEqual(2, set.RangeCount, "[300, 310) 整段作废");
+        Assert.AreEqual(170, set.HighestAckedOffset, "[150, 200) 剪成 [150, 170)");
+
+        set.TruncateTo(40);
+        Assert.AreEqual(40, set.DurableLength);
+        Assert.AreEqual(1, set.RangeCount);
+    }
+
+    [TestMethod]
     public void 空洞被补上之后区间合并()
     {
         AckedRangeSet probe = new();
