@@ -55,9 +55,9 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     /// 一整个在途写入窗口,使起点之前的数据可信。
     /// </para>
     /// <para>
-    /// 窗口大小**按当前会话实测**(在途请求数 × 协商出的块大小),不再写死 2 MB ——
-    /// 写死的那个值只对某一个底层库的某一组默认参数成立,换了库或换了服务端就是错的,
-    /// 而错的方向是「回退得不够」,也就是续传出一个坏文件。
+    /// 窗口大小由库给出(<c>SftpFileSystem.MaxUnconfirmedWriteBytes</c>:单个写入流最多能有多少字节在途),
+    /// 不在这里自己推算 —— 曾经按「起始在途数 × 块大小」算,而库的流水线深度会自己长大
+    /// (最多到 <c>MaxPipelineDepth</c>),那时回退就不够了,错的方向是续传出一个坏文件。
     /// </para>
     /// <para>
     /// 更好的做法是用库的 <c>SftpFileStream.DurableLength</c>(已**连续**确认的偏移),
@@ -66,7 +66,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     /// </para>
     /// </remarks>
     public long ResumeSafetyMargin =>
-        _fs is { } fs ? (long)SftpOptions.Default.MaxInFlight * fs.BlockSize : 64L * 32 * 1024;
+        _fs is { } fs ? fs.MaxUnconfirmedWriteBytes : (long)SftpOptions.Default.MaxPipelineDepth * 256 * 1024;
 
     /// <inheritdoc />
     public async Task ConnectAsync(CancellationToken cancellationToken)

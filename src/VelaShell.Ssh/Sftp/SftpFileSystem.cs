@@ -657,11 +657,42 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
         return new SftpFileStream(
             _pipeline, handle, path, canRead, canWrite, length, BlockSize, writeMode,
-            maxInFlightWrites: _options.MaxInFlight, maxReadAhead: _options.MaxInFlight)
+            maxInFlightWrites: StreamWindow, maxReadAhead: StreamWindow)
         {
             LengthKnown = lengthKnown,
         };
     }
+
+    /// <summary>单个流自己的在途上限。</summary>
+    /// <remarks>
+    /// <para>
+    /// 开着自适应时取深度的<b>上限</b>，不取起始值：让管线的在途额度成为唯一的限流点。
+    /// 「深度是不是瓶颈」的信号只在管线额度被用光时才记得到 ——
+    /// 流自带一个与管线起始深度一样大的上限的话，它总是先卡住，管线额度永远空着，深度永远不长。
+    /// </para>
+    /// <para>
+    /// 曾经就是这样：单文件上传、下载（最常见的用法）的窗口钉死在 64 × 块大小，
+    /// 服务端没宣告 limits 时是 2 MiB，200 ms RTT 下约 10 MB/s —— 正是自适应深度想消灭的那个上限。
+    /// 只有多个流并发时深度才会长。
+    /// </para>
+    /// </remarks>
+    private int StreamWindow => _options.AdaptivePipelineDepth ? _options.MaxPipelineDepth : _options.MaxInFlight;
+
+    /// <summary>流水线的深度被调大过几次（诊断与测试用）。</summary>
+    internal int PipelineDepthIncreases => _pipeline.DepthIncreases;
+
+    /// <summary>单个写入流最多有多少字节「已经发出、还没被服务端确认」。</summary>
+    /// <remarks>
+    /// <para>
+    /// 流水线写的完成顺序不保证与偏移顺序一致：断线时远端文件的长度只是「已确认的最高偏移」，
+    /// 它之前最多这么多字节可能还是空洞。只凭远端长度续传的话，要从长度往回退这么多再比对。
+    /// </para>
+    /// <para>
+    /// 开着自适应深度时它按深度的<b>上限</b>算 —— 断线那一刻深度长到了多少，事后无从得知。
+    /// 能拿到断线那条流的 <see cref="SftpFileStream.DurableLength"/>（已连续确认的偏移）时用它，不必回退。
+    /// </para>
+    /// </remarks>
+    public long MaxUnconfirmedWriteBytes => (long)StreamWindow * BlockSize;
 
     /// <summary>把整个文件读成字节。</summary>
     public async ValueTask<byte[]> ReadAllBytesAsync(string path, CancellationToken cancellationToken = default)

@@ -146,6 +146,33 @@ public sealed class SftpPipelineDepthTests
 
         byte[] content = await harness.Sftp.ReadAllBytesAsync("/home/joe/big.bin", harness.Token);
         Assert.AreSequenceEqual(payload, content, "数据要一字节不差");
+
+        // 曾经这条只比对数据：单个流自带一个与起始深度一样大的上限，深度从来没长过。
+        Assert.IsGreaterThan(0, harness.Sftp.PipelineDepthIncreases, "单个流下载时深度没有长大");
+    }
+
+    [TestMethod]
+    public async Task 单个流上传时深度也会长大()
+    {
+        LinkCharacteristics link = new(TimeSpan.FromMilliseconds(5));
+
+        SftpOptions options = SftpOptions.Default with
+        {
+            MaxInFlight = 4,
+            BlockSize = 8 * 1024,
+            AdaptivePipelineDepth = true,
+            MaxPipelineDepth = 64,
+        };
+
+        byte[] payload = new byte[400 * 1024];
+        Random.Shared.NextBytes(payload);
+
+        await using Harness harness = await Harness.StartAsync(link, options, _ => { });
+
+        await harness.Sftp.WriteAllBytesAsync("/home/joe/up.bin", payload, cancellationToken: harness.Token);
+
+        Assert.IsGreaterThan(0, harness.Sftp.PipelineDepthIncreases, "单个流上传时深度没有长大");
+        Assert.AreSequenceEqual(payload, harness.SftpServer.Nodes["/home/joe/up.bin"].Content.ToArray(), "数据要一字节不差");
     }
 
     [TestMethod]
@@ -171,6 +198,28 @@ public sealed class SftpPipelineDepthTests
 
         // 需要确定性内存占用的场景（在途数 × 块大小）靠的就是这一条。
         Assert.IsNotNull(SftpOptions.Default with { AdaptivePipelineDepth = false });
+    }
+
+    /// <summary>
+    /// 续传要回退的量必须盖住单个写入流能长到的窗口 —— 按起始在途数算的话，
+    /// 深度长大之后回退不够，续传出来的文件带着空洞。
+    /// </summary>
+    [TestMethod]
+    [DataRow(true, 64, DisplayName = "自适应：按深度上限算")]
+    [DataRow(false, 4, DisplayName = "固定深度：按在途数算")]
+    public async Task 未确认写入量按单个流能长到的窗口算(bool adaptive, int expectedRequests)
+    {
+        SftpOptions options = SftpOptions.Default with
+        {
+            MaxInFlight = 4,
+            BlockSize = 8 * 1024,
+            AdaptivePipelineDepth = adaptive,
+            MaxPipelineDepth = 64,
+        };
+
+        await using Harness harness = await Harness.StartAsync(new LinkCharacteristics(TimeSpan.Zero), options, _ => { });
+
+        Assert.AreEqual((long)expectedRequests * 8 * 1024, harness.Sftp.MaxUnconfirmedWriteBytes);
     }
 
     [TestMethod]
