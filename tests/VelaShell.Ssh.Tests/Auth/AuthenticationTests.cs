@@ -696,6 +696,40 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
             "记录里要看得出走的是桥接那条路");
     }
 
+    /// <summary>
+    /// PAM 两步验证：「Password:」一轮、「Verification code:」再一轮，两轮都是单条不回显。
+    /// 兼答只答第一轮；第二轮回空串 —— 曾经把密码也填了进去，pam_radius、Duo 一类模块会把它转发到第三方。
+    /// </summary>
+    [TestMethod]
+    public async Task 兼答在同一次键盘交互里只答一次密码()
+    {
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                RequiredMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                KeyboardRounds =
+                [
+                    new TestKeyboardRound
+                    {
+                        Prompts = [("Password: ", false)],
+                        ExpectedAnswers = ["hunter2"],
+                    },
+                    new TestKeyboardRound
+                    {
+                        Prompts = [("Verification code: ", false)],
+                        ExpectedAnswers = ["123456"],
+                    },
+                ],
+            });
+
+        Assert.IsNotNull(run.Failed, "没配动态码，这一次本来就该失败");
+        Assert.HasCount(2, run.Observation.KeyboardAnswers);
+        Assert.AreSequenceEqual(["hunter2"], [.. run.Observation.KeyboardAnswers[0]]);
+        Assert.AreSequenceEqual([""], [.. run.Observation.KeyboardAnswers[1]], "密码被填进了动态码那一轮");
+    }
+
     [TestMethod]
     public async Task 关掉开关之后密码不再自动填进键盘交互()
     {

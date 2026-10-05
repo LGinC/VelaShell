@@ -278,7 +278,8 @@ internal static class SshConnectionAssembler
     /// 而用户填的就是同一个密码。没有界面可问时(<paramref name="keyboard" /> 为空)
     /// 由 <see cref="PasswordCredential" /> 的默认行为兼答;有界面时换成
     /// <see cref="KeyboardInteractiveResponder" />:口令提示照样用这个密码答,
-    /// 验证码之类的弹框问用户 —— 库的兼答只看形状,会把密码也填进验证码那一轮,所以要关掉。
+    /// 验证码之类的弹框问用户,一次交互就走完。库的兼答此时关掉:它每次交互只答一次口令、
+    /// 之后的轮次回空串(不会把密码填进验证码那一轮),但那样验证码一轮必然失败,要再走一遍才轮到界面。
     /// </para>
     /// <para>
     /// <b>有界面时每种认证方式后面都跟一条 keyboard-interactive</b>,好接住

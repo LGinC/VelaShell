@@ -239,6 +239,8 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             return null;
         }
 
+        // 这条桥接凭据只用于这一次键盘交互（每次桥接都新造一个），所以「答过了」记在这里就够了。
+        bool answered = false;
         return new KeyboardInteractiveCredential(
             async (challenge, cancellationToken) =>
             {
@@ -247,9 +249,18 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 // 其它形状（多条提示、要回显的提示）意味着这是真正的多因素询问。
                 // 此时**必须仍然回够条数**：中途放弃会把服务端晾在等应答的状态上，
                 // 让整条会话卡住。回空串让服务端干脆地拒绝，我们再换下一条凭据。
-                return challenge.Prompts is not [{ Echo: false }]
-                    ? [.. challenge.Prompts.Select(static _ => string.Empty)]
-                    : (IReadOnlyList<string>)(string[])[await password.GetPasswordAsync(cancellationToken).ConfigureAwait(false)];
+                //
+                // ⚠️ **同一次键盘交互里密码至多答一次**（velashell-docs/zh/ssh/spec/04 §6.5）。
+                //    PAM 两步验证常见的流程是「Password:」一轮、「Verification code:」再一轮，两轮都是单条不回显。
+                //    曾经只看形状不看轮次，第二轮也把密码发了出去：白耗一次失败计数，而且 pam_radius、Duo 一类模块
+                //    会把这一轮的应答转发到 RADIUS 或第三方服务 —— 密码就这样离开了目标主机。
+                if (answered || challenge.Prompts is not [{ Echo: false }])
+                {
+                    return [.. challenge.Prompts.Select(static _ => string.Empty)];
+                }
+
+                answered = true;
+                return [await password.GetPasswordAsync(cancellationToken).ConfigureAwait(false)];
             },
             label: $"{password.Label}（经 keyboard-interactive）");
     }
