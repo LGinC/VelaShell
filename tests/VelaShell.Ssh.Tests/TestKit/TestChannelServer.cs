@@ -106,6 +106,12 @@ internal sealed record TestChannelScript
     /// <summary>拒绝 <c>auth-agent-req@openssh.com</c>。</summary>
     public bool RejectAgentForward { get; init; }
 
+    /// <summary>
+    /// 第一个要应答的通道请求，等这么久才回 —— 期间服务端不处理后面的报文（与真实 sshd 一样按序处理）。
+    /// </summary>
+    /// <remarks>模拟 PAM 慢、命令启动慢：客户端在等应答时放弃了这条通道，应答在它的 CLOSE 之后才到。</remarks>
+    public TimeSpan DelayFirstRequestReply { get; init; }
+
     /// <summary>收到 stdin 也不回补客户端的发送窗口 —— 模拟远端进程不读 stdin。</summary>
     public bool WithholdWindowAdjust { get; init; }
 
@@ -261,6 +267,7 @@ internal sealed class TestChannelServer : IDisposable
 
     /// <summary>本端（服务端）给通道的编号 → 客户端的编号。</summary>
     private readonly Dictionary<uint, uint> _peerIds = [];
+    private int _repliedRequests;
 
     /// <summary>本端能往客户端发多少字节（客户端的接收窗口）。</summary>
     /// <remarks>
@@ -780,6 +787,11 @@ internal sealed class TestChannelServer : IDisposable
 
         if (wantReply)
         {
+            if (_script.DelayFirstRequestReply > TimeSpan.Zero && Interlocked.Increment(ref _repliedRequests) == 1)
+            {
+                await Task.Delay(_script.DelayFirstRequestReply, cancellationToken);
+            }
+
             uint clientChannel = _peerIds.GetValueOrDefault(serverChannel);
             await SendSimpleAsync(
                 success ? SshMessageNumber.ChannelSuccess : SshMessageNumber.ChannelFailure,

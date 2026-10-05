@@ -207,6 +207,44 @@ public sealed class ConnectionTests
         Assert.IsTrue(output.IsSuccess);
     }
 
+    /// <summary>
+    /// 等 exec 应答时取消：通道在本端收尾、CLOSE 已发，对端随后才回那条 exec 的应答。
+    /// 那是合法的在途报文 —— 连接不能因此判 FIFO 失步，同一连接上的其它通道照常可用。
+    /// </summary>
+    [TestMethod]
+    public async Task 等命令应答时取消之后迟到的应答不会打断整条连接()
+    {
+        await using FakeServer server = new(new TestChannelScript
+        {
+            StandardOutput = "ok\n"u8.ToArray(),
+            ExitCode = 0,
+            DelayFirstRequestReply = TimeSpan.FromMilliseconds(500),
+        });
+
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = server.CreateDialer(),
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+
+        using (CancellationTokenSource probeTimeout = new(TimeSpan.FromMilliseconds(100)))
+        {
+            await Assert.ThrowsAsync<OperationCanceledException>(
+                async () => await connection.RunAsync("慢吞吞的探测", cancellationToken: probeTimeout.Token));
+        }
+
+        // 等那条迟到的应答（以及对端对我们 CLOSE 的回应）落地。
+        await Task.Delay(TimeSpan.FromMilliseconds(800));
+
+        Assert.IsTrue(connection.IsAlive, "迟到的应答被当成 FIFO 失步，整条连接断了");
+
+        SshCommandResult output = await connection.RunAsync("echo ok");
+        Assert.AreEqual("ok\n", output.StandardOutput);
+    }
+
     [TestMethod]
     public async Task 命令失败时异常里带着stderr()
     {

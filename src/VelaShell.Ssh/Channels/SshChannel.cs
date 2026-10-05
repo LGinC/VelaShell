@@ -402,12 +402,13 @@ public sealed class SshChannel : IAsyncDisposable
             buffer.WrittenMemory,
             () =>
             {
+                // 账本已经关了（通道在本端收尾了）也不发：发出去的话对端的应答回来时没人认领。
                 if (!MayStillSend())
                 {
                     return false;
                 }
-                reply = _pendingRequests.Register();
-                return true;
+                reply = _pendingRequests.TryRegister();
+                return reply is not null;
             },
             cancellationToken).ConfigureAwait(false);
 
@@ -732,8 +733,22 @@ public sealed class SshChannel : IAsyncDisposable
     }
 
     /// <summary>收到通道请求的应答。</summary>
-    /// <returns>队列里有没有人在等。<see langword="false"/> 说明 FIFO 失步了。</returns>
-    internal bool OnRequestReply(bool success) => _pendingRequests.TryComplete(success);
+    /// <returns><see langword="false"/> 说明 FIFO 失步了：账本还开着，却没有人在等。</returns>
+    /// <remarks>
+    /// <para>
+    /// 账本已经关了（本端收尾过这条通道）时，迟到的应答照单吸收，不算失步。
+    /// 典型的时序：exec 已经发出，调用方等应答时取消了 → 释放通道，CLOSE 发出、账本关掉、
+    /// 通道号还扣着等对端的 CLOSE → 对端按顺序先回 exec 的应答，再回 CLOSE。
+    /// 那个应答是合法的在途报文（RFC 4254 §5.3；velashell-docs/zh/ssh/spec/05 §1 规则 4），
+    /// 在途的请求在关账时已经以「没成」结算过了。
+    /// </para>
+    /// <para>
+    /// 曾经它被判成失步，整条连接以 PROTOCOL_ERROR 断开 —— 同一连接上的终端、SFTP、隧道一起陪葬，
+    /// 而起因只是一个带超时的探测命令。
+    /// </para>
+    /// </remarks>
+    internal bool OnRequestReply(bool success) =>
+        _pendingRequests.TryComplete(success) || _pendingRequests.IsClosed;
 
     /// <summary>收到对端发来的通道请求。</summary>
     /// <returns>我们是否「认得」它。不认得且对端要应答时，调用方要回 <c>CHANNEL_FAILURE</c>。</returns>
