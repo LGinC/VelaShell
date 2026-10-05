@@ -648,6 +648,26 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 名字不合法的目录项被丢掉_不拼出目录以外的路径()
+    {
+        // 服务端回 `../x`、`a/b` 或空名字：拼出来的 FullPath 指向这个目录以外（或就是它自己），
+        // 照着它递归复制、删除，动的就是别处的东西。
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/ok.txt", Text("x")),
+            new TestSftpOptions { ExtraDirectoryEntryNames = ["../escape", "a/b", "/etc/passwd", "", "nul\0x", "..", "."] });
+
+        List<SftpDirectoryEntry> entries = [];
+        await foreach (SftpDirectoryEntry entry in
+            harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+        {
+            entries.Add(entry);
+        }
+
+        Assert.AreSequenceEqual(new[] { "ok.txt" }, entries.Select(e => e.Name).ToArray());
+        Assert.AreEqual(5, harness.Sftp.MalformedEntriesSkipped, "「.」「..」是按选项过滤的，不算不合法");
+    }
+
+    [TestMethod]
     public async Task 符号链接保留是链接这个事实()
     {
         await using Harness harness = await Harness.StartAsync(server =>

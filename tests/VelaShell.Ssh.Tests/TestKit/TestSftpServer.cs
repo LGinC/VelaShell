@@ -75,6 +75,9 @@ internal sealed record TestSftpOptions
     /// <summary>每批 <c>READDIR</c> 最多回这么多项。</summary>
     public int ReadDirBatchSize { get; init; } = 2;
 
+    /// <summary>每个目录的列表末尾再塞进这些名字（不对应任何节点）—— 模拟一个回 <c>../x</c>、<c>a/b</c>、空名字的服务端。</summary>
+    public IReadOnlyList<string> ExtraDirectoryEntryNames { get; init; } = [];
+
     /// <summary>
     /// 把应答<b>乱序</b>发出去（攒够两条再倒着发）。
     /// </summary>
@@ -401,7 +404,7 @@ internal sealed class TestSftpServer
 
         HandleState state = new(path, isDirectory: true)
         {
-            Entries = [.. ChildrenOf(path)],
+            Entries = [.. ChildrenOf(path), .. _options.ExtraDirectoryEntryNames],
         };
         return BuildHandle(id, NewHandle(state));
     }

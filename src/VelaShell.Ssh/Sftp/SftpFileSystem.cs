@@ -62,6 +62,9 @@ public sealed class SftpFileSystem : IAsyncDisposable
     private readonly SshChannel _channel;
     private readonly SftpRequestPipeline _pipeline;
     private readonly SftpOptions _options;
+
+    // 列目录可以在几个枚举里并发跑 —— 走 Interlocked。
+    private int _malformedEntriesSkipped;
     private bool _disposed;
 
     private SftpFileSystem(
@@ -462,6 +465,15 @@ public sealed class SftpFileSystem : IAsyncDisposable
             {
                 continue;
             }
+
+            // 〔velashell-docs/zh/ssh/spec/06 §4.4〕目录项只能是一个名字。服务端回 `../x`、`a/b` 或空名字时，
+            // 拼出来的 FullPath 指向这个目录以外的地方（或者就是这个目录本身）—— 照着它递归复制、删除，
+            // 动的就是别处的东西。这种项一律丢掉，不交给调用方。
+            if (!IsPlainName(entry.Name))
+            {
+                Interlocked.Increment(ref _malformedEntriesSkipped);
+                continue;
+            }
             kept.Add(entry);
         }
 
@@ -680,6 +692,9 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
     /// <summary>流水线的深度被调大过几次（诊断与测试用）。</summary>
     internal int PipelineDepthIncreases => _pipeline.DepthIncreases;
+
+    /// <summary>列目录时丢掉了几个名字不合法的项（空名字、含 <c>/</c> 或 NUL；诊断与测试用）。</summary>
+    internal int MalformedEntriesSkipped => Volatile.Read(ref _malformedEntriesSkipped);
 
     /// <summary>单个写入流最多有多少字节「已经发出、还没被服务端确认」。</summary>
     /// <remarks>
@@ -918,6 +933,10 @@ public sealed class SftpFileSystem : IAsyncDisposable
             // 通道已经没了的话服务端会自己回收句柄。
         }
     }
+
+    /// <summary>目录项的名字是不是一个单纯的名字：非空、不含 <c>/</c> 与 NUL。</summary>
+    internal static bool IsPlainName(string name) =>
+        name.Length > 0 && !name.Contains('/', StringComparison.Ordinal) && !name.Contains('\0', StringComparison.Ordinal);
 
     /// <summary>拼路径。<b>SFTP 的路径分隔符永远是 <c>/</c></b>，与本机平台无关。</summary>
     internal static string CombinePath(string directory, string name)
