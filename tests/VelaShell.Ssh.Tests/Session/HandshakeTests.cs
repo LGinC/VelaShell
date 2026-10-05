@@ -264,6 +264,27 @@ public sealed class HandshakeTests
     }
 
     [TestMethod]
+    public async Task 严格KEX下对端的第一个报文不是KEXINIT时断开()
+    {
+        // 读 KEXINIT 时还不知道会协商出严格 KEX，前面的 IGNORE 只能先照 RFC 跳过 —— 协商完必须回头追究。
+        SshProtocolException ex = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await HandshakeAsync(
+                serverOptions: new TestSshServerOptions { InjectIgnoreBeforeKexInit = true }));
+
+        Assert.AreEqual(SshFailureReason.ProtocolError, ex.Reason);
+        Assert.Contains("第一个报文", ex.Message);
+    }
+
+    [TestMethod]
+    public async Task 不启用严格KEX时KEXINIT之前的IGNORE照常跳过()
+    {
+        (SshKeyExchangeResult client, _) = await HandshakeAsync(
+            serverOptions: new TestSshServerOptions { AdvertiseStrictKex = false, InjectIgnoreBeforeKexInit = true });
+
+        Assert.IsFalse(client.StrictKeyExchange);
+    }
+
+    [TestMethod]
     public async Task 不启用严格KEX时IGNORE被忽略()
     {
         // 老服务端不宣告严格 KEX。此时按 RFC 4253 §11.2 忽略这些报文 ——

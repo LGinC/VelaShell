@@ -45,6 +45,13 @@ internal sealed record TestSshServerOptions
     /// </remarks>
     public bool InjectIgnoreDuringKex { get; init; }
 
+    /// <summary>在首个 <c>KEXINIT</c> <b>之前</b>先发一个 <c>SSH_MSG_IGNORE</c>。</summary>
+    /// <remarks>
+    /// 严格 KEX 要求对端的第一个报文就是 <c>KEXINIT</c>：客户端读 KEXINIT 时会照 RFC 跳过前面的 IGNORE，
+    /// 等协商出严格 KEX 之后必须回头追究。
+    /// </remarks>
+    public bool InjectIgnoreBeforeKexInit { get; init; }
+
     /// <summary>把签名故意弄坏，用来验证客户端确实在验签。</summary>
     public bool CorruptSignature { get; init; }
 
@@ -242,6 +249,10 @@ internal sealed class TestSshServer : IAsyncDisposable
         byte[] serverKexInit = ourKexInitAlreadySent ?? BuildServerKexInit(algorithms, KeyFor(isInitial), isInitial);
         if (ourKexInitAlreadySent is null)
         {
+            if (isInitial && _options.InjectIgnoreBeforeKexInit)
+            {
+                await send(new byte[] { (byte)SshMessageNumber.Ignore, 0, 0, 0, 0 }, cancellationToken);
+            }
             await send(serverKexInit, cancellationToken);
         }
         // 重协商时客户端的 KEXINIT 已经被收包循环读掉了 —— 不能再等一个。

@@ -78,6 +78,9 @@ internal sealed class SshKeyExchangeRunner
     private readonly IHostKeyPolicy _hostKeyPolicy;
     private readonly int _minimumRsaKeyBits;
 
+    /// <summary>密钥交换期间照 RFC 跳过的 IGNORE / DEBUG / UNIMPLEMENTED 一共几个（严格 KEX 的追究要看它）。</summary>
+    private int _skippedKexPackets;
+
     /// <summary>创建一个密钥交换执行器。</summary>
     /// <param name="transport">传输。</param>
     /// <param name="algorithms">本端的算法清单。</param>
@@ -206,9 +209,13 @@ internal sealed class SshKeyExchangeRunner
             await _transport.SendAsync(clientKexInitPayload, cancellationToken).ConfigureAwait(false);
         }
 
+        // 读对端 KEXINIT 时还不知道会不会协商出严格 KEX，只能先按 RFC 跳过它前面的 IGNORE / DEBUG ——
+        // 记下跳过了几个，协商完再回头追究（见下面的 ②）。
+        int skippedBefore = _skippedKexPackets;
         byte[] serverKexInitPayload = peerKexInit ?? (await ReadKexPacketAsync(
                 SshMessageNumber.KexInit, strictKex: false, cancellationToken).ConfigureAwait(false))
             .Payload.ToArray();
+        int skippedBeforeKexInit = _skippedKexPackets - skippedBefore;
         var serverKexInit = SshKexInitMessage.Decode(serverKexInitPayload);
 
         // ② 协商。任一类没有交集就抛 SshNegotiationException（带双方名单）。
@@ -232,6 +239,18 @@ internal sealed class SshKeyExchangeRunner
         // 规则 (a)「密钥交换期间出现 IGNORE / DEBUG / UNIMPLEMENTED 即断开」只管首次交换；
         // 重协商期间它们是合法的普通报文。
         bool strictReads = isInitial && negotiated.StrictKeyExchange;
+
+        // 〔velashell-docs/zh/ssh/spec/03 §六〕严格 KEX 下，首次交换里对端的**第一个报文**必须就是 KEXINIT。
+        // 读 KEXINIT 时还不知道会协商出严格 KEX，前面的 IGNORE / DEBUG 被照 RFC 跳过了 —— 这里补上追究：
+        // （KEXINIT 之前能出现、又不会当场报错的只有被跳过的那几种。）序号会在 NEWKEYS 处归零，
+        // Terrapin 的截断本来做不成，这一条是规范符合性与纵深防御。
+        if (strictReads && skippedBeforeKexInit > 0)
+        {
+            throw new SshProtocolException(
+                SshPhase.KeyExchange,
+                $"启用严格 KEX 时，对端的第一个报文必须是 KEXINIT，而它之前还有 {skippedBeforeKexInit} 个报文 —— " +
+                "这正是 Terrapin 攻击（CVE-2023-48795）利用的报文位置。");
+        }
 
         // ③ 交换公开值。
         using ISshKeyExchange kex = SshKeyExchangeFactory.Create(negotiated.KeyExchange);
@@ -573,6 +592,7 @@ internal sealed class SshKeyExchangeRunner
                             $"启用严格 KEX 时，密钥交换期间不允许出现 {packet.MessageNumber} —— " +
                             "这正是 Terrapin 攻击（CVE-2023-48795）利用的报文。");
                     }
+                    _skippedKexPackets++;
                     continue;
 
                 default:
