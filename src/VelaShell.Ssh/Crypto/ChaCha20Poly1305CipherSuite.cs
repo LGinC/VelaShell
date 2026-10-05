@@ -277,6 +277,13 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
 
     private void DecryptLengthField(ReadOnlySpan<byte> encrypted, uint sequenceNumber, Span<byte> plain) => Rewind(_lengthEngine, sequenceNumber).ProcessBytes(encrypted, plain);
 
+    /// <remarks>
+    /// ⚠️ 〔已知局限〕BouncyCastle 的 <see cref="KeyParameter"/> 总是另存一份密钥，公开 API 拿不到那份去清零 ——
+    /// 每个报文的 Poly1305 一次性密钥因此在堆上留一份，等 GC。它只对那一个报文（那一个序号）有用，
+    /// 而 Poly1305 自己的内部状态里本来也留着由它展开的 r / s，直到下一次 Init。
+    /// 同理，每个报文换 nonce 都要新建 <see cref="ParametersWithIV"/>（引擎没有公开的「只换 nonce」入口）。
+    /// 要消掉这几处小分配与副本得自己写 Poly1305 / ChaCha20 —— 那是 AGENTS 3.3 不许的。我们这边的那份（栈上）照常清零。
+    /// </remarks>
     private void ComputeTag(ReadOnlySpan<byte> polyKey, ReadOnlySpan<byte> data, Span<byte> tag)
     {
         _poly.Init(new KeyParameter(polyKey));
@@ -294,8 +301,10 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
         _disposed = true;
 
         // 引擎里留着密钥展开后的状态：装一把全零的钥把它覆盖掉。
+        // Poly1305 里留着最后一个报文的 r / s（由那个报文的一次性密钥展开）：同样用全零的钥覆盖。
         byte[] zeroKey = new byte[32];
         _payloadEngine.Init(forEncryption: true, new ParametersWithIV(new KeyParameter(zeroKey), _nonce));
         _lengthEngine.Init(forEncryption: true, new ParametersWithIV(new KeyParameter(zeroKey), _nonce));
+        _poly.Init(new KeyParameter(zeroKey));
     }
 }
