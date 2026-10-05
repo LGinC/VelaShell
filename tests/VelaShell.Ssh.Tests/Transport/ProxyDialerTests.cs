@@ -364,6 +364,9 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
     [DataRow("$(id)", null, DisplayName = "sh 的命令替换")]
     [DataRow("host.example.com", "$(id)", DisplayName = "用户名里的命令替换")]
     [DataRow("host\nrm -rf ~", null, DisplayName = "换行")]
+    [DataRow("-oProxyUseFdpass", null, DisplayName = "主机名以 - 开头:被 ssh 当成选项")]
+    [DataRow("-e", null, DisplayName = "主机名以 - 开头:被 nc 当成选项")]
+    [DataRow("host.example.com", "-x", DisplayName = "用户名以 - 开头")]
     public void 主机名或用户名里有shell元字符时不代入ProxyCommand(string host, string? user)
     {
         // 主机名、用户名常常不是写配置的人给的（ssh:// 链接、导入的会话、快速连接框）。

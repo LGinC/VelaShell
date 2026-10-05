@@ -83,9 +83,21 @@ internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTranspor
     /// 不做转义而是直接拒绝：两种 shell 的引用规则不一样，<c>cmd</c> 的尤其难以写对；
     /// 而合法的主机名与用户名本来就只用得到这几种字符。
     /// </para>
+    /// <para>
+    /// ⚠️ <b>开头的 <c>-</c> 也拒绝。</b>字符全都合法，值本身照样能变成别的东西：模板里的 <c>nc</c> / <c>ncat</c> / <c>socat</c>
+    /// 会把 <c>-e/bin/sh</c>、<c>-oProxyCommand=…</c> 这样的值当成<b>选项</b>解析 —— 那是参数注入（与 Git 的 CVE-2017-1000117 同一类）。
+    /// 合法的主机名与用户名不以 <c>-</c> 开头（RFC 1123 的主机名以字母或数字开头）。
+    /// </para>
     /// </remarks>
     private static string Checked(string value, string what, bool allowAt)
     {
+        if (value.StartsWith('-'))
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{what}以「-」开头，不能代入 ProxyCommand：命令里的 nc / ssh 之类会把它当成选项解析。");
+        }
+
         foreach (char c in value)
         {
             bool safe = char.IsLetterOrDigit(c) || c is '.' or '-' or '_' || (c == ':' && !allowAt) || (c == '@' && allowAt);
