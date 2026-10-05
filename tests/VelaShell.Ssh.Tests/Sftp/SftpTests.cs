@@ -998,6 +998,42 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 取单个路径的完整条目_与列目录给出的一样()
+    {
+        await using Harness harness = await Harness.StartAsync(server =>
+        {
+            server.AddDirectory("/home/joe/real");
+            server.AddSymbolicLink("/home/joe/link", "/home/joe/real");
+            server.AddSymbolicLink("/home/joe/dangling", "/nowhere");
+            server.AddFile(@"/home/joe/a\b.txt", Text("x"));
+        });
+
+        SftpDirectoryEntry? link = await harness.Sftp.GetEntryAsync("/home/joe/link", harness.Token);
+        Assert.IsNotNull(link);
+        Assert.IsTrue(link.Value.IsSymbolicLink);
+        Assert.IsTrue(link.Value.IsDirectory, "其余字段描述的是链接指向的对象");
+        Assert.AreEqual("/home/joe/real", link.Value.LinkTarget);
+        Assert.AreEqual("link", link.Value.Name);
+
+        SftpDirectoryEntry? dangling = await harness.Sftp.GetEntryAsync("/home/joe/dangling", harness.Token);
+        Assert.IsTrue(dangling!.Value.IsBrokenLink, "断链照样有条目，不是「找不到」");
+
+        SftpDirectoryEntry? file = await harness.Sftp.GetEntryAsync(@"/home/joe/a\b.txt", harness.Token);
+        Assert.AreEqual(@"a\b.txt", file!.Value.Name, "名字按 SFTP 的「/」取，反斜杠是名字的一部分");
+
+        Assert.IsNull(await harness.Sftp.GetEntryAsync("/home/joe/none", harness.Token));
+    }
+
+    [TestMethod]
+    [DataRow("/a/b", "b")]
+    [DataRow("/a/b/", "b")]
+    [DataRow("/", "/")]
+    [DataRow("rel", "rel")]
+    [DataRow(@"dir/a\b", @"a\b")]
+    public void 路径的最后一段按斜杠取(string path, string name) =>
+        Assert.AreEqual(name, SftpFileSystem.NameOf(path));
+
+    [TestMethod]
     public async Task 符号链接保留是链接这个事实()
     {
         await using Harness harness = await Harness.StartAsync(server =>

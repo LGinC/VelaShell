@@ -384,44 +384,10 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     public Task<SftpEntry?> GetEntryAsync(string path, CancellationToken ct = default) =>
         GuardedAsync(async () =>
         {
-            SftpFileSystem fs = EnsureConnected();
-
-            SftpFileAttributes link;
-            try
-            {
-                link = await fs.GetLinkAttributesAsync(path, ct).ConfigureAwait(false);
-            }
-            catch (SftpException ex) when (ex.IsNotFound)
-            {
-                return null;
-            }
-
-            if (!link.IsSymbolicLink)
-            {
-                return MapEntry(path, link, isSymbolicLink: false, linkTarget: null);
-            }
-
-            string? target = null;
-            try
-            {
-                target = await fs.ReadSymbolicLinkAsync(path, ct).ConfigureAwait(false);
-            }
-            catch (SftpException)
-            {
-                // 读不到目标文本(权限、服务端不支持 readlink)不影响条目本身。
-            }
-
-            try
-            {
-                SftpFileAttributes resolved = await fs.GetAttributesAsync(path, ct).ConfigureAwait(false);
-                return MapEntry(path, resolved, isSymbolicLink: true, target);
-            }
-            catch (SftpException)
-            {
-                // 断链:保留链接自身的属性,IsDirectory 为 false。
-                // **不能返回 null** —— 链接本身是存在的,删除它不能先报"找不到"。
-                return MapEntry(path, link, isSymbolicLink: true, target);
-            }
+            // 库给的完整条目:链接保留「是链接」这个事实、并发补上目标与跟随后的属性,断链保留链接自身的属性,
+            // 名字按 SFTP 的「/」取(不用本机的 Path.GetFileName —— Windows 上它把远端名字里合法的「\」当分隔符)。
+            SftpDirectoryEntry? entry = await EnsureConnected().GetEntryAsync(path, ct).ConfigureAwait(false);
+            return entry is { } found ? MapEntry(found) : null;
         }, ct);
 
     /// <inheritdoc />
@@ -456,7 +422,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         MapEntry(entry.FullPath, entry.Attributes, entry.IsSymbolicLink, entry.LinkTarget, entry.Name);
 
     internal static SftpEntry MapEntry(
-        string fullPath, SftpFileAttributes attributes, bool isSymbolicLink, string? linkTarget, string? name = null)
+        string fullPath, SftpFileAttributes attributes, bool isSymbolicLink, string? linkTarget, string name)
     {
         // PermissionBits 已经去掉了高位的文件类型（0xF000）——
         // 直接用 Permissions 在这九位上结果一样，但读起来像是在碰类型位。
@@ -464,7 +430,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
         return new SftpEntry
         {
-            Name = name ?? Path.GetFileName(fullPath),
+            Name = name,
             FullName = fullPath,
             Length = (long)attributes.Size,
             IsDirectory = attributes.IsDirectory,

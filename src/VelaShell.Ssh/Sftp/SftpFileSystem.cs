@@ -663,14 +663,24 @@ public sealed class SftpFileSystem : IAsyncDisposable
             entry = entry with { Attributes = better };
         }
 
-        if (!entry.Attributes.IsSymbolicLink)
+        return await CompleteEntryAsync(entry.Name, fullPath, entry.Attributes, entry.LongName, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// 由不跟随链接的属性补成完整的条目：不是链接就是它自己；是链接就并发补上目标与跟随后的属性。
+    /// </summary>
+    private async ValueTask<SftpDirectoryEntry> CompleteEntryAsync(
+        string name, string fullPath, SftpFileAttributes linkAttributes, string longName, CancellationToken cancellationToken)
+    {
+        if (!linkAttributes.IsSymbolicLink)
         {
             return new SftpDirectoryEntry(
-                entry.Name, fullPath, entry.Attributes,
-                IsSymbolicLink: false, LinkTarget: null, IsBrokenLink: false, entry.LongName);
+                name, fullPath, linkAttributes,
+                IsSymbolicLink: false, LinkTarget: null, IsBrokenLink: false, longName);
         }
 
-        // 链接：目标与跟随后的属性一起要。
+        // 链接：目标与跟随后的属性一起要。并发发出 —— 它们在同一条通道上流水线，串行就是多两轮往返。
         Task<string?> targetTask = ReadLinkQuietlyAsync(fullPath, cancellationToken);
         Task<SftpFileAttributes?> followedTask = StatQuietlyAsync(fullPath, cancellationToken);
 
@@ -682,13 +692,53 @@ public sealed class SftpFileSystem : IAsyncDisposable
         // 断链：**保留链接自身的属性**，IsDirectory 为 false。
         // 返回 null 是不对的 —— 链接本身是存在的，删除它不能先报「找不到」。
         return new SftpDirectoryEntry(
-            entry.Name,
+            name,
             fullPath,
-            followed ?? entry.Attributes,
+            followed ?? linkAttributes,
             IsSymbolicLink: true,
             LinkTarget: target,
             IsBrokenLink: followed is null,
-            entry.LongName);
+            longName);
+    }
+
+    /// <summary>取一个路径的完整条目（与列目录给出的一样：链接保留「是链接」这个事实，并补上目标与跟随后的属性）。</summary>
+    /// <returns>路径不存在时为 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/06 §八〕先不跟随地 stat；是链接才并发补 READLINK 与跟随的 stat —— 普通文件一轮往返，链接两轮。
+    /// 曾经没有这个方法，宿主自己复制了一份：串行三轮往返、只吞 SFTP 异常，还用本机的 <c>Path.GetFileName</c> 取名字 ——
+    /// Windows 上把远端名字里合法的 <c>\</c> 当成了分隔符。
+    /// </para>
+    /// <para><see cref="SftpDirectoryEntry.Name"/> 是路径最后一个 <c>/</c> 之后的那一段（SFTP 的分隔符永远是 <c>/</c>）。</para>
+    /// </remarks>
+    public async ValueTask<SftpDirectoryEntry?> GetEntryAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(path);
+
+        SftpFileAttributes linkAttributes;
+        try
+        {
+            linkAttributes = await GetLinkAttributesAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (SftpException ex) when (ex.IsNotFound)
+        {
+            return null;
+        }
+
+        return await CompleteEntryAsync(NameOf(path), path, linkAttributes, longName: "", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>路径的最后一段（按 <c>/</c> 分；末尾的 <c>/</c> 不算；根就是 <c>/</c>）。</summary>
+    internal static string NameOf(string path)
+    {
+        string trimmed = path.Length > 1 ? path.TrimEnd('/') : path;
+        if (trimmed.Length == 0)
+        {
+            return "/";
+        }
+
+        int slash = trimmed.LastIndexOf('/');
+        return slash < 0 || trimmed.Length == 1 ? trimmed : trimmed[(slash + 1)..];
     }
 
     // 下面两个「悄悄」版本吞的是<b>这一条应答</b>的问题：服务端拒了（SftpException），
