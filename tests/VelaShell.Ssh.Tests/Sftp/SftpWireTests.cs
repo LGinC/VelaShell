@@ -201,6 +201,34 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 不认识的标志位不写回_SETSTAT照样完整()
+    {
+        // stat 回来的属性带着 v4 起的位（0x40 之类）：原样写回而不写对应字段，发出去的就是一个畸形的 SETSTAT。
+        SftpFileAttributes fromServer = new()
+        {
+            Flags = SftpAttributeFields.Size | (SftpAttributeFields)0x40 | SftpAttributeFields.Permissions,
+            Size = 7,
+            Permissions = 0x81A4,
+            Extended = [],
+        };
+
+        ArrayBufferWriter<byte> buffer = new();
+        SftpWire.WriteSetStat(buffer, 9, "/f", fromServer, SftpNameCodec.Utf8);
+
+        ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
+        SftpWire.TryReadFrame(ref input, out SftpFrame frame);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        reader.ReadUInt32();
+        reader.ReadUtf8String(1024);
+        uint flags = reader.ReadUInt32();
+
+        Assert.AreEqual((uint)(SftpAttributeFields.Size | SftpAttributeFields.Permissions), flags);
+        Assert.AreEqual(7UL, reader.ReadUInt64());
+        Assert.AreEqual(0x81A4U, reader.ReadUInt32());
+        Assert.IsTrue(reader.IsEmpty, "后面不该再有东西");
+    }
+
+    [TestMethod]
     public void 属主与属组共用一个标志位()
     {
         // draft-02 §5：两者共用 0x02。只写一个会让后面所有字段错位。

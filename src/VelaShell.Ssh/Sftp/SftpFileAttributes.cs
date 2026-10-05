@@ -119,10 +119,20 @@ public readonly record struct SftpFileAttributes
     /// <summary>最后访问时间。</summary>
     public DateTimeOffset LastAccessTime => DateTimeOffset.FromUnixTimeSeconds(AccessTime);
 
+    /// <summary>v3 认得、也写得出对应字段的那几个标志位。</summary>
+    private const SftpAttributeFields WritableFields =
+        SftpAttributeFields.Size | SftpAttributeFields.UidGid | SftpAttributeFields.Permissions
+        | SftpAttributeFields.Times | SftpAttributeFields.Extended;
+
     /// <summary>写进报文。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §4.2〕<b>只写认得的标志位。</b>stat 回来的属性里可能带着本库不认识的位（v4 起的字段），
+    /// 曾经原样写回而不写对应的字段：拿 stat 的结果改一项再 <c>SetAttributesAsync</c>，发出去的就是一个畸形的 SETSTAT ——
+    /// 服务端按那个位去读一个不存在的字段。
+    /// </remarks>
     internal void Write(ref SshDataWriter writer)
     {
-        writer.WriteUInt32((uint)Flags);
+        writer.WriteUInt32((uint)(Flags & WritableFields));
 
         if (HasSize)
         {
