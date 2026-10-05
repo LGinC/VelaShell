@@ -320,14 +320,29 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         byte[] response = await ExchangeAsync(request.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
+        byte[] signature;
+        string signedWith;
         try
         {
-            return ParseSignature(response);
+            signature = ParseSignature(response);
+            signedWith = new SshDataReader(new ReadOnlySequence<byte>(signature)).ReadUtf8String(MaxMessageLength);
         }
         catch (SshWireFormatException ex)
         {
             throw Malformed("签名", ex);
         }
+
+        // 〔velashell-docs/zh/ssh/spec/04 §4.3〕签名里的算法名要与请求的一致。老版本的 agent（不认 SHA-2 标志位的 Pageant 之类）
+        // 会照旧回一个 ssh-rsa（SHA-1）签名：交出去的话，认证器把它当 rsa-sha2-512 发给服务端，用户只看到 Permission denied；
+        // AllowSha1RsaSignatures = false 的意图也被悄悄绕过了。证书的签名算法名不带证书后缀。
+        string requested = SshPublicKey.StripCertificateSuffix(algorithm);
+        if (!string.Equals(signedWith, requested, StringComparison.Ordinal))
+        {
+            throw new SshAgentException(SshFailureReason.Unsupported,
+                $"ssh-agent 用 {PeerText.Sanitize(signedWith, 64)} 签了名，而请求的是 {requested} —— " +
+                "这个 agent 多半太老，不认 SHA-2 的签名标志位。升级 agent，或者改用私钥文件。");
+        }
+        return signature;
     }
 
     private static byte[] ParseSignature(byte[] response)

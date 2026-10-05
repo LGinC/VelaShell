@@ -71,6 +71,50 @@ public sealed class AgentListIdentitiesTests
         Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
     }
 
+    /// <summary>
+    /// 〔spec/04 §4.3〕不认 SHA-2 标志位的老 agent 照旧回 ssh-rsa 签名：不交出去（交出去的话认证器当 rsa-sha2-512 发，
+    /// 用户只看到 Permission denied，「不许 SHA-1」的意图也被绕过）。
+    /// </summary>
+    [TestMethod]
+    public async Task agent签名的算法与请求的不一致时不交出去()
+    {
+        byte[] reply = SignResponse("ssh-rsa");
+
+        SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
+            async () => await WithScriptedReplyAsync(reply, client => client.SignAsync(new byte[] { 1 }, new byte[] { 2 }, "rsa-sha2-512").AsTask()));
+
+        Assert.AreEqual(Diagnostics.SshFailureReason.Unsupported, error.Reason);
+        Assert.Contains("ssh-rsa", error.Message);
+    }
+
+    /// <summary>证书的签名算法名不带证书后缀：请求 rsa-sha2-512-cert-v01 时回 rsa-sha2-512 是对的。</summary>
+    [TestMethod]
+    public async Task agent签名的算法与请求一致时照常交出()
+    {
+        byte[] reply = SignResponse("rsa-sha2-512");
+        byte[]? signature = null;
+
+        await WithScriptedReplyAsync(reply, async client =>
+            signature = await client.SignAsync(new byte[] { 1 }, new byte[] { 2 }, "rsa-sha2-512-cert-v01@openssh.com"));
+
+        Assert.IsNotNull(signature);
+    }
+
+    /// <summary>一条 SIGN_RESPONSE：签名 blob 是 <c>string 算法名 ‖ string 签名</c>。</summary>
+    private static byte[] SignResponse(string algorithm)
+    {
+        System.Buffers.ArrayBufferWriter<byte> blob = new();
+        Ssh.Protocol.SshDataWriter blobWriter = new(blob);
+        blobWriter.WriteUtf8String(algorithm);
+        blobWriter.WriteString(new byte[64]);
+
+        System.Buffers.ArrayBufferWriter<byte> reply = new();
+        Ssh.Protocol.SshDataWriter writer = new(reply);
+        writer.WriteByte(14);   // SSH_AGENT_SIGN_RESPONSE
+        writer.WriteString(blob.WrittenSpan);
+        return reply.WrittenSpan.ToArray();
+    }
+
     /// <summary>对端读掉一条请求、回一条写好的应答（不经 TestAgent，好造畸形的）。</summary>
     private static async Task WithScriptedReplyAsync(byte[] reply, Func<SshAgentClient, Task> act)
     {
