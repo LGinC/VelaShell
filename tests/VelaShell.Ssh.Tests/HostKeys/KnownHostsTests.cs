@@ -542,6 +542,54 @@ public sealed class KnownHostsTests
         Assert.IsFalse(File.Exists(path), "一行都不该写");
     }
 
+    /// <summary>
+    /// 读不出来（被别的进程独占）报带原因码的 <see cref="SshConnectException"/>。
+    /// 曾经漏出 BCL 异常：<see cref="IOException"/> 在建连路上被归成「对端断开」，<see cref="UnauthorizedAccessException"/> 干脆接不住。
+    /// </summary>
+    [TestMethod]
+    public async Task 读不出来时报存储失败()
+    {
+        string path = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+        File.WriteAllText(path, "");
+
+        try
+        {
+            SshConnectException error;
+            await using (FileStream exclusive = new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+                    async () => await KnownHostsFile.LoadAsync(path));
+            }
+
+            Assert.AreEqual(SshFailureReason.HostKeyStoreFailed, error.Reason);
+            Assert.IsInstanceOfType<IOException>(error.InnerException);
+            Assert.Contains(path, error.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    [TestMethod]
+    public async Task 写不进去时报存储失败()
+    {
+        // 拿一个目录当 known_hosts：追加必然失败（Windows 上是 UnauthorizedAccessException）。
+        DirectoryInfo directory = Directory.CreateTempSubdirectory("kh-");
+        try
+        {
+            SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+                async () => await KnownHostsFile.AppendAsync("a.example.com", 22, MakeKey(), directory.FullName));
+
+            Assert.AreEqual(SshFailureReason.HostKeyStoreFailed, error.Reason);
+            Assert.IsTrue(error.InnerException is IOException or UnauthorizedAccessException, error.InnerException?.GetType().Name);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task 文件末尾没有换行时追加不会把两条记录粘在一起()
     {

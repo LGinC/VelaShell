@@ -40,6 +40,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>変更されたホスト指紋を受け入れ</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>ホスト指紋を保存できませんでした</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>ホスト指紋を拒否</value>
   </data>
@@ -1101,6 +1104,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>ユーザーは {0} の初回接続フィンガープリントを今回のみ信頼しました(保存されません):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>{0} のホスト指紋を信頼しましたが、保存に失敗しました:{2}。この接続はそのまま続行します。VelaShell を再起動した後に接続すると、再度確認されます。指紋:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>鍵 {0} は既に存在します。</value>

@@ -69,6 +69,15 @@ public enum SshFailureReason
     /// <summary>主机密钥与已记录的不符。</summary>
     HostKeyChanged,
 
+    /// <summary>
+    /// 主机密钥的记录读不出来或写不进去：<c>known_hosts</c> 没有权限、被别的进程占着、磁盘满。
+    /// </summary>
+    /// <remarks>
+    /// 读不出来时没法判断这台主机认不认识，连接不放行；「信任并记住」时写不进去不影响这次连接，
+    /// 失败记在 <c>SshConnection.HostKeyPersistFailure</c> 上（velashell-docs/zh/ssh/spec/03 §5.4）。
+    /// </remarks>
+    HostKeyStoreFailed,
+
     // ---- 认证 ----
 
     /// <summary>一次认证尝试失败。</summary>

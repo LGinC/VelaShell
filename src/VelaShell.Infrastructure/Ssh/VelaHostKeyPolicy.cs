@@ -171,15 +171,34 @@ internal sealed class VelaHostKeyPolicy(
     /// 落盘发生在密钥交换阶段、认证**之前**,与 OpenSSH 的时机一致:
     /// 主机身份在 KEX 就已经证明完了,认证成不成功是另一回事。
     /// </para>
+    /// <para>
+    /// 记不下来(信任库出错)时库照常连下去,失败记在连接的 <c>HostKeyPersistFailure</c> 上
+    /// (velashell-docs/zh/ssh/spec/03 §5.4)。这里补两件只有宿主做得了的事:本次运行里记住这把指纹,
+    /// 下一次连接别再弹窗;再告诉用户一声 —— 不然重启之后又被问一遍,他不会知道为什么。
+    /// </para>
     /// </remarks>
     public async ValueTask PersistAsync(
         SshHostKeyContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        await hostKey.TrustHostKeyAsync(
-            context.Host, context.Port, context.Key.PlainKeyType, context.Key.Sha256Fingerprint, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await hostKey.TrustHostKeyAsync(
+                context.Host, context.Port, context.Key.PlainKeyType, context.Key.Sha256Fingerprint, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            HostTrustOnceCache.Remember(context.Host, context.Port, context.Key.Sha256Fingerprint);
+            if (alerts is not null)
+            {
+                await alerts.RaiseAsync("hostkey-persist-failed",
+                    Strings.Format("KeySvc_AlertPersistFailed", context.Target, context.Key.Sha256Fingerprint, ex.Message))
+                    .ConfigureAwait(false);
+            }
+            throw;
+        }
     }
 
     /// <summary>被拒时给用户看的那句话:说清是哪台、哪把指纹、以及下一步去哪操作。</summary>

@@ -9,6 +9,7 @@
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 
@@ -58,6 +59,9 @@ public static class KnownHostsFile
     }
 
     /// <summary>读一份 <c>known_hosts</c> 文件；文件不存在时返回空列表。</summary>
+    /// <exception cref="SshConnectException">
+    /// 文件在却读不出来（没有权限、被占用、IO 错误）：<see cref="SshFailureReason.HostKeyStoreFailed"/>。
+    /// </exception>
     public static async ValueTask<IReadOnlyList<KnownHostEntry>> LoadAsync(
         string? path = null, CancellationToken cancellationToken = default)
     {
@@ -69,9 +73,30 @@ public static class KnownHostsFile
             return [];
         }
 
-        string content = await File.ReadAllTextAsync(actual, cancellationToken).ConfigureAwait(false);
+        string content;
+        try
+        {
+            content = await File.ReadAllTextAsync(actual, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return [];   // 查过之后、读之前被删了：与不存在一样
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw StoreFailed($"读不了 {actual}", ex);
+        }
+
         return Parse(content);
     }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/03 §5.4〕读写 known_hosts 失败。曾经原样漏出 BCL 异常：
+    /// <see cref="IOException"/> 在建连路上被归成「对端断开」、判为可重试，<see cref="UnauthorizedAccessException"/>
+    /// 干脆不是 <see cref="SshException"/>。
+    /// </summary>
+    private static SshConnectException StoreFailed(string what, Exception inner) =>
+        new(SshFailureReason.HostKeyStoreFailed, SshPhase.KeyExchange, $"{what}：{inner.Message}", inner);
 
     private static KnownHostEntry? ParseLine(string line, int lineNumber)
     {
@@ -447,6 +472,9 @@ public static class KnownHostsFile
 
     /// <summary>把一台主机追加进 <c>known_hosts</c>。</summary>
     /// <exception cref="ArgumentException">主机名不能原样写进 <c>known_hosts</c>（见 <see cref="IsRecordableHost"/>）。</exception>
+    /// <exception cref="SshConnectException">
+    /// 写不进去（没有权限、被占用、磁盘满）：<see cref="SshFailureReason.HostKeyStoreFailed"/>。
+    /// </exception>
     /// <remarks>
     /// <b>只追加，不改写已有的行。</b>改写意味着要把整个文件读进来再写回去，
     /// 而那会在并发写时丢掉别的进程刚加的记录 —— OpenSSH 自己也是追加。
@@ -460,23 +488,29 @@ public static class KnownHostsFile
         CancellationToken cancellationToken = default)
     {
         string actual = path ?? DefaultPath;
-        string? directory = Path.GetDirectoryName(actual);
-
-        if (!string.IsNullOrEmpty(directory))
-        {
-            Directory.CreateDirectory(directory);
-        }
-
         string line = FormatEntry(host, port, key, hashHostName) + Environment.NewLine;
 
-        // 文件最后一行没有换行（手工编辑过的文件很常见）的话，直接追加会把新记录接在那一行后面，
-        // 两条一起坏掉 —— 那台主机从此每次都按「没见过」处理。先补一个换行。
-        if (!await EndsWithNewlineAsync(actual, cancellationToken).ConfigureAwait(false))
+        try
         {
-            line = Environment.NewLine + line;
-        }
+            string? directory = Path.GetDirectoryName(actual);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
 
-        await File.AppendAllTextAsync(actual, line, cancellationToken).ConfigureAwait(false);
+            // 文件最后一行没有换行（手工编辑过的文件很常见）的话，直接追加会把新记录接在那一行后面，
+            // 两条一起坏掉 —— 那台主机从此每次都按「没见过」处理。先补一个换行。
+            if (!await EndsWithNewlineAsync(actual, cancellationToken).ConfigureAwait(false))
+            {
+                line = Environment.NewLine + line;
+            }
+
+            await File.AppendAllTextAsync(actual, line, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw StoreFailed($"写不进 {actual}", ex);
+        }
     }
 
     /// <summary>文件不存在、为空，或者最后一个字节是 <c>\n</c>。</summary>

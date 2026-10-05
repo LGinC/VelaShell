@@ -139,6 +139,9 @@ internal sealed class SshKeyExchangeRunner
     /// </remarks>
     internal CancellationToken? DecisionCancellationToken { get; init; }
 
+    /// <summary>「信任并记住」时没记下来的原因（见 <see cref="SshConnection.HostKeyPersistFailure"/>）。</summary>
+    internal Exception? HostKeyPersistFailure { get; private set; }
+
     /// <summary>
     /// 重协商时：首次交换验明、并经策略裁决过的主机密钥。设了就<b>钉住它</b>，不再走主机密钥策略。
     /// </summary>
@@ -443,7 +446,9 @@ internal sealed class SshKeyExchangeRunner
             SshHostKeyVerdict verdict;
             try
             {
-                verdict = await _hostKeyPolicy.EvaluateAsync(context, decisionCts.Token).ConfigureAwait(false);
+                // 〔velashell-docs/zh/ssh/spec/08 §2.1〕策略是调用方的代码：它自己抛的异常原样交还，不归成「对端断开」。
+                verdict = await SshCallbackFaultException.InvokeAsync(
+                    () => _hostKeyPolicy.EvaluateAsync(context, decisionCts.Token)).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (!outer.IsCancellationRequested)
             {
@@ -459,7 +464,16 @@ internal sealed class SshKeyExchangeRunner
 
                 case SshHostKeyDecision.AcceptAndPersist:
                     // 用调用方的令牌，不用连接计时器的 —— 见 DecisionCancellationToken 的说明。
-                    await _hostKeyPolicy.PersistAsync(context, outer).ConfigureAwait(false);
+                    try
+                    {
+                        await _hostKeyPolicy.PersistAsync(context, outer).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (IsStoreFailure(ex))
+                    {
+                        // 〔velashell-docs/zh/ssh/spec/03 §5.4〕信任已经给了，只是没记下来：这次连接照常进行，失败记在连接上。
+                        // 曾经整条连接因此失败 —— 用户点了「信任」，换来一句「对端关闭了连接」。
+                        HostKeyPersistFailure = ex;
+                    }
                     break;
 
                 default:
@@ -479,6 +493,17 @@ internal sealed class SshKeyExchangeRunner
             ConnectDeadline?.Resume();
         }
     }
+
+    /// <summary>
+    /// 持久化抛的异常里，哪些只是「没记下来」：本库报的存储失败，以及调用方策略自己的异常。
+    /// 取消照实抛出；本库别的原因（主机名不能写进 known_hosts，<c>InvalidConfiguration</c>）是策略有意不放行。
+    /// </summary>
+    private static bool IsStoreFailure(Exception ex) => ex switch
+    {
+        OperationCanceledException => false,
+        SshException ssh => ssh.Reason == SshFailureReason.HostKeyStoreFailed,
+        _ => true,
+    };
 
     private async ValueTask ExchangeNewKeysAsync(
         SshNegotiatedAlgorithms negotiated,

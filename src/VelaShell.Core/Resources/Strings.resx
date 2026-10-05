@@ -28,6 +28,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>Changed host fingerprint accepted</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>Host fingerprint could not be saved</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>Host fingerprint rejected</value>
   </data>
@@ -1381,6 +1384,9 @@ If this keeps happening, close any other VelaShell windows and try again.</value
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>The user chose to trust the first-connection fingerprint of {0} this time only (not saved): {1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>The host fingerprint of {0} was trusted, but saving it failed: {2}. This connection continues; you will be asked again after VelaShell restarts. Fingerprint: {1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>Key {0} already exists.</value>

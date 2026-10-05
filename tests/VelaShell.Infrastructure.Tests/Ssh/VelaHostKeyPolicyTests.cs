@@ -3,7 +3,9 @@ using NSubstitute.ExceptionExtensions;
 using VelaShell.Core.Models;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Ssh;
+using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.HostKeys;
 
 namespace VelaShell.Infrastructure.Tests.Ssh;
 
@@ -48,6 +50,39 @@ public sealed class VelaHostKeyPolicyTests
         VelaHostKeyPolicy preference = new(store, settings: null, prompt: null, alerts: null);
 
         Assert.IsEmpty(await preference.GetKnownKeyTypesAsync("any.example", 22));
+    }
+
+    /// <summary>
+    /// 信任了却没能记下来：库照常连下去（失败记在连接上）。宿主这边要在本次运行里记住这把指纹、
+    /// 别在下一次连接时又弹窗，并告诉用户一声 —— 不然重启之后又被问，他不会知道为什么。
+    /// </summary>
+    [TestMethod]
+    public async Task 信任库写不进去时本次运行记住指纹并告警()
+    {
+        IHostKeyService store = Substitute.For<IHostKeyService>();
+        IOException locked = new("数据库被锁");
+        store.TrustHostKeyAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .ThrowsAsync(locked);
+        ISecurityAlertService alerts = Substitute.For<ISecurityAlertService>();
+
+        using InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        string host = $"persist-{Guid.NewGuid():N}.example";
+        SshHostKeyContext context = new()
+        {
+            Host = host,
+            Port = 22,
+            Key = signer.PublicKey,
+            NegotiatedAlgorithm = signer.PublicKey.KeyType,
+        };
+
+        VelaHostKeyPolicy policy = new(store, settings: null, prompt: null, alerts);
+
+        IOException error = await Assert.ThrowsExactlyAsync<IOException>(async () => await policy.PersistAsync(context));
+
+        Assert.AreSame(locked, error, "原样交给库，库把它记在连接的 HostKeyPersistFailure 上");
+        Assert.IsTrue(HostTrustOnceCache.IsTrusted(host, 22, signer.PublicKey.Sha256Fingerprint));
+        await alerts.Received(1).RaiseAsync(
+            "hostkey-persist-failed", Arg.Is<string>(m => m.Contains("数据库被锁")), Arg.Any<object?>());
     }
 
     /// <summary>

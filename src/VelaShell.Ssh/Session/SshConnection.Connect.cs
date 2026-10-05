@@ -74,8 +74,8 @@ public sealed partial class SshConnection
             SshAlgorithmSet algorithms = options.Algorithms;
             if (options.HostKeyPolicy is IHostKeyTypePreference preference)
             {
-                IReadOnlyList<string> knownTypes = await preference
-                    .GetKnownKeyTypesAsync(options.Host, options.Port, connect.Token)
+                IReadOnlyList<string> knownTypes = await SshCallbackFaultException.InvokeAsync(
+                    () => preference.GetKnownKeyTypesAsync(options.Host, options.Port, connect.Token))
                     .ConfigureAwait(false);
                 algorithms = algorithms.PreferHostKeyTypes([.. knownTypes]);
             }
@@ -158,6 +158,7 @@ public sealed partial class SshConnection
                 RekeyHardPacketLimit = options.RekeyHardPacketLimit,
                 RekeyTimeout = options.RekeyTimeout,
                 Description = $"{options.UserName}@{options.EndPoint}",
+                HostKeyPersistFailure = runner.HostKeyPersistFailure,
             };
 
             connection.Start();
@@ -184,6 +185,14 @@ public sealed partial class SshConnection
                 reason, phase,
                 $"连 {options.EndPoint} 时在「{what}」这一步超时" +
                 $"（限 {budget.TotalSeconds:0.#} 秒）。");
+        }
+        catch (SshCallbackFaultException fault)
+        {
+            await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
+
+            // 调用方回调自己抛的：原样交还（见 SshCallbackFaultException）。
+            fault.ThrowOriginal();
+            throw;   // 到不了；编译器要它
         }
         catch (Exception ex) when (ex is IOException or System.Net.Sockets.SocketException && phase != SshPhase.Dialing)
         {

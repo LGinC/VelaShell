@@ -98,6 +98,8 @@ internal static class SshInterop
     /// <para>
     /// 私钥读不出、格式不对、证书与私钥不是一对、配置不成立、端口占用这几类也不翻:
     /// 库的消息里带着文件路径、指纹、端口号这些具体信息,换成一句通用文案反而帮不上忙。
+    /// <see cref="SshFailureReason.HostKeyStoreFailed" /> 同理(消息里是 known_hosts 的路径与 IO 错误);
+    /// 而且宿主的信任库不走库的 known_hosts,它只在调用方换用 <c>KnownHostsPolicy</c> 时才会出现。
     /// </para>
     /// <para>
     /// 尾巴上的 <c>[原因 @ 阶段]</c> 不翻译 —— 那是给提 issue 时贴日志用的,跨语言一致才好搜。

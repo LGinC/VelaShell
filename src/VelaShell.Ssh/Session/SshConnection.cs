@@ -141,6 +141,17 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>服务端出示的主机公钥。</summary>
     public HostKeys.SshPublicKey HostKey { get; }
 
+    /// <summary>
+    /// 主机密钥策略裁决「信任并记住」、记的时候却失败了的原因；记下了（或者没让记）时为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/03 §5.4〕信任已经给了，这次连接照常进行 —— 与 OpenSSH 一样只是提醒，
+    /// 下次连接还会再问。<see cref="HostKeys.KnownHostsPolicy"/> 写不进 known_hosts 时它是
+    /// <see cref="SshFailureReason.HostKeyStoreFailed"/> 的 <see cref="SshConnectException"/>；
+    /// 调用方自己的策略抛的异常原样放在这里。经跳板时只记在那一跳自己的连接上。
+    /// </remarks>
+    public Exception? HostKeyPersistFailure { get; internal init; }
+
     /// <summary>保活策略。</summary>
     internal SshKeepAlivePolicy KeepAlive { get; init; } = SshKeepAlivePolicy.Disabled;
 

@@ -40,6 +40,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>변경된 호스트 지문 수락</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>호스트 지문을 저장하지 못함</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>호스트 지문 거부</value>
   </data>
@@ -1101,6 +1104,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>사용자가 {0}의 최초 연결 지문을 이번만 신뢰했습니다(저장 안 함): {1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>{0}의 호스트 지문을 신뢰했지만 저장하지 못했습니다: {2}. 이번 연결은 그대로 진행됩니다. VelaShell을 다시 시작한 후 연결하면 다시 확인합니다. 지문: {1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>키 {0}이(가) 이미 존재합니다.</value>

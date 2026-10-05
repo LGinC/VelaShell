@@ -168,13 +168,14 @@ public sealed class AuditLogViewModel : ReactiveObject
         "hostkey-rejected" => Strings.Get("AuditLog_ActionHostKeyRejected"),
         "hostkey-trusted-once" => Strings.Get("AuditLog_ActionHostKeyTrustedOnce"),
         "hostkey-changed-accepted" => Strings.Get("AuditLog_ActionHostKeyChangedAccepted"),
+        "hostkey-persist-failed" => Strings.Get("AuditLog_ActionHostKeyPersistFailed"),
         "external-launch" => Strings.Get("AuditLog_ActionExternalLaunch"),
         _ => action,
     };
 
-    /// <summary>值得留意的动作:没连上、拒掉了指纹、接受了一把变过的指纹。</summary>
+    /// <summary>值得留意的动作:没连上、拒掉了指纹、接受了一把变过的指纹、信任了却没能保存。</summary>
     internal static bool IsProblem(string action) =>
-        action is "connect-failed" or "hostkey-rejected" or "hostkey-changed-accepted";
+        action is "connect-failed" or "hostkey-rejected" or "hostkey-changed-accepted" or "hostkey-persist-failed";
 
     private async Task<Dictionary<Guid, string>> SessionNamesAsync(List<AuditEntry> entries)
     {

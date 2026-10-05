@@ -397,7 +397,9 @@ public sealed class AuthenticationTests
     {
         // 横幅回调在「密码请求已发出、SUCCESS 还没读」时抛异常。当成「跳过这条凭据」的话，
         // 客户端会报「所有方法都失败」—— 而服务端其实已经认证通过了。
-        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        // 认证器把调用方的异常裹一层往外送（不让建连路上按类型归类的 catch 认出它），ConnectAsync 的出口再原样还原
+        // （ConnectionTests.横幅回调自己抛的IO错原样交还）。
+        SshCallbackFaultException fault = await Assert.ThrowsExactlyAsync<SshCallbackFaultException>(
             () => RunAsync(
                 [new PasswordCredential("hunter2")],
                 new TestAuthPolicy { AcceptPassword = "hunter2", BannersBeforeSuccess = ["维护通知"] },
@@ -408,6 +410,7 @@ public sealed class AuthenticationTests
                         : ValueTask.CompletedTask,
                 }));
 
+        InvalidOperationException error = Assert.IsInstanceOfType<InvalidOperationException>(fault.InnerException);
         Assert.AreEqual("界面已经关了", error.Message);
     }
 

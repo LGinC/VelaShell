@@ -478,6 +478,145 @@ public sealed class ConnectionTests
         Assert.IsTrue(connection.IsAlive);
         Assert.AreEqual(1, policy.Persisted);
         Assert.IsFalse(policy.PersistTokenWasCancelled, "持久化拿到的是已取消的令牌 —— 「永久信任」存不下来");
+        Assert.IsNull(connection.HostKeyPersistFailure);
+    }
+
+    // ------------------------------------------------------------ 建连时调用方回调自己的异常
+
+    /// <summary>按给定的方式失败的策略：裁决时抛，或者记的时候抛；都不给时「信任并记住」。</summary>
+    private sealed class FailingPolicy(Exception? onEvaluate = null, Exception? onPersist = null) : IHostKeyPolicy
+    {
+        public ValueTask<SshHostKeyVerdict> EvaluateAsync(
+            SshHostKeyContext context, CancellationToken cancellationToken = default) =>
+            onEvaluate is null
+                ? ValueTask.FromResult(SshHostKeyVerdict.AcceptAndPersist)
+                : ValueTask.FromException<SshHostKeyVerdict>(onEvaluate);
+
+        public ValueTask PersistAsync(SshHostKeyContext context, CancellationToken cancellationToken = default) =>
+            onPersist is null ? ValueTask.CompletedTask : ValueTask.FromException(onPersist);
+    }
+
+    private static SshConnectionOptions Options(FakeServer server, IHostKeyPolicy policy) => new("joe@test.invalid")
+    {
+        Dialer = server.CreateDialer(),
+        HostKeyPolicy = policy,
+        Credentials = [new PasswordCredential("hunter2")],
+    };
+
+    /// <summary>
+    /// 策略是调用方的代码：它自己抛的 IO 错（宿主的信任库连不上）原样交还。
+    /// 曾经被建连路上那道 catch 改写成「对端关闭了连接」，还判为可重试 —— 重试只会再失败一次。
+    /// </summary>
+    [TestMethod]
+    public async Task 策略裁决时自己抛的IO错原样交还而不是记成对端断开()
+    {
+        await using FakeServer server = new();
+        IOException storeDown = new("信任库连不上");
+
+        IOException error = await Assert.ThrowsExactlyAsync<IOException>(
+            async () => await SshConnection.ConnectAsync(Options(server, new FailingPolicy(onEvaluate: storeDown))));
+
+        Assert.AreSame(storeDown, error);
+    }
+
+    /// <summary>横幅回调同理（velashell-docs/zh/ssh/spec/04 §3.4：照实抛出）。</summary>
+    [TestMethod]
+    public async Task 横幅回调自己抛的IO错原样交还()
+    {
+        await using FakeServer server = new(authPolicy: new TestAuthPolicy { AcceptPassword = "hunter2", Banners = ["欢迎"] });
+        IOException logFull = new("横幅日志写不进去");
+
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            BannerHandler = (_, _) => ValueTask.FromException(logFull),
+        };
+
+        IOException error = await Assert.ThrowsExactlyAsync<IOException>(
+            async () => await SshConnection.ConnectAsync(options));
+
+        Assert.AreSame(logFull, error);
+    }
+
+    /// <summary>
+    /// 〔spec/03 §5.4〕信任已经给了、只是没记下来：这次连接照常进行，原因记在连接上（与 OpenSSH 一样只是提醒）。
+    /// 曾经整条连接失败，用户点了「信任」换来一句「对端关闭了连接」。
+    /// </summary>
+    [TestMethod]
+    public async Task 记主机密钥失败不影响这次连接()
+    {
+        await using FakeServer server = new();
+        IOException diskFull = new("磁盘满了");
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(
+            Options(server, new FailingPolicy(onPersist: diskFull)));
+
+        Assert.IsTrue(connection.IsAlive);
+        Assert.AreSame(diskFull, connection.HostKeyPersistFailure);
+    }
+
+    /// <summary>本库的 known_hosts 写不进去时同样放行，失败是带原因码的 <see cref="SshConnectException"/>。</summary>
+    [TestMethod]
+    public async Task known_hosts写不进去时连接照常并记下原因()
+    {
+        await using FakeServer server = new();
+
+        // 拿一个目录当 known_hosts：读的时候当它不存在（没见过这台主机），写的时候失败。
+        DirectoryInfo directory = Directory.CreateTempSubdirectory("kh-");
+        try
+        {
+            KnownHostsPolicy policy = new(directory.FullName, (_, _) => ValueTask.FromResult(true));
+
+            await using SshConnection connection = await SshConnection.ConnectAsync(Options(server, policy));
+
+            Assert.IsTrue(connection.IsAlive);
+            SshConnectException failure = Assert.IsInstanceOfType<SshConnectException>(connection.HostKeyPersistFailure);
+            Assert.AreEqual(SshFailureReason.HostKeyStoreFailed, failure.Reason);
+            Assert.Contains(directory.FullName, failure.Message);
+        }
+        finally
+        {
+            directory.Delete(recursive: true);
+        }
+    }
+
+    /// <summary>策略有意不让记（主机名不能写进 known_hosts）不是「没记下来」：连接照样不放行。</summary>
+    [TestMethod]
+    public async Task 策略有意不让记时连接不放行()
+    {
+        await using FakeServer server = new();
+        SshConnectException refusal = new(SshFailureReason.InvalidConfiguration, SshPhase.KeyExchange, "这个名字不能记");
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(Options(server, new FailingPolicy(onPersist: refusal))));
+
+        Assert.AreSame(refusal, error);
+    }
+
+    /// <summary>known_hosts 读不出来：没法判断认不认识这台主机，连接不放行，报存储失败、不可重试。</summary>
+    [TestMethod]
+    public async Task known_hosts读不出来时连接不放行()
+    {
+        await using FakeServer server = new();
+        string path = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+        File.WriteAllText(path, "");
+
+        try
+        {
+            SshConnectException error;
+            await using (FileStream exclusive = new(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            {
+                error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+                    async () => await SshConnection.ConnectAsync(Options(server, new KnownHostsPolicy(path))));
+            }
+
+            Assert.AreEqual(SshFailureReason.HostKeyStoreFailed, error.Reason);
+            Assert.AreEqual(SshPhase.KeyExchange, error.Phase);
+            Assert.IsFalse(error.IsRetryable);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
     }
 
     /// <summary>记下被问了几次；问到就放行。</summary>

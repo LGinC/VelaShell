@@ -775,9 +775,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         string text = reader.ReadUtf8String(64 * 1024);
         _banner.Add(text);
 
-        if (BannerHandler is not null)
+        if (BannerHandler is { } handler)
         {
-            await BannerHandler(text, cancellationToken).ConfigureAwait(false);
+            // 〔velashell-docs/zh/ssh/spec/04 §3.4〕回调自己抛的照实交还：不当成跳过，也不归成「对端断开」。
+            await SshCallbackFaultException.InvokeAsync(() => handler(text, cancellationToken)).ConfigureAwait(false);
         }
     }
 

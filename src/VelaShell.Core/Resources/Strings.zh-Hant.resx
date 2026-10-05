@@ -132,6 +132,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>接受了變更的主機指紋</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>主機指紋未能儲存</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>拒絕了主機指紋</value>
   </data>
@@ -1490,6 +1493,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>使用者對 {0} 的首次連線指紋選擇僅本次信任(不落盤):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>已信任 {0} 的主機指紋,但儲存失敗:{2}。本次連線照常進行;重新啟動 VelaShell 後再連線會再次詢問。指紋:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>金鑰 {0} 已存在。</value>

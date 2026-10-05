@@ -132,6 +132,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>接受了变更的主机指纹</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>主机指纹未能保存</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>拒绝了主机指纹</value>
   </data>
@@ -1490,6 +1493,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>用户对 {0} 的首次连接指纹选择仅本次信任(不落盘):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>已信任 {0} 的主机指纹,但保存失败:{2}。本次连接照常进行;重启 VelaShell 后再连接会再次询问。指纹:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>密钥 {0} 已存在。</value>
