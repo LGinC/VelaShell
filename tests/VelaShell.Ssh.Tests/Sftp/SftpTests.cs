@@ -204,6 +204,21 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 接收窗口装不下一个SFTP报文时先抛_不让双方死等()
+    {
+        // 通道默认的 256 KiB 窗口恰好装不下一块 256 KiB 的 DATA 应答：报文收齐之前一个字节都不消费，窗口永远回补不了。
+        await using Harness harness = await Harness.StartAsync();
+        int before = harness.Connection.ChannelCount;
+
+        ArgumentException error = await Assert.ThrowsExactlyAsync<ArgumentException>(
+            async () => await SftpFileSystem.ConnectAsync(
+                harness.Connection, new SftpOptions { Channel = SshChannelOptions.Default }, harness.Token));
+
+        Assert.AreEqual("Channel", error.ParamName);
+        Assert.AreEqual(before, harness.Connection.ChannelCount);
+    }
+
+    [TestMethod]
     public async Task 服务端拒绝sftp子系统时报SftpUnavailable()
     {
         SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(

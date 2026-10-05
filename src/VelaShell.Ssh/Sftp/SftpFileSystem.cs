@@ -93,6 +93,17 @@ public sealed record SftpOptions
             throw new ArgumentOutOfRangeException(
                 nameof(MaxPipelineDepth), MaxPipelineDepth, $"在途请求数的上限不能小于起始值 MaxInFlight（{MaxInFlight}）。");
         }
+
+        // 接收窗口至少装得下一整个 SFTP 报文（长度前缀 + 最长的报文）：报文收齐之前收包循环一个字节都不消费，
+        // 而窗口只随消费回补 —— 窗口比报文小，就是对端等窗口、我们等报文，谁也动不了，也没有任何报错。
+        // 通道的默认窗口（256 KiB）恰好装不下一块 256 KiB 的 DATA 应答。
+        int frame = 4 + SftpProtocol.MaxMessageLength;
+        if (Channel.WindowPolicy.MinimumBytes < frame)
+        {
+            throw new ArgumentException(
+                $"SFTP 通道的接收窗口至少要 {frame} 字节（一整个 SFTP 报文），现在是 {Channel.WindowPolicy.MinimumBytes} 字节。",
+                nameof(Channel));
+        }
     }
 }
 
