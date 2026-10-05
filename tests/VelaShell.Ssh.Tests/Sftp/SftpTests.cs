@@ -840,6 +840,23 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 按偏移读写也看打开方式_只读流上写不会弄坏关闭()
+    {
+        await using Harness harness = await Harness.StartAsync(server => server.AddFile("/home/joe/r.txt", Text("内容")));
+
+        SftpFileStream reading = await harness.Sftp.OpenReadAsync("/home/joe/r.txt", harness.Token);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(
+            async () => await reading.WriteAtAsync(0, new byte[4], harness.Token));
+
+        // 曾经那个 WRITE 发出去被拒，记成写入故障 —— 关闭这个只读流时抛「传输中断」。
+        await reading.DisposeAsync();
+
+        await using SftpFileStream writing = await harness.Sftp.OpenWriteAsync("/home/joe/w.bin", cancellationToken: harness.Token);
+        await Assert.ThrowsExactlyAsync<NotSupportedException>(
+            async () => await writing.ReadAtAsync(0, new byte[4], harness.Token));
+    }
+
+    [TestMethod]
     public async Task 截短之后DurableLength跟着回退()
     {
         // 曾经不回退：之后再断开，报出的续传点会跨过已经被截掉的数据。

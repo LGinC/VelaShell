@@ -370,11 +370,16 @@ public sealed class SftpFileStream : Stream
     /// <b>返回的字节数可能少于请求的</b>，那不是错误 ——
     /// 调用方要循环读直到拿够或返回 0。
     /// </remarks>
+    /// <exception cref="NotSupportedException">这个流是以只写方式打开的。</exception>
     public async ValueTask<int> ReadAtAsync(
         long offset, Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if (!_readable)
+        {
+            throw new NotSupportedException("这个流是以只写方式打开的。");
+        }
 
         if (buffer.IsEmpty)
         {
@@ -551,11 +556,18 @@ public sealed class SftpFileStream : Stream
     /// 流水线模式下这个方法<b>在应答回来之前就返回</b> ——
     /// 真正确认落盘要看 <see cref="DurableLength"/>，或者 <see cref="FlushAsync"/> 之后。
     /// </remarks>
+    /// <exception cref="NotSupportedException">这个流是以只读方式打开的。</exception>
     public async ValueTask WriteAtAsync(
         long offset, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
+
+        // 在本地就拒掉：曾经发出去让服务端拒，那个失败记成写入故障 —— 之后关闭这个只读流会抛「传输中断」。
+        if (!_writable)
+        {
+            throw new NotSupportedException("这个流是以只读方式打开的。");
+        }
 
         // 攒着的尾巴先发：它与这次写可能重叠，服务端按到达顺序处理，先写的要先到。
         await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
