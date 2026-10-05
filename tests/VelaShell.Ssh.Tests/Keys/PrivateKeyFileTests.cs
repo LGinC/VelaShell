@@ -434,6 +434,38 @@ public sealed class PrivateKeyFileTests
     }
 
     [TestMethod]
+    public void 截断的OpenSSH私钥报格式不对_不漏出内部异常()
+    {
+        // 复制粘贴丢了尾行，base64 恰好在 4 字符边界断开：曾经漏出解析层 internal 的 SshWireFormatException。
+        ArrayBufferWriter<byte> body = new();
+        body.Write("openssh-key-v1\0"u8);
+        SshDataWriter writer = new(body);
+        writer.WriteUtf8String("none");   // ciphername，后面全没了
+        string pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+                     Convert.ToBase64String(body.WrittenSpan) +
+                     "\n-----END OPENSSH PRIVATE KEY-----\n";
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void 行数字段不是数字的ppk报格式不对_不漏出BCL异常()
+    {
+        const string ppk =
+            "PuTTY-User-Key-File-3: ssh-ed25519\n" +
+            "Encryption: none\n" +
+            "Comment: broken\n" +
+            "Public-Lines: abc\n" +
+            "AAAA\n";
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(ppk));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
     public void 带口令的私钥没给口令时说清楚()
     {
         using var rsa = RSA.Create(2048);

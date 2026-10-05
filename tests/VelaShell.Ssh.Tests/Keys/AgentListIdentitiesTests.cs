@@ -48,6 +48,60 @@ public sealed class AgentListIdentitiesTests
         }
     }
 
+    [TestMethod]
+    [DataRow(new byte[] { 12, 0, 0 }, DisplayName = "身份列表:计数只有半截")]
+    [DataRow(new byte[] { 12, 0, 0, 0, 1, 0, 0, 0, 9, 1, 2 }, DisplayName = "身份列表:公钥 blob 被截断")]
+    public async Task agent回了畸形的身份列表时报SshAgentException(byte[] reply)
+    {
+        // 曾经让解析层的 internal 异常原样漏出去：宿主只接 SshAgentException，那就一路漏到了界面上。
+        SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
+            async () => await WithScriptedReplyAsync(reply, client => client.ListIdentitiesAsync().AsTask()));
+
+        Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
+    }
+
+    [TestMethod]
+    public async Task agent回了畸形的签名应答时报SshAgentException()
+    {
+        byte[] reply = [14, 0, 0, 0, 50, 1];   // SIGN_RESPONSE，签名 blob 声称 50 字节、只有 1 个
+
+        SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
+            async () => await WithScriptedReplyAsync(reply, client => client.SignAsync(new byte[] { 1 }, new byte[] { 2 }, "ssh-ed25519").AsTask()));
+
+        Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
+    }
+
+    /// <summary>对端读掉一条请求、回一条写好的应答（不经 TestAgent，好造畸形的）。</summary>
+    private static async Task WithScriptedReplyAsync(byte[] reply, Func<SshAgentClient, Task> act)
+    {
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(10));
+        (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
+        await using SshAgentClient client = SshAgentClient.FromStream(ours, "(脚本 agent)");
+
+        Task answering = Task.Run(async () =>
+        {
+            byte[] length = new byte[4];
+            await theirs.ReadExactlyAsync(length, cts.Token);
+            byte[] request = new byte[System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(length)];
+            await theirs.ReadExactlyAsync(request, cts.Token);
+
+            byte[] framed = new byte[4 + reply.Length];
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(framed, (uint)reply.Length);
+            reply.CopyTo(framed, 4);
+            await theirs.WriteAsync(framed, cts.Token);
+            await theirs.FlushAsync(cts.Token);
+        }, cts.Token);
+
+        try
+        {
+            await act(client);
+        }
+        finally
+        {
+            await answering;
+        }
+    }
+
     /// <summary>造一个只有类型串对、内容随意的公钥 blob。</summary>
     internal static byte[] OpaqueBlob(string keyType)
     {

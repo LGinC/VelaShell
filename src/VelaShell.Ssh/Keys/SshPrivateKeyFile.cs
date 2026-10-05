@@ -142,18 +142,30 @@ public static class SshPrivateKeyFile
         SshPrivateKeyFormat format = DetectFormat(pem);
         string where = origin is null ? "" : $"（{origin}）";
 
-        return format switch
+        try
         {
-            SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.Parse(pem, passphrase, origin),
-            SshPrivateKeyFormat.OpenSsh => ParseOpenSsh(pem, passphrase, where),
-            SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs8Encrypted
-                or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec =>
-                ParseWithBcl(pem, passphrase, format, where),
-            _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported,
-                $"认不出这个私钥格式{where}。支持的有：OpenSSH（BEGIN OPENSSH PRIVATE KEY）、" +
-                "PKCS#8、PKCS#1（BEGIN RSA PRIVATE KEY）、SEC1（BEGIN EC PRIVATE KEY）、" +
-                "以及 PuTTY 的 .ppk（v2 / v3）。"),
-        };
+            return format switch
+            {
+                SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.Parse(pem, passphrase, origin),
+                SshPrivateKeyFormat.OpenSsh => ParseOpenSsh(pem, passphrase, where),
+                SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs8Encrypted
+                    or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec =>
+                    ParseWithBcl(pem, passphrase, format, where),
+                _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"认不出这个私钥格式{where}。支持的有：OpenSSH（BEGIN OPENSSH PRIVATE KEY）、" +
+                    "PKCS#8、PKCS#1（BEGIN RSA PRIVATE KEY）、SEC1（BEGIN EC PRIVATE KEY）、" +
+                    "以及 PuTTY 的 .ppk（v2 / v3）。"),
+            };
+        }
+        catch (Exception ex) when (ex is not SshPrivateKeyException)
+        {
+            // 〔velashell-docs/zh/ssh/spec/04 §4.6〕私钥文件是外来输入：截断（复制粘贴丢了尾行、base64 恰好在 4 字符边界断开）、
+            // 字段畸形（`Public-Lines: abc`、RSA 的 p 或 q 为 1）都只该是「格式不对」。曾经让解析层的 internal 异常
+            // 或 BCL 的 FormatException / DivideByZeroException 原样漏出去 —— 调用方只接 SshPrivateKeyException，
+            // 那就一路漏到了界面上。
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid, $"私钥文件的内容不完整或格式不对{where}：{ex.Message}", ex);
+        }
     }
 
     // ------------------------------------------------------------ OpenSSH 格式

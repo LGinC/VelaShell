@@ -236,6 +236,22 @@ public sealed class SshAgentClient : IAsyncDisposable
         byte[] response = await ExchangeAsync(
             new byte[] { SshAgentMessage.RequestIdentities }, cancellationToken).ConfigureAwait(false);
 
+        try
+        {
+            return ParseIdentities(response);
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw Malformed("身份列表", ex);
+        }
+    }
+
+    /// <summary>agent 的应答格式不对：曾经让解析层的 internal 异常原样漏出去，调用方只接 <see cref="SshAgentException"/>。</summary>
+    private static SshAgentException Malformed(string what, SshWireFormatException inner) =>
+        new(SshFailureReason.ProtocolError, $"agent 回的{what}格式不对：{inner.Message}", inner);
+
+    private static List<SshAgentIdentity> ParseIdentities(byte[] response)
+    {
         SshDataReader reader = new(new ReadOnlySequence<byte>(response));
         byte type = reader.ReadByte();
 
@@ -304,6 +320,18 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         byte[] response = await ExchangeAsync(request.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
+        try
+        {
+            return ParseSignature(response);
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw Malformed("签名", ex);
+        }
+    }
+
+    private static byte[] ParseSignature(byte[] response)
+    {
         SshDataReader reader = new(new ReadOnlySequence<byte>(response));
         byte type = reader.ReadByte();
 
