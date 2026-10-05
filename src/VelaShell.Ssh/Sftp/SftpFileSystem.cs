@@ -133,6 +133,12 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
     // 列目录可以在几个枚举里并发跑 —— 走 Interlocked。
     private int _malformedEntriesSkipped;
+
+    /// <summary>
+    /// 服务端宣告了 <c>max-open-handles</c> 时的句柄额度：每个开着的文件、目录占一个，关了还回来。
+    /// 没宣告时为 <see langword="null"/>（不限）。
+    /// </summary>
+    private SemaphoreSlim? _handleSlots;
     private bool _disposed;
 
     private SftpFileSystem(
@@ -290,6 +296,14 @@ public sealed class SftpFileSystem : IAsyncDisposable
         }
 
         BlockSize = ChooseBlockSize(_options.BlockSize, Capabilities.Limits);
+
+        // 〔velashell-docs/zh/ssh/spec/06 §7.1〕宣告了同时能开几个句柄，就按它排队：曾经读了不用，
+        // 并发传输撞上服务端的句柄上限时只会得到一个随机的「操作失败」。
+        if (Capabilities.Limits.MaxOpenHandles > 0)
+        {
+            int slots = (int)Math.Min(Capabilities.Limits.MaxOpenHandles, int.MaxValue);
+            _handleSlots = new SemaphoreSlim(slots, slots);
+        }
 
         // 〔决策 velashell-docs/zh/ssh/spec/06 §4.6〕连上就对 "." 做一次 REALPATH。
         // 这是唯一可靠的「用户家目录在哪」的答案 —— 比拼 /home/{user} 靠谱得多。
@@ -512,7 +526,17 @@ public sealed class SftpFileSystem : IAsyncDisposable
     {
         ValidatePath(path);
 
-        byte[] handle = await OpenDirectoryHandleAsync(path, cancellationToken).ConfigureAwait(false);
+        await AcquireHandleSlotAsync(cancellationToken).ConfigureAwait(false);
+        byte[] handle;
+        try
+        {
+            handle = await OpenDirectoryHandleAsync(path, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            ReleaseHandleSlot();
+            throw;
+        }
 
         try
         {
@@ -553,6 +577,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         finally
         {
             await CloseHandleQuietlyAsync(handle).ConfigureAwait(false);
+            ReleaseHandleSlot();
         }
     }
 
@@ -786,14 +811,24 @@ public sealed class SftpFileSystem : IAsyncDisposable
         bool canRead = (flags & SftpOpenModes.Read) != 0;
         bool canWrite = (flags & (SftpOpenModes.Write | SftpOpenModes.Append)) != 0;
 
+        await AcquireHandleSlotAsync(cancellationToken).ConfigureAwait(false);
+
         byte[] handle;
-        using (SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteOpen(output, id, path, flags, attributes, _names),
-            onLateResponse: CloseLateHandle,
-            cancellationToken: cancellationToken).ConfigureAwait(false))
+        try
         {
+            using SftpResponse response = await _pipeline.SendAsync(
+                (output, id) => SftpWire.WriteOpen(output, id, path, flags, attributes, _names),
+                onLateResponse: CloseLateHandle,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
             response.ThrowIfError(path, SftpOperation.Open, SftpMessageType.Handle);
             handle = SftpWire.ReadHandle(response.Payload);
+        }
+        catch (Exception)
+        {
+            // 没开成（或取消之后迟到的句柄由 CloseLateHandle 关）：额度现在就还。
+            ReleaseHandleSlot();
+            throw;
         }
 
         // 截断打开的，长度就是 0；别的（读、续写、不截断的写）要问一次 ——
@@ -825,6 +860,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
                 // ⚠️ 取消、流水线断了、应答不合格式：句柄已经开在服务端了，
                 //    还没交给流，这里不关就没人关 —— 每失败一次漏一个，直到 max-open-handles 用光。
                 await CloseHandleQuietlyAsync(handle).ConfigureAwait(false);
+                ReleaseHandleSlot();
                 throw;
             }
         }
@@ -834,6 +870,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             maxInFlightWrites: StreamWindow, maxReadAhead: StreamWindow)
         {
             LengthKnown = lengthKnown,
+            OnHandleClosed = ReleaseHandleSlot,
         };
     }
 
@@ -1058,6 +1095,16 @@ public sealed class SftpFileSystem : IAsyncDisposable
     }
 
     // ------------------------------------------------------------ 内部
+
+    /// <summary>等一个句柄额度（服务端宣告了 <c>max-open-handles</c> 时）。</summary>
+    private Task AcquireHandleSlotAsync(CancellationToken cancellationToken) =>
+        _handleSlots?.WaitAsync(cancellationToken) ?? Task.CompletedTask;
+
+    /// <summary>还一个句柄额度。</summary>
+    private void ReleaseHandleSlot() => _handleSlots?.Release();
+
+    /// <summary>当前空着的句柄额度（测试用）；不限时为 <see langword="null"/>。</summary>
+    internal int? FreeHandleSlots => _handleSlots?.CurrentCount;
 
     /// <summary>取消之后迟到的 <c>HANDLE</c> 应答 —— 句柄不关就泄漏在服务端。</summary>
     private void CloseLateHandle(SftpResponse response)

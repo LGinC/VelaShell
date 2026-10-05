@@ -162,6 +162,9 @@ public sealed class SftpFileStream : Stream
     /// <summary>打开时拿到了文件的真实长度（或者是截断打开的，长度就是 0）。</summary>
     internal bool LengthKnown { get; init; }
 
+    /// <summary>句柄关掉之后（不论 CLOSE 成没成）调一次：还文件系统的句柄额度。</summary>
+    internal Action? OnHandleClosed { get; init; }
+
     /// <inheritdoc />
     public override long Position
     {
@@ -892,6 +895,7 @@ public sealed class SftpFileStream : Stream
             // 关不上多半是通道已经没了 —— 那样服务端也会自己回收句柄。
             // 在释放路径上为此抛异常，只会盖住真正的失败原因。
         }
+        OnHandleClosed?.Invoke();
 
         _writeSlots.Dispose();
         if (_coalesce is not null)

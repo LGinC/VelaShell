@@ -833,6 +833,34 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 服务端宣告了句柄上限时按它排队_关一个才开得了下一个()
+    {
+        // 曾经读了不用：并发传输撞上服务端的句柄上限时只会得到一个随机的「操作失败」。
+        await using Harness harness = await Harness.StartAsync(
+            server =>
+            {
+                server.AddFile("/home/joe/a", Text("a"));
+                server.AddFile("/home/joe/b", Text("b"));
+                server.AddFile("/home/joe/c", Text("c"));
+            },
+            new TestSftpOptions { Limits = new SftpLimits(262_144, 261_120, 261_120, MaxOpenHandles: 2) });
+
+        SftpFileStream a = await harness.Sftp.OpenReadAsync("/home/joe/a", harness.Token);
+        SftpFileStream b = await harness.Sftp.OpenReadAsync("/home/joe/b", harness.Token);
+        Assert.AreEqual(0, harness.Sftp.FreeHandleSlots);
+
+        Task<SftpFileStream> third = harness.Sftp.OpenReadAsync("/home/joe/c", harness.Token).AsTask();
+        await Task.Delay(100, harness.Token);
+        Assert.IsFalse(third.IsCompleted, "额度用完了就排队，而不是去撞服务端的上限");
+
+        await a.DisposeAsync();
+        await using SftpFileStream c = await third.WaitAsync(TimeSpan.FromSeconds(10));
+        await b.DisposeAsync();
+
+        Assert.AreEqual(1, harness.Sftp.FreeHandleSlots, "关掉的都还回来了，只剩 c 占着一个");
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>
