@@ -39,9 +39,13 @@ internal static class SshConnectionAssembler
     /// 跳板链上的跳板连接不在这里:它们归各自拨出来的流所有,外层连接释放时逐层一起断开
     /// (见 <see cref="DialerChain.Jump(SshEndPoint, Func{SshJumpContext, CancellationToken, ValueTask{SshConnection}})" />)。
     /// </remarks>
+    /// <param name="Connect">连接工厂。</param>
+    /// <param name="ConnectTimeout">建链超时。</param>
+    /// <param name="Banners">认证时服务端发来的横幅(链上每一跳都收),开 shell 时作为提示写进终端。</param>
     internal readonly record struct Assembled(
         Func<CancellationToken, ValueTask<SshConnection>> Connect,
-        TimeSpan ConnectTimeout);
+        TimeSpan ConnectTimeout,
+        SshServerBanners Banners);
 
     /// <summary>按连接信息装配。</summary>
     /// <param name="info">连接信息(含跳板链)。</param>
@@ -71,6 +75,7 @@ internal static class SshConnectionAssembler
             : new VelaHostKeyPolicy(hostKey, settings, prompt, alerts);
 
         TimeSpan connectTimeout = ConnectTimeout(settings);
+        SshServerBanners banners = new();
 
         // 最内层跳板真正出网,代理装在它身上;外层每一跳用库的跳板拨号器包住内层。
         // 每一跳的连接由这里现建(要先连 agent、按跳准备凭据),所以用回调那一种。
@@ -81,13 +86,14 @@ internal static class SshConnectionAssembler
             ISshTransportDialer inner = dialer;
             dialer = DialerChain.Jump(
                 new SshEndPoint(hop.Host, hop.Port),
-                (jump, ct) => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, jump, ct));
+                (jump, ct) => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, banners, jump, ct));
         }
 
         ISshTransportDialer finalDialer = dialer;
         return new Assembled(
-            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, jump: null, ct),
-            connectTimeout);
+            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, banners, jump: null, ct),
+            connectTimeout,
+            banners);
     }
 
     /// <summary>
@@ -115,6 +121,7 @@ internal static class SshConnectionAssembler
         ISshTransportDialer dialer,
         TimeSpan connectTimeout,
         IKeyboardInteractivePrompt? keyboardPrompt,
+        SshServerBanners banners,
         SshJumpContext? jump,
         CancellationToken cancellationToken)
     {
@@ -155,6 +162,7 @@ internal static class SshConnectionAssembler
                 // 「允许老算法」也要放开用户钥的 SHA-1 签名:只认 ssh-rsa 的老设备上,只放开 KEX / 主机密钥 / MAC
                 // 而不放开这一项,RSA 私钥登录必然失败。库在对端不发 server-sig-algs 时会先试 SHA-2、被拒再降级一次。
                 AllowSha1RsaSignatures = info.Ssh?.LegacyAlgorithms == true,
+                BannerHandler = banners.OnBannerAsync,
             };
 
             SshConnection connection;
