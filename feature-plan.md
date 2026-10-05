@@ -84,6 +84,7 @@
 | ⏳ | 🟢 P3 | **插件协议的文件能力补口** | 插件协议上：符号链接如实抛不支持（SDK 的 `RemoteFileEntry` 没有链接字段）；设不了远端修改时间，双向同步会把刚上传的文件判成远端较新；算不了服务器端摘要（`plan.md` §72、§74、§75） | 一次性扩 SDK 契约（链接字段、`SetLastWriteTime`、摘要）。⚠️ 要发 SDK，按 `AGENTS.md` 的版本纪律走，别自己定版本号 |
 | ⏳ | 🟢 P3 | **「远程 + 远程」双栏的同步窗口** | 双栏远程文档只有「比较目录」（按大小与修改时间，不做 SHA-256），没有「同步…」与「保持远端最新」（`plan.md` §128） | `DirectorySyncViewModel` / `DirectorySyncRunner` 全是「本地路径 + Upload/Download」的语义，要做成两端对称（两边都用 `DirectoryTreeScanner.ScanRemoteAsync`、动作换成两个方向的 Relay）；「保持远端最新」靠监视本地文件系统，双远程下没有意义，不做。等有人要再排 |
 | ⏳ | 🟢 P3 | **目录同步：FTP 时区偏移** | FTP 服务器与本机不在同一时区时，按修改时间比较会整体错位（WinSCP 在会话设置里有这一项） | 连接配置加时区偏移，比较器按偏移换算。同步选项本身**刻意不持久化**（只在文档标签内记住），别顺手加设置项 |
+| ⏳ | 🟢 P3 | **SFTP 文件名按会话编码显示** | SSH 库默认按 UTF-8、解不开的字节无损往返（GBK 名字的文件打得开、删得掉，但显示成替换字符）；库已经有 `SftpOptions.FileNameEncoding`，宿主没接 | 把会话的终端编码（`SessionTerminalSettings.Encoding`）带进 SFTP 的连接参数：`SshSession` / `ConnectionInfo` 现在都不带这个值，得从配置那一路传过来。⚠️ UTF-8 时不要传（传 null），否则丢掉无损往返 |
 | ⏳ | 🟢 P3 | **内置编辑器的临时副本没有兜底清理** | `RemoteFileEditorView.OnClosed` 只删自己那个 `builtin-edit\<8hex>\`；进程崩溃留下的没人管，退出时的 `TryDeleteEmptyTree` 只删空目录 | 启动时按时间兜底（如清 7 天前的）。⚠️ 别把「上传失败刻意保留的草稿」一起删了 —— 那是用户改动唯一的存身之处 |
 
 ### 🖥️ 终端与 SSH

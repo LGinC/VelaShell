@@ -134,12 +134,12 @@ internal static class SftpWire
     /// <summary>打开文件。</summary>
     public static void WriteOpen(
         IBufferWriter<byte> output, uint requestId, string path,
-        SftpOpenModes flags, SftpFileAttributes attributes)
+        SftpOpenModes flags, SftpFileAttributes attributes, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(path);
+        names.Write(ref writer, path);
         writer.WriteUInt32((uint)flags);
         attributes.Write(ref writer);
         WriteFrame(output, SftpMessageType.Open, payload.WrittenSpan);
@@ -158,12 +158,12 @@ internal static class SftpWire
 
     /// <summary>只带一个路径的请求（<c>STAT</c> / <c>LSTAT</c> / <c>OPENDIR</c> / …）。</summary>
     public static void WritePathRequest(
-        IBufferWriter<byte> output, SftpMessageType type, uint requestId, string path)
+        IBufferWriter<byte> output, SftpMessageType type, uint requestId, string path, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(path);
+        names.Write(ref writer, path);
         WriteFrame(output, type, payload.WrittenSpan);
     }
 
@@ -231,12 +231,12 @@ internal static class SftpWire
 
     /// <summary>设属性（按路径）。</summary>
     public static void WriteSetStat(
-        IBufferWriter<byte> output, uint requestId, string path, SftpFileAttributes attributes)
+        IBufferWriter<byte> output, uint requestId, string path, SftpFileAttributes attributes, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(path);
+        names.Write(ref writer, path);
         attributes.Write(ref writer);
         WriteFrame(output, SftpMessageType.SetStat, payload.WrittenSpan);
     }
@@ -255,25 +255,25 @@ internal static class SftpWire
 
     /// <summary>建目录。</summary>
     public static void WriteMkDir(
-        IBufferWriter<byte> output, uint requestId, string path, SftpFileAttributes attributes)
+        IBufferWriter<byte> output, uint requestId, string path, SftpFileAttributes attributes, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(path);
+        names.Write(ref writer, path);
         attributes.Write(ref writer);
         WriteFrame(output, SftpMessageType.MkDir, payload.WrittenSpan);
     }
 
     /// <summary>重命名。</summary>
     public static void WriteRename(
-        IBufferWriter<byte> output, uint requestId, string oldPath, string newPath)
+        IBufferWriter<byte> output, uint requestId, string oldPath, string newPath, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(oldPath);
-        writer.WriteUtf8String(newPath);
+        names.Write(ref writer, oldPath);
+        names.Write(ref writer, newPath);
         WriteFrame(output, SftpMessageType.Rename, payload.WrittenSpan);
     }
 
@@ -282,6 +282,7 @@ internal static class SftpWire
     /// <param name="requestId">请求编号。</param>
     /// <param name="targetPath">链接<b>指向</b>哪里。</param>
     /// <param name="linkPath">在哪里<b>创建</b>链接。</param>
+    /// <param name="names">路径怎么编码（见 <see cref="SftpOptions.FileNameEncoding"/>）。</param>
     /// <remarks>
     /// <para>
     /// ⚠️⚠️ <b>不要「顺手修正」这里的参数顺序。</b>
@@ -303,13 +304,13 @@ internal static class SftpWire
     /// </para>
     /// </remarks>
     public static void WriteSymLink(
-        IBufferWriter<byte> output, uint requestId, string targetPath, string linkPath)
+        IBufferWriter<byte> output, uint requestId, string targetPath, string linkPath, SftpNameCodec names)
     {
         ArrayBufferWriter<byte> payload = new();
         SshDataWriter writer = new(payload);
         writer.WriteUInt32(requestId);
-        writer.WriteUtf8String(targetPath);   // ← OpenSSH 顺序：先目标
-        writer.WriteUtf8String(linkPath);     // ← 再链接位置
+        names.Write(ref writer, targetPath);   // ← OpenSSH 顺序：先目标
+        names.Write(ref writer, linkPath);     // ← 再链接位置
         WriteFrame(output, SftpMessageType.SymLink, payload.WrittenSpan);
     }
 
@@ -443,7 +444,7 @@ internal static class SftpWire
     /// 解析它是各家 SFTP 客户端 bug 的经典来源（时间格式、locale、列对齐全都因服务端而异）。
     /// 但原文保留下来，使用者需要时能拿到。
     /// </remarks>
-    public static IReadOnlyList<SftpNameEntry> ReadName(ReadOnlySequence<byte> payloadAfterRequestId)
+    public static IReadOnlyList<SftpNameEntry> ReadName(ReadOnlySequence<byte> payloadAfterRequestId, SftpNameCodec names)
     {
         try
         {
@@ -461,8 +462,8 @@ internal static class SftpWire
                         $"SSH_FXP_NAME 声称有 {count} 项，实际只有 {i} 项。");
                 }
 
-                string fileName = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-                string longName = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+                string fileName = names.Read(ref reader, SftpProtocol.MaxPathLength);
+                string longName = names.Read(ref reader, SftpProtocol.MaxPathLength);
                 var attributes = SftpFileAttributes.Read(ref reader);
                 entries.Add(new SftpNameEntry(fileName, longName, attributes));
             }

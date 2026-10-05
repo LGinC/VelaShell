@@ -61,9 +61,9 @@ public sealed class SftpWireTests
     public void 一次能连着解出多个帧()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 1, "/a");
-        SftpWire.WritePathRequest(buffer, SftpMessageType.LStat, 2, "/b");
-        SftpWire.WritePathRequest(buffer, SftpMessageType.RealPath, 3, "/c");
+        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 1, "/a", SftpNameCodec.Utf8);
+        SftpWire.WritePathRequest(buffer, SftpMessageType.LStat, 2, "/b", SftpNameCodec.Utf8);
+        SftpWire.WritePathRequest(buffer, SftpMessageType.RealPath, 3, "/c", SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         List<SftpMessageType> types = [];
@@ -106,7 +106,7 @@ public sealed class SftpWireTests
     public void 跨段的帧也能解出来()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 7, "/some/long/path/name");
+        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 7, "/some/long/path/name", SftpNameCodec.Utf8);
         byte[] full = buffer.WrittenSpan.ToArray();
 
         // 真实的 PipeReader 给的就是分段的 ReadOnlySequence，
@@ -131,7 +131,7 @@ public sealed class SftpWireTests
         // 「顺手按 RFC 修正」它的后果：链接被建在你本想指向的位置上，
         // **而且不报错**。这条用例就是拦住那次「修正」的。
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSymLink(buffer, 42, targetPath: "/real/file", linkPath: "/the/link");
+        SftpWire.WriteSymLink(buffer, 42, targetPath: "/real/file", linkPath: "/the/link", SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         Assert.IsTrue(SftpWire.TryReadFrame(ref input, out SftpFrame frame));
@@ -149,7 +149,7 @@ public sealed class SftpWireTests
     public void 空属性只写一个标志字段()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteOpen(buffer, 1, "/f", SftpOpenModes.Read, SftpFileAttributes.Empty);
+        SftpWire.WriteOpen(buffer, 1, "/f", SftpOpenModes.Read, SftpFileAttributes.Empty, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -180,7 +180,7 @@ public sealed class SftpWireTests
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 9, "/f", original);
+        SftpWire.WriteSetStat(buffer, 9, "/f", original, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -214,7 +214,7 @@ public sealed class SftpWireTests
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -238,7 +238,7 @@ public sealed class SftpWireTests
                 DateTimeOffset.FromUnixTimeSeconds(222));
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -304,7 +304,7 @@ public sealed class SftpWireTests
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -359,7 +359,7 @@ public sealed class SftpWireTests
         writer.WriteUInt32(0);                // 空 ATTRS
 
         SshProtocolException error = Assert.ThrowsExactly<SshProtocolException>(
-            () => SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray())));
+            () => SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()), SftpNameCodec.Utf8));
 
         Assert.Contains("声称有 3 项", error.Message);
     }

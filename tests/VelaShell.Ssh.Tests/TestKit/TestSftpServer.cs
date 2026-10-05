@@ -358,7 +358,7 @@ internal sealed class TestSftpServer
     private byte[] HandleRealPath(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         string resolved = path == "." ? _options.WorkingDirectory : path;
         return BuildName(id, [new SftpNameEntry(resolved, resolved, AttributesOf(_nodes.GetValueOrDefault(resolved)))]);
     }
@@ -366,7 +366,7 @@ internal sealed class TestSftpServer
     private byte[] HandleStat(uint id, ReadOnlySequence<byte> rest, bool follow)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         TestSftpNode? node = Resolve(path, follow);
         return node is null
@@ -377,7 +377,7 @@ internal sealed class TestSftpServer
     private byte[] HandleOpen(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         var mode = (SftpOpenModes)reader.ReadUInt32();
         SftpFileAttributes attributes = ReadAttributes(ref reader);
 
@@ -411,7 +411,7 @@ internal sealed class TestSftpServer
     private byte[] HandleOpenDir(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node) || !node.IsDirectory)
         {
@@ -596,7 +596,7 @@ internal sealed class TestSftpServer
     private byte[] HandleSetStat(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         SftpFileAttributes attributes = ReadAttributes(ref reader);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node))
@@ -611,7 +611,7 @@ internal sealed class TestSftpServer
     private byte[] HandleMkDir(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (_nodes.ContainsKey(path))
         {
@@ -625,7 +625,7 @@ internal sealed class TestSftpServer
     private byte[] HandleRemove(uint id, ReadOnlySequence<byte> rest, bool mustBeDirectory)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node))
         {
@@ -652,8 +652,8 @@ internal sealed class TestSftpServer
     private byte[] HandleRename(uint id, ReadOnlySequence<byte> rest, bool overwrite)
     {
         SshDataReader reader = new(rest);
-        string oldPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-        string newPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string oldPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        string newPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(oldPath, out TestSftpNode? node))
         {
@@ -674,7 +674,7 @@ internal sealed class TestSftpServer
     private byte[] HandleReadLink(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node) || node.LinkTarget is null)
         {
@@ -705,8 +705,8 @@ internal sealed class TestSftpServer
     private byte[] HandleSymLink(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string targetPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-        string linkPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string targetPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        string linkPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (_nodes.ContainsKey(linkPath))
         {
@@ -741,8 +741,8 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.PosixRename)
         {
-            string oldPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-            string newPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+            string oldPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            string newPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
             if (!_nodes.TryGetValue(oldPath, out TestSftpNode? node))
             {
@@ -757,8 +757,8 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.HardLink)
         {
-            string targetPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-            string linkPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+            string targetPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            string linkPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
             if (!_nodes.TryGetValue(targetPath, out TestSftpNode? node))
             {
@@ -967,8 +967,8 @@ internal sealed class TestSftpServer
         writer.WriteUInt32((uint)entries.Count);
         foreach (SftpNameEntry entry in entries)
         {
-            writer.WriteUtf8String(entry.Name);
-            writer.WriteUtf8String(entry.LongName);
+            SftpNameCodec.Utf8.Write(ref writer, entry.Name);
+            SftpNameCodec.Utf8.Write(ref writer, entry.LongName);
             WriteAttributes(ref writer, entry.Attributes);
         }
         return Frame(SftpMessageType.Name, payload.WrittenSpan);

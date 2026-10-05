@@ -653,6 +653,28 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 名字不是合法UTF8的文件也能打开与删除()
+    {
+        // 「café.txt」按 Latin-1 写在磁盘上：E9 不是合法的 UTF-8。曾经它被解成 U+FFFD，
+        // 再按 UTF-8 编回去是 EF BF BD —— 服务端找不到这个文件，打不开、删不掉。
+        const string onDisk = "/home/joe/caf\uDCE9.txt";
+        await using Harness harness = await Harness.StartAsync(server => server.AddFile(onDisk, Text("内容")));
+
+        List<SftpDirectoryEntry> entries = [];
+        await foreach (SftpDirectoryEntry entry in harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+        {
+            entries.Add(entry);
+        }
+
+        SftpDirectoryEntry listed = Assert.ContainsSingle(entries);
+        Assert.AreEqual(onDisk, listed.FullPath, "解不开的字节要无损地带回来");
+        Assert.AreEqual("内容", Encoding.UTF8.GetString(await harness.Sftp.ReadAllBytesAsync(listed.FullPath, harness.Token)));
+
+        await harness.Sftp.DeleteFileAsync(listed.FullPath, harness.Token);
+        Assert.IsFalse(await harness.Sftp.ExistsAsync(listed.FullPath, harness.Token));
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>

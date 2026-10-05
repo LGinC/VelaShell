@@ -52,6 +52,19 @@ public sealed record SftpOptions
     /// <remarks>它们**会**出现在服务端返回的结果里。</remarks>
     public bool FilterDotEntries { get; init; } = true;
 
+    /// <summary>服务端的文件名用什么编码；<see langword="null"/>（默认）为 UTF-8。</summary>
+    /// <remarks>
+    /// <para>
+    /// SFTP v3 没规定文件名编码。默认按 UTF-8，<b>解不开的字节无损往返</b>：列出来的名字拿回去开、删、改名，
+    /// 到服务端的还是原来那串字节（界面上显示成替换字符）—— 见 velashell-docs/zh/ssh/spec/06 §4.7。
+    /// </para>
+    /// <para>
+    /// 服务端用 GBK、Shift-JIS 之类的老编码时，在这里给那个编码（宿主通常复用这个会话的终端编码），名字才显示得对。
+    /// 那种编码下非法的字节不保证往返。
+    /// </para>
+    /// </remarks>
+    public System.Text.Encoding? FileNameEncoding { get; init; }
+
     /// <summary>默认参数。</summary>
     public static SftpOptions Default { get; } = new();
 }
@@ -63,6 +76,9 @@ public sealed class SftpFileSystem : IAsyncDisposable
     private readonly SftpRequestPipeline _pipeline;
     private readonly SftpOptions _options;
 
+    /// <summary>文件名与路径怎么编解码（见 <see cref="SftpOptions.FileNameEncoding"/>）。</summary>
+    private readonly SftpNameCodec _names;
+
     // 列目录可以在几个枚举里并发跑 —— 走 Interlocked。
     private int _malformedEntriesSkipped;
     private bool _disposed;
@@ -73,6 +89,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         _channel = channel;
         _pipeline = pipeline;
         _options = options;
+        _names = SftpNameCodec.For(options.FileNameEncoding);
         Capabilities = capabilities;
         WorkingDirectory = ".";
     }
@@ -260,12 +277,12 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RealPath, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RealPath, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.RealPath);
 
-        IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload);
+        IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload, _names);
         if (entries.Count != 1)
         {
             throw new SshProtocolException(
@@ -293,7 +310,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, type, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, type, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.GetAttributes);
@@ -321,7 +338,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteSetStat(output, id, path, attributes),
+            (output, id) => SftpWire.WriteSetStat(output, id, path, attributes, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.SetAttributes);
@@ -361,7 +378,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteMkDir(output, id, path, SftpFileAttributes.WithPermissions(permissions)),
+            (output, id) => SftpWire.WriteMkDir(output, id, path, SftpFileAttributes.WithPermissions(permissions), _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.CreateDirectory);
@@ -373,7 +390,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RmDir, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.RmDir, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.RemoveDirectory);
@@ -385,7 +402,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.Remove, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.Remove, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.Remove);
@@ -444,7 +461,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
     private async ValueTask<byte[]> OpenDirectoryHandleAsync(string path, CancellationToken cancellationToken)
     {
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.OpenDir, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.OpenDir, id, path, _names),
             onLateResponse: CloseLateHandle,
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -470,7 +487,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             throw new SftpException(code, message, path, SftpOperation.ReadDirectory);
         }
 
-        return SftpWire.ReadName(response.Payload);
+        return SftpWire.ReadName(response.Payload, _names);
     }
 
     private async ValueTask<SftpDirectoryEntry[]> ResolveBatchAsync(
@@ -645,7 +662,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
         byte[] handle;
         using (SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteOpen(output, id, path, flags, attributes),
+            (output, id) => SftpWire.WriteOpen(output, id, path, flags, attributes, _names),
             onLateResponse: CloseLateHandle,
             cancellationToken: cancellationToken).ConfigureAwait(false))
         {
@@ -823,8 +840,8 @@ public sealed class SftpFileSystem : IAsyncDisposable
                 {
                     ArrayBufferWriter<byte> inner = new();
                     SshDataWriter writer = new(inner);
-                    writer.WriteUtf8String(sourcePath);
-                    writer.WriteUtf8String(destinationPath);
+                    _names.Write(ref writer, sourcePath);
+                    _names.Write(ref writer, destinationPath);
                     SftpWire.WriteExtended(output, id, SftpExtensionNames.PosixRename, inner.WrittenSpan);
                 },
                 cancellationToken: cancellationToken).ConfigureAwait(false);
@@ -834,7 +851,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         }
 
         using SftpResponse plain = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteRename(output, id, sourcePath, destinationPath),
+            (output, id) => SftpWire.WriteRename(output, id, sourcePath, destinationPath, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         plain.ThrowIfError(sourcePath, SftpOperation.Rename);
@@ -847,12 +864,12 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(path);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.ReadLink, id, path),
+            (output, id) => SftpWire.WritePathRequest(output, SftpMessageType.ReadLink, id, path, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(path, SftpOperation.ReadLink);
 
-        IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload);
+        IReadOnlyList<SftpNameEntry> entries = SftpWire.ReadName(response.Payload, _names);
         if (entries.Count != 1)
         {
             throw new SshProtocolException(
@@ -877,7 +894,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
         ValidatePath(targetPath);
 
         using SftpResponse response = await _pipeline.SendAsync(
-            (output, id) => SftpWire.WriteSymLink(output, id, targetPath, linkPath),
+            (output, id) => SftpWire.WriteSymLink(output, id, targetPath, linkPath, _names),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
         response.ThrowIfError(linkPath, SftpOperation.CreateSymbolicLink);
@@ -905,8 +922,8 @@ public sealed class SftpFileSystem : IAsyncDisposable
             {
                 ArrayBufferWriter<byte> inner = new();
                 SshDataWriter writer = new(inner);
-                writer.WriteUtf8String(targetPath);
-                writer.WriteUtf8String(linkPath);
+                _names.Write(ref writer, targetPath);
+                _names.Write(ref writer, linkPath);
                 SftpWire.WriteExtended(output, id, SftpExtensionNames.HardLink, inner.WrittenSpan);
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
