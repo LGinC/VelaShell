@@ -146,6 +146,15 @@ internal static class SocksHandshake
         }
 
         int port = (portBytes[0] << 8) | portBytes[1];
+
+        // 〔FW-E9〕端口 0 连不了任何东西：握手阶段就回 0x01。放过去的话，开隧道那一步因为参数不合法而抛，
+        // 客户端一句应答也收不到、只能干等到超时，错误还被记成「搬运出错」。
+        if (port == 0)
+        {
+            await WriteReplyAsync(output, SocksReply.GeneralFailure, addressType, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+
         return new SocksTarget(host, port, addressType);
     }
 

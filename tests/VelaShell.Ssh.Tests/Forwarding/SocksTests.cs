@@ -153,6 +153,24 @@ public sealed class SocksTests
         Assert.AreEqual((byte)SocksReply.CommandNotSupported, reply[2 + 1]);
     }
 
+    /// <summary>〔FW-E9〕端口 0：握手阶段就回 0x01，而不是放过去、到开隧道时才抛（客户端一句应答也收不到）。</summary>
+    [TestMethod]
+    public async Task 端口为0时握手阶段就回失败()
+    {
+        byte[] request =
+        [
+            .. Greeting(),
+            0x05, 0x01, 0x00, 0x01,     // CONNECT，IPv4
+            10, 0, 0, 9,
+            0x00, 0x00,                 // 端口 0
+        ];
+
+        (SocksTarget? target, byte[] reply) = await RunAsync(request);
+
+        Assert.IsNull(target);
+        Assert.AreEqual((byte)SocksReply.GeneralFailure, reply[2 + 1]);
+    }
+
     [TestMethod]
     public async Task 空域名当成不支持的地址回掉()
     {
