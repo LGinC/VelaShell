@@ -134,3 +134,20 @@ done
 cp putty-ed25519-v2-hi.pub putty-ed25519-v2-hi-enc.pub
 cp putty-ed25519-v3-hi.pub putty-ed25519-v3-hi-enc.pub
 ```
+
+### PKCS#8（`pkcs8-*`）
+
+`EncryptedPkcs8KeyTests` 用的 PKCS#8 由**真的 `openssl`（3.5）**生成，默认的 PBES2（PBKDF2-HMAC-SHA256 + AES-256-CBC），口令同上。
+`-rsa-enc` / `-ecdsa-enc` 的 `.pub` 是 `ssh-keygen -y` 给的；Ed25519、DSA、brainpool 三份是「口令对、钥不受支持」的样本，没有 `.pub`。
+
+```bash
+PASS='correct horse battery staple'
+openssl genpkey -algorithm ed25519 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-ed25519-enc
+openssl genpkey -algorithm ed25519 -out pkcs8-ed25519
+openssl genpkey -genparam -algorithm DSA -pkeyopt dsa_paramgen_bits:2048 -out dsaparam
+openssl genpkey -paramfile dsaparam -aes-256-cbc -pass "pass:$PASS" -out pkcs8-dsa-enc && rm dsaparam
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:brainpoolP256r1 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-brainpool-enc
+openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-rsa-enc
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-ecdsa-enc
+for n in pkcs8-rsa-enc pkcs8-ecdsa-enc; do chmod 600 $n; ssh-keygen -y -P "$PASS" -f $n > $n.pub; done
+```

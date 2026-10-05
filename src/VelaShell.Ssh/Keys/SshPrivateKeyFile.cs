@@ -570,16 +570,48 @@ public static class SshPrivateKeyFile
 
         // 加密 PKCS#8：先看一眼 KDF 的迭代数（来自文件），过大就不交给 BCL 去算（见 MaxPkcs8Iterations）。
         bool ecdsaFirst = false;
-        if (format == SshPrivateKeyFormat.Pkcs8Encrypted
-            && ReadPkcs8Encryption(DecodePemBody(pem, "ENCRYPTED PRIVATE KEY", where)) is { } encryption)
+        if (format == SshPrivateKeyFormat.Pkcs8Encrypted)
         {
-            if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+            byte[] encrypted = DecodePemBody(pem, "ENCRYPTED PRIVATE KEY", where);
+            if (ReadPkcs8Encryption(encrypted) is { } encryption)
             {
-                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
-                    $"加密 PKCS#8 私钥的 KDF 迭代数不合理{where}（{encryption.Iterations} 次，上限 {MaxPkcs8Iterations} 次）。" +
-                    "文件可能被改过；确实设过这么多次的话，请用更少的迭代数重新加密这把钥。");
+                if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+                {
+                    throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                        $"加密 PKCS#8 私钥的 KDF 迭代数不合理{where}（{encryption.Iterations} 次，上限 {MaxPkcs8Iterations} 次）。" +
+                        "文件可能被改过；确实设过这么多次的话，请用更少的迭代数重新加密这把钥。");
+                }
+                ecdsaFirst = encryption.EncryptedBytes <= EcFirstEncryptedBytes;
             }
-            ecdsaFirst = encryption.EncryptedBytes <= EcFirstEncryptedBytes;
+
+            // 〔AU-E8〕只解密一次：口令错就报口令错；解开之后看里面装的是什么钥，按算法分派。
+            // 曾经逐个按 RSA、ECDSA 交给 BCL 去试（每试一次 KDF 整个跑一遍），都失败就报「口令多半不对」——
+            // 装的是 Ed25519 / DSA 时口令明明是对的，界面一遍遍弹口令框。
+            // 解密方案 BouncyCastle 不认的（null），照旧交给下面 BCL 那一路去试。
+            if (DecryptPkcs8(encrypted, passphrase!, where) is { } plain)
+            {
+                try
+                {
+                    return LoadPkcs8(plain, where);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(plain);
+                }
+            }
+        }
+        else if (format == SshPrivateKeyFormat.Pkcs8)
+        {
+            // 明文 PKCS#8 同样按里面的算法分派：Ed25519、DSA 报「不支持」，而不是「格式不对或已损坏」。
+            byte[] plain = DecodePemBody(pem, "PRIVATE KEY", where);
+            try
+            {
+                return LoadPkcs8(plain, where);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(plain);
+            }
         }
 
         // 先按 RSA 试，再按 ECDSA 试 —— PEM 头部不总能区分
@@ -670,6 +702,128 @@ public static class SshPrivateKeyFile
             return null;
         }
     }
+
+    /// <summary>用口令解开加密 PKCS#8，交回里面的明文 PrivateKeyInfo（DER）。</summary>
+    /// <returns>
+    /// BouncyCastle 不认这种加密方案、或者解出来的不像 PrivateKeyInfo（口令不对而填充恰好对上，约 1/256）时为
+    /// <see langword="null"/>：交给 BCL 那一路去试、去报。
+    /// </returns>
+    /// <exception cref="SshPrivateKeyException">填充校验失败 —— 口令不对（<see cref="SshFailureReason.KeyPassphraseIncorrect"/>）。</exception>
+    private static byte[]? DecryptPkcs8(byte[] encrypted, string passphrase, string where)
+    {
+        Org.BouncyCastle.Asn1.Pkcs.EncryptedPrivateKeyInfo info;
+        try
+        {
+            info = Org.BouncyCastle.Asn1.Pkcs.EncryptedPrivateKeyInfo.GetInstance(encrypted);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        char[] password = passphrase.ToCharArray();
+        try
+        {
+            return Org.BouncyCastle.Pkcs.PrivateKeyInfoFactory.CreatePrivateKeyInfo(password, info).GetDerEncoded();
+        }
+        catch (Org.BouncyCastle.Crypto.InvalidCipherTextException ex)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseIncorrect, $"私钥解不开{where} —— 口令多半不对。", ex);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            Array.Clear(password);
+        }
+    }
+
+    /// <summary>按 PrivateKeyInfo 里的算法标识分派（RFC 5958 §2）。</summary>
+    /// <remarks>
+    /// SSH 用得上的只有 RSA 与三条 NIST 曲线上的 ECDSA（RFC 5656 §10.1）；
+    /// Ed25519 / Ed448 / DSA 与别的曲线报「不支持」，并说出是什么 —— 不让人去怀疑口令或文件。
+    /// </remarks>
+    private static InMemorySshSigner LoadPkcs8(byte[] der, string where)
+    {
+        const string rsaEncryption = "1.2.840.113549.1.1.1";
+        const string ecPublicKey = "1.2.840.10045.2.1";
+        const string ed25519 = "1.3.101.112";
+        const string ed448 = "1.3.101.113";
+        const string dsa = "1.2.840.10040.4.1";
+
+        (string algorithm, string? curve) = ReadPkcs8Algorithm(der, where);
+        switch (algorithm)
+        {
+            case rsaEncryption:
+                {
+                    var rsa = RSA.Create();
+                    rsa.ImportPkcs8PrivateKey(der, out _);
+                    return InMemorySshSigner.FromRsa(rsa);
+                }
+
+            case ecPublicKey:
+                {
+                    // 先按曲线的 OID 判：BCL 不认的曲线（各平台不一）连导入都过不去，报出来的会是「格式不对」。
+                    if (curve is not ("1.2.840.10045.3.1.7" or "1.3.132.0.34" or "1.3.132.0.35"))
+                    {
+                        throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                            $"这把 ECDSA 私钥用的曲线是 {DescribeCurveOid(curve)}{where}，SSH 只支持 NIST P-256 / P-384 / P-521。");
+                    }
+                    var ecdsa = ECDsa.Create();
+                    ecdsa.ImportPkcs8PrivateKey(der, out _);
+                    return InMemorySshSigner.FromEcdsa(ecdsa);
+                }
+
+            case ed25519:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"这是一把 PKCS#8 格式的 Ed25519 私钥{where}，本库暂不读 PKCS#8 里的 Ed25519。" +
+                    "请转成 OpenSSH 格式（BEGIN OPENSSH PRIVATE KEY）再用。");
+
+            case ed448:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported, $"这是一把 Ed448 私钥{where}，SSH 不用 Ed448。");
+
+            case dsa:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"这是一把 DSA 私钥{where}。DSA（ssh-dss）已被 OpenSSH 废弃，本库不支持。");
+
+            default:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"这把 PKCS#8 私钥的算法是 {algorithm}{where}，SSH 用不上（支持 RSA 与 NIST 曲线上的 ECDSA）。");
+        }
+    }
+
+    /// <summary>PrivateKeyInfo 的算法 OID；是 EC 时连同曲线的 OID（namedCurve 参数，没有就是 null）。</summary>
+    private static (string Algorithm, string? Curve) ReadPkcs8Algorithm(byte[] der, string where)
+    {
+        try
+        {
+            AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+            _ = info.ReadInteger();   // version
+            AsnReader algorithm = info.ReadSequence();
+            string oid = algorithm.ReadObjectIdentifier();
+            string? curve = algorithm.HasData && algorithm.PeekTag().HasSameClassAndValue(Asn1Tag.ObjectIdentifier)
+                ? algorithm.ReadObjectIdentifier()
+                : null;
+            return (oid, curve);
+        }
+        catch (AsnContentException ex)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"PKCS#8 私钥的结构不对{where}。", ex);
+        }
+    }
+
+    /// <summary>给人看的曲线名：认识的写名字，不认识的写 OID。</summary>
+    private static string DescribeCurveOid(string? oid) => oid switch
+    {
+        null => "（显式参数，没有曲线名）",
+        "1.3.132.0.10" => "secp256k1",
+        "1.3.36.3.3.2.8.1.1.7" => "brainpoolP256r1",
+        "1.3.36.3.3.2.8.1.1.11" => "brainpoolP384r1",
+        "1.3.36.3.3.2.8.1.1.13" => "brainpoolP512r1",
+        _ => oid,
+    };
 
     private static InMemorySshSigner LoadRsaFromPem(string pem, string? passphrase, bool encrypted)
     {
