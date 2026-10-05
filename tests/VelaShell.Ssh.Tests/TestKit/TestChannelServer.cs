@@ -157,6 +157,9 @@ internal sealed record TestX11Request(
 /// <summary>服务端在通道上观察到的事实。</summary>
 internal sealed class TestChannelObservation
 {
+    /// <summary>客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; set; }
+
     /// <summary>收到的 <c>exec</c> 命令行。</summary>
     public List<string> Commands { get; } = [];
 
@@ -370,6 +373,11 @@ internal sealed class TestChannelServer : IDisposable
 
                 if (packet.IsEndOfStream || packet.MessageNumber == SshMessageNumber.Disconnect)
                 {
+                    if (!packet.IsEndOfStream && packet.Payload.Length >= 5)
+                    {
+                        Observation.ClientDisconnectReason =
+                            System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+                    }
                     return;
                 }
 

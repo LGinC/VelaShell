@@ -454,9 +454,19 @@ internal sealed class TestSshServer : IAsyncDisposable
         await Transport.FlushAsync(cancellationToken);
     }
 
+    /// <summary>握手期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; private set; }
+
     /// <summary>直接从传输读下一个报文 —— 只有首次交换能这么做（那时还没有别的读者）。</summary>
-    private async ValueTask<SshInboundPacket> ReadTransportAsync(CancellationToken cancellationToken) =>
-        await Transport.ReadPacketAsync(cancellationToken);
+    private async ValueTask<SshInboundPacket> ReadTransportAsync(CancellationToken cancellationToken)
+    {
+        SshInboundPacket packet = await Transport.ReadPacketAsync(cancellationToken);
+        if (!packet.IsEndOfStream && packet.MessageNumber == SshMessageNumber.Disconnect && packet.Payload.Length >= 5)
+        {
+            ClientDisconnectReason = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+        }
+        return packet;
+    }
 
     /// <summary>从注入的读取器取下一个报文，并断言它的消息编号。</summary>
     private static async Task<SshInboundPacket> ExpectAsync(

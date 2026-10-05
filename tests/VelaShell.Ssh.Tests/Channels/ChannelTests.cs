@@ -1526,6 +1526,41 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
 
     // ------------------------------------------------------------ 关闭
 
+    /// <summary>
+    /// 正常释放连接：先冲刷、发 DISCONNECT(BY_APPLICATION) 再停收发。曾经直接取消，对端日志里只有「Connection closed」，
+    /// 已入队的帧也作废了。
+    /// </summary>
+    [TestMethod]
+    public async Task 正常释放连接时发DISCONNECT_BY_APPLICATION()
+    {
+        Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+        try
+        {
+            await harness.Connection.DisposeAsync();
+
+            await WaitUntilAsync(() => harness.ChannelServer.Observation.ClientDisconnectReason is not null, harness.Token);
+            Assert.AreEqual((uint)SshDisconnectReason.ByApplication, harness.ChannelServer.Observation.ClientDisconnectReason);
+        }
+        finally
+        {
+            await harness.DisposeAsync();
+        }
+    }
+
+    /// <summary>会话期间收到解不开的报文：先发 DISCONNECT(PROTOCOL_ERROR) 告诉对端为什么断，再判死。</summary>
+    [TestMethod]
+    public async Task 会话期间收到解不开的报文时发DISCONNECT_PROTOCOL_ERROR()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+
+        // 一个截断的 CHANNEL_WINDOW_ADJUST：只有消息号，没有通道号。
+        await harness.ChannelServer.SendRawAsync(new byte[] { (byte)SshMessageNumber.ChannelWindowAdjust, 0 }, harness.Token);
+
+        await WaitUntilAsync(() => harness.ChannelServer.Observation.ClientDisconnectReason is not null, harness.Token);
+        Assert.AreEqual((uint)SshDisconnectReason.ProtocolError, harness.ChannelServer.Observation.ClientDisconnectReason);
+        await WaitUntilAsync(() => !harness.Connection.IsAlive, harness.Token);
+    }
+
     [TestMethod]
     public async Task 通道关闭后能读到Closed事件()
     {

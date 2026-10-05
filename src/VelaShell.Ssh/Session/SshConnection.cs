@@ -715,6 +715,14 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
         catch (Exception ex)
         {
+            // 〔velashell-docs/zh/ssh/spec/08 §六〕对端发来的东西解不开、违反了协议、重协商时验不过主机密钥：
+            // 先尽力告诉它为什么断（RFC 4253 §11.1），再判死。曾经一声不吭就断，服务端日志里只有「Connection closed」。
+            // 套接字断了、对端在报文中途走了的，发了也没人收（DisconnectReasonFor 给 null）。
+            if (Volatile.Read(ref _fault) is null && DisconnectReasonFor(ex) is { } reason)
+            {
+                await TrySendDisconnectAsync(reason, DisconnectDescription(reason), CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
             Fault(ex);
         }
         finally
@@ -1387,6 +1395,35 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>发 <c>DISCONNECT</c> 时最多等多久。</summary>
     private static readonly TimeSpan DisconnectFlushTimeout = TimeSpan.FromSeconds(2);
 
+    /// <summary>因这个失败断开时，告诉对端的原因码；不必（或者发了也没人收）时为 <see langword="null"/>。</summary>
+    /// <remarks>
+    /// 帧层的失败一律报 <see cref="SshDisconnectReason.ProtocolError"/>，不区分「完整性校验失败」与「格式不对」——
+    /// 把校验细节回送给对端是侧信道（见 <c>SshFrameFormatException.IntegrityCheckFailed</c>）。
+    /// </remarks>
+    internal static SshDisconnectReason? DisconnectReasonFor(Exception failure) => failure switch
+    {
+        Crypto.SshFrameFormatException { PeerClosedMidPacket: true } => null,
+        Crypto.SshFrameFormatException or SshWireFormatException or SshProtocolException
+            or Crypto.Kex.SshKeyExchangeException => SshDisconnectReason.ProtocolError,
+        SshNegotiationException => SshDisconnectReason.KeyExchangeFailed,
+        SshException { Reason: SshFailureReason.HostKeyRejected or SshFailureReason.HostKeyChanged } =>
+            SshDisconnectReason.HostKeyNotVerifiable,
+        Auth.SshAuthenticationException => SshDisconnectReason.NoMoreAuthMethodsAvailable,
+        _ => null,
+    };
+
+    /// <summary><c>DISCONNECT</c> 里给对端日志看的那句话（英文：对端的日志是给运维看的，不按本机界面语言）。</summary>
+    internal static string DisconnectDescription(SshDisconnectReason reason) => reason switch
+    {
+        SshDisconnectReason.ProtocolError => "protocol error",
+        SshDisconnectReason.KeyExchangeFailed => "no matching algorithms",
+        SshDisconnectReason.HostKeyNotVerifiable => "host key not verifiable",
+        SshDisconnectReason.NoMoreAuthMethodsAvailable => "no more authentication methods available",
+        SshDisconnectReason.AuthCancelledByUser => "authentication cancelled by user",
+        SshDisconnectReason.ByApplication => "disconnected by application",
+        _ => reason.ToString(),
+    };
+
     /// <summary>把会话的故障原因归成公开的异常类型。</summary>
     /// <remarks>
     /// <para>
@@ -1531,6 +1568,16 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
         _disposed = true;
         SignalDisconnected();
+
+        // 〔velashell-docs/zh/ssh/spec/05 §九〕正常收工：先限时冲刷已入队的帧、发 DISCONNECT(BY_APPLICATION)，再停收发。
+        // DISCONNECT 排在发送队列的末尾，它出去了就说明前面的帧都出去了 —— 关标签页之前的最后一次输入不会丢；
+        // 服务端日志里也有了原因。曾经直接取消：已入队的帧作废，对端只看到连接没了。
+        if (Volatile.Read(ref _fault) is null)
+        {
+            await TrySendDisconnectAsync(
+                SshDisconnectReason.ByApplication, DisconnectDescription(SshDisconnectReason.ByApplication), CancellationToken.None)
+                .ConfigureAwait(false);
+        }
 
         try
         {

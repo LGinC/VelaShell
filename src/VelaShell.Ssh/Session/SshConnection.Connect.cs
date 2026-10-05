@@ -193,7 +193,7 @@ public sealed partial class SshConnection
                 if (phase == SshPhase.Authenticating && transport is not null)
                 {
                     // 认证期间密钥已经装好：告诉服务端是用户不连了，而不是让它等到自己的 LoginGraceTime。
-                    await TrySendAuthCancelledAsync(transport).ConfigureAwait(false);
+                    await TrySendDisconnectAsync(transport, SshDisconnectReason.AuthCancelledByUser).ConfigureAwait(false);
                 }
                 await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
 
@@ -250,6 +250,7 @@ public sealed partial class SshConnection
         }
         catch (Exception ex) when (ex is Crypto.SshFrameFormatException or Protocol.SshWireFormatException)
         {
+            await TrySendHandshakeDisconnectAsync(transport, phase, ex).ConfigureAwait(false);
             await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
 
             // 〔velashell-docs/zh/ssh/spec/08 §二〕握手与认证期间对端发来的东西解不开（KEXINIT 的名单被截断、
@@ -257,10 +258,25 @@ public sealed partial class SshConnection
             // 曾经让这两个 internal 异常原样漏出 ConnectAsync —— 调用方 catch (SshException) 接不住。
             throw new SshProtocolException(phase, $"连 {options.EndPoint} 时对端违反了协议（{phase}）：{ex.Message}", ex);
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            await TrySendHandshakeDisconnectAsync(transport, phase, ex).ConfigureAwait(false);
             await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
             throw;
+        }
+    }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/08 §六〕握手与认证失败时先告诉对端原因（协议错误、协商不上、主机密钥验不过、认证方法用尽）。
+    /// 曾经一声不吭就断，服务端日志里只有「Connection closed」。版本交换完成之前不发：那时对端还不一定说 SSH。
+    /// </summary>
+    private static async ValueTask TrySendHandshakeDisconnectAsync(SshPacketTransport? transport, SshPhase phase, Exception failure)
+    {
+        if (transport is not null
+            && phase is SshPhase.KeyExchange or SshPhase.Authenticating
+            && DisconnectReasonFor(failure) is { } reason)
+        {
+            await TrySendDisconnectAsync(transport, reason).ConfigureAwait(false);
         }
     }
 
@@ -287,16 +303,16 @@ public sealed partial class SshConnection
         }
     }
 
-    /// <summary>尽力发一个 <c>DISCONNECT(AUTH_CANCELLED_BY_USER)</c>，最多等两秒；发不出去不报。</summary>
-    private static async ValueTask TrySendAuthCancelledAsync(SshPacketTransport transport)
+    /// <summary>建连期间（还没有发送泵）直接在传输上尽力发一个 <c>DISCONNECT</c>，最多等两秒；发不出去不报。</summary>
+    private static async ValueTask TrySendDisconnectAsync(SshPacketTransport transport, SshDisconnectReason reason)
     {
         try
         {
             ArrayBufferWriter<byte> buffer = new();
             SshDataWriter writer = new(buffer);
             writer.WriteMessageNumber(SshMessageNumber.Disconnect);
-            writer.WriteUInt32((uint)SshDisconnectReason.AuthCancelledByUser);
-            writer.WriteUtf8String("authentication cancelled by user");
+            writer.WriteUInt32((uint)reason);
+            writer.WriteUtf8String(DisconnectDescription(reason));
             writer.WriteUtf8String("");
 
             transport.WritePacket(buffer.WrittenSpan);

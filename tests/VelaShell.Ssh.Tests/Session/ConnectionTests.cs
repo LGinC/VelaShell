@@ -48,6 +48,9 @@ public sealed class ConnectionTests
         /// <summary>最近一条连接的认证侧观察（走到认证之后才有）。</summary>
         public TestAuthObservation? AuthObservation { get; private set; }
 
+        /// <summary>最近一条连接的服务端（握手侧的观察在它上面）。</summary>
+        public TestSshServer? LastServer => _servers.Count == 0 ? null : _servers[^1];
+
         public ISshTransportDialer CreateDialer() => new Dialer(this);
 
         private sealed class Dialer(FakeServer owner) : ISshTransportDialer
@@ -624,6 +627,53 @@ public sealed class ConnectionTests
         {
             File.Delete(path);
         }
+    }
+
+    // ------------------------------------------------------------ 失败时告诉对端原因（DISCONNECT）
+
+    private static async Task WaitForAsync(Func<bool> condition)
+    {
+        for (int i = 0; i < 300 && !condition(); i++)
+        {
+            await Task.Delay(10);
+        }
+    }
+
+    /// <summary>认证方法用尽：服务端收到 DISCONNECT(NO_MORE_AUTH_METHODS_AVAILABLE)，日志里有原因。</summary>
+    [TestMethod]
+    public async Task 认证方法用尽时告诉服务端原因()
+    {
+        await using FakeServer server = new();
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            Credentials = [new PasswordCredential("wrong")],
+        };
+
+        await Assert.ThrowsExactlyAsync<SshAuthenticationException>(async () => await SshConnection.ConnectAsync(options));
+
+        await WaitForAsync(() => server.AuthObservation?.ClientDisconnectReason is not null);
+        Assert.AreEqual((uint)SshDisconnectReason.NoMoreAuthMethodsAvailable, server.AuthObservation?.ClientDisconnectReason);
+    }
+
+    /// <summary>主机密钥被拒：服务端收到 DISCONNECT(HOST_KEY_NOT_VERIFIABLE)。</summary>
+    [TestMethod]
+    public async Task 主机密钥被拒时告诉服务端原因()
+    {
+        await using FakeServer server = new();
+        IHostKeyPolicy reject = new RejectAll();
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(Options(server, reject)));
+        Assert.AreEqual(SshFailureReason.HostKeyRejected, error.Reason);
+
+        await WaitForAsync(() => server.LastServer?.ClientDisconnectReason is not null);
+        Assert.AreEqual((uint)SshDisconnectReason.HostKeyNotVerifiable, server.LastServer?.ClientDisconnectReason);
+    }
+
+    private sealed class RejectAll : IHostKeyPolicy
+    {
+        public ValueTask<SshHostKeyVerdict> EvaluateAsync(SshHostKeyContext context, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult(SshHostKeyVerdict.Reject("不认识。"));
     }
 
     // ------------------------------------------------------------ 前导行
