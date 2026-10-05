@@ -10,6 +10,7 @@
 //   行为规格:             velashell-docs/zh/ssh/design/architecture.md §8 第 5 项
 
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
 using System.Formats.Asn1;
 using System.Numerics;
 using System.Runtime.CompilerServices;
@@ -17,6 +18,7 @@ using System.Security.Cryptography;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Keys;
@@ -91,6 +93,68 @@ public static class SshPrivateKeyFile
         }
 
         return SshPrivateKeyFormat.Unknown;
+    }
+
+    /// <summary>不用口令读出私钥文件里的公钥。</summary>
+    /// <param name="pem">私钥文件的文本。</param>
+    /// <param name="publicKey">读出的公钥。</param>
+    /// <returns>
+    /// 读得出为 <see langword="true"/>。加密的 PKCS#8 与传统加密 PEM 不带明文公钥，读不出；
+    /// 认不出的格式、内容不完整的文件同样返回 <see langword="false"/>，不抛。
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// OpenSSH 容器的公钥段与 <c>.ppk</c> 的 <c>Public-Lines</c> 本来就是明文，私钥加了密也读得出；
+    /// 未加密的 PKCS#1 / SEC1 / PKCS#8 由私钥导出。用处是导入只有私钥、没有 <c>.pub</c> 的文件 ——
+    /// PuTTY 用户手里通常只有一个 <c>.ppk</c>。
+    /// </para>
+    /// <para>
+    /// 明文的那一份<b>没有</b>与私钥核对过（核对要先解密）：拿它显示指纹、写 <c>.pub</c> 可以；
+    /// 认证用的是 <see cref="Parse(string, ReadOnlySpan{char}, string?, CancellationToken)"/> 解出的那一把，那里会核对。
+    /// </para>
+    /// </remarks>
+    public static bool TryReadPublicKey(string pem, [NotNullWhen(true)] out SshPublicKey? publicKey)
+    {
+        ArgumentNullException.ThrowIfNull(pem);
+        publicKey = null;
+
+        try
+        {
+            byte[]? blob = DetectFormat(pem) switch
+            {
+                SshPrivateKeyFormat.OpenSsh => ReadOpenSshPublicSection(pem),
+                SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.ReadPublicBlob(pem),
+                SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec => DerivePublicBlob(pem),
+                _ => null,   // 加密的 PKCS#8：公钥也在密文里
+            };
+            if (blob is null)
+            {
+                return false;
+            }
+
+            publicKey = SshPublicKey.Decode(blob);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 文件是外来输入：读不出就是读不出，不分原因（与 Parse 把它们归成 KeyFormatInvalid 同理）。
+            return false;
+        }
+    }
+
+    /// <summary>OpenSSH 容器的公钥段（明文）。不加密的容器里私钥区也是明文，读过就清零。</summary>
+    private static byte[] ReadOpenSshPublicSection(string pem)
+    {
+        OpenSshContainer container = ReadOpenSshContainer(pem, where: "");
+        CryptographicOperations.ZeroMemory(container.PrivateSection);
+        return container.PublicSection;
+    }
+
+    /// <summary>未加密的 PKCS#1 / SEC1 / PKCS#8：解出私钥、取它的公钥。传统加密 PEM 在这里被拒。</summary>
+    private static byte[] DerivePublicBlob(string pem)
+    {
+        using InMemorySshSigner signer = Parse(pem, ReadOnlySpan<char>.Empty);
+        return signer.PublicKey.Blob.ToArray();
     }
 
     /// <summary>从文件读一把私钥。</summary>
@@ -212,33 +276,8 @@ public static class SshPrivateKeyFile
     private static InMemorySshSigner ParseOpenSsh(
         string pem, ReadOnlySpan<char> passphrase, string where, CancellationToken cancellationToken)
     {
-        byte[] blob = DecodePemBody(pem, "OPENSSH PRIVATE KEY", where);
-
-        byte[] magic = Encoding.ASCII.GetBytes(OpenSshMagic);
-        if (blob.Length < magic.Length || !blob.AsSpan(0, magic.Length).SequenceEqual(magic))
-        {
-            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"OpenSSH 私钥的魔数不对{where}。");
-        }
-
-        SshDataReader reader = new(new ReadOnlySequence<byte>(blob.AsMemory(magic.Length)));
-        string cipherName = reader.ReadUtf8String(1024);
-        string kdfName = reader.ReadUtf8String(1024);
-        byte[] kdfOptions = reader.ReadStringAsArray(64 * 1024);
-        uint keyCount = reader.ReadUInt32();
-
-        if (keyCount != 1)
-        {
-            throw new SshPrivateKeyException(SshFailureReason.Unsupported,
-                $"这个文件里有 {keyCount} 把密钥{where}，本库只处理一把。");
-        }
-
-        byte[] publicSection = reader.ReadStringAsArray(64 * 1024);   // 公钥：解出私钥之后拿来核对
-        byte[] privateSection = reader.ReadStringAsArray(1024 * 1024);
-
-        // AEAD 的认证标签在那个 string 的**外面** —— 容器末尾的裸字节，不带长度前缀。
-        // 非 AEAD 时这里是空的。误把它当成密文的尾部，会得到一个「开头解得出、
-        // 标签永远验不过」的结果（流密码解前缀照样是对的），查起来极其费劲。
-        byte[] tag = reader.ReadRemaining().ToArray();
+        (string cipherName, string kdfName, byte[] kdfOptions, byte[] publicSection, byte[] privateSection, byte[] tag) =
+            ReadOpenSshContainer(pem, where);
 
         InMemorySshSigner signer;
         if (cipherName == "none" && kdfName == "none")
@@ -269,6 +308,44 @@ public static class SshPrivateKeyFile
                 $"OpenSSH 私钥文件里的公钥与私钥不是一对{where} —— 文件被改过，或者拼错了。");
         }
         return signer;
+    }
+
+    /// <summary><c>openssh-key-v1</c> 容器拆开后的各段；私钥区还没解密。</summary>
+    private readonly record struct OpenSshContainer(
+        string CipherName, string KdfName, byte[] KdfOptions, byte[] PublicSection, byte[] PrivateSection, byte[] Tag);
+
+    /// <summary>拆开 <c>openssh-key-v1</c> 容器（布局见 <see cref="ParseOpenSsh"/>）。</summary>
+    private static OpenSshContainer ReadOpenSshContainer(string pem, string where)
+    {
+        byte[] blob = DecodePemBody(pem, "OPENSSH PRIVATE KEY", where);
+
+        byte[] magic = Encoding.ASCII.GetBytes(OpenSshMagic);
+        if (blob.Length < magic.Length || !blob.AsSpan(0, magic.Length).SequenceEqual(magic))
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"OpenSSH 私钥的魔数不对{where}。");
+        }
+
+        SshDataReader reader = new(new ReadOnlySequence<byte>(blob.AsMemory(magic.Length)));
+        string cipherName = reader.ReadUtf8String(1024);
+        string kdfName = reader.ReadUtf8String(1024);
+        byte[] kdfOptions = reader.ReadStringAsArray(64 * 1024);
+        uint keyCount = reader.ReadUInt32();
+
+        if (keyCount != 1)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                $"这个文件里有 {keyCount} 把密钥{where}，本库只处理一把。");
+        }
+
+        byte[] publicSection = reader.ReadStringAsArray(64 * 1024);   // 公钥：解出私钥之后拿来核对
+        byte[] privateSection = reader.ReadStringAsArray(1024 * 1024);
+
+        // AEAD 的认证标签在那个 string 的**外面** —— 容器末尾的裸字节，不带长度前缀。
+        // 非 AEAD 时这里是空的。误把它当成密文的尾部，会得到一个「开头解得出、
+        // 标签永远验不过」的结果（流密码解前缀照样是对的），查起来极其费劲。
+        byte[] tag = reader.ReadRemaining().ToArray();
+
+        return new(cipherName, kdfName, kdfOptions, publicSection, privateSection, tag);
     }
 
     /// <summary>用 <c>bcrypt_pbkdf</c> 派生密钥，再解开私钥区。</summary>

@@ -98,6 +98,16 @@ internal static class PuttyPrivateKeyFile
         }
     }
 
+    /// <summary>读 <c>.ppk</c> 的公钥段（<c>Public-Lines</c>）：明文，不用口令，也没有与私钥核对。</summary>
+    public static byte[] ReadPublicBlob(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        var file = PuttyFile.Parse(text, where: "");
+        Clear(file.PrivateBlob);   // 不加密的 .ppk 里这是明文私钥
+        return file.PublicBlob;
+    }
+
     /// <summary>把私钥的中间副本清零。</summary>
     /// <remarks>只清得了数组：<see cref="BigInteger"/> 与口令的 <see cref="string"/> 是不可变的，清不掉 —— 那是这里能做到的边界。</remarks>
     private static void Clear(params ReadOnlySpan<byte[]?> secrets)
