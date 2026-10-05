@@ -1591,6 +1591,22 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         }
     }
 
+    /// <summary>输出末尾是一个被截断的多字节字符：ReadToEndAsync 交回 U+FFFD，而不是悄悄丢掉（曾经解码器从不冲刷）。</summary>
+    [TestMethod]
+    public async Task 输出末尾被截断的多字节字符不被悄悄丢掉()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            StandardOutput = [.. "abc"u8, 0xE4, 0xB8],   // 「中」（E4 B8 AD）少了最后一个字节
+            ExitCode = 0,
+        });
+
+        await using SshCommand command = await harness.Connection.ExecuteAsync("x", cancellationToken: harness.Token);
+        SshCommandResult result = await command.ReadToEndAsync(harness.Token);
+
+        Assert.AreEqual("abc\uFFFD", result.StandardOutput);
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>

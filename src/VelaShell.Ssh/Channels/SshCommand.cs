@@ -146,6 +146,11 @@ public sealed class SshCommand : IAsyncDisposable
             }
         }
 
+        // 流读完了：把解码器里攒着的不完整序列冲出来（成为 U+FFFD）。曾经不冲 ——
+        // 输出末尾被截断的多字节字符（命令被杀、输出被 head -c 截断）静默消失，看不出输出不完整。
+        char[] tail = new char[decoder.GetCharCount([], flush: true)];
+        text.Append(tail, 0, decoder.GetChars([], tail, flush: true));
+
         await reader.CompleteAsync().ConfigureAwait(false);
         return text.ToString();
     }
