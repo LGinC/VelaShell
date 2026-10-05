@@ -124,9 +124,12 @@ internal static class SshConnectionAssembler
         // 每次尝试一个新的应答器:「口令只代答一次」与「用户点了取消」都是这一次认证的状态。
         KeyboardInteractiveResponder? keyboard =
             keyboardPrompt is null ? null : KeyboardInteractiveResponder.For(info, keyboardPrompt);
+        // 私钥签名器归这一次建连所有:连接建好(或失败)之后就不再需要它(重协商不会重新认证),
+        // 在 finally 里释放 —— 它释放时把私钥材料清零。交给后台「自动加钥」的那一把除外,由它用完再释放。
+        IReadOnlyList<SshCredential> credentials = [];
+        InMemorySshSigner? handedToAgentLoader = null;
         try
         {
-            IReadOnlyList<SshCredential> credentials;
             if (info.AuthMethod == AuthMethod.Agent)
             {
                 agent = await ConnectAgentAsync(cancellationToken).ConfigureAwait(false);
@@ -175,7 +178,20 @@ internal static class SshConnectionAssembler
             if (AddKeysToAgent(settings)
                 && SshAgentKeyLoader.TryGetKeyToAdd(info, credentials, out InMemorySshSigner key, out string comment))
             {
-                _ = Task.Run(() => SshAgentKeyLoader.AddAsync(key, comment, ConnectLocalAgentAsync), CancellationToken.None);
+                handedToAgentLoader = key;
+                _ = Task.Run(
+                    async () =>
+                    {
+                        try
+                        {
+                            await SshAgentKeyLoader.AddAsync(key, comment, ConnectLocalAgentAsync).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            key.Dispose();
+                        }
+                    },
+                    CancellationToken.None);
             }
 
             return connection;
@@ -185,6 +201,30 @@ internal static class SshConnectionAssembler
             if (agent is not null)
             {
                 await agent.DisposeAsync().ConfigureAwait(false);
+            }
+
+            DisposeOwnedSigners(credentials, except: handedToAgentLoader);
+        }
+    }
+
+    /// <summary>释放这一次建连读出来的私钥签名器(释放时清零私钥)。</summary>
+    /// <remarks>
+    /// 只管本地读出的私钥(<see cref="InMemorySshSigner" />)与包着它的证书签名器(它会连同里面那把一起释放);
+    /// agent 的签名器不归这里 —— 它背后的连接由 agent 客户端管。
+    /// 曾经从不释放:私钥材料在托管堆上一直留到 GC,证书读失败时已经读出的私钥也留在原处。
+    /// </remarks>
+    internal static void DisposeOwnedSigners(IReadOnlyList<SshCredential> credentials, InMemorySshSigner? except)
+    {
+        foreach (SshCredential credential in credentials)
+        {
+            if (credential is not PublicKeyCredential { Signer: var signer } || ReferenceEquals(signer, except))
+            {
+                continue;
+            }
+
+            if (signer is InMemorySshSigner or SshCertificateSigner)
+            {
+                ((IDisposable)signer).Dispose();
             }
         }
     }
@@ -312,16 +352,26 @@ internal static class SshConnectionAssembler
 
             case AuthMethod.Certificate:
                 {
-                    ISshSigner signer = await LoadSignerAsync(
+                    InMemorySshSigner signer = await LoadSignerAsync(
                         info.PrivateKeyPath!, info.PrivateKeyPassphrase, cancellationToken).ConfigureAwait(false);
 
-                    OpenSshCertificate certificate = await OpenSshCertificate
-                        .LoadAsync(info.CertificatePath!, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        OpenSshCertificate certificate = await OpenSshCertificate
+                            .LoadAsync(info.CertificatePath!, cancellationToken).ConfigureAwait(false);
 
-                    // Create 当场核对「证书与私钥是不是一对」—— 不核对的话配错了的表现是
-                    // 服务端一句 Permission denied,与「CA 不被信任」「主体不匹配」没法区分。
-                    return [new PublicKeyCredential(
-                        SshCertificateSigner.Create(certificate, signer), info.CertificatePath)];
+                        // Create 当场核对「证书与私钥是不是一对」—— 不核对的话配错了的表现是
+                        // 服务端一句 Permission denied,与「CA 不被信任」「主体不匹配」没法区分。
+                        // 证书签名器接管私钥签名器:释放它就连同私钥一起释放。
+                        return [new PublicKeyCredential(
+                            SshCertificateSigner.Create(certificate, signer), info.CertificatePath)];
+                    }
+                    catch
+                    {
+                        // 证书读不出来或与私钥不是一对:已经读出的私钥没有人会再用,当场释放(清零)。
+                        signer.Dispose();
+                        throw;
+                    }
                 }
 
             default:
