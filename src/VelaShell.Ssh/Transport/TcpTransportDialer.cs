@@ -247,13 +247,39 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
         }
     }
 
-    private static SshConnectException Translate(SocketException ex, SshEndPoint endPoint) =>
+    /// <summary>把套接字错误翻成带原因码的连接失败。</summary>
+    /// <remarks>
+    /// 原因码要说真话（velashell-docs/zh/ssh/spec/08 §3）：宿主按它本地化、按它决定要不要重试。
+    /// 曾经认不出的错误一律报成「拒绝连接」—— 断网时最常见的 DNS 暂时失败（<c>EAI_AGAIN</c>，
+    /// 即 <see cref="SocketError.TryAgain"/>）也在其中，用户去查服务端，其实是本机断网。
+    /// </remarks>
+    internal static SshConnectException Translate(SocketException ex, SshEndPoint endPoint) =>
         ex.SocketErrorCode switch
         {
             SocketError.HostNotFound or SocketError.NoData =>
                 new SshConnectException(
                     SshFailureReason.DnsFailure, SshPhase.Dialing,
                     $"DNS 查不到 {endPoint.Host}。", ex),
+
+            SocketError.TryAgain =>
+                new SshConnectException(
+                    SshFailureReason.DnsFailure, SshPhase.Dialing,
+                    $"DNS 暂时查不了 {endPoint.Host} —— 本机多半断网了，或者 DNS 服务器没有响应。", ex),
+
+            SocketError.NoRecovery =>
+                new SshConnectException(
+                    SshFailureReason.DnsFailure, SshPhase.Dialing,
+                    $"查 {endPoint.Host} 时 DNS 出了不可恢复的错误。", ex),
+
+            SocketError.NetworkDown =>
+                new SshConnectException(
+                    SshFailureReason.TcpUnreachable, SshPhase.Dialing,
+                    $"连 {endPoint} 时本机网络不可用。", ex),
+
+            SocketError.HostDown =>
+                new SshConnectException(
+                    SshFailureReason.TcpUnreachable, SshPhase.Dialing,
+                    $"{endPoint} 所在的主机没有响应（主机已关机或不在网络上）。", ex),
 
             SocketError.ConnectionRefused =>
                 new SshConnectException(
@@ -270,8 +296,10 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
                     SshFailureReason.TcpUnreachable, SshPhase.Dialing,
                     $"到 {endPoint} 的路由不通。", ex),
 
+            // 其余（本机防火墙拦了出站、本机地址不可用……）说不清是哪一类，就报不知道 ——
+            // 借一个相近的原因码，宿主会照它翻成一句假话。
             _ => new SshConnectException(
-                SshFailureReason.TcpRefused, SshPhase.Dialing,
+                SshFailureReason.Unknown, SshPhase.Dialing,
                 $"连 {endPoint} 失败：{ex.SocketErrorCode}。", ex),
         };
 }

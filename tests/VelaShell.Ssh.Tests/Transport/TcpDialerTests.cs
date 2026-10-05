@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Transport;
 
 namespace VelaShell.Ssh.Tests.Transport;
@@ -25,6 +26,32 @@ public sealed class TcpDialerTests
         Socket socket = new(SocketType.Stream, ProtocolType.Tcp);
         await socket.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
         return socket;
+    }
+
+    /// <summary>
+    /// 原因码要说真话：宿主按它本地化、按它决定要不要重试。
+    /// 曾经认不出的错误一律报成「拒绝连接」—— 断网时的 DNS 暂时失败也在其中。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SocketError.HostNotFound, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.NoData, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.TryAgain, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.NoRecovery, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.ConnectionRefused, SshFailureReason.TcpRefused)]
+    [DataRow(SocketError.TimedOut, SshFailureReason.TcpTimeout)]
+    [DataRow(SocketError.NetworkUnreachable, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.HostUnreachable, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.NetworkDown, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.HostDown, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.AccessDenied, SshFailureReason.Unknown)]
+    [DataRow(SocketError.AddressNotAvailable, SshFailureReason.Unknown)]
+    public void 套接字错误翻成说真话的原因码(SocketError error, SshFailureReason expected)
+    {
+        SshConnectException translated = TcpTransportDialer.Translate(
+            new SocketException((int)error), new SshEndPoint("host.example", 22));
+
+        Assert.AreEqual(expected, translated.Reason);
+        Assert.AreEqual(SshPhase.Dialing, translated.Phase);
     }
 
     [TestMethod]
