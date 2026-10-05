@@ -74,7 +74,7 @@ internal static class SftpWire
             // 这不是「数据还没到齐」，是对端在让我们分配一块巨大的缓冲。
             throw new SshProtocolException(
                 SshPhase.Open,
-                $"SFTP 报文声称长度 {length} 字节，超过上限 {SftpProtocol.MaxMessageLength}。");
+                $"SFTP 报文声称长度 {length} 字节，超过上限 {SftpProtocol.MaxMessageLength}。" + PrintableHint(lengthBytes));
         }
 
         if (length < 1)
@@ -93,6 +93,25 @@ internal static class SftpWire
         frame = new SftpFrame((SftpMessageType)type, body.Slice(1));
         buffer = buffer.Slice(4 + length);
         return true;
+    }
+
+    /// <summary>
+    /// 「长度」那 4 个字节全是可打印文字时，多半不是 SFTP：登录 shell 的启动文件往 stdout 输出了文字，
+    /// 抢在 sftp-server 前面（velashell-docs/zh/ssh/spec/06 §一）。曾经只报「长度超上限」，看不出真实原因。
+    /// </summary>
+    private static string PrintableHint(ReadOnlySpan<byte> lengthBytes)
+    {
+        foreach (byte b in lengthBytes)
+        {
+            if (b is not ((>= 0x20 and <= 0x7E) or (byte)'\t' or (byte)'\r' or (byte)'\n'))
+            {
+                return "";
+            }
+        }
+
+        string text = Diagnostics.PeerText.Sanitize(System.Text.Encoding.ASCII.GetString(lengthBytes));
+        return $"开头的字节「{text}」是可打印文字：多半是服务端登录 shell 的启动文件（.bashrc 之类）往 stdout 输出了文字，" +
+            "把 sftp 子系统的输出打乱了。让启动文件在非交互的会话里不输出任何东西。";
     }
 
     private static byte ReadFirstByte(ReadOnlySequence<byte> sequence)

@@ -219,6 +219,29 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task sftp_server一直不回VERSION时握手超时()
+    {
+        // 登录 shell 的启动文件卡住时 sftp-server 永远不会回 VERSION；曾经只靠调用方的令牌，没给就一直挂着。
+        SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+            async () => await Harness.StartAsync(
+                sftpOptions: new TestSftpOptions { NeverAnswerInit = true },
+                clientOptions: new SftpOptions { HandshakeTimeout = TimeSpan.FromMilliseconds(200) }));
+
+        Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+    }
+
+    [TestMethod]
+    public async Task 启动文件往stdout输出文字时报出真实原因()
+    {
+        // 「Welcome…」的前 4 个字节被当成报文长度：曾经只报「长度超上限」，看不出是启动文件在说话。
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await Harness.StartAsync(sftpOptions: new TestSftpOptions { StdoutBanner = "Welcome to the jump host\n" }));
+
+        Assert.Contains("启动文件", error.Message);
+        Assert.Contains("Welc", error.Message);
+    }
+
+    [TestMethod]
     public async Task 服务端拒绝sftp子系统时报SftpUnavailable()
     {
         SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(

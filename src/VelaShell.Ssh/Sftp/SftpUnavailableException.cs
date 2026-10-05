@@ -15,4 +15,10 @@ public sealed class SftpUnavailableException : SshException
         : base(SshFailureReason.Unsupported, SshPhase.Open, message, innerException)
     {
     }
+
+    /// <summary>带原因码的版本（如握手超时是 <see cref="SshFailureReason.Timeout"/>）。</summary>
+    internal SftpUnavailableException(SshFailureReason reason, string message, Exception? innerException = null)
+        : base(reason, SshPhase.Open, message, innerException)
+    {
+    }
 }

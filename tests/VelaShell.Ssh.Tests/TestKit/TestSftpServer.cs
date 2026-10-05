@@ -75,6 +75,12 @@ internal sealed record TestSftpOptions
     /// <summary>每批 <c>READDIR</c> 最多回这么多项。</summary>
     public int ReadDirBatchSize { get; init; } = 2;
 
+    /// <summary>收到 <c>INIT</c> 不回 <c>VERSION</c> —— 模拟登录 shell 的启动文件卡住、sftp-server 一直没起来。</summary>
+    public bool NeverAnswerInit { get; init; }
+
+    /// <summary>在任何 SFTP 报文之前先往 stdout 写这段文字 —— 模拟启动文件（.bashrc 之类）往 stdout 输出了东西。</summary>
+    public string? StdoutBanner { get; init; }
+
     /// <summary><c>READDIR</c> 永远回空的一批（count = 0），既不给项也不回 EOF。</summary>
     public bool EmptyReadDirBatches { get; init; }
 
@@ -221,6 +227,12 @@ internal sealed class TestSftpServer
         Volatile.Write(ref _input, input);
         try
         {
+            if (_options.StdoutBanner is { } banner)
+            {
+                await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes(banner), cancellationToken);
+                await output.FlushAsync(cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 ReadResult read = await input.ReadAsync(cancellationToken);
@@ -326,7 +338,7 @@ internal sealed class TestSftpServer
 
         if (frame.Type == SftpMessageType.Init)
         {
-            return BuildVersion();
+            return _options.NeverAnswerInit ? null : BuildVersion();
         }
 
         SshDataReader reader = new(frame.Payload);

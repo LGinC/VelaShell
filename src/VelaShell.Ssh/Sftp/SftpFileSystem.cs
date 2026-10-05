@@ -80,6 +80,20 @@ public sealed record SftpOptions
     /// </remarks>
     public System.Text.Encoding? FileNameEncoding { get; init; }
 
+    /// <summary>
+    /// 握手（<c>INIT</c> → <c>VERSION</c>、查 limits、取工作目录）最多等多久；到点以 <see cref="SshFailureReason.Timeout"/> 失败。
+    /// </summary>
+    /// <remarks>
+    /// sftp-server 是经登录 shell 起的：启动文件卡住（等输入、挂在一个网络盘上）时它永远不会回 VERSION。
+    /// 曾经只靠调用方的令牌，没给就一直挂着。
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public TimeSpan HandshakeTimeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(HandshakeTimeout), value, "握手时限必须为正。");
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>默认参数。</summary>
     public static SftpOptions Default { get; } = new();
 
@@ -210,13 +224,24 @@ public sealed class SftpFileSystem : IAsyncDisposable
         }
         pipeline.Start();
 
+        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        deadline.CancelAfter(effective.HandshakeTimeout);
         try
         {
-            SftpCapabilities capabilities = await HandshakeAsync(pipeline, cancellationToken).ConfigureAwait(false);
+            SftpCapabilities capabilities = await HandshakeAsync(pipeline, deadline.Token).ConfigureAwait(false);
             SftpFileSystem fileSystem = new(channel, pipeline, effective, capabilities);
 
-            await fileSystem.InitializeAsync(cancellationToken).ConfigureAwait(false);
+            await fileSystem.InitializeAsync(deadline.Token).ConfigureAwait(false);
             return fileSystem;
+        }
+        catch (OperationCanceledException ex) when (deadline.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
+        {
+            await pipeline.DisposeAsync().ConfigureAwait(false);
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw new SftpUnavailableException(
+                SshFailureReason.Timeout,
+                $"SFTP 握手在 {effective.HandshakeTimeout.TotalSeconds:0} 秒内没有完成：sftp-server 没有回应。" +
+                "常见原因是服务端登录 shell 的启动文件卡住了（等输入、挂在一个连不上的网络盘上）。", ex);
         }
         catch (Exception)
         {
