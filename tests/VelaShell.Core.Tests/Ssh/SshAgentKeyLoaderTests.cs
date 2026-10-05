@@ -157,6 +157,21 @@ public sealed class SshAgentKeyLoaderTests
         Assert.AreEqual(SshAgentKeyLoader.Outcome.Failed, timedOut);
     }
 
+    /// <summary>
+    /// 意料之外的异常同样只报失败、不抛:调用方是丢进 Task.Run 不等的,抛出去就成了没人观察的任务异常。
+    /// 曾经只接 agent / 取消 / IO / 已释放这几种。
+    /// </summary>
+    [TestMethod]
+    public async Task AnUnexpectedFailureIsReportedNotThrown()
+    {
+        using var key = InMemorySshSigner.GenerateEd25519();
+
+        SshAgentKeyLoader.Outcome outcome = await SshAgentKeyLoader.AddAsync(
+            key, "k", _ => throw new InvalidOperationException("连接器里的意外"));
+
+        Assert.AreEqual(SshAgentKeyLoader.Outcome.Failed, outcome);
+    }
+
     [TestMethod]
     public void OnlyPrivateKeyAuthenticationOffersAKey()
     {

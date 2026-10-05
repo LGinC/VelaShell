@@ -87,9 +87,10 @@ internal static class SshAgentKeyLoader
             Trace.WriteLine($"[ssh-agent] 已把 {comment} 加入 {agent.Endpoint}");
             return Outcome.Added;
         }
-        catch (Exception ex) when (ex is SshAgentException or OperationCanceledException or IOException
-                                       or ObjectDisposedException)
+        catch (Exception ex)
         {
+            // 后台尽力而为,任何失败都只记一笔:调用方是丢进 Task.Run 不等的,漏出去就是一个没人观察的任务异常。
+            // 曾经只接 agent / 取消 / IO / 已释放这几种,别的(agent 应答畸形时库漏出的内部异常、连接器里的 BCL 异常)都漏了出去。
             Trace.WriteLine($"[ssh-agent] 没能把 {comment} 加入 agent:{ex.Message}");
             return Outcome.Failed;
         }
