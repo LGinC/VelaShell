@@ -15,8 +15,20 @@ namespace VelaShell.Ssh.Keys;
 public sealed record SshAgentKeyConstraints
 {
     /// <summary>多久之后由 agent 自己删掉这把钥；<see langword="null"/> 表示不限。</summary>
-    /// <remarks>按整秒发送，至少 1 秒。</remarks>
-    public TimeSpan? Lifetime { get; init; }
+    /// <remarks>按整秒发送，不足一秒的向上取整（不把有效期截短）。</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// 不为正，或超过 <see cref="uint.MaxValue"/> 秒（报文里是 uint32）。曾经 0 与负数被静默钳成 1 秒 —— 加进去的钥一秒后就没了。
+    /// </exception>
+    public TimeSpan? Lifetime
+    {
+        get;
+        init => field = value is null || (value > TimeSpan.Zero && value <= MaxLifetime)
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(Lifetime), value, "有效期必须为正、且不超过 uint32 能表示的秒数；不限就给 null。");
+    }
+
+    /// <summary>有效期的上限：<see cref="uint.MaxValue"/> 秒。</summary>
+    private static readonly TimeSpan MaxLifetime = TimeSpan.FromSeconds(uint.MaxValue);
 
     /// <summary>每次用这把钥签名时，由 agent 向使用者确认。</summary>
     public bool ConfirmEachUse { get; init; }
