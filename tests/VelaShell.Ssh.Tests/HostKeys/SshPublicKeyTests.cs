@@ -123,6 +123,27 @@ public sealed class SshPublicKeyTests
         Assert.IsFalse(key.VerifySignature(signatureBlob, data, SshAlgorithmNames.SshEd25519));
     }
 
+    /// <summary>
+    /// 〔AU-P1〕只解析、不验签的公钥不留原生钥（CNG 句柄只能靠终结器回收）；第一次验签时才建，之后复用。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SshAlgorithmNames.RsaSha256)]
+    [DataRow(SshAlgorithmNames.EcdsaSha2Nistp256)]
+    public async Task 原生钥第一次验签时才建(string algorithm)
+    {
+        using VelaShell.Ssh.Auth.InMemorySshSigner signer = algorithm == SshAlgorithmNames.RsaSha256
+            ? VelaShell.Ssh.Auth.InMemorySshSigner.FromRsa(RSA.Create(2048))
+            : VelaShell.Ssh.Auth.InMemorySshSigner.FromEcdsa(ECDsa.Create(ECCurve.NamedCurves.nistP256));
+        byte[] data = RandomNumberGenerator.GetBytes(32);
+        byte[] signature = await signer.SignAsync(data, algorithm);
+
+        SshPublicKey key = SshPublicKey.Decode(signer.PublicKey.Blob);
+        Assert.IsFalse(key.HasNativeKey, "只解析不该建原生钥");
+
+        Assert.IsTrue(key.VerifySignature(signature, data, algorithm));
+        Assert.IsTrue(key.HasNativeKey);
+        Assert.IsTrue(key.VerifySignature(signature, data, algorithm), "建好的原生钥照样能复用");
+    }
     /// <summary>〔AU-D1〕签名 blob 末尾多出字节：不作数 —— 同一个签名不许有两种都验得过的编码。</summary>
     [TestMethod]
     public void 签名blob末尾有多余字节时验不过()

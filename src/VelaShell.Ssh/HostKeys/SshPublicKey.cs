@@ -38,18 +38,25 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     private const int MaxFieldBytes = 8 * 1024;
 
     private readonly byte[] _blob;
-    private readonly RSA? _rsa;
-    private readonly ECDsa? _ecdsa;
+
+    // 〔AU-P1〕验签用的原生钥第一次验签时才建（证书身份与原钥共用同一个）。绝大多数公钥实例（known_hosts 的每一行、
+    // agent 列出的每一把、认证时出示的那把）从来不用来验签；曾经每个实例解析时就建一把原生 RSA / ECDsa ——
+    // Windows 上是 CNG 句柄，而这个类型不可释放，只能等终结器回收。
+    private readonly LazyNativeKey<RSA>? _rsa;
+    private readonly LazyNativeKey<ECDsa>? _ecdsa;
     private readonly byte[]? _ed25519;
 
-    private SshPublicKey(string keyType, byte[] blob, RSA? rsa, ECDsa? ecdsa, byte[]? ed25519, int keyBits)
+    /// <summary>验签用的原生钥建出来了没有（测试用：只解析、不验签的实例不该有）。</summary>
+    internal bool HasNativeKey => _rsa?.IsCreated == true || _ecdsa?.IsCreated == true;
+
+    private SshPublicKey(string keyType, byte[] blob, LazyNativeKey<RSA>? rsa, LazyNativeKey<ECDsa>? ecdsa, byte[]? ed25519, int keyBits)
         : this(keyType, keyType, blob, rsa, ecdsa, ed25519, keyBits, plain: null, certificate: null)
     {
     }
 
     private SshPublicKey(
         string keyType, string plainKeyType, byte[] blob,
-        RSA? rsa, ECDsa? ecdsa, byte[]? ed25519, int keyBits,
+        LazyNativeKey<RSA>? rsa, LazyNativeKey<ECDsa>? ecdsa, byte[]? ed25519, int keyBits,
         SshPublicKey? plain, OpenSshCertificate? certificate)
     {
         KeyType = keyType;
@@ -456,23 +463,71 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
                 $"{keyType} 的公钥点必须是 {1 + (coordinate * 2)} 字节的未压缩点。");
         }
 
+        ECParameters parameters = new()
+        {
+            Curve = curve,
+            Q = new ECPoint
+            {
+                X = point[1..(1 + coordinate)],
+                Y = point[(1 + coordinate)..],
+            },
+        };
+
         try
         {
-            var ecdsa = ECDsa.Create(new ECParameters
-            {
-                Curve = curve,
-                Q = new ECPoint
-                {
-                    X = point[1..(1 + coordinate)],
-                    Y = point[(1 + coordinate)..],
-                },
-            });
-            return new SshPublicKey(keyType, blob, null, ecdsa, null, bits);
+            // 「点在不在曲线上」解析时就判：建一把试过就释放，留着的只是参数（见 _ecdsa）。
+            ECDsa.Create(parameters).Dispose();
+            return new SshPublicKey(keyType, blob, null, new LazyNativeKey<ECDsa>(() => ECDsa.Create(parameters)), null, bits);
         }
         catch (Exception ex) when (ex is not SshPublicKeyException)
         {
             // 各平台抛的类型不同（OpenSSL vs CNG），含义都是「这个点用不了」。
             throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥点不在曲线上。", ex);
+        }
+    }
+
+    private static RSA CreateRsa(RSAParameters parameters)
+    {
+        var rsa = RSA.Create();
+        try
+        {
+            rsa.ImportParameters(parameters);
+            return rsa;
+        }
+        catch
+        {
+            rsa.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>第一次用到时才建的原生钥；并发时只留一个，多建的当场释放。</summary>
+    private sealed class LazyNativeKey<T>(Func<T> create)
+        where T : AsymmetricAlgorithm
+    {
+        private T? _value;
+
+        public bool IsCreated => Volatile.Read(ref _value) is not null;
+
+        public T Value
+        {
+            get
+            {
+                if (Volatile.Read(ref _value) is { } existing)
+                {
+                    return existing;
+                }
+
+                T created = create();
+                T? raced = Interlocked.CompareExchange(ref _value, created, null);
+                if (raced is null)
+                {
+                    return created;
+                }
+
+                created.Dispose();
+                return raced;
+            }
         }
     }
 
@@ -489,13 +544,15 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
 
         try
         {
-            var rsa = RSA.Create();
-            rsa.ImportParameters(new RSAParameters { Modulus = modulus, Exponent = exponent });
+            RSAParameters parameters = new() { Modulus = modulus, Exponent = exponent };
+
+            // 参数能不能用解析时就判：建一把试过就释放，留着的只是参数（见 _rsa）。
+            CreateRsa(parameters).Dispose();
 
             // 真实位数，不是「字节数 × 8」：2047 位的模数也占 256 字节，按字节算就成了 2048 位，
             // 混过「主机密钥至少 2048 位」那道检查；多带一个前导零字节（非规范编码，容忍读入）又会多算 8 位。
             long bits = new System.Numerics.BigInteger(modulus, isUnsigned: true, isBigEndian: true).GetBitLength();
-            return new SshPublicKey(keyType, blob, rsa, null, null, (int)bits);
+            return new SshPublicKey(keyType, blob, new LazyNativeKey<RSA>(() => CreateRsa(parameters)), null, null, (int)bits);
         }
         catch (Exception ex) when (ex is not SshPublicKeyException)
         {
@@ -560,7 +617,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         try
         {
             byte[] digest = HashData(hash, data);
-            return _ecdsa.VerifyHash(digest, ieee);
+            return _ecdsa.Value.VerifyHash(digest, ieee);
         }
         catch (Exception)
         {
@@ -578,7 +635,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         try
         {
             // PKCS#1 v1.5，**不是 PSS**（RFC 8332 §3）。
-            return _rsa.VerifyData(data, signature, hash, RSASignaturePadding.Pkcs1);
+            return _rsa.Value.VerifyData(data, signature, hash, RSASignaturePadding.Pkcs1);
         }
         catch (Exception)
         {
@@ -620,7 +677,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
             // CA5350「弱加密算法」—— 这是 ssh-rsa 的定义（RFC 4253 §6.6），
             // 而 ssh-rsa 只在使用者显式放开老算法时才会被协商出来。
 #pragma warning disable CA5350 // Do Not Use Weak Cryptographic Algorithms
-            return _rsa.VerifyData(data, signature, HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
+            return _rsa.Value.VerifyData(data, signature, HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 #pragma warning restore CA5350
         }
         catch (Exception)
