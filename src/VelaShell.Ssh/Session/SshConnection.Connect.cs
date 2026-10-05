@@ -118,11 +118,28 @@ public sealed partial class SshConnection
                 auth.CancelAfter(options.AuthenticationTimeout);
             }
 
+            // 认证期间对端发起的重协商（RFC 4253 §9 允许任何时刻）：钉住首次的主机密钥，就地跑完。
+            // 压缩不在这里装 —— 唯一支持的 zlib@openssh.com 要等认证成功之后才启用（下面的 ④ 用最新一次的协商结果）。
+            SshKeyExchangeResult latest = kex;
             SshAuthenticator authenticator = new(transport, options.UserName, kex.SessionId)
             {
                 BannerHandler = options.BannerHandler,
                 AllowSha1RsaSignatures = options.AllowSha1RsaSignatures,
                 SessionProof = kex.CreateSessionProof(),
+                PeerKexInitHandler = async (peerKexInit, ct) =>
+                {
+                    SshKeyExchangeRunner rekey = new(transport, algorithms, options.HostKeyPolicy)
+                    {
+                        PinnedHostKey = kex.HostKey,
+                        InitialStrictKeyExchange = kex.Algorithms.StrictKeyExchange,
+                    };
+                    SshKeyExchangeResult result = await rekey.RunAsync(
+                        versions, options.Host, options.Port,
+                        sessionId: kex.SessionId,
+                        peerKexInit: peerKexInit.ToArray(),
+                        cancellationToken: ct).ConfigureAwait(false);
+                    latest = latest with { Algorithms = result.Algorithms };
+                },
             };
 
             List<SshCredential> credentials = [.. options.Credentials];
@@ -145,7 +162,7 @@ public sealed partial class SshConnection
             // 推迟不是为了省事：认证之前的报文里有密码与公钥，而压缩会让
             // 密文长度泄漏明文的可压缩性 —— 对着一个长度可观测的口令做
             // 压缩旁路攻击（CRIME 那一类）是现实的。
-            ActivateDelayedCompression(transport, kex.Algorithms);
+            ActivateDelayedCompression(transport, latest.Algorithms);
 
             // ⑤ 认证过了，报文上限放宽到认证后的默认值。
             //
@@ -154,7 +171,7 @@ public sealed partial class SshConnection
             // 服务端按我们宣告的大小发来的报文就会被当成协议错误。
             transport.MaxPacketLength = SshPacketFormat.DefaultMaxPacketLength;
 
-            SshConnection connection = new(transport, kex, options.Limits)
+            SshConnection connection = new(transport, latest, options.Limits)
             {
                 // 重协商要把密钥交换整个再跑一遍，所以把它需要的东西留下来。
                 // 没有这一份，对端发起重协商时我们只能报错断连 ——

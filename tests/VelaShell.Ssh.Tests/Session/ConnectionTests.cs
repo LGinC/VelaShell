@@ -76,7 +76,7 @@ public sealed class ConnectionTests
                 TestSshServerHandshake handshake = await server.HandshakeAsync(_cts.Token);
                 HostKey = SshPublicKey.Decode(handshake.HostKeyBlob);
 
-                TestAuthServer auth = new(server.Transport, handshake.ExchangeHash, _authPolicy);
+                TestAuthServer auth = new(server.Transport, handshake.ExchangeHash, _authPolicy) { SshServer = server };
                 AuthObservation = auth.Observation;
                 await auth.RunAsync(_cts.Token);
 
@@ -674,6 +674,27 @@ public sealed class ConnectionTests
     {
         public ValueTask<SshHostKeyVerdict> EvaluateAsync(SshHostKeyContext context, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(SshHostKeyVerdict.Reject("不认识。"));
+    }
+
+    // ------------------------------------------------------------ 认证期间的重协商
+
+    /// <summary>
+    /// 〔RFC 4253 §9〕认证期间服务端发起重协商（用户找动态码花了几分钟、服务端按时间 RekeyLimit 发起）：
+    /// 就地做完，认证照常成功，之后的会话用新密钥。曾经 KEXINIT 被当成意外报文，连接以协议错误失败。
+    /// </summary>
+    [TestMethod]
+    public async Task 认证期间服务端发起重协商时就地做完()
+    {
+        await using FakeServer server = new(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            new TestAuthPolicy { AcceptPassword = "hunter2", RekeyBeforeSuccess = true });
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(
+            Options(server, new DangerousAcceptAnyHostKeyPolicy()));
+
+        Assert.AreEqual(1, server.AuthObservation?.RekeysDuringAuth);
+        SshCommandResult result = await connection.RunAsync("ok");
+        Assert.AreEqual("ok\n", result.StandardOutput, "重协商之后的报文用新密钥照样收发");
     }
 
     // ------------------------------------------------------------ 前导行

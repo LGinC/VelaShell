@@ -105,6 +105,14 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// <summary>横幅回调。文本来自**未认证**的对端，是注入面。</summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
 
+    /// <summary>认证期间对端发起了重协商（收到 <c>KEXINIT</c>，载荷交进来）：就地把这次交换做完。</summary>
+    /// <remarks>
+    /// 〔RFC 4253 §9〕任何时刻都可以重协商 —— 用户找动态码花了几分钟，服务端按时间的 <c>RekeyLimit</c> 就会发起。
+    /// 认证阶段只有认证器一个读者、一个写者，交换就在这条传输上原地跑（由建连代码给出，认证器不依赖会话层）。
+    /// 曾经没有这条路：KEXINIT 被当成「意外的报文」，连接以协议错误失败。没给时照旧报协议错误，但说清是什么。
+    /// </remarks>
+    internal Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask>? PeerKexInitHandler { get; init; }
+
     /// <summary>首次密钥交换里服务端的身份证明；背后是 ssh-agent 的签名器拿它向 agent 声明会话（spec/07 §7.4）。</summary>
     /// <remarks><see langword="null"/> 时不声明 —— 只有绕过连接工厂直接跑认证的测试会这样。</remarks>
     public SshSessionProof? SessionProof { get; init; }
@@ -755,6 +763,15 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
                 case SshMessageNumber.Disconnect:
                     throw BuildDisconnectException(packet.Payload);
+
+                case SshMessageNumber.KexInit when PeerKexInitHandler is { } rekey:
+                    // 对端在途的那个应答会在交换完成之后、用新密钥到来 —— 接着读就是。
+                    await rekey(packet.Payload, cancellationToken).ConfigureAwait(false);
+                    continue;
+
+                case SshMessageNumber.KexInit:
+                    throw new SshProtocolException(
+                        SshPhase.Authenticating, "服务端在认证期间发起了密钥重协商，而这条认证路径不支持就地重协商。");
 
                 default:
                     return packet;

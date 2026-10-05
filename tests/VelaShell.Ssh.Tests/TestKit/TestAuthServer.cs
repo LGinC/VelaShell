@@ -70,6 +70,12 @@ internal sealed record TestAuthPolicy
     public IReadOnlyList<string> BannersBeforeSuccess { get; init; } = [];
 
     /// <summary>
+    /// 回 <c>USERAUTH_SUCCESS</c> 之前由服务端发起一次密钥重协商（模拟用户输动态码太久、服务端按时间 RekeyLimit 发起）。
+    /// 要求认证服务端拿得到 <see cref="TestAuthServer.SshServer"/>。
+    /// </summary>
+    public bool RekeyBeforeSuccess { get; init; }
+
+    /// <summary>
     /// 通过 <c>EXT_INFO</c> 宣告的 <c>server-sig-algs</c>；
     /// <see langword="null"/> 表示不发 <c>EXT_INFO</c>。
     /// </summary>
@@ -117,6 +123,9 @@ internal sealed class TestAuthObservation
 
     /// <summary>认证期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
     public uint? ClientDisconnectReason { get; set; }
+
+    /// <summary>认证期间服务端发起并做完的重协商次数。</summary>
+    public int RekeysDuringAuth { get; set; }
 }
 
 /// <summary>测试服务端的认证侧。</summary>
@@ -143,6 +152,9 @@ internal sealed class TestAuthServer
 
     /// <summary>服务端这一侧观察到的事实。</summary>
     public TestAuthObservation Observation { get; } = new();
+
+    /// <summary>做握手的那个服务端（<see cref="TestAuthPolicy.RekeyBeforeSuccess"/> 要用它发起重协商）。</summary>
+    public TestSshServer? SshServer { get; init; }
 
     /// <summary>跑完认证的服务端一侧。</summary>
     /// <returns>认证是否成功。</returns>
@@ -250,6 +262,14 @@ internal sealed class TestAuthServer
         foreach (string banner in _policy.BannersBeforeSuccess)
         {
             await SendBannerAsync(banner, cancellationToken);
+        }
+
+        if (_policy.RekeyBeforeSuccess && SshServer is { } ssh)
+        {
+            byte[] ours = await ssh.BeginRekeyAsync(SendRawAsync, cancellationToken);
+            SshInboundPacket clientKexInit = await ReadSkippingNoiseAsync(cancellationToken);
+            _ = await ssh.CompleteRekeyAsync(ours, clientKexInit.Payload.ToArray(), SendRawAsync, ReadRawAsync, cancellationToken);
+            Observation.RekeysDuringAuth++;
         }
 
         _transport.WritePacket([(byte)SshMessageNumber.UserAuthSuccess]);
@@ -508,6 +528,27 @@ internal sealed class TestAuthServer
         w.WriteUtf8String(string.Join(',', algorithms));
         _transport.WritePacket(buffer.WrittenSpan);
         await _transport.FlushAsync(cancellationToken);
+    }
+
+    private async ValueTask SendRawAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken)
+    {
+        _transport.WritePacket(packet.Span);
+        await _transport.FlushAsync(cancellationToken);
+    }
+
+    private ValueTask<SshInboundPacket> ReadRawAsync(CancellationToken cancellationToken) =>
+        _transport.ReadPacketAsync(cancellationToken);
+
+    private async ValueTask<SshInboundPacket> ReadSkippingNoiseAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            SshInboundPacket packet = await _transport.ReadPacketAsync(cancellationToken);
+            if (packet.MessageNumber is not (SshMessageNumber.Ignore or SshMessageNumber.Debug))
+            {
+                return packet;
+            }
+        }
     }
 
     private async Task SendBannerAsync(string text, CancellationToken cancellationToken)
