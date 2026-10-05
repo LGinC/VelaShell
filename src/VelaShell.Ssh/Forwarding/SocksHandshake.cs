@@ -6,6 +6,7 @@
 //   行为规格: velashell-docs/zh/ssh/spec/07-forwarding.md §三
 
 using System.Buffers;
+using System.Globalization;
 using System.IO.Pipelines;
 using System.Net;
 using System.Text;
@@ -221,8 +222,36 @@ internal static class SocksHandshake
         // 这是动态转发最重要的一条语义 —— curl --socks5-hostname 依赖它。
         // 本地解析会导致「DNS 走本地、连接走隧道」的分裂，
         // 在内网域名场景下直接失效，而且泄漏了访问目标。
-        return Encoding.ASCII.GetString(name);
+        //
+        // 〔FW-E10〕按 UTF-8 解，非 ASCII 的名字转成 Punycode（与 SOCKS5 拨号器一致）：服务端那边的解析器只认 ASCII 的名字。
+        // 曾经按 ASCII 解，非 ASCII 字符一律成了「?」—— 连的是一个不存在的主机。解不开、转不成的当成不支持的地址回掉。
+        string decoded;
+        try
+        {
+            decoded = StrictUtf8.GetString(name);
+        }
+        catch (DecoderFallbackException)
+        {
+            return null;
+        }
+
+        if (Ascii.IsValid(decoded))
+        {
+            return decoded;
+        }
+
+        try
+        {
+            return new IdnMapping().GetAscii(decoded);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
     }
+
+    /// <summary>遇到非法字节就抛的 UTF-8（不把它们换成替换字符）。</summary>
+    private static readonly UTF8Encoding StrictUtf8 = new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
 
     private static async ValueTask<byte[]?> ReadExactlyAsync(
         PipeReader input, int count, CancellationToken cancellationToken)
