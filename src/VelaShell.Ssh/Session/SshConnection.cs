@@ -983,7 +983,12 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         string channelType = SshProtocolNames.ChannelSession;
         lock (_stateLock)
         {
-            _pendingOpens.Remove(recipient, out completion);
+            // 〔velashell-docs/zh/ssh/spec/05 §八〕只认还在等确认的那种：对一条已经开着的通道发 OPEN_FAILURE 是对端违规，忽略。
+            // 曾经照样把通道收尾、**当场还号**（没走双向 CLOSE）—— 对端还以为那条通道开着，30 秒后号被复用就会串话。
+            if (!_pendingOpens.Remove(recipient, out completion))
+            {
+                return;
+            }
             if (_channels.TryGetValue(recipient, out channel))
             {
                 channelType = channel.ChannelType;
@@ -991,7 +996,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
 
         channel?.OnOpenFailed();
-        completion?.TrySetException(
+        completion.TrySetException(
             SshChannelException.FromOpenFailure(channelType, reasonCode, description));
     }
 
@@ -1001,6 +1006,22 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         SshChannel? channel = Lookup(recipient);
         if (channel is null)
         {
+            return;
+        }
+
+        // 还在等确认的通道收到 CLOSE（对端违规）：我们还不知道对端的通道号，回不了 CLOSE；按「没开成」收尾，
+        // 让等着开通道的人拿到结局。曾经照常回 CLOSE（带着还是 0 的对端号 —— 关掉的是对端的 0 号通道）、
+        // 而等确认的那个 completion 没人结算：不带令牌开通道的调用方就永远挂着。
+        TaskCompletionSource<SshChannel>? pendingOpen;
+        lock (_stateLock)
+        {
+            _pendingOpens.Remove(recipient, out pendingOpen);
+        }
+        if (pendingOpen is not null)
+        {
+            channel.OnOpenFailed();
+            pendingOpen.TrySetException(new SshChannelException(
+                SshFailureReason.ChannelOpenFailed, $"对端还没确认通道 {recipient} 就把它关掉了。"));
             return;
         }
 

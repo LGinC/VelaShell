@@ -1512,6 +1512,51 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         Assert.AreEqual(3, (await command.WaitAsync(harness.Token)).ExitCode, "再问一次");
     }
 
+    /// <summary>对端对一条已经开着的通道发 OPEN_FAILURE：违规，忽略 —— 不能当场还号（对端还以为它开着，号被复用就串话）。</summary>
+    [TestMethod]
+    public async Task 已开着的通道收到OPEN_FAILURE不受影响()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        ArrayBufferWriter<byte> failure = new();
+        SshDataWriter writer = new(failure);
+        writer.WriteMessageNumber(SshMessageNumber.ChannelOpenFailure);
+        writer.WriteUInt32(channel.LocalId);
+        writer.WriteUInt32((uint)SshChannelOpenFailureReason.ConnectFailed);
+        writer.WriteUtf8String("迟到的拒绝");
+        writer.WriteUtf8String("");
+        await harness.ChannelServer.SendRawAsync(failure.WrittenMemory, harness.Token);
+
+        // 用一次全局往返确认那个报文已经处理过了。
+        await harness.Connection.SendKeepAliveAsync(harness.Token);
+
+        Assert.IsFalse(channel.Closed.IsCancellationRequested, "通道不该被一个迟到的 OPEN_FAILURE 关掉");
+        Assert.AreEqual(1, harness.Connection.ChannelCount, "号也不该被还掉");
+        await channel.DisposeAsync();
+    }
+
+    /// <summary>
+    /// 对端还没确认就对通道发 CLOSE：开通道的人拿到「没开成」，而不是永远挂着（不带令牌时）；也不回 CLOSE（对端号还不知道）。
+    /// </summary>
+    [TestMethod]
+    public async Task 还在等确认的通道收到CLOSE时开通道的人拿到结局()
+    {
+        TaskCompletionSource never = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { HoldOpenConfirmationUntil = never.Task });
+
+        Task<SshChannel> opening = harness.Connection.OpenSessionChannelAsync(null).AsTask();
+        await WaitUntilAsync(() => harness.Connection.ChannelCount == 1, harness.Token);
+
+        byte[] close = [(byte)SshMessageNumber.ChannelClose, 0, 0, 0, 0];   // 新连接上第一条通道的号是 0
+        await harness.ChannelServer.SendRawAsync(close, harness.Token);
+
+        SshChannelException error = await Assert.ThrowsExactlyAsync<SshChannelException>(
+            async () => await opening.WaitAsync(TimeSpan.FromSeconds(10), harness.Token));
+        Assert.AreEqual(SshFailureReason.ChannelOpenFailed, error.Reason);
+        never.SetResult();
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>
