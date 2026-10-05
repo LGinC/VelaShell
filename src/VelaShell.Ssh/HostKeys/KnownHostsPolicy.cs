@@ -3,6 +3,8 @@
 //
 // 行为规格: velashell-docs/zh/ssh/spec/03-key-exchange.md §5.3、§5.4、§5.5
 
+using VelaShell.Ssh.Diagnostics;
+
 namespace VelaShell.Ssh.HostKeys;
 
 /// <summary>按 <c>known_hosts</c> 裁决主机密钥。</summary>
@@ -180,6 +182,16 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
         if (_withoutFile)
         {
             return;   // 配置说了不用 known_hosts：记到哪里去都不对
+        }
+
+        // 〔velashell-docs/zh/ssh/spec/03 §5.4〕主机名里有 known_hosts 另有含义的字符时不写、这次连接也不放行：
+        // 使用者说的是「信任并记住」，记不下来就不该悄悄当成「只信这一次」；而这样的名字本来就不是一台主机。
+        if (!KnownHostsFile.IsRecordableHost(context.Host))
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.KeyExchange,
+                $"主机名 {PeerText.Sanitize(context.Host)} 里有 known_hosts 里另有含义的字符" +
+                "（, * ? ! [ ] # 空白、控制字符，或开头的 @ |），不能记进 known_hosts。");
         }
 
         await KnownHostsFile.AppendAsync(

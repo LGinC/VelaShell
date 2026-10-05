@@ -497,6 +497,52 @@ public sealed class KnownHostsTests
     }
 
     [TestMethod]
+    [DataRow("x,*", DisplayName = "逗号接通配:对所有主机生效")]
+    [DataRow("*", DisplayName = "通配")]
+    [DataRow("host?", DisplayName = "问号")]
+    [DataRow("!x", DisplayName = "取反")]
+    [DataRow("a b", DisplayName = "空格")]
+    [DataRow("a\tb", DisplayName = "Tab")]
+    [DataRow("x\ny ssh-ed25519 AAAA", DisplayName = "换行")]
+    [DataRow("@cert-authority", DisplayName = "开头的 @")]
+    [DataRow("|1|abc|def", DisplayName = "开头的 |")]
+    [DataRow("[x]", DisplayName = "方括号")]
+    [DataRow("#x", DisplayName = "注释")]
+    [DataRow("", DisplayName = "空串")]
+    public void 主机名里有known_hosts另有含义的字符时不写(string host)
+    {
+        // `x,*` 写进去，这把钥就对所有主机生效了。主机名可能来自外部启动链接、ssh_config 的 HostName。
+        SshPublicKey key = MakeKey();
+
+        Assert.IsFalse(KnownHostsFile.IsRecordableHost(host));
+        Assert.ThrowsExactly<ArgumentException>(() => KnownHostsFile.FormatEntry(host, 22, key));
+        Assert.ThrowsExactly<ArgumentException>(() => KnownHostsFile.FormatEntry(host, 22, key, hashHostName: true));
+    }
+
+    [TestMethod]
+    [DataRow("server.example.com")]
+    [DataRow("host_name-1.corp")]
+    [DataRow("10.0.0.9")]
+    [DataRow("fe80::1%eth0")]
+    [DataRow("例子.测试")]
+    public void 正常的主机名照常写(string host) =>
+        Assert.IsTrue(KnownHostsFile.IsRecordableHost(host));
+
+    [TestMethod]
+    public async Task 记不下来的主机名连接不放行()
+    {
+        // 使用者说的是「信任并记住」：记不下来就不该悄悄当成「只信这一次」。
+        string path = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+        KnownHostsPolicy policy = new(path, (_, _) => ValueTask.FromResult(true));
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await policy.PersistAsync(Context("x,*", 22, MakeKey())));
+
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.IsFalse(File.Exists(path), "一行都不该写");
+    }
+
+    [TestMethod]
     public async Task 文件末尾没有换行时追加不会把两条记录粘在一起()
     {
         SshPublicKey first = MakeKey();

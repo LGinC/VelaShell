@@ -382,10 +382,18 @@ public static class KnownHostsFile
     /// <param name="port">端口。</param>
     /// <param name="key">公钥。是证书时记下的是<b>证书里那把钥</b>（证书每次重签 blob 都会变）。</param>
     /// <param name="hashHostName">要不要把主机名散列掉（对应 <c>HashKnownHosts yes</c>）。</param>
+    /// <exception cref="ArgumentException">主机名里有 <c>known_hosts</c> 里另有含义的字符（见 <see cref="IsRecordableHost"/>）。</exception>
     public static string FormatEntry(string host, int port, SshPublicKey key, bool hashHostName = false)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(key);
+
+        if (!IsRecordableHost(host))
+        {
+            throw new ArgumentException(
+                $"主机名 {Diagnostics.PeerText.Sanitize(host)} 里有 known_hosts 里另有含义的字符（, * ? ! [ ] # 空白、控制字符，或开头的 @ |），" +
+                "写进去这一行的意思就变了。", nameof(host));
+        }
 
         string name = FormatHostPattern(host, port);
 
@@ -408,7 +416,37 @@ public static class KnownHostsFile
             $"{name} {recorded.KeyType} {Convert.ToBase64String(recorded.Blob.Span)}");
     }
 
+    /// <summary>这个主机名能不能原样写进 <c>known_hosts</c>。</summary>
+    /// <remarks>
+    /// <para>
+    /// 主机名那一栏本身是一张模式表：<c>,</c> 分隔多个模式，<c>*</c> <c>?</c> 是通配，<c>!</c> 取反，<c>[ ]</c> 包着非 22 端口，
+    /// 空白结束这一栏，开头的 <c>@</c> 是标记、<c>|</c> 是散列行，<c>#</c> 开头是注释。主机名带着它们写进去，
+    /// 这一行的意思就变了 —— <c>x,*</c> 让这把钥对<b>所有主机</b>生效。主机名可能来自外部启动链接、
+    /// <c>ssh_config</c> 的 <c>HostName</c>，不一定是使用者亲手敲的。
+    /// </para>
+    /// <para>合法的主机名、IP（含 IPv6 与区域标识 <c>%</c>）与国际化域名都用不到这些字符。散列行也一样拒绝：这样的名字本来就不是一台主机。</para>
+    /// </remarks>
+    public static bool IsRecordableHost(string host)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+
+        if (host.Length == 0 || host[0] is '@' or '|')
+        {
+            return false;
+        }
+
+        foreach (char c in host)
+        {
+            if (char.IsWhiteSpace(c) || char.IsControl(c) || c is ',' or '*' or '?' or '!' or '[' or ']' or '#')
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// <summary>把一台主机追加进 <c>known_hosts</c>。</summary>
+    /// <exception cref="ArgumentException">主机名不能原样写进 <c>known_hosts</c>（见 <see cref="IsRecordableHost"/>）。</exception>
     /// <remarks>
     /// <b>只追加，不改写已有的行。</b>改写意味着要把整个文件读进来再写回去，
     /// 而那会在并发写时丢掉别的进程刚加的记录 —— OpenSSH 自己也是追加。
