@@ -869,6 +869,11 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             return;   // 刚回收的通道的在途数据 —— 忽略，不断开
         }
 
+        if (await ExceedsMaxPacketAsync(channel, data.Length, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         if (!channel.OnData(data))
         {
             await FaultProtocolAsync(
@@ -892,12 +897,34 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             return;
         }
 
+        if (await ExceedsMaxPacketAsync(channel, data.Length, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         if (!channel.OnExtendedData(dataTypeCode, data))
         {
             await FaultProtocolAsync(
                 $"通道 {recipient} 的对端发来了超出我们宣告窗口的扩展数据。",
                 cancellationToken).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/05 §八〕单个数据段超出我们宣告的 max packet 是协议违规：判死并返回 <see langword="true"/>。
+    /// </summary>
+    /// <remarks>曾经不查 —— 有窗口与传输层的上限兜着，没有内存风险，但那是一个照单全收的违规。</remarks>
+    private async ValueTask<bool> ExceedsMaxPacketAsync(SshChannel channel, long length, CancellationToken cancellationToken)
+    {
+        if (length <= channel.ReceiveMaxPacketBytes)
+        {
+            return false;
+        }
+
+        await FaultProtocolAsync(
+            $"通道 {channel.LocalId} 的对端发来了 {length} 字节的数据段，超出我们宣告的 max packet（{channel.ReceiveMaxPacketBytes} 字节）。",
+            cancellationToken).ConfigureAwait(false);
+        return true;
     }
 
     private async ValueTask OnChannelWindowAdjustAsync(

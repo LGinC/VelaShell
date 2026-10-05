@@ -159,6 +159,7 @@ public sealed class SshChannel : IAsyncDisposable
         _admitData = () => _dataAdmitted = MayStillSend();
 
         _windowPolicy = options.WindowPolicy;
+        ReceiveMaxPacketBytes = options.ReceiveMaxPacketBytes;
         int window = options.WindowPolicy.InitialBytes;
         _receiveWindow = new SshWindow(window);
         _budgetCharged = window;   // 会话开通道时按它计的
@@ -226,6 +227,9 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>对端宣告的单个数据段上限。<b>发送时必须遵守</b>。</summary>
     public int RemoteMaxPacketBytes { get; private set; }
+
+    /// <summary>我们宣告的单个数据段上限（<c>maximum packet size</c>）：对端发来的每个 DATA / EXTENDED_DATA 都不许超过它。</summary>
+    internal int ReceiveMaxPacketBytes { get; }
 
     /// <summary>远端的标准输出。</summary>
     /// <remarks>

@@ -1449,6 +1449,27 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
             "两个请求都得有各自的应答，顺序不能错位");
     }
 
+    /// <summary>〔spec/05 §八〕对端发来的单个数据段超出我们宣告的 max packet：协议错误，断开。</summary>
+    [TestMethod]
+    public async Task 对端的数据段超出我们宣告的max_packet时断开()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+        SshChannel channel = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        int oversized = channel.ReceiveMaxPacketBytes + 1;
+
+        ArrayBufferWriter<byte> data = new();
+        SshDataWriter writer = new(data);
+        writer.WriteMessageNumber(SshMessageNumber.ChannelData);
+        writer.WriteUInt32(channel.LocalId);
+        writer.WriteString(new byte[oversized]);
+        await harness.ChannelServer.SendRawAsync(data.WrittenMemory, harness.Token);
+
+        await WaitUntilAsync(() => !harness.Connection.IsAlive, harness.Token);
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await harness.Connection.OpenSessionChannelAsync(null, harness.Token));
+        Assert.Contains("max packet", error.Message);
+    }
+
     // ------------------------------------------------------------ 关闭
 
     /// <summary>
