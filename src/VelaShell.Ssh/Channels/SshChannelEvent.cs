@@ -62,8 +62,14 @@ public abstract record SshChannelEvent
 /// <summary>通道为什么关闭。</summary>
 public enum SshChannelCloseReason
 {
-    /// <summary>双向 <c>CHANNEL_CLOSE</c> 正常走完。</summary>
-    Normal,
+    /// <summary>
+    /// 零值，本库不产出 —— 只在 <c>default</c> 时出现，读到它说明这个值没被设置过。
+    /// </summary>
+    /// <remarks>
+    /// 〔AGENTS 4.3〕枚举的零值必须是安全的那个。曾经零值是 <c>Normal</c>（「双向 CLOSE 正常走完」），
+    /// 库却从不产出它：一个没赋值的 <c>default</c> 读起来就像「正常关闭」。
+    /// </remarks>
+    Unknown,
 
     /// <summary>对端先发的 <c>CHANNEL_CLOSE</c>。</summary>
     ClosedByPeer,

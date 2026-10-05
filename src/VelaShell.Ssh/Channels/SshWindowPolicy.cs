@@ -144,35 +144,4 @@ internal sealed class SshWindow(int initialSize)
 
     /// <summary>把窗口的额定大小改掉（自适应用）。</summary>
     public void Resize(int newSize) => Size = newSize;
-
-    /// <summary>
-    /// 该不该现在发一个 <c>WINDOW_ADJUST</c>。
-    /// </summary>
-    /// <remarks>
-    /// 〔决策 velashell-docs/zh/ssh/spec/05 §3.2〕剩余不足一半时补满。
-    /// 太频繁是在浪费报文，太稀疏会让发送方空等。
-    /// </remarks>
-    public bool ShouldAdjust()
-    {
-        lock (_lock)
-        {
-            return _remaining <= (uint)(Size / 2);
-        }
-    }
-
-    /// <summary>算出「补满」需要补多少，并直接记账。</summary>
-    public uint TakeRefill()
-    {
-        lock (_lock)
-        {
-            uint target = (uint)Size;
-            if (_remaining >= target)
-            {
-                return 0;
-            }
-            uint delta = target - _remaining;
-            _remaining = target;
-            return delta;
-        }
-    }
 }

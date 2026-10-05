@@ -554,11 +554,18 @@ public sealed partial class SshConnection
                             }
                             return item.Packet.Length;
 
-                        default:
+                        case SendGateAdmission.Stashed:
                             // 已暂存：开闸后按原顺序流出。发送方不必再等 ——
                             // 它等的是「收下了」，不是「上线了」，而暂存的字节仍然计在背压里。
                             item.Completion?.SetResult();
                             return 0;
+
+                        default:
+                            // StashFull：这道闸不限量（_sendGate 的注释），走不到这里。真走到了就是那条前提被改坏了 ——
+                            // 帧**没有**被收下，照「已暂存」结算等于静默丢帧（流被截断、对端无从察觉）。抛出来让连接照实判死。
+                            // 曾经 StashFull 落进的正是「已暂存」的分支。
+                            throw new System.Diagnostics.UnreachableException(
+                                $"发送闸门拒收了一帧（{number}）：它在连接上不该有暂存上限。");
                     }
                 }
 

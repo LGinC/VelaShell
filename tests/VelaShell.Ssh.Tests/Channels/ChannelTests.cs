@@ -755,6 +755,14 @@ public sealed class ChannelTests
             [SshProtocolNames.RequestPty, SshProtocolNames.RequestShell], [.. observed.Requests.Where(r => r is SshProtocolNames.RequestPty or SshProtocolNames.RequestShell)]);
     }
 
+    /// <summary>关闭原因的零值是「未知」：没赋值的 <c>default</c> 不能读起来像「正常关闭」（曾经零值是从不产出的 <c>Normal</c>）。</summary>
+    [TestMethod]
+    public void 关闭原因的零值是未知()
+    {
+        SshChannelCloseReason zero = Enum.GetValues<SshChannelCloseReason>().Single(reason => reason == 0);
+        Assert.AreEqual(nameof(SshChannelCloseReason.Unknown), zero.ToString());
+    }
+
     [TestMethod]
     public void 负的终端尺寸在构造时就被拒绝()
     {
