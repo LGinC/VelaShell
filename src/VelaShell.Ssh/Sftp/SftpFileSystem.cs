@@ -480,6 +480,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
 
         try
         {
+            int emptyBatches = 0;
             while (true)
             {
                 IReadOnlyList<SftpNameEntry>? batch =
@@ -489,6 +490,20 @@ public sealed class SftpFileSystem : IAsyncDisposable
                 {
                     yield break;   // STATUS = EOF：目录读完了
                 }
+
+                // 〔velashell-docs/zh/ssh/spec/06 §4.4〕READDIR 要么给至少一项、要么回 EOF。一直给空批的服务端会让这里
+                // 永远转下去（曾经就是这样，直到调用方取消）—— 连着空了这么多批就判协议错误。
+                if (batch.Count == 0)
+                {
+                    if (++emptyBatches >= MaxConsecutiveEmptyBatches)
+                    {
+                        throw new SshProtocolException(
+                            SshPhase.Open,
+                            $"列目录 {PeerText.Sanitize(path)} 时服务端连着 {emptyBatches} 次回了空的一批，既没有项也没有 EOF。");
+                    }
+                    continue;
+                }
+                emptyBatches = 0;
 
                 SftpDirectoryEntry[] resolved =
                     await ResolveBatchAsync(path, batch, cancellationToken).ConfigureAwait(false);
@@ -504,6 +519,9 @@ public sealed class SftpFileSystem : IAsyncDisposable
             await CloseHandleQuietlyAsync(handle).ConfigureAwait(false);
         }
     }
+
+    /// <summary>READDIR 连着回多少次空批就不再等（见 <see cref="EnumerateDirectoryAsync"/>）。</summary>
+    internal const int MaxConsecutiveEmptyBatches = 16;
 
     private async ValueTask<byte[]> OpenDirectoryHandleAsync(string path, CancellationToken cancellationToken)
     {

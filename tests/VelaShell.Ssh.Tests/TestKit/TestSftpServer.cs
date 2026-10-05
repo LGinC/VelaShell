@@ -75,6 +75,9 @@ internal sealed record TestSftpOptions
     /// <summary>每批 <c>READDIR</c> 最多回这么多项。</summary>
     public int ReadDirBatchSize { get; init; } = 2;
 
+    /// <summary><c>READDIR</c> 永远回空的一批（count = 0），既不给项也不回 EOF。</summary>
+    public bool EmptyReadDirBatches { get; init; }
+
     /// <summary>每个目录的列表末尾再塞进这些名字（不对应任何节点）—— 模拟一个回 <c>../x</c>、<c>a/b</c>、空名字的服务端。</summary>
     public IReadOnlyList<string> ExtraDirectoryEntryNames { get; init; } = [];
 
@@ -447,6 +450,11 @@ internal sealed class TestSftpServer
         if (!TryGetHandle(rest, out HandleState? state))
         {
             return BuildStatus(id, SftpStatusCode.Failure, "无效的句柄");
+        }
+
+        if (_options.EmptyReadDirBatches)
+        {
+            return BuildName(id, []);
         }
 
         if (state.DirectoryCursor >= state.Entries.Count)

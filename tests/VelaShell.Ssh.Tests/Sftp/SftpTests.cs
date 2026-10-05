@@ -840,6 +840,21 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task READDIR一直回空批时判协议错误_不无限循环()
+    {
+        await using Harness harness = await Harness.StartAsync(sftpOptions: new TestSftpOptions { EmptyReadDirBatches = true });
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(async () =>
+        {
+            await foreach (SftpDirectoryEntry _ in harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+            {
+            }
+        });
+
+        Assert.Contains("空的一批", error.Message);
+    }
+
+    [TestMethod]
     public async Task 名字含NUL的链接项不让整个目录列不出来()
     {
         // 曾经补这个链接的 READLINK / STAT 时在本地抛 ArgumentException（路径里有 NUL），
