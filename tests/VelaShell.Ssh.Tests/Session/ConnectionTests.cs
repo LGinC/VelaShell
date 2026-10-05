@@ -395,6 +395,84 @@ public sealed class ConnectionTests
         Assert.IsFalse(policy.PersistTokenWasCancelled, "持久化拿到的是已取消的令牌 —— 「永久信任」存不下来");
     }
 
+    /// <summary>记下被问了几次；问到就放行。</summary>
+    private sealed class CountingTrustPolicy : IHostKeyPolicy
+    {
+        public int Asked { get; private set; }
+
+        public ValueTask<SshHostKeyVerdict> EvaluateAsync(
+            SshHostKeyContext context, CancellationToken cancellationToken = default)
+        {
+            Asked++;
+            return ValueTask.FromResult(SshHostKeyVerdict.Accept);
+        }
+    }
+
+    /// <summary>拨通之后把手动时钟往前拨，但不执行到点的回调 —— 摆出「已经到点、回调还没轮到执行」的那一刻。</summary>
+    private sealed class ClockAdvancingDialer(ISshTransportDialer inner, ManualTimeProvider clock, TimeSpan by)
+        : ISshTransportDialer
+    {
+        public SshDialKind Kind => inner.Kind;
+
+        public async ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
+        {
+            Stream stream = await inner.DialAsync(target, cancellationToken);
+            clock.AdvanceWithoutRunningCallbacks(by);
+            return stream;
+        }
+    }
+
+    /// <summary>
+    /// 连接超时在裁决之前就用完了，只是到点的回调还没轮到执行：不该再拿指纹去问用户 ——
+    /// 用户点完「信任」，这一轮照样超时。报的是密钥交换这一步超时。
+    /// </summary>
+    [TestMethod]
+    public async Task 裁决之前连接超时已经用完就不再去问()
+    {
+        await using FakeServer server = new();
+        ManualTimeProvider clock = new();
+        CountingTrustPolicy policy = new();
+
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = new ClockAdvancingDialer(server.CreateDialer(), clock, TimeSpan.FromSeconds(11)),
+            HostKeyPolicy = policy,
+            Credentials = [new PasswordCredential("hunter2")],
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            TimeProvider = clock,
+        };
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(options));
+
+        Assert.AreEqual(0, policy.Asked, "已经超时的连接还在拿指纹问用户");
+        Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+        Assert.AreEqual(SshPhase.KeyExchange, error.Phase);
+    }
+
+    /// <summary>上一条的对照：裁决之前还剩时间，照常去问、照常连上。</summary>
+    [TestMethod]
+    public async Task 裁决之前连接超时还有剩余就照常去问()
+    {
+        await using FakeServer server = new();
+        ManualTimeProvider clock = new();
+        CountingTrustPolicy policy = new();
+
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = new ClockAdvancingDialer(server.CreateDialer(), clock, TimeSpan.FromSeconds(9)),
+            HostKeyPolicy = policy,
+            Credentials = [new PasswordCredential("hunter2")],
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+            TimeProvider = clock,
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+
+        Assert.AreEqual(1, policy.Asked);
+        Assert.IsTrue(connection.IsAlive);
+    }
+
     [TestMethod]
     public async Task 保活探测在链路闲下来之后发出()
     {

@@ -53,7 +53,8 @@ public sealed partial class SshConnection
             // ① 拨号 + 版本交换 + 密钥交换，共用一把连接计时器。
             //    主机密钥裁决期间它停表（见 SshConnectDeadline）；经跳板时挂在外层计时器上，
             //    这里停表时外层也跟着停。
-            using SshConnectDeadline connect = new(options.ConnectTimeout, cancellationToken, options.OuterDeadline);
+            using SshConnectDeadline connect = new(
+                options.ConnectTimeout, cancellationToken, options.OuterDeadline, options.TimeProvider);
 
             stream = await options.Dialer
                 .DialAsync(SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect }, connect.Token)

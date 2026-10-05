@@ -411,6 +411,10 @@ internal sealed class SshKeyExchangeRunner
         ConnectDeadline?.Pause();
         try
         {
+            // 停表时预算已经用完（Pause 当场判了超时），或者调用方已经不要了：不再去问。
+            // 问了也白问 —— 用户点完「信任」，这一轮照样以超时收场（velashell-docs/zh/ssh/spec/03 §5.3）。
+            cancellationToken.ThrowIfCancellationRequested();
+
             using var decisionCts = CancellationTokenSource.CreateLinkedTokenSource(outer);
             if (HostKeyDecisionTimeout != Timeout.InfiniteTimeSpan)
             {
