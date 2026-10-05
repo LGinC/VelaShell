@@ -89,8 +89,8 @@ internal static class SshInterop
     /// 英 / 日 / 韩界面的用户在换库之后会突然看到中文报错。
     /// </para>
     /// <para>
-    /// 只翻有把握的那几类。<see cref="SshFailureReason.ProxyRefused" /> 与
-    /// <see cref="SshFailureReason.ProxyAuthRequired" /> 不在其中:它们的消息是 <c>ProxyTransportDialer</c>
+    /// 只翻有把握的那几类。<see cref="SshFailureReason.ProxyRefused" />、<see cref="SshFailureReason.ProxyAuthRequired" /> 与
+    /// <see cref="SshFailureReason.ProxyAuthFailed" /> 不在其中:它们的消息是 <c>ProxyTransportDialer</c>
     /// 用界面语言拼的,带着「经哪个代理去哪」、换 SOCKS5 的提示,并且分得清「没配凭据」与「凭据不对」,
     /// 比一句泛泛的「代理拒绝」有用得多。<see cref="SshFailureReason.HostKeyRejected" /> 同理:消息是
     /// <c>VelaHostKeyPolicy</c> 用本地化文案写的拒绝理由(含新旧指纹)。认不出的原因照旧用原文。

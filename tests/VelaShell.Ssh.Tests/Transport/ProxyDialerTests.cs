@@ -67,6 +67,46 @@ public sealed class ProxyDialerTests
         Assert.AreEqual(SshFailureReason.ProxyAuthRequired, ex.Reason);
     }
 
+    /// <summary>配了凭据而被拒是「改对」，不是「去配」：两个原因码分开（曾经共用 ProxyAuthRequired）。</summary>
+    [TestMethod]
+    public async Task SOCKS5凭据被拒时报ProxyAuthFailed()
+    {
+        await using var proxy = FakeSocks5Proxy.Start(required: new SshProxyCredentials("alice", "s3cret"));
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(DialerChain.Socks5("127.0.0.1", proxy.Port, new SshProxyCredentials("alice", "wrong"))));
+
+        Assert.AreEqual(SshFailureReason.ProxyAuthFailed, ex.Reason);
+        Assert.IsFalse(ex.IsRetryable);
+    }
+
+    /// <summary>凭据超长在本地就发不出去：配置错误，不是代理拒绝（那个码可重试）。</summary>
+    [TestMethod]
+    public async Task SOCKS5凭据超长时报配置错误()
+    {
+        await using var proxy = FakeSocks5Proxy.Start(required: new SshProxyCredentials("alice", "s3cret"));
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(DialerChain.Socks5("127.0.0.1", proxy.Port, new SshProxyCredentials(new string('a', 256), "s3cret"))));
+
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, ex.Reason);
+    }
+
+    /// <summary>主机名放不进 SOCKS5 请求（不是合法域名、超过 255 字节）：配置错误，代理根本没见到请求。</summary>
+    [TestMethod]
+    public void SOCKS5放不进请求的主机名报配置错误()
+    {
+        string tooLong = string.Join('.', Enumerable.Repeat(new string('a', 60), 5)) + ".example";
+
+        foreach (string host in new[] { "a..example", tooLong })
+        {
+            SshConnectException ex = Assert.ThrowsExactly<SshConnectException>(
+                () => Socks5Dialer.BuildConnectRequest(new SshEndPoint(host, 22)), host);
+
+            Assert.AreEqual(SshFailureReason.InvalidConfiguration, ex.Reason, host);
+        }
+    }
+
     [TestMethod]
     public async Task SOCKS5拒绝时带着结果码与每一跳()
     {
@@ -181,6 +221,19 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
 
         Assert.AreEqual(SshFailureReason.ProxyAuthRequired, ex.Reason);
         Assert.Contains("Basic realm", ex.Message);
+    }
+
+    [TestMethod]
+    public async Task HTTP代理407且配了凭据时报ProxyAuthFailed()
+    {
+        await using var proxy = FakeHttpProxy.Start(
+            "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"corp\"");
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(DialerChain.HttpConnect("127.0.0.1", proxy.Port, new SshProxyCredentials("alice", "wrong"))));
+
+        Assert.AreEqual(SshFailureReason.ProxyAuthFailed, ex.Reason);
+        Assert.Contains("alice", ex.Message);
     }
 
     [TestMethod]

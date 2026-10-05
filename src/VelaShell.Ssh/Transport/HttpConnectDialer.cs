@@ -210,9 +210,9 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
                 ? ""
                 : $"（代理要求：{Truncate(challenge["Proxy-Authenticate:".Length..].Trim())}）";
 
-            throw ProxyDialing.AuthRequired(Credentials is null
-                ? $"HTTP 代理 {Proxy} 要求认证，但没有配置代理凭据{scheme}。"
-                : $"HTTP 代理 {Proxy} 拒绝了用户名 {Credentials.UserName} 的凭据{scheme}。");
+            throw Credentials is null
+                ? ProxyDialing.AuthRequired($"HTTP 代理 {Proxy} 要求认证，但没有配置代理凭据{scheme}。")
+                : ProxyDialing.AuthFailed($"HTTP 代理 {Proxy} 拒绝了用户名 {Credentials.UserName} 的凭据{scheme}。");
         }
 
         // 〔velashell-docs/zh/ssh/spec/09 §4.2〕高频而且用户完全猜不到的一种失败：代理只放行 80/443。

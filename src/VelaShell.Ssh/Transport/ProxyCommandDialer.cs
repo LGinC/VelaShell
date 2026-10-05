@@ -152,8 +152,9 @@ internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTranspor
         }
         catch (Exception ex) when (ex is not SshException)
         {
+            // 起不来的是本机的 shell（ComSpec 指向的程序不在、没有执行权限）：配置问题，重试不会好。
             string message = $"启动 ProxyCommand 失败（{command}）：{ex.Message}";
-            throw new SshConnectException(SshFailureReason.ProxyRefused, SshPhase.Dialing, message, ex)
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing, message, ex)
             {
                 Hops = [DialHops.Hop(Kind, target.EndPoint, succeeded: false, startedAt, message)],
             };

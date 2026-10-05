@@ -81,6 +81,17 @@ internal static class ProxyDialing
     public static SshConnectException AuthRequired(string message) =>
         new(SshFailureReason.ProxyAuthRequired, SshPhase.Dialing, message);
 
+    /// <summary>一条代理拒绝凭据的失败（<see cref="SshFailureReason.ProxyAuthFailed"/>）。</summary>
+    public static SshConnectException AuthFailed(string message) =>
+        new(SshFailureReason.ProxyAuthFailed, SshPhase.Dialing, message);
+
+    /// <summary>
+    /// 请求在本地就发不出去：主机名放不进代理协议、凭据超长（<see cref="SshFailureReason.InvalidConfiguration"/>）。
+    /// </summary>
+    /// <remarks>曾经报 <see cref="SshFailureReason.ProxyRefused"/> —— 代理根本没见到请求，而且那个码判为可重试，重试只会再失败一次。</remarks>
+    public static SshConnectException Misconfigured(string message) =>
+        new(SshFailureReason.InvalidConfiguration, SshPhase.Dialing, message);
+
     private static async ValueTask DisposeQuietlyAsync(Stream stream)
     {
         try

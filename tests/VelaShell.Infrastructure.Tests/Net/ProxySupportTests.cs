@@ -113,8 +113,8 @@ public class ProxySupportTests
         SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
             DialThroughAsync(route, "target.example", 22, cts.Token));
 
-        // 配了凭据却被拒:原因码留着 ProxyAuthRequired,文案说的是「凭据不对」而不是「没配凭据」。
-        Assert.AreEqual(SshFailureReason.ProxyAuthRequired, error.Reason);
+        // 配了凭据却被拒:原因码是 ProxyAuthFailed,文案说的是「凭据不对」而不是「没配凭据」。
+        Assert.AreEqual(SshFailureReason.ProxyAuthFailed, error.Reason);
         Assert.StartsWith(Strings.Get("Msg_ProxyAuthFailed"), error.Message);
     }
 

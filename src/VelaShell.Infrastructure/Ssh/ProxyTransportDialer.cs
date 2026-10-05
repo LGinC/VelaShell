@@ -63,9 +63,9 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
         }
         catch (InvalidOperationException ex)
         {
-            // 代理配置本身不合法(地址写错、类型不认识):仍然是一次「连不上」,
-            // 要落到 SSH 异常体系里,宿主那边才翻得成连接失败而不是一个裸异常。
-            throw new SshConnectException(SshFailureReason.ProxyRefused, SshPhase.Dialing, ex.Message, ex);
+            // 代理配置本身不合法(地址写错、类型不认识):要落到 SSH 异常体系里,宿主那边才翻得成连接失败
+            // 而不是一个裸异常。原因码是配置错误 —— 曾经记成可重试的 ProxyRefused,自动重连只会一遍遍再失败。
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing, ex.Message, ex);
         }
         _lastRoute = route;
 
@@ -91,10 +91,12 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
         }
         catch (SshConnectException ex)
         {
-            // 「要认证 / 凭据被拒」单独留着原因,其余一律记成代理拒绝 —— 包括连不上代理本身:
-            // 那时库给的是 TcpRefused 之类,宿主会把它翻成「目标端口没开」,而没开的其实是代理。
-            SshFailureReason reason = ex.Reason == SshFailureReason.ProxyAuthRequired
-                ? SshFailureReason.ProxyAuthRequired
+            // 「没配凭据 / 凭据被拒 / 配置不成立」原样留着原因(都不可重试),其余一律记成代理拒绝 ——
+            // 包括连不上代理本身:那时库给的是 TcpRefused 之类,宿主会把它翻成「目标端口没开」,而没开的其实是代理。
+            SshFailureReason reason = ex.Reason is SshFailureReason.ProxyAuthRequired
+                or SshFailureReason.ProxyAuthFailed
+                or SshFailureReason.InvalidConfiguration
+                ? ex.Reason
                 : SshFailureReason.ProxyRefused;
             throw new SshConnectException(reason, SshPhase.Dialing, DescribeProxyFailure(route, host, port, ex), ex)
             {
@@ -122,8 +124,8 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 认证失败按有没有配凭据分开说:没配是「代理要认证」,配了是「用户名或口令不对」——
-    /// 库对这两种给的是同一个原因码,宿主这里有路由,分得清。
+    /// 认证失败分开说:没配是「代理要认证」(<see cref="SshFailureReason.ProxyAuthRequired" />),
+    /// 配了被拒是「用户名或口令不对」(<see cref="SshFailureReason.ProxyAuthFailed" />)。
     /// </para>
     /// <para>
     /// SSH 的 22 端口经 HTTP CONNECT 常被代理软件限制(只放行 80/443),
@@ -134,9 +136,9 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
     private static string DescribeProxyFailure(ProxyRoute route, string host, int port, Exception error)
     {
         string via = $" (via {(route.Kind == ProxyKind.Socks5 ? "socks5" : "http")} {route.Host}:{route.Port} → {host}:{port})";
-        if (error is SshConnectException { Reason: SshFailureReason.ProxyAuthRequired })
+        if (error is SshConnectException { Reason: SshFailureReason.ProxyAuthRequired or SshFailureReason.ProxyAuthFailed } auth)
         {
-            return Strings.Get(route.HasCredentials ? "Msg_ProxyAuthFailed" : "SshErr_ProxyAuthRequired") + via;
+            return Strings.Get(auth.Reason == SshFailureReason.ProxyAuthFailed ? "Msg_ProxyAuthFailed" : "SshErr_ProxyAuthRequired") + via;
         }
         string hint = route.Kind == ProxyKind.Http && port == 22
             ? " If the proxy refuses CONNECT to port 22, switch Proxy to socks5 (e.g. 127.0.0.1:10808) or none for TUN."

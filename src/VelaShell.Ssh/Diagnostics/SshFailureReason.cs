@@ -44,6 +44,13 @@ public enum SshFailureReason
     /// <summary>代理要求认证，但未配置代理凭据。</summary>
     ProxyAuthRequired,
 
+    /// <summary>代理拒绝了配置的凭据（用户名或口令不对）。</summary>
+    /// <remarks>
+    /// 与 <see cref="ProxyAuthRequired"/> 分开：一个是「去配」，一个是「改对」。曾经两者共用一个码，
+    /// 宿主只好自己靠「有没有配凭据」来分。
+    /// </remarks>
+    ProxyAuthFailed,
+
     // ---- 版本交换 ----
 
     /// <summary>对端不是 SSH 服务（没有发出合法的协议标识串）。</summary>
