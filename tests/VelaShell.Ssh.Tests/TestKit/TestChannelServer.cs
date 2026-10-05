@@ -82,6 +82,9 @@ internal sealed record TestChannelScript
     public SshChannelOpenFailureReason RejectTunnelWith { get; init; } =
         SshChannelOpenFailureReason.AdministrativelyProhibited;
 
+    /// <summary>收到隧道的 <c>CHANNEL_OPEN</c> 时不回话、直接把连接断掉（模拟跳板在开隧道时掉线）。</summary>
+    public bool DropConnectionOnTunnelOpen { get; init; }
+
     /// <summary>接受 <c>x11-req</c> 通道请求。</summary>
     public bool GrantX11Forward { get; init; }
 
@@ -272,6 +275,9 @@ internal sealed class TestChannelServer : IDisposable
     private const int MaxField = 256 * 1024;
 
     private readonly SshPacketTransport _transport;
+
+    /// <summary>按 <see cref="TestChannelScript.DropConnectionOnTunnelOpen"/> 断掉了连接：主循环就此收工。</summary>
+    private bool _dropped;
     private readonly TestChannelScript _script;
 
     /// <summary>本端（服务端）给通道的编号 → 客户端的编号。</summary>
@@ -368,6 +374,10 @@ internal sealed class TestChannelServer : IDisposable
                 }
 
                 await HandleAsync(packet.MessageNumber, packet.Payload.ToArray(), cancellationToken);
+                if (_dropped)
+                {
+                    return;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -587,6 +597,13 @@ internal sealed class TestChannelServer : IDisposable
         // 目标要在**任何 await 之前**读出来 —— SshDataReader 是 ref struct，
         // 跨不过 await 边界。
         string tunnelTarget = isTunnel ? ReadTunnelTarget(channelType, ref reader) : "";
+
+        if (isTunnel && _script.DropConnectionOnTunnelOpen)
+        {
+            _dropped = true;
+            await _transport.DisposeAsync();
+            return;
+        }
 
         if (isTunnel && _script.TunnelHandler is null && _script.RejectOpenWith is null)
         {

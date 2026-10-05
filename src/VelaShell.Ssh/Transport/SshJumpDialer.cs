@@ -133,11 +133,22 @@ internal sealed class SshJumpDialer : ISshTransportDialer
             }
 
             string detail = ex.Message;
+            IReadOnlyList<SshHopInfo> hops =
+                [reachedJump, DialHops.Hop(SshDialKind.SshJump, target.EndPoint, succeeded: false, tunnelStartedAt, detail)];
+
+            // 〔velashell-docs/zh/ssh/spec/09 §2.2〕只有跳板回了 CHANNEL_OPEN_FAILURE 才是「不肯转发」。
+            // 开隧道时跳板自己断了（ClosedByPeer）、违反了协议，照原因码报 —— 曾经一律改写成 ProxyRefused，
+            // 断线被说成了「跳板拒绝」。
+            if (ex is not SshChannelException { Reason: SshFailureReason.ChannelOpenFailed })
+            {
+                throw DialHops.Rewrap(ex, $"跳板 {jump} 在转发到 {target.EndPoint} 时出了问题：{detail}", hops);
+            }
+
             throw new SshConnectException(
                 SshFailureReason.ProxyRefused, SshPhase.Dialing,
                 $"跳板 {jump} 不肯转发到 {target.EndPoint}：{detail}", ex)
             {
-                Hops = [reachedJump, DialHops.Hop(SshDialKind.SshJump, target.EndPoint, succeeded: false, tunnelStartedAt, detail)],
+                Hops = hops,
             };
         }
     }

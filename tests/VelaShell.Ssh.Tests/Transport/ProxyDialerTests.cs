@@ -295,6 +295,24 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         Assert.IsFalse(ex.Hops[1].Succeeded);
     }
 
+    /// <summary>
+    /// 开隧道时跳板自己断了：那是断线（可重试），不是「跳板不肯转发」。曾经一律改写成 ProxyRefused。
+    /// </summary>
+    [TestMethod]
+    public async Task 跳板在开隧道时断开不报成不肯转发()
+    {
+        await using JumpHost jump = new(tunnelTargets: null, dropOnTunnelOpen: true);
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(new SshJumpDialer(jump.Options)));
+
+        Assert.AreEqual(SshFailureReason.ClosedByPeer, ex.Reason);
+        Assert.DoesNotContain("不肯转发", ex.Message);
+        Assert.HasCount(2, ex.Hops);
+        Assert.IsTrue(ex.Hops[0].Succeeded, "跳板本身是连上了的");
+        Assert.IsFalse(ex.Hops[1].Succeeded);
+    }
+
     [TestMethod]
     public async Task 在跳板上输口令的时间不算进外层的连接超时()
     {
@@ -805,10 +823,10 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         private readonly CancellationTokenSource _cts = new(TimeSpan.FromSeconds(30));
         private readonly List<Task> _servers = [];
 
-        public JumpHost(List<string>? tunnelTargets)
+        public JumpHost(List<string>? tunnelTargets, bool dropOnTunnelOpen = false)
         {
             TestChannelScript jumpScript = tunnelTargets is null
-                ? new TestChannelScript()
+                ? new TestChannelScript { DropConnectionOnTunnelOpen = dropOnTunnelOpen }
                 : new TestChannelScript
                 {
                     TunnelHandler = (target, input, output, ct) =>
