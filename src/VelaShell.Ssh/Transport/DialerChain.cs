@@ -55,14 +55,16 @@ public static class DialerChain
     /// <param name="connect">
     /// 建立到跳板的连接。<b>每次拨号调一次</b> —— 断线重连时跳板也要重连；
     /// 返回的连接归拨出来的流所有，流释放时一并断开。
+    /// 准备好这一跳的参数之后，用上下文的 <see cref="SshJumpContext.ConnectAsync"/> 去连，
+    /// 而不是直接调 <see cref="SshConnection.ConnectAsync"/>：前者把外层连接的计时器带进去，
+    /// 跳板上看指纹、输动态码时外层停表（velashell-docs/zh/ssh/spec/09 §2.4）。
     /// </param>
     /// <remarks>
-    /// 给「每一跳都要现准备凭据」的调用方用（先连 ssh-agent、弹口令框之类）。
-    /// 能直接给出连接参数的，用 <see cref="Jump(SshConnectionOptions)"/> ——
-    /// 那样外层连接的计时器会传进跳板的建连里。
+    /// 给「每一跳都要现准备凭据」的调用方用（先连 ssh-agent 之类）。
+    /// 能直接给出连接参数的，用 <see cref="Jump(SshConnectionOptions)"/>。
     /// </remarks>
     public static ISshTransportDialer Jump(
-        SshEndPoint jumpHost, Func<CancellationToken, ValueTask<SshConnection>> connect) =>
+        SshEndPoint jumpHost, Func<SshJumpContext, CancellationToken, ValueTask<SshConnection>> connect) =>
         new SshJumpDialer(jumpHost, connect);
 
     /// <summary>

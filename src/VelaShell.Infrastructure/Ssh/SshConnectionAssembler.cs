@@ -37,7 +37,7 @@ internal static class SshConnectionAssembler
     /// </summary>
     /// <remarks>
     /// 跳板链上的跳板连接不在这里:它们归各自拨出来的流所有,外层连接释放时逐层一起断开
-    /// (见 <see cref="DialerChain.Jump(SshEndPoint, Func{CancellationToken, ValueTask{SshConnection}})" />)。
+    /// (见 <see cref="DialerChain.Jump(SshEndPoint, Func{SshJumpContext, CancellationToken, ValueTask{SshConnection}})" />)。
     /// </remarks>
     internal readonly record struct Assembled(
         Func<CancellationToken, ValueTask<SshConnection>> Connect,
@@ -81,12 +81,12 @@ internal static class SshConnectionAssembler
             ISshTransportDialer inner = dialer;
             dialer = DialerChain.Jump(
                 new SshEndPoint(hop.Host, hop.Port),
-                ct => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, ct));
+                (jump, ct) => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, jump, ct));
         }
 
         ISshTransportDialer finalDialer = dialer;
         return new Assembled(
-            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, ct),
+            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, jump: null, ct),
             connectTimeout);
     }
 
@@ -115,6 +115,7 @@ internal static class SshConnectionAssembler
         ISshTransportDialer dialer,
         TimeSpan connectTimeout,
         IKeyboardInteractivePrompt? keyboardPrompt,
+        SshJumpContext? jump,
         CancellationToken cancellationToken)
     {
         // agent 这一路的签名要回到 agent 去做,所以 agent 客户端得一直活到认证结束 ——
@@ -153,7 +154,11 @@ internal static class SshConnectionAssembler
             SshConnection connection;
             try
             {
-                connection = await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+                // 跳板这一跳经上下文去连:外层连接的计时器一起带进去,
+                // 用户在跳板上看指纹、输动态码时外层停表。
+                connection = jump is null
+                    ? await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false)
+                    : await jump.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
             }
             catch (Exception ex) when (keyboard is { Cancelled: true } && !cancellationToken.IsCancellationRequested)
             {

@@ -28,7 +28,8 @@ namespace VelaShell.Ssh.Transport;
 /// </para>
 /// <para>
 /// 跳板连接有两种来法：给出它的连接参数（库来连，外层的连接计时器会传进去），
-/// 或者给一个回调（调用方要按跳逐个准备凭据时用，比如先连 ssh-agent）。
+/// 或者给一个回调（调用方要按跳逐个准备凭据时用，比如先连 ssh-agent）——
+/// 回调拿到的 <see cref="SshJumpContext"/> 带着外层的计时器，两种来法停表的行为一样。
 /// </para>
 /// </remarks>
 internal sealed class SshJumpDialer : ISshTransportDialer
@@ -53,13 +54,16 @@ internal sealed class SshJumpDialer : ISshTransportDialer
 
     /// <summary>用回调构造：跳板连接由调用方建。</summary>
     /// <param name="jump">跳板的地址（进诊断信息与逐跳记录）。</param>
-    /// <param name="connect">建立到跳板的连接；每次拨号调一次。</param>
-    internal SshJumpDialer(SshEndPoint jump, Func<CancellationToken, ValueTask<SshConnection>> connect)
+    /// <param name="connect">
+    /// 建立到跳板的连接；每次拨号调一次。回调拿到的上下文带着外层的计时器 ——
+    /// 它用 <see cref="SshJumpContext.ConnectAsync"/> 连，跳板上等人时外层也停表。
+    /// </param>
+    internal SshJumpDialer(SshEndPoint jump, Func<SshJumpContext, CancellationToken, ValueTask<SshConnection>> connect)
     {
         ArgumentNullException.ThrowIfNull(connect);
         _jump = jump;
         _jumpName = jump.ToString();
-        _connect = (_, ct) => connect(ct);
+        _connect = (target, ct) => connect(new SshJumpContext(jump, target.Deadline), ct);
     }
 
     /// <summary>跳板的连接参数；用回调构造时为 <see langword="null"/>。</summary>

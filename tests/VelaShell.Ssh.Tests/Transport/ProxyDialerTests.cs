@@ -242,6 +242,44 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
     }
 
+    /// <summary>
+    /// 跳板连接由调用方的回调建（按跳准备凭据的那种用法）：在跳板上输口令的时间同样不算进外层的连接超时。
+    /// </summary>
+    /// <remarks>曾经回调只拿到一个取消令牌、自己去连，外层的计时器传不进去 —— 认证被当场掐断。</remarks>
+    [TestMethod]
+    public async Task 回调建的跳板上输口令的时间也不算进外层的连接超时()
+    {
+        List<string> tunnelTargets = [];
+        await using JumpHost jump = new(tunnelTargets);
+
+        SshConnectionOptions jumpOptions = jump.Options with
+        {
+            Credentials =
+            [
+                new PasswordCredential(async cancellationToken =>
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(1.5), cancellationToken);
+                    return "hunter2";
+                }),
+            ],
+        };
+
+        ISshTransportDialer dialer = DialerChain.Jump(
+            new SshEndPoint(jumpOptions.Host, jumpOptions.Port),
+            (context, cancellationToken) => context.ConnectAsync(jumpOptions, cancellationToken));
+
+        SshConnectionOptions options = new($"joe@{TargetHost}:22")
+        {
+            Dialer = dialer,
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+            ConnectTimeout = TimeSpan.FromSeconds(1),
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+        Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
+    }
+
     [TestMethod]
     public async Task 外层计时器在跳板握手时到点_报超时并说清是哪一跳()
     {
