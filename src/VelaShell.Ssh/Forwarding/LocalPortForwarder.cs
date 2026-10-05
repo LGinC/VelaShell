@@ -16,6 +16,10 @@ using VelaShell.Ssh.Session;
 namespace VelaShell.Ssh.Forwarding;
 
 /// <summary>本地 / 动态转发的参数。</summary>
+/// <remarks>
+/// 〔FW-E16〕非法值在设值时就抛（AGENTS 4.3）。曾经不拦：<c>MaxConnections = 0</c> 时监听已经 Bind + Listen、
+/// 随后构造转发器才抛 —— 套接字没人释放，端口一直占到 GC。
+/// </remarks>
 public sealed record LocalPortForwardOptions
 {
     /// <summary>
@@ -26,13 +30,27 @@ public sealed record LocalPortForwardOptions
     /// 一条隧道的另一端往往是内网数据库或管理接口；默认绑 <c>0.0.0.0</c>
     /// 等于把它暴露给同网段的所有人。要对外开放，使用者得<b>显式</b>写出来。
     /// </remarks>
-    public IPAddress BindAddress { get; init; } = IPAddress.Loopback;
+    public IPAddress BindAddress
+    {
+        get;
+        init => field = value ?? throw new ArgumentNullException(nameof(BindAddress));
+    } = IPAddress.Loopback;
 
     /// <summary>监听端口。<c>0</c> 表示由系统分配，结果看 <see cref="LocalPortForwarder.BoundEndPoint"/>。</summary>
-    public int BindPort { get; init; }
+    /// <exception cref="ArgumentOutOfRangeException">不在 0–65535 之间。</exception>
+    public int BindPort
+    {
+        get;
+        init => field = value is >= 0 and <= 65535 ? value : throw new ArgumentOutOfRangeException(nameof(BindPort), value, "监听端口要在 0–65535 之间（0 由系统分配）。");
+    }
 
     /// <summary>并发连接数上限。</summary>
-    public int MaxConnections { get; init; } = 1024;
+    /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
+    public int MaxConnections
+    {
+        get;
+        init => field = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(MaxConnections), value, "并发连接数上限至少为 1。");
+    } = 1024;
 
     /// <summary>动态转发里，SOCKS 握手要在多久之内完成。</summary>
     /// <remarks>
@@ -40,7 +58,12 @@ public sealed record LocalPortForwardOptions
     /// 占满 <see cref="MaxConnections"/> 之后正经的连接一条也进不来。
     /// 浏览器与 curl 连上就发握手，30 秒绰绰有余。
     /// </remarks>
-    public TimeSpan SocksHandshakeTimeout { get; init; } = TimeSpan.FromSeconds(30);
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public TimeSpan SocksHandshakeTimeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(SocksHandshakeTimeout), value, "SOCKS 握手时限必须为正。");
+    } = TimeSpan.FromSeconds(30);
 
     /// <summary>每条隧道通道的参数。</summary>
     public SshChannelOptions Channel { get; init; } = SshChannelOptions.Default with
@@ -124,12 +147,7 @@ public sealed class LocalPortForwarder : PortForwarder
         ArgumentOutOfRangeException.ThrowIfGreaterThan(targetPort, 65535);
 
         LocalPortForwardOptions effective = options ?? LocalPortForwardOptions.Default;
-        Socket listener = Bind(effective);
-
-        LocalPortForwarder forwarder = new(
-            connection, effective, ForwardKind.Local, listener, targetHost, targetPort);
-        forwarder.Run();
-        return forwarder;
+        return StartListening(connection, effective, ForwardKind.Local, targetHost, targetPort);
     }
 
     /// <summary>起一个动态转发（<c>-D</c>，SOCKS5）。</summary>
@@ -141,11 +159,25 @@ public sealed class LocalPortForwarder : PortForwarder
         ArgumentNullException.ThrowIfNull(connection);
 
         LocalPortForwardOptions effective = options ?? LocalPortForwardOptions.Default;
-        Socket listener = Bind(effective);
+        return StartListening(connection, effective, ForwardKind.Dynamic, targetHost: null, targetPort: 0);
+    }
 
-        LocalPortForwarder forwarder = new(connection, effective, ForwardKind.Dynamic, listener, null, 0);
-        forwarder.Run();
-        return forwarder;
+    /// <summary>起监听、建转发器；起监听之后出了任何错，监听当场关掉 —— 不留一个占着端口、没人管的套接字。</summary>
+    private static LocalPortForwarder StartListening(
+        SshConnection connection, LocalPortForwardOptions options, ForwardKind kind, string? targetHost, int targetPort)
+    {
+        Socket listener = Bind(options);
+        try
+        {
+            LocalPortForwarder forwarder = new(connection, options, kind, listener, targetHost, targetPort);
+            forwarder.Run();
+            return forwarder;
+        }
+        catch
+        {
+            listener.Dispose();
+            throw;
+        }
     }
 
     private static Socket Bind(LocalPortForwardOptions options)

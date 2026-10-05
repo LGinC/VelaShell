@@ -18,6 +18,7 @@ using VelaShell.Ssh.Session;
 namespace VelaShell.Ssh.Forwarding;
 
 /// <summary>远程转发（<c>-R</c>）的参数。</summary>
+/// <remarks>〔FW-E16〕非法值在设值时就抛（AGENTS 4.3）。</remarks>
 public sealed record RemotePortForwardOptions
 {
     /// <summary>
@@ -30,13 +31,27 @@ public sealed record RemotePortForwardOptions
     /// 默认 <c>"localhost"</c>：只有服务端本机能连，与 OpenSSH 的
     /// <c>GatewayPorts no</c> 一致。
     /// </remarks>
-    public string BindAddress { get; init; } = "localhost";
+    public string BindAddress
+    {
+        get;
+        init => field = value ?? throw new ArgumentNullException(nameof(BindAddress));
+    } = "localhost";
 
     /// <summary>请服务端绑哪个端口。<c>0</c> 表示由服务端分配。</summary>
-    public int BindPort { get; init; }
+    /// <exception cref="ArgumentOutOfRangeException">不在 0–65535 之间。</exception>
+    public int BindPort
+    {
+        get;
+        init => field = value is >= 0 and <= 65535 ? value : throw new ArgumentOutOfRangeException(nameof(BindPort), value, "监听端口要在 0–65535 之间（0 由服务端分配）。");
+    }
 
     /// <summary>并发连接数上限。</summary>
-    public int MaxConnections { get; init; } = 1024;
+    /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
+    public int MaxConnections
+    {
+        get;
+        init => field = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(MaxConnections), value, "并发连接数上限至少为 1。");
+    } = 1024;
 
     /// <summary>每条隧道通道的参数。</summary>
     public SshChannelOptions Channel { get; init; } = SshChannelOptions.Default with

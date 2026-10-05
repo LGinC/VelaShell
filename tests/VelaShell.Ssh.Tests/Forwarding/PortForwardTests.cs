@@ -582,6 +582,24 @@ public sealed class PortForwardTests
         rebind.Bind(new IPEndPoint(IPAddress.Loopback, port));
     }
 
+    /// <summary>
+    /// 〔FW-E16〕转发参数的非法值在设值时就抛 —— 曾经 MaxConnections = 0 时监听已经起来、构造转发器才抛，端口一直占到 GC。
+    /// </summary>
+    [TestMethod]
+    public void 转发参数的非法值在设值时就抛()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { MaxConnections = 0 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { BindPort = -1 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { BindPort = 65536 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { SocksHandshakeTimeout = TimeSpan.Zero });
+        Assert.ThrowsExactly<ArgumentNullException>(() => new LocalPortForwardOptions { BindAddress = null! });
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new RemotePortForwardOptions { MaxConnections = -1 });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new RemotePortForwardOptions { BindPort = 70000 });
+        Assert.ThrowsExactly<ArgumentNullException>(() => new RemotePortForwardOptions { BindAddress = null! });
+
+        Assert.AreEqual(1, new LocalPortForwardOptions { MaxConnections = 1, BindPort = 65535 }.MaxConnections);
+    }
     /// <summary>ConnectionClosed 触发时，活跃连接数已经不含这一条（订阅者常在这里刷新界面上的连接数）。</summary>
     [TestMethod]
     public async Task 报连接关闭时活跃数已经减掉()
