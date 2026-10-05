@@ -124,6 +124,9 @@ public sealed class SshChannel : IAsyncDisposable
     private bool _closeSent;
     private bool _closeReceived;
 
+    /// <summary>对端的 <c>CHANNEL_CLOSE</c> 到的时候我们还没发 —— 是对端先关的。</summary>
+    private bool _peerClosedFirst;
+
     /// <summary>通道号已经还给会话。</summary>
     private bool _idReleased;
     private bool _disposed;
@@ -788,18 +791,27 @@ public sealed class SshChannel : IAsyncDisposable
         {
             _closeReceived = true;
             mustReply = !_closeSent;
+            _peerClosedFirst = mustReply;
             _closeSent = true;
         }
 
         return mustReply;
     }
 
-    /// <summary>双向 CLOSE 都走完了。</summary>
-    internal void OnCloseCompleted(SshChannelCloseReason reason)
+    /// <summary>双向 CLOSE 都走完了（收到对端的那一个之后调用）。</summary>
+    internal void OnCloseCompleted()
     {
+        // 原因看谁先发的 CLOSE。曾经一律记成 ClosedByPeer：本端 CloseAsync 先发、对端照规矩回一个，
+        // 事件流里也说是「对端关的」。
+        bool peerClosedFirst;
+        lock (_stateLock)
+        {
+            peerClosedFirst = _peerClosedFirst;
+        }
+
         // 本端先收尾过（释放了通道）的话，状态早就是 Closed，FinishClose 什么都不做 ——
         // 但号一直扣着在等的正是这一个 CLOSE。
-        FinishClose(reason);
+        FinishClose(peerClosedFirst ? SshChannelCloseReason.ClosedByPeer : SshChannelCloseReason.ClosedLocally);
         ReleaseId(force: false);
     }
 

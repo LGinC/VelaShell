@@ -755,6 +755,41 @@ public sealed class ChannelTests
             [SshProtocolNames.RequestPty, SshProtocolNames.RequestShell], [.. observed.Requests.Where(r => r is SshProtocolNames.RequestPty or SshProtocolNames.RequestShell)]);
     }
 
+    /// <summary>
+    /// 关闭原因看的是谁先发的 CLOSE：本端先关、对端回 CLOSE 时是 <see cref="SshChannelCloseReason.ClosedLocally"/>；
+    /// 对端先关时是 <see cref="SshChannelCloseReason.ClosedByPeer"/>。状态也照实走：本端先关才经过 Closing。
+    /// </summary>
+    [TestMethod]
+    public async Task 关闭原因看谁先发的CLOSE()
+    {
+        await using (Harness local = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null }))
+        {
+            SshChannel channel = await local.Connection.OpenSessionChannelAsync(null, local.Token);
+            ValueTask closing = channel.CloseAsync(local.Token);
+            Assert.AreEqual(SshChannelState.Closing, channel.State, "本端先发 CLOSE，等对端那一个时是 Closing");
+            await closing;
+
+            Assert.AreEqual(SshChannelCloseReason.ClosedLocally, (await ReadUntilClosedAsync(channel, local.Token)).Reason);
+            await channel.DisposeAsync();
+        }
+
+        // 服务端跑完脚本（收到 exec 之后）先发 CLOSE。
+        await using Harness remote = await Harness.StartAsync(new TestChannelScript());
+        await using SshCommand command = await remote.Connection.ExecuteAsync("关", cancellationToken: remote.Token);
+        Assert.AreEqual(SshChannelCloseReason.ClosedByPeer, (await ReadUntilClosedAsync(command.Channel, remote.Token)).Reason);
+
+        static async Task<SshChannelEvent.Closed> ReadUntilClosedAsync(SshChannel channel, CancellationToken token)
+        {
+            while (true)
+            {
+                if (await channel.ReadEventAsync(token) is SshChannelEvent.Closed closed)
+                {
+                    return closed;
+                }
+            }
+        }
+    }
+
     /// <summary>关闭原因的零值是「未知」：没赋值的 <c>default</c> 不能读起来像「正常关闭」（曾经零值是从不产出的 <c>Normal</c>）。</summary>
     [TestMethod]
     public void 关闭原因的零值是未知()

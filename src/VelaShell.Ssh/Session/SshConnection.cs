@@ -1033,7 +1033,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(1), channel.RemoteId);
         PostIf(reply, channel.OnClose);
 
-        channel.OnCloseCompleted(SshChannelCloseReason.ClosedByPeer);
+        channel.OnCloseCompleted();
     }
 
     private void OnChannelRequest(ReadOnlyMemory<byte> payload)
