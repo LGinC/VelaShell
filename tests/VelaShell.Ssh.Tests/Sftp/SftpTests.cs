@@ -840,6 +840,26 @@ public sealed class SftpTests
     }
 
     [TestMethod]
+    public async Task 名字含NUL的链接项不让整个目录列不出来()
+    {
+        // 曾经补这个链接的 READLINK / STAT 时在本地抛 ArgumentException（路径里有 NUL），
+        // 而「悄悄」版本只吞 SFTP 异常 —— 一个怪链接让整个目录列不出来。现在这种名字在列表里就被丢掉。
+        await using Harness harness = await Harness.StartAsync(server =>
+        {
+            server.AddFile("/home/joe/ok.txt", Text("x"));
+            server.AddSymbolicLink("/home/joe/li\0nk", "/home/joe/ok.txt");
+        });
+
+        List<SftpDirectoryEntry> entries = [];
+        await foreach (SftpDirectoryEntry entry in harness.Sftp.EnumerateDirectoryAsync("/home/joe", harness.Token))
+        {
+            entries.Add(entry);
+        }
+
+        Assert.AreSequenceEqual(new[] { "ok.txt" }, entries.Select(e => e.Name).ToArray());
+    }
+
+    [TestMethod]
     public async Task 符号链接保留是链接这个事实()
     {
         await using Harness harness = await Harness.StartAsync(server =>
