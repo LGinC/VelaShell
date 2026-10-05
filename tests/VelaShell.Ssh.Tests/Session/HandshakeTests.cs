@@ -195,6 +195,32 @@ public sealed class HandshakeTests
 
     // ------------------------------------------------------------ 版本交换
 
+    /// <summary>
+    /// 〔spec/02 §六〕服务端标识串的注释里有不是合法 UTF-8 的字节（Latin-1 的 ©）：进交换哈希的必须是原始字节。
+    /// 曾经解成 string 再按 UTF-8 编回去，那个字节变成 EF BF BD，验签必然失败，还报「可能有中间人」。
+    /// </summary>
+    [TestMethod]
+    public async Task 标识串里的非UTF8字节原样进交换哈希()
+    {
+        (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
+        byte[] identification = [.. "SSH-2.0-Vendor_1.0 "u8, 0xA9, .. " Corp"u8];
+        await using TestSshServer server = new(serverStream, new TestSshServerOptions { IdentificationBytes = identification });
+        await using SshPacketTransport clientTransport = new(clientStream);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Task<TestSshServerHandshake> serverTask = server.HandshakeAsync(cts.Token);
+
+        SshVersionExchangeResult versions =
+            await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token);
+        Assert.AreSequenceEqual(identification, versions.ServerVersionBytes);
+
+        SshKeyExchangeRunner runner = new(clientTransport, SshAlgorithmSet.Default, new DangerousAcceptAnyHostKeyPolicy());
+        SshKeyExchangeResult kex = await runner.RunAsync(versions, "test.invalid", 22, cancellationToken: cts.Token);
+        TestSshServerHandshake handshake = await serverTask;
+
+        Assert.AreSequenceEqual(handshake.ExchangeHash, kex.ExchangeHash, "两边算出的交换哈希必须一致");
+    }
+
     [TestMethod]
     public async Task 服务端的前导行被收集起来()
     {

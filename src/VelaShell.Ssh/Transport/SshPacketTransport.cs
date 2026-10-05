@@ -156,6 +156,23 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// </remarks>
     public async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken = default)
     {
+        byte[]? line = await ReadRawLineAsync(cancellationToken).ConfigureAwait(false);
+
+        // 标识串按 RFC 是 US-ASCII，但前导行（banner）可能是任意 UTF-8。
+        // 用宽容的 UTF-8 解码：这里的文本只用于展示与判断开头，进交换哈希的是原始字节（见 ReadRawLineAsync）。
+        return line is null ? null : Encoding.UTF8.GetString(line);
+    }
+
+    /// <summary>
+    /// 同 <see cref="ReadLineAsync"/>，但交回<b>原始字节</b>（去掉行尾的 <c>\r\n</c> / <c>\n</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/02 §六〕服务端标识串进交换哈希（<c>V_S</c>）的必须是它发来的那串字节。
+    /// 先解成 string 再编回去的话，注释段里一个不是合法 UTF-8 的字节（Latin-1 的 ©）会变成 <c>EF BF BD</c>，
+    /// 两边算出的交换哈希不同 —— 验签失败、报「主机密钥被拒、可能有中间人」，一个兼容性问题被报成了安全事件。
+    /// </remarks>
+    internal async ValueTask<byte[]?> ReadRawLineAsync(CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         while (true)
@@ -174,9 +191,9 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                         $"标识串行超过 {MaxIdentificationLineBytes} 字节（收到 {line.Length}）。");
                 }
 
-                string text = DecodeLine(line);
+                byte[] raw = StripCarriageReturn(line);
                 _reader.AdvanceTo(buffer.GetPosition(1, newline.Value));
-                return text;
+                return raw;
             }
 
             if (buffer.Length > MaxIdentificationLineBytes)
@@ -219,26 +236,11 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static string DecodeLine(ReadOnlySequence<byte> line)
+    /// <summary>一行的原始字节，顺带去掉行尾的 CR（见 <see cref="ReadLineAsync"/> 的互操作说明）。</summary>
+    private static byte[] StripCarriageReturn(ReadOnlySequence<byte> line)
     {
-        int length = (int)line.Length;
-        byte[] rented = ArrayPool<byte>.Shared.Rent(Math.Max(length, 1));
-        try
-        {
-            line.CopyTo(rented);
-            // 顺带去掉 CR —— 见 <remarks> 的互操作说明。
-            if (length > 0 && rented[length - 1] == (byte)'\r')
-            {
-                length--;
-            }
-            // 标识串按 RFC 是 US-ASCII，但前导行（banner）可能是任意 UTF-8。
-            // 用宽容的 UTF-8 解码：这些文本只用于展示，不参与任何判定。
-            return Encoding.UTF8.GetString(rented.AsSpan(0, length));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
+        byte[] bytes = line.ToArray();
+        return bytes.Length > 0 && bytes[^1] == (byte)'\r' ? bytes[..^1] : bytes;
     }
 
     // ------------------------------------------------------------ 帧式（稳态）

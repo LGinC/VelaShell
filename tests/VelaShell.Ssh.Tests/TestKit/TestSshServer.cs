@@ -22,6 +22,9 @@ internal sealed record TestSshServerOptions
     /// <summary>服务端的版本标识串。</summary>
     public string Identification { get; init; } = "SSH-2.0-VelaShellTestServer_1.0";
 
+    /// <summary>设了就原样发这串字节作标识串（不经任何编码，可以带不是合法 UTF-8 的字节），交换哈希也用它。</summary>
+    public byte[]? IdentificationBytes { get; init; }
+
     /// <summary>标识串之前发的前导行。</summary>
     public IReadOnlyList<string> PreAuthBanner { get; init; } = [];
 
@@ -95,8 +98,11 @@ internal sealed class TestSshServer : IAsyncDisposable
     private byte[]? _sessionId;
 
     /// <summary>在给定的流上建立一个测试服务端。</summary>
+    private readonly Stream _stream;
+
     public TestSshServer(Stream stream, TestSshServerOptions? options = null)
     {
+        _stream = stream;
         _options = options ?? new TestSshServerOptions();
         Transport = new SshPacketTransport(stream);
         _hostKey = _options.HostKey ?? TestHostKey.Create(_options.HostKeyType);
@@ -119,7 +125,16 @@ internal sealed class TestSshServer : IAsyncDisposable
         {
             await Transport.WriteLineAsync(line, cancellationToken);
         }
-        await Transport.WriteLineAsync(_options.Identification, cancellationToken);
+        if (_options.IdentificationBytes is { } rawIdentification)
+        {
+            // 前面的行都已经刷出去了，直接写底层流不会乱序。
+            await _stream.WriteAsync((byte[])[.. rawIdentification, (byte)'\r', (byte)'\n'], cancellationToken);
+            await _stream.FlushAsync(cancellationToken);
+        }
+        else
+        {
+            await Transport.WriteLineAsync(_options.Identification, cancellationToken);
+        }
 
         string? clientVersion = null;
         while (clientVersion is null)
@@ -304,7 +319,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         byte[] exchangeHash = SshExchangeHash.Compute(shape.HashAlgorithm, new SshExchangeHashInput
         {
             ClientVersion = System.Text.Encoding.ASCII.GetBytes(clientVersion),
-            ServerVersion = System.Text.Encoding.ASCII.GetBytes(_options.Identification),
+            ServerVersion = _options.IdentificationBytes ?? System.Text.Encoding.ASCII.GetBytes(_options.Identification),
             ClientKexInit = clientKexInitPayload,
             ServerKexInit = serverKexInit,
             HostKeyBlob = hostKeyBlob,
