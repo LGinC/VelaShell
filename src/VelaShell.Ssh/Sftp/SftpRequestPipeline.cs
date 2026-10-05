@@ -589,7 +589,7 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         // 而挂死没有堆栈也没有日志。
         foreach (PendingRequest item in pending)
         {
-            item.Completion.TrySetException(exception);
+            item.Fail(exception);
         }
 
         lock (_stateLock)
@@ -643,6 +643,20 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
             HandleLate(response);
         }
 
+        /// <summary>流水线收工：把故障交给还在等的人。</summary>
+        /// <remarks>
+        /// 〔velashell-docs/zh/ssh/spec/06 §5.4〕<b>已经放弃的不设异常。</b>等它的人已经走了，没人会看这个任务 ——
+        /// 设了就是一个未观察的任务异常，GC 时触发 <c>UnobservedTaskException</c>，宿主据此写进崩溃日志：
+        /// 一次断线让几十个被取消过的请求同时「崩溃」，崩溃日志里全是其实不是崩溃的记录。
+        /// </remarks>
+        public void Fail(Exception exception)
+        {
+            if (Interlocked.CompareExchange(ref _state, Delivered, Waiting) == Waiting)
+            {
+                Completion.TrySetException(exception);
+            }
+        }
+
         /// <summary>等的人不等了（取消或失败）。应答要是已经交付了，就在这里接手善后。</summary>
         public void Abandon()
         {
@@ -651,12 +665,23 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
                 return;   // 应答还没到，收包循环会善后
             }
 
-            // 应答已经（或马上就会）落在 Completion 上，而等它的人已经走了。
+            // 应答（或收工时的故障）已经、或马上就会落在 Completion 上，而等它的人已经走了：
+            // 应答由这里善后；故障在这里看一眼，免得变成未观察的任务异常。
             _ = Completion.Task.ContinueWith(
-                static (task, state) => ((PendingRequest)state!).HandleLate(task.Result),
+                static (task, state) =>
+                {
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        ((PendingRequest)state!).HandleLate(task.Result);
+                    }
+                    else
+                    {
+                        _ = task.Exception;
+                    }
+                },
                 this,
                 CancellationToken.None,
-                TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                TaskContinuationOptions.ExecuteSynchronously,
                 TaskScheduler.Default);
         }
 

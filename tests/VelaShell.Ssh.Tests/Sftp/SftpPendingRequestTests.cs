@@ -63,6 +63,73 @@ public sealed class SftpPendingRequestTests
     }
 
     [TestMethod]
+    public void 收工时还在等的人拿到故障()
+    {
+        SftpRequestPipeline.PendingRequest pending = new(null);
+        InvalidOperationException fault = new("通道断了");
+
+        pending.Fail(fault);
+
+        Assert.IsTrue(pending.Completion.Task.IsFaulted);
+        Assert.AreSame(fault, pending.Completion.Task.Exception!.InnerException);
+    }
+
+    [TestMethod]
+    public void 已经放弃的请求收工时不设异常()
+    {
+        // 等的人已经走了，没人会看这个任务 —— 设了异常就是一个未观察的任务异常，
+        // 宿主据此写崩溃日志：一次断线让几十个被取消过的请求同时「崩溃」。
+        SftpRequestPipeline.PendingRequest pending = new(null);
+
+        pending.Abandon();
+        pending.Fail(new InvalidOperationException("通道断了"));
+
+        Assert.IsFalse(pending.Completion.Task.IsFaulted);
+    }
+
+    [TestMethod]
+    public void 故障先到而等的人随后放弃_故障被看过不成为未观察的异常()
+    {
+        string marker = Guid.NewGuid().ToString("N");
+        List<Exception> unobserved = [];
+        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        {
+            if (e.Exception.InnerExceptions.Any(x => x.Message == marker))
+            {
+                lock (unobserved)
+                {
+                    unobserved.Add(e.Exception);
+                }
+            }
+        };
+
+        TaskScheduler.UnobservedTaskException += handler;
+        try
+        {
+            FailThenAbandon(marker);
+
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+            GC.Collect();
+            GC.WaitForPendingFinalizers();
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= handler;
+        }
+
+        Assert.IsEmpty(unobserved, "放弃的一方要接手看一眼这个故障");
+    }
+
+    [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+    private static void FailThenAbandon(string marker)
+    {
+        SftpRequestPipeline.PendingRequest pending = new(null);
+        pending.Fail(new InvalidOperationException(marker));
+        pending.Abandon();
+    }
+
+    [TestMethod]
     public void 重复放弃只善后一次()
     {
         int lateCalls = 0;

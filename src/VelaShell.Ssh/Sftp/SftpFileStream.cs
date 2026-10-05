@@ -586,6 +586,13 @@ public sealed class SftpFileStream : Stream
         // 在途写的数量就是背压。满了就等，不报错。调用方的令牌只管「等写槽」这一段。
         await _writeSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
 
+        // 等写槽的时候，前面的写可能已经失败了：别再往一条坏掉的流上堆请求。
+        if (Volatile.Read(ref _writeFault) is not null)
+        {
+            _writeSlots.Release();
+            ThrowIfWriteFaulted();
+        }
+
         // 调用方的缓冲在我们返回之后就可能被复用 —— 必须先复制。
         byte[] rented = ArrayPool<byte>.Shared.Rent(data.Length);
         data.CopyTo(rented);
@@ -610,6 +617,7 @@ public sealed class SftpFileStream : Stream
             // 顺序模式的承诺是「任何时刻文件都是一个完整前缀」——
             // 那就必须等这一块确认了才返回。取消只是不再等，这一块照样会被确认、记账。
             await write.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ThrowIfWriteFaulted();
         }
     }
 
@@ -629,9 +637,12 @@ public sealed class SftpFileStream : Stream
         catch (Exception ex)
         {
             // 记下第一个错误。后续的 WriteAtAsync 会立刻抛，
-            // 而不是继续往一条已经坏掉的流上堆请求。
+            // 而不是继续往一条已经坏掉的流上堆请求；FlushAsync / 关闭由它报出带精确续传点的中断。
+            //
+            // ⚠️ 不再往外抛：这个任务没人逐个 await（在途写的清单只在 FlushAsync 里一起等，中途还会摘掉做完的），
+            //    让它以异常结束就是一个未观察的任务异常 —— 断线时几十个写同时失败，宿主的崩溃日志里全是它们。
+            //    错误已经在 _writeFault 上了，这里交出去的只是「这一块结束了」。
             Interlocked.CompareExchange(ref _writeFault, ex, null);
-            throw;
         }
         finally
         {
@@ -684,25 +695,10 @@ public sealed class SftpFileStream : Stream
             pending = [.. _pendingWrites];
         }
 
-        Task all = Task.WhenAll(pending);
-        try
-        {
-            await all.WaitAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !all.IsCompleted)
-        {
-            throw;   // 调用方不等了 —— 这不是写入失败
-        }
-        catch (Exception ex)
-        {
-            // 把「已经确切落盘了多少」一并交出去，让上层不必再 stat 一次、
-            // 更不必盲退一个在途窗口。
-            throw new SftpTransferInterruptedException(
-                DurableLength,
-                $"写入 {Path} 时中断。已连续确认 {DurableLength} 字节，从这里续传即可。",
-                ex);
-        }
+        // 在途的写不会以异常结束（失败记在 _writeFault 上，见 SendWriteAsync）；取消只是不再等。
+        await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
 
+        // 把「已经确切落盘了多少」一并交出去，让上层不必再 stat 一次、更不必盲退一个在途窗口。
         ThrowIfWriteFaulted();
     }
 
