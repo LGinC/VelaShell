@@ -128,7 +128,7 @@ public sealed partial class SshConnection
                 SessionProof = kex.CreateSessionProof(),
                 PeerKexInitHandler = async (peerKexInit, ct) =>
                 {
-                    SshKeyExchangeRunner rekey = new(transport, algorithms, options.HostKeyPolicy)
+                    SshKeyExchangeRunner rekey = new(transport, RestrictToPinnedHostKey(algorithms, kex.HostKey), options.HostKeyPolicy)
                     {
                         PinnedHostKey = kex.HostKey,
                         InitialStrictKeyExchange = kex.Algorithms.StrictKeyExchange,

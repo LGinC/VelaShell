@@ -216,6 +216,27 @@ public sealed class RekeyTests
         }
     }
 
+    /// <summary>
+    /// 本端发起重协商时，发出去的 KEXINIT 用的就是本地协商用的那份收窄过的清单（主机密钥算法只剩钉住的那一类）。
+    /// 曾经发的是没收窄的、本地协商用的却是收窄后的。
+    /// </summary>
+    [TestMethod]
+    public async Task 本端发起重协商时发出去的KEXINIT已收窄到钉住的主机密钥类型()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 });
+
+        await host.Connection.StartRekeyAsync(host.Token);
+        while (host.Connection.RekeyCount == 0)
+        {
+            await Task.Delay(20, host.Token);
+        }
+
+        byte[] sent = host.Channels.Observation.LastClientInitiatedKexInit
+            ?? throw new AssertFailedException("服务端没记到客户端发起的 KEXINIT。");
+        Assert.AreSequenceEqual([SshAlgorithmNames.SshEd25519], SshKexInitMessage.Decode(sent).ServerHostKeyAlgorithms.ToArray());
+    }
+
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
     [TestMethod]
     public async Task 重协商不再询问主机密钥策略()

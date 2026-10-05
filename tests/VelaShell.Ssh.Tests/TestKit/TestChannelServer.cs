@@ -160,6 +160,9 @@ internal sealed class TestChannelObservation
     /// <summary>客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
     public uint? ClientDisconnectReason { get; set; }
 
+    /// <summary>最近一次<b>客户端发起</b>的重协商里，客户端的 <c>KEXINIT</c> 载荷。</summary>
+    public byte[]? LastClientInitiatedKexInit { get; set; }
+
     /// <summary>收到的 <c>exec</c> 命令行。</summary>
     public List<string> Commands { get; } = [];
 
@@ -484,6 +487,10 @@ internal sealed class TestChannelServer : IDisposable
         byte[]? ours = Interlocked.Exchange(ref _pendingRekeyKexInit, null);
         TaskCompletionSource<TestSshServerHandshake>? request =
             Interlocked.Exchange(ref _rekeyRequest, null);
+        if (ours is null)
+        {
+            Observation.LastClientInitiatedKexInit = payload;
+        }
 
         if (HoldRekeyCompletionUntil is { } hold)
         {

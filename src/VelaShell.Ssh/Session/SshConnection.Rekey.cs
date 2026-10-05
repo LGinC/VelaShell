@@ -111,6 +111,14 @@ public sealed partial class SshConnection
         return sameType.Length > 0 ? algorithms with { HostKey = sameType } : algorithms;
     }
 
+    /// <summary>重协商用的算法清单：主机密钥算法收窄到钉住的那把钥。</summary>
+    /// <remarks>
+    /// 发出去的 KEXINIT 与本地协商<b>必须用同一份</b>。曾经本端发起时 KEXINIT 用的是没收窄的清单、本地协商却用收窄后的 ——
+    /// 服务端清单不变时两边结果一样，只是一个隐患：协商出来的未必是对端按我们发的清单算出来的那一个。
+    /// </remarks>
+    private SshAlgorithmSet RekeyAlgorithms(SshRekeyContext context) =>
+        HostKey is { } pinned ? RestrictToPinnedHostKey(context.Algorithms, pinned) : context.Algorithms;
+
     /// <summary>主动发起一次密钥重协商。</summary>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <remarks>
@@ -156,7 +164,7 @@ public sealed partial class SshConnection
 
             ArrayBufferWriter<byte> buffer = new();
             SshKexInitMessage.Encode(
-                RekeyContext.Algorithms, includeIndicators: false, buffer);
+                RekeyAlgorithms(RekeyContext), includeIndicators: false, buffer);
             byte[] ourKexInit = buffer.WrittenSpan.ToArray();
             _ourPendingKexInit = ourKexInit;
 
@@ -363,9 +371,7 @@ public sealed partial class SshConnection
 
         try
         {
-            SshAlgorithmSet algorithms = HostKey is { } pinned
-                ? RestrictToPinnedHostKey(context.Algorithms, pinned)
-                : context.Algorithms;
+            SshAlgorithmSet algorithms = RekeyAlgorithms(context);
 
             SshKeyExchangeRunner runner = new(
                 new RekeyKexTransport(this),
