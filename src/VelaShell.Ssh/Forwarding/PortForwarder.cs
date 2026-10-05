@@ -67,6 +67,39 @@ public abstract class PortForwarder : IAsyncDisposable
     /// <summary>这一条连接在本转发器内的序号。</summary>
     private protected long NextConnectionId() => Interlocked.Increment(ref _nextConnectionId);
 
+    /// <summary>撞并发上限时 <see cref="Error"/> 事件最多多久报一次（度量里的错误计数照常每条都记）。</summary>
+    private const long ConnectionLimitReportIntervalMs = 1000;
+
+    /// <summary>上一次报「撞并发上限」的时刻（<c>Environment.TickCount64</c>）；0 表示还没报过。</summary>
+    private long _connectionLimitReportedAt;
+
+    /// <summary>上一次报过之后又拒了几条。</summary>
+    private int _connectionLimitRejected;
+
+    /// <summary>撞并发上限、拒了一条：度量每条都记；<see cref="Error"/> 事件节流 —— 每秒至多一次，带上这期间拒了几条。</summary>
+    /// <remarks>
+    /// 〔FW-D6〕曾经每拒一条就发一次事件：上限撞满时往往是一大波连接同时涌进来，宿主随之把每一条都推到界面上。
+    /// </remarks>
+    private protected void ReportConnectionLimit(int maxConnections)
+    {
+        ForwardEvents.RecordError(Kind, ForwardErrorReason.ConnectionLimit);
+        Interlocked.Increment(ref _connectionLimitRejected);
+
+        long now = Environment.TickCount64;
+        long last = Volatile.Read(ref _connectionLimitReportedAt);
+        if ((last != 0 && now - last < ConnectionLimitReportIntervalMs)
+            || Interlocked.CompareExchange(ref _connectionLimitReportedAt, now, last) != last)
+        {
+            return;
+        }
+
+        int rejected = Interlocked.Exchange(ref _connectionLimitRejected, 0);
+        string message = rejected <= 1
+            ? $"并发连接数已达上限 {maxConnections}，这一条被拒绝。"
+            : $"并发连接数已达上限 {maxConnections}，又拒绝了 {rejected} 条（这类错误每秒至多报一次）。";
+        ForwardEvents.Raise(Error, this, new ForwardErrorEventArgs(ForwardErrorReason.ConnectionLimit, message, null));
+    }
+
     /// <summary>把本机一头与隧道通道对接起来搬运，计量、事件、错误都在这里。</summary>
     /// <param name="connectionId">连接序号。</param>
     /// <param name="source">来源端点（远程转发没有）。</param>

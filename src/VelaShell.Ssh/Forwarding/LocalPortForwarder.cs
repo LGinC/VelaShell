@@ -249,6 +249,12 @@ public sealed class LocalPortForwarder : PortForwarder
             {
                 return;
             }
+            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.ConnectionReset or SocketError.ConnectionAborted)
+            {
+                // 〔FW-D6〕对端在 accept 之前就把这一条重置了：是这一条自己的事，监听本身好好的 —— 不退避，也不报。
+                // 曾经照「接受失败」处理：报一次错误、整个监听退避 50 ms 起步，别的连接跟着等。
+                continue;
+            }
             catch (SocketException ex)
             {
                 Report(ForwardErrorReason.Accept, "接受入站连接失败。", ex);
@@ -273,8 +279,7 @@ public sealed class LocalPortForwarder : PortForwarder
             // 并发上限撞满：拒掉这一条，已有连接不受影响。
             if (!_connectionSlots.Wait(0, CancellationToken.None))
             {
-                Report(ForwardErrorReason.ConnectionLimit,
-                    $"并发连接数已达上限 {_options.MaxConnections}，这一条被拒绝。", null);
+                ReportConnectionLimit(_options.MaxConnections);
                 inbound.Dispose();
                 continue;
             }

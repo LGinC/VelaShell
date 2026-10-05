@@ -617,6 +617,56 @@ public sealed class PortForwardTests
 
         Assert.AreEqual(1, new LocalPortForwardOptions { MaxConnections = 1, BindPort = 65535 }.MaxConnections);
     }
+    /// <summary>
+    /// 〔FW-D6〕撞并发上限时一大波被拒的连接只换来至多每秒一次的 Error 事件（曾经每拒一条报一次，宿主逐条推到界面上）。
+    /// </summary>
+    [TestMethod]
+    public async Task 撞并发上限时错误事件节流()
+    {
+        TaskCompletionSource release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            TunnelHandler = async (_, _, _, ct) => await release.Task.WaitAsync(ct),
+        });
+
+        await using var forwarder = LocalPortForwarder.Start(
+            harness.Connection, "t", 1, new LocalPortForwardOptions { MaxConnections = 1 });
+        List<ForwardErrorEventArgs> errors = [];
+        forwarder.Error += (_, e) =>
+        {
+            lock (errors)
+            {
+                errors.Add(e);
+            }
+        };
+
+        using Socket holder = new(SocketType.Stream, ProtocolType.Tcp);
+        await holder.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+        await WaitUntilAsync(() => forwarder.ActiveConnections == 1, harness.Token);
+
+        for (int i = 0; i < 20; i++)
+        {
+            using Socket extra = new(SocketType.Stream, ProtocolType.Tcp);
+            await extra.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+            try
+            {
+                _ = await extra.ReceiveAsync(new byte[1], harness.Token);   // 被拒的那一条随即被关掉
+            }
+            catch (SocketException)
+            {
+                // 被重置也算。
+            }
+        }
+
+        int limitEvents;
+        lock (errors)
+        {
+            limitEvents = errors.Count(e => e.Reason == ForwardErrorReason.ConnectionLimit);
+        }
+        Assert.IsTrue(limitEvents is >= 1 and <= 2, $"20 条被拒只该换来一两次事件，实际 {limitEvents} 次");
+        release.SetResult();
+    }
+
     /// <summary>ConnectionClosed 触发时，活跃连接数已经不含这一条（订阅者常在这里刷新界面上的连接数）。</summary>
     [TestMethod]
     public async Task 报连接关闭时活跃数已经减掉()
