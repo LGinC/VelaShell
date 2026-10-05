@@ -132,6 +132,18 @@ public sealed record SshConnectionOptions
     /// <summary>服务端横幅的回调。<b>文本来自未认证的对端，是注入面。</b></summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
 
+    /// <summary>
+    /// 服务端在标识串<b>之前</b>发的前导行（法律声明、公告，RFC 4253 §4.2）的回调；有前导行时在版本交换之后调一次。
+    /// <see langword="null"/>（默认）表示不交出。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/02 §三〕这些文本在企业环境里常有法律意义，库吞掉不合适；
+    /// 但它们来自<b>还没验明身份</b>的对端（主机密钥都还没交换），默认往界面上打就是一个注入面 —— 所以默认不交出，
+    /// 交出的是原文（行数与字节已经限过），展示之前由调用方清洗。回调自己抛的异常原样交还（spec/08 §2.1）。
+    /// 曾经收集了却从没有交出去的路：有的设备只在这里打印使用声明，用户看不到。
+    /// </remarks>
+    public Func<IReadOnlyList<string>, CancellationToken, ValueTask>? PreAuthBannerHandler { get; init; }
+
     /// <summary>是否允许 RSA 降级到 SHA-1 签名。默认<b>否</b>。</summary>
     public bool AllowSha1RsaSignatures { get; init; }
 

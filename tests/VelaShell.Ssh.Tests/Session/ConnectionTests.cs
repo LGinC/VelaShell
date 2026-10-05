@@ -33,10 +33,13 @@ public sealed class ConnectionTests
         private readonly TestChannelScript _script;
         private readonly TestAuthPolicy _authPolicy;
 
-        public FakeServer(TestChannelScript? script = null, TestAuthPolicy? authPolicy = null)
+        private readonly TestSshServerOptions? _serverOptions;
+
+        public FakeServer(TestChannelScript? script = null, TestAuthPolicy? authPolicy = null, TestSshServerOptions? serverOptions = null)
         {
             _script = script ?? new TestChannelScript();
             _authPolicy = authPolicy ?? new TestAuthPolicy { AcceptPassword = "hunter2" };
+            _serverOptions = serverOptions;
         }
 
         /// <summary>服务端出示的主机公钥（第一条连接建立之后才有）。</summary>
@@ -62,7 +65,7 @@ public sealed class ConnectionTests
 
         private void StartServerSide(InMemoryDuplexStream serverStream)
         {
-            TestSshServer server = new(serverStream);
+            TestSshServer server = new(serverStream, _serverOptions);
             _servers.Add(server);
 
             _running.Add(Task.Run(async () =>
@@ -621,6 +624,54 @@ public sealed class ConnectionTests
         {
             File.Delete(path);
         }
+    }
+
+    // ------------------------------------------------------------ 前导行
+
+    /// <summary>
+    /// 标识串之前的前导行（法律声明）交给调用方。曾经收集了却从没有交出去的路（spec/02 §三写的回调不存在）。
+    /// </summary>
+    [TestMethod]
+    public async Task 标识串之前的前导行交给回调()
+    {
+        await using FakeServer server = new(serverOptions: new TestSshServerOptions
+        {
+            PreAuthBanner = ["Authorized use only.", "All activity is monitored."],
+        });
+        List<string> received = [];
+
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            PreAuthBannerHandler = (lines, _) =>
+            {
+                received.AddRange(lines);
+                return ValueTask.CompletedTask;
+            },
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+
+        Assert.AreSequenceEqual(["Authorized use only.", "All activity is monitored."], received.ToArray());
+    }
+
+    [TestMethod]
+    public async Task 没有前导行时不调回调()
+    {
+        await using FakeServer server = new();
+        int calls = 0;
+
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            PreAuthBannerHandler = (_, _) =>
+            {
+                calls++;
+                return ValueTask.CompletedTask;
+            },
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+
+        Assert.AreEqual(0, calls);
     }
 
     // ------------------------------------------------------------ 回调自己抛的取消

@@ -75,6 +75,12 @@ public sealed partial class SshConnection
                 .ExchangeAsync(transport, cancellationToken: connect.Token)
                 .ConfigureAwait(false);
 
+            if (options.PreAuthBannerHandler is { } preAuthBanner && versions.PreAuthBanner.Count > 0)
+            {
+                await SshCallbackFaultException.InvokeAsync(
+                    () => preAuthBanner(versions.PreAuthBanner, connect.Token)).ConfigureAwait(false);
+            }
+
             phase = SshPhase.KeyExchange;
 
             // 已经记着这台主机哪些类型的主机密钥，就把那些类型排到前面 —— 正常的服务端因此谈成
