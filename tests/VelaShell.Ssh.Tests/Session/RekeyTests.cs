@@ -50,6 +50,7 @@ public sealed class RekeyTests
         Assert.AreEqual(0, after.ExitCode);
 
         Assert.AreEqual(1, host.Connection.RekeyCount, "应当记下发生过一次重协商");
+        Assert.AreEqual(1, host.Connection.SendGateOpensPosted, "交换成功才开闸，开一次");
         Assert.IsTrue(host.Connection.IsAlive, "重协商不该把连接弄坏");
     }
 
@@ -177,6 +178,7 @@ public sealed class RekeyTests
             async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
         Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
         Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "交换没完成就不开闸：暂存的通道数据不能在 NEWKEYS 之前发出去");
     }
 
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
@@ -218,6 +220,9 @@ public sealed class RekeyTests
             async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
         Assert.AreEqual(SshFailureReason.HostKeyChanged, error.Reason);
         Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+
+        // 刚判定「主机密钥变了」，暂存的通道数据就不该再被放出去（RFC 4253 §7.1：KEXINIT 之后、NEWKEYS 之前只许发 KEX 报文）。
+        Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "失败的交换不开闸");
     }
 
     private sealed class CountingPolicy : Ssh.HostKeys.IHostKeyPolicy

@@ -69,6 +69,9 @@ public sealed partial class SshConnection
     /// <summary>已经完成过几次重协商（诊断与测试用）。</summary>
     public int RekeyCount => Volatile.Read(ref _rekeyCount);
 
+    /// <summary>重协商之后投递过几次开闸（测试用：失败的交换一次都不该开）。</summary>
+    internal int SendGateOpensPosted => Volatile.Read(ref _sendGateOpensPosted);
+
     /// <summary>这条连接一共发出/收到了多少个报文（诊断用）。</summary>
     /// <remarks>
     /// 重协商的报文数阈值盯的就是它 —— 交出来，排障时才能回答
@@ -411,14 +414,19 @@ public sealed partial class SshConnection
 
             Interlocked.Increment(ref _rekeyCount);
             SnapshotRekeyBaseline();
+
+            // 〔velashell-docs/zh/ssh/spec/03 §8.2〕**只在交换成功时开闸。**暂存的帧随之按原顺序流出。
+            Interlocked.Increment(ref _sendGateOpensPosted);
+            PostControl(OutboundKind.OpenGate);
         }
         finally
         {
-            // **开闸一定要跑到。** 密钥交换失败时连接已经废了，
-            // 但暂存区里可能还压着别人在等的帧 —— 不开闸它们就永远等下去。
-            PostControl(OutboundKind.OpenGate);
-
-            // 开闸之后才允许下一次发起：它的关闸排在这个开闸后面。
+            // 失败时**不开闸**：异常一路抛到接收循环，连接随即判死。开闸的话，发送泵可能抢在判死之前
+            // 把暂存的通道数据写出去 —— 在 KEXINIT 之后、NEWKEYS 之前发应用数据违反 RFC 4253 §7.1，
+            // 刚判定「主机密钥变了」之后更不该再往外发东西。暂存区由发送泵的收尾丢掉，
+            // 等着背压的发送方也由那里放出来（拿到连接关闭的异常），不会永远挂着。
+            //
+            // 成功时开闸之后才允许下一次发起：它的关闸排在这个开闸后面。
             lock (_stateLock)
             {
                 _kexInProgress = false;

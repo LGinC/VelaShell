@@ -150,6 +150,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>上一次收到任何入站报文的时刻（<c>Environment.TickCount64</c> 口径）。</summary>
     private long _lastInboundTicks = Environment.TickCount64;
     private int _rekeyCount;
+    private int _sendGateOpensPosted;
 
     /// <summary>我们发出、还没被一次交换用掉的 <c>KEXINIT</c>（<see cref="_kexInProgress"/> 为假时才可能非空）。</summary>
     private byte[]? _ourPendingKexInit;
