@@ -46,6 +46,9 @@ public sealed class SshAgentClient : IAsyncDisposable
     private Stream _stream;
     private readonly SemaphoreSlim _lock = new(1, 1);
 
+    /// <summary>一次问答做到一半被打断过：这条连接上的问答已经错位，不能再用（持有 <see cref="_lock"/> 时读写）。</summary>
+    private bool _outOfStep;
+
     /// <summary>由 <see cref="ConnectAsync"/> 连上的才能重开；<see cref="FromStream"/> 交来的流不知道怎么重开。</summary>
     private readonly bool _canReopen;
 
@@ -577,6 +580,7 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             broken = _stream;
             _stream = fresh;
+            _outOfStep = false;   // 新连接上的问答从头开始
         }
         finally
         {
@@ -600,8 +604,19 @@ public sealed class SshAgentClient : IAsyncDisposable
     {
         // agent 协议是严格的一问一答，没有 id —— 所以并发调用必须串起来。
         await _lock.WaitAsync(cancellationToken).ConfigureAwait(false);
+        bool answered = false;
         try
         {
+            // 〔AU-E3〕上一次问答做到一半被打断（取消、读写出错、长度不合理）：请求可能只写了一半，
+            // 或者应答还在路上 —— 没有 id，下一问读到的会是上一问的答案。曾经照常接着用，
+            // 那个答案被当成这一问的；现在这条连接作废，照实失败。由 ConnectAsync 连上的客户端在
+            // 会话声明那条路上会重开连接（见 ReopenAsync），其余情形由调用方重连。
+            if (_outOfStep)
+            {
+                throw new SshAgentException(SshFailureReason.AgentUnavailable,
+                    "与 ssh-agent 的上一次问答中途被打断（取消或出错），这条连接上的问答已经错位，不能再用 —— 请重新连接 agent。");
+            }
+
             byte[] header = new byte[4];
             BinaryPrimitives.WriteUInt32BigEndian(header, (uint)request.Length);
 
@@ -619,6 +634,7 @@ public sealed class SshAgentClient : IAsyncDisposable
 
             byte[] response = new byte[length];
             await _stream.ReadExactlyAsync(response, cancellationToken).ConfigureAwait(false);
+            answered = true;
             return response;
         }
         catch (EndOfStreamException ex)
@@ -631,6 +647,18 @@ public sealed class SshAgentClient : IAsyncDisposable
         }
         finally
         {
+            if (!answered && !_outOfStep)
+            {
+                _outOfStep = true;
+                try
+                {
+                    await _stream.DisposeAsync().ConfigureAwait(false);   // 不再用了：连接还给 agent
+                }
+                catch (Exception)
+                {
+                    // 它可能本来就断了。
+                }
+            }
             _lock.Release();
         }
     }

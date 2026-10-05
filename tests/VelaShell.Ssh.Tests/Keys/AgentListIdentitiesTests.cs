@@ -48,6 +48,33 @@ public sealed class AgentListIdentitiesTests
         }
     }
 
+    /// <summary>
+    /// 〔AU-E3〕问到一半被取消、agent 的应答随后才到：agent 协议没有请求 id，这条连接上的问答已经错位。
+    /// 之后的调用照实失败（AgentUnavailable），而不是把上一问迟到的答案当成这一问的。
+    /// </summary>
+    [TestMethod]
+    public async Task 问答中途取消之后这条连接作废()
+    {
+        await using Rig rig = new();
+        TaskCompletionSource hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        rig.Agent.HoldRepliesUntil = hold.Task;
+
+        using CancellationTokenSource cancel = new();
+        Task listing = rig.Client.ListIdentitiesAsync(cancel.Token).AsTask();
+        while (rig.Agent.ListRequests == 0)
+        {
+            await Task.Delay(10, rig.Token);   // 请求已经整条交给 agent，客户端在等应答
+        }
+
+        await cancel.CancelAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => listing);
+        hold.SetResult();   // 迟到的应答发出来了
+
+        SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
+            async () => await rig.Client.ListIdentitiesAsync(rig.Token));
+        Assert.AreEqual(Diagnostics.SshFailureReason.AgentUnavailable, error.Reason);
+    }
+
     [TestMethod]
     [DataRow(new byte[] { 12, 0, 0 }, DisplayName = "身份列表:计数只有半截")]
     [DataRow(new byte[] { 12, 0, 0, 0, 1, 0, 0, 0, 9, 1, 2 }, DisplayName = "身份列表:公钥 blob 被截断")]

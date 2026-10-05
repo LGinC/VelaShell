@@ -78,6 +78,9 @@ internal sealed class TestAgent
     /// <summary>收到会话声明时怎么回。</summary>
     public TestDeclarationReply DeclarationReply { get; set; } = TestDeclarationReply.Accept;
 
+    /// <summary>设了就把每一条应答扣到它完成再发 —— 模拟「应答迟到」。</summary>
+    public Task? HoldRepliesUntil { get; set; }
+
     /// <summary>收到的会话声明，按到达顺序。</summary>
     public IReadOnlyList<TestSessionDeclaration> Declarations
     {
@@ -144,6 +147,11 @@ internal sealed class TestAgent
                     // 模拟「收到不认识的报文就断开」的 agent。
                     await stream.DisposeAsync();
                     return;
+                }
+
+                if (HoldRepliesUntil is { } hold)
+                {
+                    await hold.WaitAsync(cancellationToken);
                 }
 
                 BinaryPrimitives.WriteUInt32BigEndian(header, (uint)response.Length);
