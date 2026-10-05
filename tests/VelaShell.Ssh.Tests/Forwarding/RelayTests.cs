@@ -228,6 +228,37 @@ public sealed class RelayTests
         Assert.AreSequenceEqual(payload, atRight);
     }
 
+    /// <summary>
+    /// 〔FW-P1〕目的端是一条流时直接写进去（不经 PipeWriter 的缓冲再拷一遍）：内容、计数、半关闭照旧。
+    /// </summary>
+    [TestMethod]
+    public async Task 目的端是流时直接写进去且内容完整()
+    {
+        byte[] payload = new byte[512 * 1024];
+        Random.Shared.NextBytes(payload);
+
+        (VelaShell.Ssh.Transport.InMemoryDuplexStream ours, VelaShell.Ssh.Transport.InMemoryDuplexStream theirs) = VelaShell.Ssh.Transport.InMemoryTransport.CreatePair();
+        FakeEndpoint left = new();
+        await using StreamRelayEndpoint right = new(ours, shutdownSend: ours.CompleteWrites);
+
+        Task<RelayResult> relay = DuplexRelay.RunAsync(left, right);
+
+        Task<byte[]> atRight = Task.Run(async () =>
+        {
+            using MemoryStream received = new();
+            await theirs.CopyToAsync(received);   // 半关闭之后读到结尾
+            return received.ToArray();
+        });
+
+        await left.FeedAsync(payload);
+        left.FeedComplete();
+
+        Assert.AreSequenceEqual(payload, await atRight.WaitAsync(TimeSpan.FromSeconds(10)));
+        theirs.CompleteWrites();
+        RelayResult result = await relay.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.AreEqual(payload.Length, result.BytesFromLeft);
+    }
+
     // ------------------------------------------------------------ 出错收尾
 
     [TestMethod]

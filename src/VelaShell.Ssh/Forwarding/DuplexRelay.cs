@@ -28,6 +28,13 @@ internal interface IRelayEndpoint : IAsyncDisposable
     /// <summary>写到这一端去的数据。</summary>
     PipeWriter Output { get; }
 
+    /// <summary>这一端的底层就是一条流时，往它写可以直接写进这条流；没有就是 <see langword="null"/>，按 <see cref="Output"/> 写。</summary>
+    /// <remarks>
+    /// 〔FW-P1〕<c>PipeWriter.Create(stream)</c> 要先把数据拷进它自己的缓冲、刷的时候再写进流 —— 每个字节多复制一次。
+    /// 直接写省掉这一次。同一端只有一个方向在往里写，两条路不会交错。默认 <see langword="null"/>。
+    /// </remarks>
+    Stream? DirectOutput => null;
+
     /// <summary>
     /// 告诉这一端「我不会再发数据了」。
     /// </summary>
@@ -165,9 +172,21 @@ internal static class DuplexRelay
 
                 if (!buffer.IsEmpty)
                 {
-                    foreach (ReadOnlyMemory<byte> segment in buffer)
+                    bool destinationDone = false;
+                    if (destination.DirectOutput is { } direct)
                     {
-                        destination.Output.Write(segment.Span);
+                        // 底层是流：逐段直接写进去，不经 PipeWriter 的缓冲再拷一遍。
+                        foreach (ReadOnlyMemory<byte> segment in buffer)
+                        {
+                            await direct.WriteAsync(segment, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        foreach (ReadOnlyMemory<byte> segment in buffer)
+                        {
+                            destination.Output.Write(segment.Span);
+                        }
                     }
 
                     int length = (int)buffer.Length;
@@ -177,10 +196,14 @@ internal static class DuplexRelay
                     // 通道层的字节数含协议开销，而面板上要显示的是应用数据量。
                     onBytes?.Invoke(length);
 
-                    FlushResult flush = await destination.Output.FlushAsync(cancellationToken)
-                        .ConfigureAwait(false);
+                    if (destination.DirectOutput is null)
+                    {
+                        FlushResult flush = await destination.Output.FlushAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        destinationDone = flush.IsCompleted;
+                    }
 
-                    if (flush.IsCompleted)
+                    if (destinationDone)
                     {
                         break;   // 对面不要了
                     }
@@ -312,6 +335,9 @@ internal sealed class StreamRelayEndpoint : IRelayEndpoint
 
     /// <inheritdoc />
     public PipeWriter Output { get; }
+
+    /// <inheritdoc />
+    public Stream? DirectOutput => _stream;
 
     /// <inheritdoc />
     public async ValueTask CompleteSendAsync(CancellationToken cancellationToken)
