@@ -790,6 +790,35 @@ public sealed class ChannelTests
         }
     }
 
+    /// <summary>同一个操作码再设一次是替换（留在原位），不是追加出第二条。</summary>
+    [TestMethod]
+    public void 终端模式重复设同一个操作码是替换()
+    {
+        SshTerminalModes modes = SshTerminalModes.Empty
+            .With(SshTerminalModeOpcode.Echo, 1)
+            .With(SshTerminalModeOpcode.Utf8Input, 1)
+            .With(SshTerminalModeOpcode.Echo, 0);
+
+        byte[] expected =
+        [
+            (byte)SshTerminalModeOpcode.Echo, 0, 0, 0, 0,
+            (byte)SshTerminalModeOpcode.Utf8Input, 0, 0, 0, 1,
+            (byte)SshTerminalModeOpcode.EndOfOptions,
+        ];
+        CollectionAssert.AreEqual(expected, modes.Encode());
+    }
+
+    /// <summary>窗口策略按值比较（曾经是 class，同样的两个策略比较结果是「不等」）；<c>default</c> 设不进通道选项。</summary>
+    [TestMethod]
+    public void 窗口策略按值比较且default设不进选项()
+    {
+        Assert.AreEqual(SshWindowPolicy.Fixed(64 * 1024), SshWindowPolicy.Fixed(64 * 1024));
+        Assert.AreEqual(new SshChannelOptions { WindowPolicy = SshWindowPolicy.Adaptive() }, SshChannelOptions.Default);
+        Assert.AreNotEqual(SshWindowPolicy.Fixed(64 * 1024), SshWindowPolicy.Adaptive(64 * 1024, 64 * 1024));
+
+        Assert.ThrowsExactly<ArgumentException>(() => new SshChannelOptions { WindowPolicy = default });
+    }
+
     /// <summary>关闭原因的零值是「未知」：没赋值的 <c>default</c> 不能读起来像「正常关闭」（曾经零值是从不产出的 <c>Normal</c>）。</summary>
     [TestMethod]
     public void 关闭原因的零值是未知()

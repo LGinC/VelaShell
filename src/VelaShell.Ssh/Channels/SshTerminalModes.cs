@@ -32,11 +32,11 @@ public sealed class SshTerminalModes
     /// <summary>空的模式表：一切按服务端默认。</summary>
     public static SshTerminalModes Empty { get; } = new([]);
 
-    /// <summary>加一个具名模式，返回新的模式表。</summary>
+    /// <summary>设一个具名模式，返回新的模式表。已经有这个操作码时替换它的值。</summary>
     public SshTerminalModes With(SshTerminalModeOpcode opcode, uint argument) =>
         With((byte)opcode, argument);
 
-    /// <summary>加一个裸操作码，返回新的模式表 —— 具名成员不可能穷举，未知的值原样传过去。</summary>
+    /// <summary>设一个裸操作码，返回新的模式表 —— 具名成员不可能穷举，未知的值原样传过去。已经有这个操作码时替换它的值。</summary>
     public SshTerminalModes With(byte opcode, uint argument)
     {
         if (opcode == 0)
@@ -53,6 +53,16 @@ public sealed class SshTerminalModes
                 nameof(opcode),
                 $"操作码 {opcode} 落在保留区（160–255）。对端遇到它会停止解析，" +
                 "排在后面的模式会被一起丢掉。");
+        }
+
+        // 同一个操作码再设一次是**替换**（留在原来的位置）。曾经是追加：表里出现两条同样的操作码，
+        // 对端按哪一条算取决于它的实现 —— 「后设的覆盖先设的」这个直觉不一定成立。
+        for (int i = 0; i < _entries.Length; i++)
+        {
+            if (_entries[i].Opcode == opcode)
+            {
+                return new SshTerminalModes(_entries.SetItem(i, (opcode, argument)));
+            }
         }
 
         return new SshTerminalModes(_entries.Add((opcode, argument)));

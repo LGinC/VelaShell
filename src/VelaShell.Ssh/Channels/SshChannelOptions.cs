@@ -26,7 +26,14 @@ public enum SshStderrMode
 public sealed record SshChannelOptions
 {
     /// <summary>接收窗口策略。</summary>
-    public SshWindowPolicy WindowPolicy { get; init; } = SshWindowPolicy.Default;
+    /// <exception cref="ArgumentException">设成 <c>default</c>（没经 <c>Fixed</c> / <c>Adaptive</c> 构造的策略）。</exception>
+    public SshWindowPolicy WindowPolicy
+    {
+        get;
+        init => field = value.IsValid
+            ? value
+            : throw new ArgumentException("窗口策略要经 SshWindowPolicy.Fixed / Adaptive 构造，default 不是一个合法的策略。", nameof(WindowPolicy));
+    } = SshWindowPolicy.Default;
 
     /// <summary>
     /// 我们宣告的单个 <c>CHANNEL_DATA</c> 数据段上限。
