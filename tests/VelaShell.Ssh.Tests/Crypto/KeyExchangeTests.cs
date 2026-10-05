@@ -25,6 +25,37 @@ namespace VelaShell.Ssh.Tests.Crypto;
 [TestCategory("Crypto")]
 public sealed class KeyExchangeTests
 {
+    // ------------------------------------------------------- ML-KEM 的两种实现
+
+    /// <summary>
+    /// 〔AGENTS 3.3〕ML-KEM-768 平台支持时走 BCL、否则走 BouncyCastle —— 两种实现都会被用到，必须互通：
+    /// 一边生成、另一边封装、生成的那边解封装，共享密钥一致。
+    /// </summary>
+    [TestMethod]
+    public void MLKem768的BCL实现与BouncyCastle实现互通()
+    {
+        if (!MLKem.IsSupported)
+        {
+            Assert.Inconclusive("这个平台的 BCL 不支持 ML-KEM，用的是 BouncyCastle。");
+        }
+
+        // BCL 生成、BouncyCastle 封装、BCL 解封装。
+        using HybridKeyExchange.BclMlKem768Kem bcl = new();
+        byte[] bclPublic = bcl.GenerateKeyPairAndGetPublicKey();
+        MLKemEncapsulator encapsulator = new(MLKemParameters.ml_kem_768);
+        encapsulator.Init(MLKemPublicKeyParameters.FromEncoding(MLKemParameters.ml_kem_768, bclPublic));
+        byte[] ciphertext = new byte[encapsulator.EncapsulationLength];
+        byte[] secret = new byte[encapsulator.SecretLength];
+        encapsulator.Encapsulate(ciphertext, 0, ciphertext.Length, secret, 0, secret.Length);
+        Assert.AreSequenceEqual(secret, bcl.Decapsulate(ciphertext));
+
+        // BouncyCastle 生成、BCL 封装、BouncyCastle 解封装。
+        using HybridKeyExchange.MlKem768Kem bouncy = new();
+        byte[] bouncyPublic = bouncy.GenerateKeyPairAndGetPublicKey();
+        using MLKem encapsulationKey = MLKem.ImportEncapsulationKey(MLKemAlgorithm.MLKem768, bouncyPublic);
+        encapsulationKey.Encapsulate(out byte[] ciphertext2, out byte[] secret2);
+        Assert.AreSequenceEqual(secret2, bouncy.Decapsulate(ciphertext2));
+    }
     // ------------------------------------------------------- 椭圆曲线 / 有限域
 
     [TestMethod]

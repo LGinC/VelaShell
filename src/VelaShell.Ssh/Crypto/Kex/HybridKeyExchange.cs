@@ -61,7 +61,9 @@ internal sealed class HybridKeyExchange : ISshKeyExchange
         switch (name)
         {
             case SshAlgorithmNames.MlKem768X25519Sha256:
-                _kem = new MlKem768Kem();
+                // 〔AGENTS.md 3.3〕BCL 有的走 BCL：平台支持时（Windows 的 CNG、OpenSSL 3.5 起）用 System.Security.Cryptography.MLKem，
+                // 吃得到平台的实现与它的侧信道防护；不支持时退回 BouncyCastle。曾经一律走 BouncyCastle。
+                _kem = MLKem.IsSupported ? new BclMlKem768Kem() : new MlKem768Kem();
                 HashAlgorithm = HashAlgorithmName.SHA256;
                 break;
             case SshAlgorithmNames.Sntrup761X25519Sha512:
@@ -181,7 +183,7 @@ internal sealed class HybridKeyExchange : ISshKeyExchange
     }
 
     /// <summary>把两种 KEM 的差异收进一个接口，让上面的混合逻辑只写一遍。</summary>
-    private interface IHybridKem : IDisposable
+    internal interface IHybridKem : IDisposable
     {
         int CiphertextBytes { get; }
 
@@ -190,7 +192,42 @@ internal sealed class HybridKeyExchange : ISshKeyExchange
         byte[] Decapsulate(ReadOnlySpan<byte> ciphertext);
     }
 
-    private sealed class MlKem768Kem : IHybridKem
+    /// <summary>ML-KEM-768 走 BCL（<see cref="MLKem"/>，平台支持时）。</summary>
+    internal sealed class BclMlKem768Kem : IHybridKem
+    {
+        private MLKem? _key;
+
+        /// <summary>ML-KEM-768 的密文长度（FIPS 203 表 3）。</summary>
+        public int CiphertextBytes => 1088;
+
+        public byte[] GenerateKeyPairAndGetPublicKey()
+        {
+            _key?.Dispose();
+            _key = MLKem.GenerateKey(MLKemAlgorithm.MLKem768);
+            return _key.ExportEncapsulationKey();
+        }
+
+        public byte[] Decapsulate(ReadOnlySpan<byte> ciphertext)
+        {
+            if (_key is null)
+            {
+                throw new InvalidOperationException("必须先生成密钥对。");
+            }
+
+            byte[] secret = new byte[MLKemAlgorithm.MLKem768.SharedSecretSizeInBytes];
+            _key.Decapsulate(ciphertext, secret);
+            return secret;
+        }
+
+        public void Dispose()
+        {
+            _key?.Dispose();
+            _key = null;
+        }
+    }
+
+    /// <summary>ML-KEM-768 走 BouncyCastle（平台不支持 <see cref="MLKem"/> 时）。</summary>
+    internal sealed class MlKem768Kem : IHybridKem
     {
         private MLKemPrivateKeyParameters? _private;
 
