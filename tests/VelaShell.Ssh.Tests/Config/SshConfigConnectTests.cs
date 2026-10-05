@@ -216,6 +216,42 @@ public sealed class SshConfigConnectTests
         Assert.AreSame(given, plain.HostKeyPolicy);
     }
 
+    /// <summary>〔FW-E13〕UserKnownHostsFile 里的 %h / %r 照这台主机与用户展开（曾经代入空串，所有主机挤进同一个文件）。</summary>
+    [TestMethod]
+    public async Task UserKnownHostsFile里的百分号记号照主机与用户展开()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"velashell-kh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+                Host web
+                    HostName web.example.com
+                    User deploy
+                    StrictHostKeyChecking accept-new
+                    UserKnownHostsFile {directory}/kh_%h_%r
+                """);
+
+            SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web");
+
+            using var signer = Ssh.Auth.InMemorySshSigner.GenerateEd25519();
+            await options.HostKeyPolicy.PersistAsync(new SshHostKeyContext
+            {
+                Host = "web.example.com",
+                Port = 22,
+                Key = signer.PublicKey,
+                NegotiatedAlgorithm = SshAlgorithmNames.SshEd25519,
+            });
+
+            Assert.IsTrue(File.Exists(Path.Combine(directory, "kh_web.example.com_deploy")), "known_hosts 应当写到展开之后的路径");
+            Assert.IsFalse(File.Exists(Path.Combine(directory, "kh__")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     [TestMethod]
     public async Task UserKnownHostsFile为none时不读也不写()
     {

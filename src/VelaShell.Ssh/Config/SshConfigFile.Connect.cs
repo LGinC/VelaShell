@@ -87,7 +87,7 @@ public static partial class SshConfigFile
                 .. await LoadIdentityFilesAsync(config, user, settings, identities, cancellationToken).ConfigureAwait(false),
                 .. CallerCredentialsFor(settings, isTarget),
             ],
-            HostKeyPolicy = MapHostKeyPolicy(config, settings),
+            HostKeyPolicy = MapHostKeyPolicy(config, user, settings),
         };
 
         if (config.Compression)
@@ -284,7 +284,7 @@ public static partial class SshConfigFile
     private static bool IsSet(string? value) =>
         !string.IsNullOrWhiteSpace(value) && !string.Equals(value, "none", StringComparison.OrdinalIgnoreCase);
 
-    private static IHostKeyPolicy MapHostKeyPolicy(SshHostConfig config, SshConfigConnectOptions settings)
+    private static IHostKeyPolicy MapHostKeyPolicy(SshHostConfig config, string user, SshConfigConnectOptions settings)
     {
         string? strict = config.StrictHostKeyChecking?.ToLowerInvariant();
         string? knownHosts = config.UserKnownHostsFile?
@@ -323,7 +323,9 @@ public static partial class SshConfigFile
             return KnownHostsPolicy.WithoutFile(settings.AskUnknownHost, unknown);
         }
 
-        return new KnownHostsPolicy(ExpandPath(knownHosts, null, null), settings.AskUnknownHost)
+        // 〔FW-E13〕%h / %r 照这台主机与用户展开（每台主机一个 known_hosts 的写法要靠它）。曾经代入空串：
+        // ~/.ssh/kh_%h 成了 ~/.ssh/kh_，所有主机挤进同一个文件。
+        return new KnownHostsPolicy(ExpandPath(knownHosts, config.HostName, user), settings.AskUnknownHost)
         {
             UnknownHost = unknown,
         };
