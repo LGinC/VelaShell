@@ -35,8 +35,37 @@ internal sealed class VelaHostKeyPolicy(
     IHostKeyService hostKey,
     ISettingsService? settings,
     IHostKeyPrompt? prompt,
-    ISecurityAlertService? alerts) : IHostKeyPolicy
+    ISecurityAlertService? alerts) : IHostKeyPolicy, IHostKeyTypePreference
 {
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// 交出这台主机记着的那把钥的类型,库会把它的算法排到最前:协商以客户端的顺序为准,
+    /// 正常的服务端因此谈成已记下的那一种。
+    /// </para>
+    /// <para>
+    /// 曾经没有实现它。服务端新增一把 Ed25519 钥(或系统升级后自动生成了一把)时,
+    /// 库默认把 Ed25519 排在前面,谈成的类型一变,而信任库按 host:port 只记一把钥,
+    /// 就报「主机指纹已变更」—— 开着「变更即阻断」时连接直接失败;用户学会无视这个告警之后,
+    /// 真有中间人时它也就没用了。
+    /// </para>
+    /// <para>读不到记录时返回空、不阻断建连:裁决那一步还会再查一次。</para>
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> GetKnownKeyTypesAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            KnownHost? known = await hostKey.FindKnownHostAsync(host, port, cancellationToken).ConfigureAwait(false);
+            return string.IsNullOrEmpty(known?.KeyType) ? [] : [known.KeyType];
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
+            return [];
+        }
+    }
+
     /// <inheritdoc />
     /// <remarks>
     /// 三条出路:已信任直接放行、按设置弹窗裁决、fail-closed 拒绝。
