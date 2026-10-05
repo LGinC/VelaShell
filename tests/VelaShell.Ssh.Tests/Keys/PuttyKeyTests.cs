@@ -464,6 +464,50 @@ public sealed class PuttyKeyTests
         }
     }
 
+    /// <summary>
+    /// v2 / v3 的 Private-MAC 是必填的。曾经缺了就跳过整段校验：删掉这一行就能改公钥段而不被发现。
+    /// </summary>
+    [TestMethod]
+    [DataRow(2)]
+    [DataRow(3)]
+    public void 缺少MAC的ppk被拒(int version)
+    {
+        (byte[] pub, byte[] priv, InMemorySshSigner expected) = MakeEd25519();
+        using (expected)
+        {
+            string ppk = BuildPpk(version, SshAlgorithmNames.SshEd25519, pub, priv);
+            string stripped = string.Join('\n', ppk.Split('\n').Where(l => !l.StartsWith("Private-MAC:", StringComparison.Ordinal)));
+
+            SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(
+                () => SshPrivateKeyFile.Parse(stripped));
+
+            Assert.AreEqual(Diagnostics.SshFailureReason.KeyFormatInvalid, error.Reason);
+            Assert.Contains("Private-MAC", error.Message);
+        }
+    }
+
+    /// <summary>
+    /// 未加密 .ppk 的 MAC 键是公开的：改了公钥段、再把 MAC 重算一遍，MAC 照样对得上。
+    /// 私钥派生出的公钥必须与 Public-Lines 是同一把，不然拿到的是「不是你以为的那把」钥。
+    /// </summary>
+    [TestMethod]
+    public void 私钥与公钥段不是一对时被拒()
+    {
+        (_, byte[] priv, InMemorySshSigner first) = MakeEd25519();
+        (byte[] otherPub, _, InMemorySshSigner second) = MakeEd25519();
+        using (first)
+        using (second)
+        {
+            string ppk = BuildPpk(3, SshAlgorithmNames.SshEd25519, otherPub, priv);
+
+            SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(
+                () => SshPrivateKeyFile.Parse(ppk));
+
+            Assert.AreEqual(Diagnostics.SshFailureReason.KeyFormatInvalid, error.Reason);
+            Assert.Contains("不是一对", error.Message);
+        }
+    }
+
     [TestMethod]
     public void 不支持的版本被拒()
     {

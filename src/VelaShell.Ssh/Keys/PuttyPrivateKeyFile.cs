@@ -365,9 +365,14 @@ internal static class PuttyPrivateKeyFile
     private static void VerifyMac(
         PuttyFile file, byte[] macKey, string where, bool wrongPassphraseLikely = false)
     {
+        // ⚠️ v2 / v3 的 Private-MAC 是必填的。曾经缺了就跳过整段校验：拿到加密 .ppk 的人删掉这一行，
+        //    就能改公钥段（RSA 的 n、e，ECDSA 的曲线与点都取自那里）而不被发现，与私钥半拼成「不是你以为的那把」钥；
+        //    口令错了也查不出来。
         if (file.Mac.Length == 0)
         {
-            return;   // 没有 MAC 字段的老文件
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 缺少 Private-MAC{where} —— v{file.Version} 的 MAC 是必填的，没有它就验不了文件有没有被改过。");
         }
 
         foreach (int length in CandidateLengths(file))
@@ -451,13 +456,26 @@ internal static class PuttyPrivateKeyFile
     {
         SshDataReader priv = new(new ReadOnlySequence<byte>(privateBlob));
 
-        return algorithm switch
+        InMemorySshSigner signer = algorithm switch
         {
             SshAlgorithmNames.SshEd25519 => BuildEd25519(ref priv),
             SshAlgorithmNames.SshRsa => BuildRsa(publicBlob, ref priv, where),
             SshAlgorithmNames.EcdsaSha2Nistp256 or SshAlgorithmNames.EcdsaSha2Nistp384 or SshAlgorithmNames.EcdsaSha2Nistp521 => BuildEcdsa(publicBlob, ref priv, algorithm, where),
             _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported, $".ppk 里是不支持的密钥类型 {algorithm}{where}。"),
         };
+
+        // 私钥半派生出的公钥必须就是 Public-Lines 那一把。
+        // 不核对的话，坏文件（或被改过公钥段、又重算了 MAC 的未加密文件 —— 它的 MAC 键是公开的）
+        // 得到的是一把「不是你以为的那把」钥，症状只是服务端一句「不接受这把公钥」。
+        if (!signer.PublicKey.Blob.Span.SequenceEqual(publicBlob))
+        {
+            signer.Dispose();
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 的私钥与 Public-Lines 里的公钥不是一对{where}，文件可能被改过或已损坏。");
+        }
+
+        return signer;
     }
 
     private static InMemorySshSigner BuildEd25519(scoped ref SshDataReader priv)
