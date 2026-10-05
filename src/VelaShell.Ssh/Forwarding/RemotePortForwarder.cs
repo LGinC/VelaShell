@@ -44,6 +44,10 @@ public sealed record RemotePortForwardOptions
         StderrMode = SshStderrMode.Discard,
     };
 
+    /// <summary>释放时等服务端回「取消监听」的应答最多多久。</summary>
+    /// <remarks>只有测试会调短它（见 <see cref="RemotePortForwarder.DisposeAsync"/>）。</remarks>
+    internal TimeSpan CancelReplyTimeout { get; init; } = TimeSpan.FromSeconds(5);
+
     /// <summary>默认参数。</summary>
     public static RemotePortForwardOptions Default { get; } = new();
 }
@@ -513,14 +517,19 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
 
         (string cancelRequest, ReadOnlyMemory<byte> payload) = EncodeCancelRequest();
 
+        // ⚠️ 等应答有时限。半死的链路上（保活没开、或者周期很长）应答可能永远不来，
+        //    不设时限的话释放一直卡到 TCP 重传放弃（Linux 默认约 15 分钟），调用方的「停止隧道」跟着卡住。
+        //    到点就当链路已经不可用，照常收尾、不再等宽限期 —— 与通道的释放时限是同一个思路。
         bool connectionAlive = true;
+        using CancellationTokenSource deadline = new(_options.CancelReplyTimeout);
         try
         {
-            await _connection.SendGlobalRequestAsync(cancelRequest, payload).ConfigureAwait(false);
+            await _connection.SendGlobalRequestAsync(cancelRequest, payload, cancellationToken: deadline.Token)
+                .ConfigureAwait(false);
         }
         catch (Exception)
         {
-            // 会话可能已经没了 —— 那样服务端的监听自然也没了。
+            // 会话可能已经没了 —— 那样服务端的监听自然也没了；或者等应答超时了，链路多半已经半死。
             connectionAlive = false;
         }
 

@@ -389,6 +389,31 @@ public sealed class PortForwardTests
         Assert.IsTrue(harness.Connection.IsAlive);
     }
 
+    /// <summary>
+    /// 半死的链路上服务端不回「取消监听」的应答：释放要有时限，不能一直卡到 TCP 放弃（约 15 分钟）。
+    /// </summary>
+    [TestMethod]
+    public async Task 释放远程转发时等取消应答有时限()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            GrantRemoteForwardPort = 34572,
+            IgnoreCancelForward = true,
+        });
+
+        RemotePortForwarder forwarder = await RemotePortForwarder.StartAsync(
+            harness.Connection, "127.0.0.1", 8080,
+            new RemotePortForwardOptions { BindPort = 34572, CancelReplyTimeout = TimeSpan.FromMilliseconds(300) },
+            harness.Token);
+
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await forwarder.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), harness.Token);
+
+        Assert.IsFalse(forwarder.IsActive);
+        Assert.IsLessThan(TimeSpan.FromSeconds(2), elapsed.Elapsed,
+            "等不到取消应答时应当到点就收尾，而且不再等宽限期");
+    }
+
     [TestMethod]
     public async Task 服务端拒绝远程转发时抛出且不留半挂的转发器()
     {
