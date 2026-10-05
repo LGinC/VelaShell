@@ -450,10 +450,37 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         await using Stream stream = await new ProxyCommandDialer(command)
             .DialAsync(SshDialTarget.Direct(TargetHost, 22));
 
-        IOException ex = await Assert.ThrowsExactlyAsync<IOException>(
+        // 〔spec/09 §6〕连上之前就退出是拨号失败：ProxyRefused，带着这一跳。
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
             async () => await stream.ReadExactlyAsync(new byte[16]));
 
+        Assert.AreEqual(SshFailureReason.ProxyRefused, ex.Reason);
+        Assert.AreEqual(SshPhase.Dialing, ex.Phase);
         Assert.Contains("退出码 3", ex.Message);
+        Assert.HasCount(1, ex.Hops);
+        Assert.AreEqual(SshDialKind.ProxyCommand, ex.Hops[0].Kind);
+        Assert.IsFalse(ex.Hops[0].Succeeded);
+    }
+
+    /// <summary>
+    /// 建连全程：代理程序在连上之前退出，报的是代理那一跳失败，stderr 完整进消息。
+    /// 曾经被建连路上那道 catch 归成「对端关闭了连接」（ClosedByPeer），消息截到 256 个字符，跳信息也没了。
+    /// </summary>
+    [TestMethod]
+    public async Task 代理命令在连上之前退出时建连报ProxyRefused且stderr不截断()
+    {
+        string detail = "proxy said no " + new string('x', 300) + " END";
+        string command = OperatingSystem.IsWindows()
+            ? $"echo {detail} 1>&2 & exit /b 7"
+            : $"echo {detail} >&2; exit 7";
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(new ProxyCommandDialer(command)));
+
+        Assert.AreEqual(SshFailureReason.ProxyRefused, ex.Reason);
+        Assert.Contains("退出码 7", ex.Message);
+        Assert.Contains(" END", ex.Message, "stderr 的末尾不该被截掉 —— 代理程序的失败原因常在最后一行");
+        Assert.AreEqual(SshDialKind.ProxyCommand, ex.Hops[^1].Kind);
     }
 
     // ------------------------------------------------------------ 脚手架

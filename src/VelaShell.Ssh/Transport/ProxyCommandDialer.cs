@@ -160,7 +160,7 @@ internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTranspor
             };
         }
 
-        return ValueTask.FromResult<Stream>(new ProcessDuplexStream(process, command));
+        return ValueTask.FromResult<Stream>(new ProcessDuplexStream(process, command, target.EndPoint, startedAt));
     }
 }
 
@@ -175,16 +175,23 @@ internal sealed class ProcessDuplexStream : Stream
 
     private readonly Process _process;
     private readonly string _command;
+    private readonly SshEndPoint _target;
+    private readonly long _startedAt;
     private readonly Stream _output;
     private readonly Stream _input;
     private readonly StringBuilder _stderr = new();
     private readonly Task _stderrPump;
     private int _disposed;
 
-    public ProcessDuplexStream(Process process, string command)
+    /// <summary>程序的 stdout 上出现过数据（只在读的那一侧写）。</summary>
+    private bool _anyOutput;
+
+    public ProcessDuplexStream(Process process, string command, SshEndPoint target, long startedAt)
     {
         _process = process;
         _command = command;
+        _target = target;
+        _startedAt = startedAt;
         _output = process.StandardOutput.BaseStream;
         _input = process.StandardInput.BaseStream;
         _stderrPump = PumpStderrAsync();
@@ -207,7 +214,11 @@ internal sealed class ProcessDuplexStream : Stream
     public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         int read = await _output.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
-        if (read == 0 && !buffer.IsEmpty)
+        if (read > 0)
+        {
+            _anyOutput = true;
+        }
+        else if (!buffer.IsEmpty)
         {
             await ThrowIfFailedAsync().ConfigureAwait(false);
         }
@@ -251,7 +262,13 @@ internal sealed class ProcessDuplexStream : Stream
 
     public override void SetLength(long value) => throw new NotSupportedException();
 
-    /// <summary>程序已经以非零退出码结束：抛一个带 stderr 的异常。</summary>
+    /// <summary>程序已经退出：没输出过任何数据就退出是拨号失败，输出过之后以非零退出码结束是连接断了。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §6〕程序在连上之前就退出（<c>nc</c> 连不上目标、代理拒绝、命令本身不存在），
+    /// 判 <see cref="SshFailureReason.ProxyRefused"/>，消息带退出码与 stderr 末尾，并带上这一跳。
+    /// 曾经一律抛 <see cref="IOException"/>：建连路上它被归成「对端断开」，消息还被截到 256 个字符 ——
+    /// 代理程序往往只在 stderr 上说明原因，截掉的正是那一段。
+    /// </remarks>
     private async ValueTask ThrowIfFailedAsync()
     {
         // stdout 读到结尾时进程多半正在退出，但操作系统未必已经把它标成「已退出」——
@@ -275,7 +292,7 @@ internal sealed class ProcessDuplexStream : Stream
             // 读不全就用已经读到的。
         }
 
-        if (_process.ExitCode == 0)
+        if (_process.ExitCode == 0 && _anyOutput)
         {
             return;
         }
@@ -286,10 +303,18 @@ internal sealed class ProcessDuplexStream : Stream
             // stderr 里常常转述着对端的话（nc、connect-proxy 打出来的应答），进消息之前同样先清一遍。
             stderr = PeerText.Sanitize(_stderr.ToString().Trim(), MaxStderrChars);
         }
+        string said = stderr.Length == 0 ? "。" : $"：{stderr}";
 
-        throw new IOException(
-            $"ProxyCommand（{_command}）以退出码 {_process.ExitCode} 结束" +
-            (stderr.Length == 0 ? "。" : $"：{stderr}"));
+        if (!_anyOutput)
+        {
+            string message = $"ProxyCommand（{_command}）在连上 {_target} 之前就以退出码 {_process.ExitCode} 结束{said}";
+            throw new SshConnectException(SshFailureReason.ProxyRefused, SshPhase.Dialing, message)
+            {
+                Hops = [DialHops.Hop(SshDialKind.ProxyCommand, _target, succeeded: false, _startedAt, message)],
+            };
+        }
+
+        throw new IOException($"ProxyCommand（{_command}）以退出码 {_process.ExitCode} 结束{said}");
     }
 
     private async Task PumpStderrAsync()
