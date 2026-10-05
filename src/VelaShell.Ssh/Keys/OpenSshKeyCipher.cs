@@ -116,6 +116,21 @@ internal static class OpenSshKeyCipher
         return plaintext;
     }
 
+    /// <summary>把密钥交给 <see cref="Aes"/>;中转的那份副本用完清零。</summary>
+    /// <remarks><see cref="SymmetricAlgorithm.Key"/> 只收数组,而它自己会再复制一份 —— 我们的这份留着就是一份白放在堆上的明文密钥。</remarks>
+    private static void SetKey(Aes aes, ReadOnlySpan<byte> key)
+    {
+        byte[] copy = key.ToArray();
+        try
+        {
+            aes.Key = copy;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(copy);
+        }
+    }
+
     /// <summary>CTR:把 IV 当成初始计数块,逐块加密计数器再与密文异或。</summary>
     /// <remarks>
     /// 计数器按**整个分组**当作大端整数递增(不是只动低 32 位)——
@@ -125,7 +140,7 @@ internal static class OpenSshKeyCipher
         ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> key, ReadOnlySpan<byte> iv, Span<byte> plaintext)
     {
         using var aes = Aes.Create();
-        aes.Key = key.ToArray();
+        SetKey(aes, key);
 
         Span<byte> counter = stackalloc byte[16];
         Span<byte> keyStream = stackalloc byte[16];
@@ -150,7 +165,7 @@ internal static class OpenSshKeyCipher
         ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> key, ReadOnlySpan<byte> iv, Span<byte> plaintext)
     {
         using var aes = Aes.Create();
-        aes.Key = key.ToArray();
+        SetKey(aes, key);
         aes.DecryptCbc(ciphertext, iv, plaintext, PaddingMode.None);
     }
 

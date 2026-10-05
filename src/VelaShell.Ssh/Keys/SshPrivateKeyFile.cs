@@ -265,9 +265,10 @@ public static class SshPrivateKeyFile
         }
 
         byte[] material = new byte[shape.KeyBytes + shape.IvBytes];
+        byte[] passphraseBytes = Encoding.UTF8.GetBytes(passphrase);
         try
         {
-            BcryptPbkdf.DeriveKey(Encoding.UTF8.GetBytes(passphrase), salt, (int)rounds, material);
+            BcryptPbkdf.DeriveKey(passphraseBytes, salt, (int)rounds, material);
             return OpenSshKeyCipher.Decrypt(cipherName, section, tag, material);
         }
         catch (CryptographicException ex)
@@ -280,6 +281,22 @@ public static class SshPrivateKeyFile
         finally
         {
             CryptographicOperations.ZeroMemory(material);
+            CryptographicOperations.ZeroMemory(passphraseBytes);
+        }
+    }
+
+    /// <summary>把私钥的中间副本清零（velashell-docs/zh/ssh/spec/04 §5.2）。</summary>
+    /// <remarks>
+    /// 只清得了数组：<see cref="BigInteger"/> 与口令的 <see cref="string"/> 是不可变的，清不掉 —— 那是这里能做到的边界。
+    /// </remarks>
+    private static void Clear(params ReadOnlySpan<byte[]?> secrets)
+    {
+        foreach (byte[]? secret in secrets)
+        {
+            if (secret is not null)
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
         }
     }
 
@@ -333,13 +350,21 @@ public static class SshPrivateKeyFile
         _ = reader.ReadString(64);                                  // 公钥
         byte[] secret = reader.ReadStringAsArray(128);              // 种子 ‖ 公钥
 
-        if (secret.Length != 64)
+        try
         {
-            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
-                $"Ed25519 私钥应当是 64 字节（种子 32 + 公钥 32），实际 {secret.Length} 字节{where}。");
-        }
+            if (secret.Length != 64)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥应当是 64 字节（种子 32 + 公钥 32），实际 {secret.Length} 字节{where}。");
+            }
 
-        return InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            // 签名器复制一份归自己所有；这一份由这里清。
+            return InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+        }
+        finally
+        {
+            Clear(secret);
+        }
     }
 
     private static InMemorySshSigner ReadRsa(scoped ref SshDataReader reader, string where)
@@ -351,6 +376,7 @@ public static class SshPrivateKeyFile
         byte[] p = reader.ReadMpint(4096).ToArray();
         byte[] q = reader.ReadMpint(4096).ToArray();
 
+        RSAParameters parameters = default;
         try
         {
             // OpenSSH 存的是 n/e/d/iqmp/p/q，而 RSAParameters 还要 DP 与 DQ。
@@ -363,7 +389,7 @@ public static class SshPrivateKeyFile
             byte[] dp = ToFixedLength(bigD % (bigP - BigInteger.One), p.Length);
             byte[] dq = ToFixedLength(bigD % (bigQ - BigInteger.One), q.Length);
 
-            RSAParameters parameters = new()
+            parameters = new()
             {
                 Modulus = TrimLeadingZero(n),
                 Exponent = TrimLeadingZero(e),
@@ -383,13 +409,17 @@ public static class SshPrivateKeyFile
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"RSA 私钥的参数不成立{where}：{ex.Message}", ex);
         }
+        finally
+        {
+            // RSA 对象已经导入了自己的一份；这里读出来、算出来的中间值都是明文私钥。
+            Clear(d, iqmp, p, q, parameters.D, parameters.P, parameters.Q, parameters.DP, parameters.DQ, parameters.InverseQ);
+        }
     }
 
     private static InMemorySshSigner ReadEcdsa(scoped ref SshDataReader reader, string keyType, string where)
     {
         string curveName = reader.ReadUtf8String(64);
         byte[] point = reader.ReadStringAsArray(512);
-        byte[] d = reader.ReadMpint(512).ToArray();
 
         (ECCurve curve, int coordinateBytes) = curveName switch
         {
@@ -408,8 +438,12 @@ public static class SshPrivateKeyFile
                 $"期望 {1 + (coordinateBytes * 2)} 字节，实际 {point.Length} 字节{where}。");
         }
 
+        // 曲线与公开点先验过、再读私钥标量：验不过时手上还没有要清的明文。
+        byte[] d = reader.ReadMpint(512).ToArray();
+        byte[]? fixedD = null;
         try
         {
+            fixedD = ToFixedLength(ToPositive(d), coordinateBytes);
             ECParameters parameters = new()
             {
                 Curve = curve,
@@ -418,7 +452,7 @@ public static class SshPrivateKeyFile
                     X = point.AsSpan(1, coordinateBytes).ToArray(),
                     Y = point.AsSpan(1 + coordinateBytes, coordinateBytes).ToArray(),
                 },
-                D = ToFixedLength(ToPositive(d), coordinateBytes),
+                D = fixedD,
             };
 
             var ecdsa = ECDsa.Create();
@@ -428,6 +462,10 @@ public static class SshPrivateKeyFile
         catch (CryptographicException ex)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"ECDSA 私钥的参数不成立{where}：{ex.Message}", ex);
+        }
+        finally
+        {
+            Clear(d, fixedD);
         }
     }
 

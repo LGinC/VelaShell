@@ -112,7 +112,17 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
         // （NIST SP 800-38A §6.5），不是「用 ECB 加密数据」。
         // 走 BCL 而不是软件实现，是为了吃到 AES-NI / ARM Crypto 扩展的硬件加速。
         _aes = Aes.Create();
-        _aes.Key = key.ToArray();
+
+        // Key 只收数组，而它自己会再复制一份：中转的这份用完清零（velashell-docs/zh/ssh/spec/03 §7 第 4 条）。
+        byte[] keyCopy = key.ToArray();
+        try
+        {
+            _aes.Key = keyCopy;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keyCopy);
+        }
         _aes.Mode = CipherMode.ECB;
         _aes.Padding = PaddingMode.None;
 
