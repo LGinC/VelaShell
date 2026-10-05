@@ -69,6 +69,52 @@ public class SftpServiceTests
         Assert.IsEmpty(made, "死了才换,换一次");
     }
 
+    /// <summary>
+    /// 传输与浏览各用一条 SFTP 通道:上传大文件时几十个 WRITE 在途,浏览的 STAT / READDIR 不该排在它们后面。
+    /// </summary>
+    [TestMethod]
+    public async Task Transfers_UseTheirOwnSftpChannel()
+    {
+        ISftpClientWrapper browsing = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper transfer = Substitute.For<ISftpClientWrapper>();
+        browsing.IsConnected.Returns(true);
+        transfer.IsConnected.Returns(true);
+        Queue<ISftpClientWrapper> made = new([browsing, transfer]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await service.ListDirectoryAsync(_sessionId, "/");
+        await using (await service.OpenReadAsync(_sessionId, "/big.iso")) { }
+        await service.ListDirectoryAsync(_sessionId, "/");
+
+        await transfer.Received(1).OpenAsync("/big.iso", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await browsing.DidNotReceive().OpenAsync(Arg.Any<string>(), Arg.Any<FileMode>(), Arg.Any<FileAccess>(), Arg.Any<CancellationToken>());
+        await browsing.Received(2).ListDirectoryAsync("/", Arg.Any<CancellationToken>());
+
+        await service.CloseSessionAsync(_sessionId);
+        await browsing.Received(1).DisposeAsync();
+        await transfer.Received(1).DisposeAsync();
+    }
+
+    /// <summary>开不出第二条通道(服务端 MaxSessions 太小):传输退回浏览那一条,之后不再试。</summary>
+    [TestMethod]
+    public async Task Transfers_FallBackToTheBrowsingChannel_WhenASecondCannotOpen()
+    {
+        ISftpClientWrapper browsing = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper refused = Substitute.For<ISftpClientWrapper>();
+        browsing.IsConnected.Returns(true);
+        refused.ConnectAsync(Arg.Any<CancellationToken>()).Returns(Task.FromException(new VelaSshClientException("administratively prohibited")));
+        Queue<ISftpClientWrapper> made = new([browsing, refused]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await using (await service.OpenReadAsync(_sessionId, "/a")) { }
+        await using (await service.OpenReadAsync(_sessionId, "/b")) { }
+
+        await browsing.Received(1).OpenAsync("/a", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await browsing.Received(1).OpenAsync("/b", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await refused.Received(1).DisposeAsync();
+        Assert.IsEmpty(made, "第二条开不出来就记住,不再每次都试");
+    }
+
     /// <summary>SSH 一断,挂在它上面的 SFTP 通道跟着收掉。</summary>
     /// <remarks>
     /// SFTP 复用的就是主 SSH 连接(DI 处 <c>OpenSftpClientAsync</c> 刻意不另开连接),

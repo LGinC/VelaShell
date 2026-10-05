@@ -19,6 +19,14 @@ public class SftpService : ISftpService
     private readonly ISettingsService? _settingsService;
     private readonly ConcurrentDictionary<Guid, ISftpClientWrapper> _sftpClients = new();
 
+    /// <summary>
+    /// 传输专用的 SFTP 客户端:同一条 SSH 连接上的<b>第二条</b> SFTP 通道(见 <see cref="GetTransferClientAsync" />)。
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, ISftpClientWrapper> _transferClients = new();
+
+    /// <summary>开不出第二条 SFTP 通道的会话(服务端 MaxSessions 太小之类):传输回到浏览用的那一条上。</summary>
+    private readonly ConcurrentDictionary<Guid, bool> _singleChannelSessions = new();
+
     /// <summary>属主/属组的数字 id → 名称翻译(按会话缓存,见 RemoteIdentityResolver)。</summary>
     private readonly RemoteIdentityResolver _identities;
 
@@ -83,7 +91,7 @@ public class SftpService : ISftpService
         long resumeOffset = 0,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         var fileInfo = new FileInfo(localPath);
         long totalBytes = fileInfo.Length;
         string fileName = Path.GetFileName(localPath);
@@ -167,7 +175,7 @@ public class SftpService : ISftpService
         {
             throw new ArgumentException("Resuming a streamed upload needs a seekable source.", nameof(source));
         }
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         var reporter = new TransferProgressThrottle(progress, GetUnixFileName(remotePath), length);
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
         (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
@@ -228,7 +236,7 @@ public class SftpService : ISftpService
         long resumeOffset = 0,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         string fileName = GetUnixFileName(remotePath);
         RemoteFileInfo fileInfo = await GetFileInfoAsync(sessionId, remotePath, cancellationToken).ConfigureAwait(false);
         long totalBytes = fileInfo.Size;
@@ -438,7 +446,7 @@ public class SftpService : ISftpService
         IProgress<TransferProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         // 通过 stat 判断源是否为目录(旧实现名为 stat 实为列举整个父目录)。
         SftpEntry? entry = await client.GetEntryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
@@ -518,7 +526,7 @@ public class SftpService : ISftpService
             throw new InvalidOperationException($"Cycle detected copying {sourcePath} — a directory contains a link to itself.");
         }
 
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         await EnsureDirectoryAsync(sessionId, destPath, cancellationToken).ConfigureAwait(false);
 
         IEnumerable<SftpEntry> children = await client.ListDirectoryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
@@ -659,7 +667,7 @@ public class SftpService : ISftpService
     /// <summary>打开远端文件的只读流(顺序读取,调用方负责释放)。</summary>
     public async Task<Stream> OpenReadAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         return await client.OpenAsync(remotePath, FileMode.Open, FileAccess.Read, cancellationToken).ConfigureAwait(false);
     }
 
@@ -700,13 +708,18 @@ public class SftpService : ISftpService
 
         // 在下面的早退之前丢弃:即使本会话从未建过 SFTP 客户端,查表缓存也可能已存在。
         _identities.Invalidate(sessionId);
-        if (!_sftpClients.TryRemove(sessionId, out ISftpClientWrapper? client))
-        {
-            return;
-        }
+        _singleChannelSessions.TryRemove(sessionId, out _);
+
         // 这里原先要 Task.Run 把释放甩到线程池 —— 因为那时释放是同步阻塞的,
         // 在调用线程上做会卡住关标签页这个动作。现在释放本身就是异步的,直接 await。
-        await DisposeQuietlyAsync(client).ConfigureAwait(false);
+        if (_transferClients.TryRemove(sessionId, out ISftpClientWrapper? transfer))
+        {
+            await DisposeQuietlyAsync(transfer).ConfigureAwait(false);
+        }
+        if (_sftpClients.TryRemove(sessionId, out ISftpClientWrapper? client))
+        {
+            await DisposeQuietlyAsync(client).ConfigureAwait(false);
+        }
     }
 
     /// <summary>尽力拆解一个 SFTP 客户端;标签页已经不在了,失败没有补救动作。</summary>
@@ -727,6 +740,11 @@ public class SftpService : ISftpService
     {
         // 先退订:连接服务比本服务活得久时,悬着的委托会把已释放的实例一直吊在内存里。
         _connectionService.SessionDisconnected -= OnSshSessionDisconnected;
+        foreach (KeyValuePair<Guid, ISftpClientWrapper> kvp in _transferClients)
+        {
+            await DisposeQuietlyAsync(kvp.Value).ConfigureAwait(false);
+        }
+        _transferClients.Clear();
         foreach (KeyValuePair<Guid, ISftpClientWrapper> kvp in _sftpClients)
         {
             await DisposeQuietlyAsync(kvp.Value).ConfigureAwait(false);
@@ -1148,9 +1166,82 @@ public class SftpService : ISftpService
         }
     }
 
-    private bool TryGetUsableClient(Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client)
+    /// <summary>传输(上传、下载、远端复制、读流)用的 SFTP 客户端。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>传输与浏览分开两条 SFTP 通道</b>(同一条 SSH 连接上开第二个 session 通道)。sftp-server 按到达顺序处理请求:
+    /// 只有一条通道时,上传大文件约 16 MiB 的 WRITE 在途,这时点开一个目录,STAT / READDIR 就排在那 16 MiB 后面 ——
+    /// 10 Mbit/s 上行时是十几秒的界面卡顿。WinSCP、FileZilla 也是传输单开连接。
+    /// </para>
+    /// <para>
+    /// 开不出第二条(服务端 <c>MaxSessions</c> 太小、管理上禁止)就退回浏览用的那一条,并记住这个会话,之后不再试;
+    /// 传输照常,只是又会挡住浏览。会话关闭时一并清掉。
+    /// </para>
+    /// </remarks>
+    private async Task<ISftpClientWrapper> GetTransferClientAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-        if (_sftpClients.TryGetValue(sessionId, out client))
+        if (_singleChannelSessions.ContainsKey(sessionId))
+        {
+            return await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        }
+        if (TryGetUsableClient(_transferClients, sessionId, out ISftpClientWrapper? existing))
+        {
+            return existing;
+        }
+
+        // 先确保浏览那一条在:会话状态、工厂这些前置条件由它报;传输那一条开不成时也有地方退。
+        ISftpClientWrapper interactive = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        SemaphoreSlim gate = _clientGates.GetOrAdd(sessionId, static _ => new(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (TryGetUsableClient(_transferClients, sessionId, out existing))
+            {
+                return existing;
+            }
+
+            SshSession session = _connectionService.GetSession(sessionId)
+                ?? throw new InvalidOperationException($"Session {sessionId} not found");
+            ISftpClientWrapper client = _sftpClientFactory!(session);
+            try
+            {
+                await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                await DisposeQuietlyAsync(client).ConfigureAwait(false);
+                _singleChannelSessions[sessionId] = true;
+                return interactive;
+            }
+
+            if (_transferClients.TryGetValue(sessionId, out ISftpClientWrapper? stale) && !ReferenceEquals(stale, client))
+            {
+                await DisposeQuietlyAsync(stale).ConfigureAwait(false);
+            }
+            _transferClients[sessionId] = client;
+            return client;
+        }
+        finally
+        {
+            try
+            {
+                gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // CloseSessionAsync 与创建赛跑时会把闸释放掉;创建结果本身已无所谓。
+            }
+        }
+    }
+
+    private bool TryGetUsableClient(Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client) =>
+        TryGetUsableClient(_sftpClients, sessionId, out client);
+
+    private static bool TryGetUsableClient(
+        ConcurrentDictionary<Guid, ISftpClientWrapper> clients, Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client)
+    {
+        if (clients.TryGetValue(sessionId, out client))
         {
             try
             {
