@@ -507,6 +507,7 @@ public class SftpServiceTests
         SftpEntry childSub = CreateMockSftpFile("sub", "/home/user/proj/sub", 0, true, "rwxr-xr-x");
         SftpEntry grandchild = CreateMockSftpFile("b.txt", "/home/user/proj/sub/b.txt", 20, false, "rw-r--r--");
         _sftpClient.GetEntryAsync(dir, Arg.Any<CancellationToken>()).Returns(mockDir); // stat → proj 是目录
+        _sftpClient.GetEntryAsync(childSub.FullName, Arg.Any<CancellationToken>()).Returns(childSub); // 进子目录之前不跟随链接地再确认一次
         _sftpClient.ListDirectoryAsync(dir, Arg.Any<CancellationToken>())
                    .Returns(Task.FromResult<IEnumerable<SftpEntry>>([childFile, childSub]));
         _sftpClient.ListDirectoryAsync("/home/user/proj/sub", Arg.Any<CancellationToken>())
@@ -971,6 +972,34 @@ public class SftpServiceTests
         await _sftpClient.Received(1).DeleteFileAsync(nestedLink.FullName, Arg.Any<CancellationToken>());
         await _sftpClient.Received(1).DeleteDirectoryAsync(dir, Arg.Any<CancellationToken>());
         Assert.AreEqual(2, reports[^1].TotalCount, "链接计 1 条、目录自身计 1 条,链接目标里的条目不能算进来。");
+    }
+
+    /// <summary>
+    /// 列表说是真目录、不跟随链接的 stat 却说是链接:不进去,只删链接本身。
+    /// </summary>
+    /// <remarks>
+    /// READDIR 的属性按 lstat 还是 stat 给,SFTP 草案没有规定。服务端给的是跟随之后的属性时,
+    /// 指向目录的链接在列表里就是一个「真目录」—— 照着列表进去删,删掉的是链接目标里的东西。
+    /// </remarks>
+    [TestMethod]
+    public async Task DeleteAsync_Recursive_ConfirmsWithLstatBeforeDescending()
+    {
+        const string dir = "/home/user/proj";
+        SftpEntry mockDir = CreateMockSftpFile("proj", dir, 0, true, "rwxr-xr-x");
+        // 列表里看起来是真目录(服务端给的是跟随之后的属性)……
+        SftpEntry listedAsDirectory = CreateMockSftpFile("data", "/home/user/proj/data", 0, true, "rwxr-xr-x");
+        // ……不跟随链接地 stat 一下,其实是指向别处的链接。
+        SftpEntry actuallyLink = listedAsDirectory with { IsSymbolicLink = true, LinkTarget = "/var/important" };
+        _sftpClient.GetEntryAsync(dir, Arg.Any<CancellationToken>()).Returns(mockDir);
+        _sftpClient.GetEntryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>()).Returns(actuallyLink);
+        _sftpClient.ListDirectoryAsync(dir, Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult<IEnumerable<SftpEntry>>([listedAsDirectory]));
+
+        await _sftpService.DeleteAsync(_sessionId, dir);
+
+        await _sftpClient.DidNotReceive().ListDirectoryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
+        await _sftpClient.Received(1).DeleteFileAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().DeleteDirectoryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
     }
 
     /// <summary>复制链接得到链接(cp -P 口径),不去下载目标内容。</summary>

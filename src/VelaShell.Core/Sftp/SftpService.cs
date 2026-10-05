@@ -1033,7 +1033,9 @@ public class SftpService : ISftpService
             {
                 continue;
             }
-            total += await CountEntriesAsync(client, child.FullName, IsTraversableDirectory(child), cancellationToken).ConfigureAwait(false);
+            total += await CountEntriesAsync(
+                client, child.FullName, await ShouldDescendAsync(client, child, cancellationToken).ConfigureAwait(false), cancellationToken)
+                .ConfigureAwait(false);
         }
         return total;
     }
@@ -1056,7 +1058,8 @@ public class SftpService : ISftpService
                 {
                     continue;
                 }
-                await DeleteEntryAsync(client, child.FullName, IsTraversableDirectory(child), total, counter, progress, cancellationToken).ConfigureAwait(false);
+                bool descend = await ShouldDescendAsync(client, child, cancellationToken).ConfigureAwait(false);
+                await DeleteEntryAsync(client, child.FullName, descend, total, counter, progress, cancellationToken).ConfigureAwait(false);
             }
             await client.DeleteDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
         }
@@ -1074,6 +1077,26 @@ public class SftpService : ISftpService
     /// —— 链接可以指回祖先(无限递归),更要命的是进去删掉的是链接目标里的东西。
     /// </summary>
     private static bool IsTraversableDirectory(SftpEntry entry) => entry.IsDirectory && !entry.IsSymbolicLink;
+
+    /// <summary>
+    /// 列目录列出来的子项要不要进去:列表说它是真目录,还要用不跟随链接的 stat(<see cref="ISftpClientWrapper.GetEntryAsync" />)
+    /// 再确认一次。
+    /// </summary>
+    /// <remarks>
+    /// 「是不是真目录」在列表里只是 READDIR 的说法,而 SFTP 草案没规定那里的属性按 lstat 还是 stat 给。
+    /// 某个服务端给的是跟随之后的属性的话,指向目录的链接看起来就是一个真目录 —— 递归删除会进到链接目标里去删,
+    /// 链接指回祖先时计数还会无限递归。一个目录多一次往返,换不删错东西;文件不受影响。
+    /// </remarks>
+    private static async Task<bool> ShouldDescendAsync(ISftpClientWrapper client, SftpEntry child, CancellationToken cancellationToken)
+    {
+        if (!IsTraversableDirectory(child))
+        {
+            return false;
+        }
+
+        SftpEntry? confirmed = await client.GetEntryAsync(child.FullName, cancellationToken).ConfigureAwait(false);
+        return confirmed is not null && IsTraversableDirectory(confirmed);
+    }
 
     private async Task<ISftpClientWrapper> GetOrCreateSftpClientAsync(Guid sessionId, CancellationToken cancellationToken)
     {
