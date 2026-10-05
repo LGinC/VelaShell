@@ -214,6 +214,16 @@ public sealed record SshAlgorithmSet
     {
         Check(KeyExchange, nameof(KeyExchange),
             static n => SshKeyExchangeFactory.IsSupported(n) || SshAlgorithmNegotiator.IsIndicator(n));
+
+        // 〔velashell-docs/zh/ssh/spec/03 §2.3〕指示符（ext-info-c、kex-strict-c-v00@openssh.com 之类）不是算法，
+        // 由编码 KEXINIT 时按需加在首次交换里。写进清单的话它会出现在每一个 KEXINIT 里，包括重协商 ——
+        // ext-info-c 在重协商里再出现是协议违规（RFC 8308 §2.2）。曾经这里放行。
+        if (KeyExchange.FirstOrDefault(SshAlgorithmNegotiator.IsIndicator) is { } indicator)
+        {
+            throw new ArgumentException(
+                $"算法清单的 KeyExchange 里不要写指示符 {indicator}：它不是算法，库会在首次 KEXINIT 里自己加上。",
+                nameof(KeyExchange));
+        }
         Check(HostKey, nameof(HostKey), static _ => true);
         Check(EncryptionClientToServer, nameof(EncryptionClientToServer), SshSessionKeys.IsSupportedEncryption);
         Check(EncryptionServerToClient, nameof(EncryptionServerToClient), SshSessionKeys.IsSupportedEncryption);
