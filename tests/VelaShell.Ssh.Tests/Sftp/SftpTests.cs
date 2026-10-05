@@ -958,6 +958,49 @@ public sealed class SftpTests
             async () => await stream.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10)));
 
         Assert.AreEqual(block, error.DurableLength, "只有第一块确认了");
+        Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+    }
+
+    /// <summary>
+    /// 服务端拒写（磁盘满）不是断线：原因码随内层的 SFTP 错误，不可重试。
+    /// 曾经一律是 ClosedByPeer —— 按原因码判断的调用方会把「磁盘满」当成断线、照样去续传。
+    /// </summary>
+    [TestMethod]
+    public async Task 服务端拒写时中断的原因码不是断线()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { RejectWritesWith = SftpStatusCode.Failure });
+
+        await using SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/full.bin", cancellationToken: harness.Token);
+        await stream.WriteAsync(new byte[harness.Sftp.BlockSize], harness.Token);
+
+        SftpTransferInterruptedException error = await Assert.ThrowsExactlyAsync<SftpTransferInterruptedException>(
+            async () => await stream.FlushAsync(harness.Token));
+
+        Assert.AreNotEqual(SshFailureReason.ClosedByPeer, error.Reason);
+        Assert.IsFalse(error.IsRetryable);
+        Assert.IsInstanceOfType<SftpException>(error.InnerException);
+        Assert.AreEqual(0, error.DurableLength);
+        await Assert.ThrowsAsync<SshException>(async () => await stream.DisposeAsync());
+    }
+
+    [TestMethod]
+    [DataRow(false, DisplayName = "取消")]
+    [DataRow(true, DisplayName = "本端释放")]
+    public void 取消与本端释放引起的中断是Aborted(bool disposed)
+    {
+        Exception inner = disposed ? new ObjectDisposedException("stream") : new OperationCanceledException();
+
+        Assert.AreEqual(SshFailureReason.Aborted, new SftpTransferInterruptedException(10, "中断", inner).Reason);
+    }
+
+    [TestMethod]
+    public void 断线引起的中断仍是ClosedByPeer()
+    {
+        SshConnectionClosedException dropped = new(SshFailureReason.ClosedByPeer, SshPhase.Open, "断了");
+
+        Assert.AreEqual(SshFailureReason.ClosedByPeer, new SftpTransferInterruptedException(10, "中断", dropped).Reason);
+        Assert.AreEqual(SshFailureReason.ClosedByPeer, new SftpTransferInterruptedException(10, "中断").Reason);
     }
 
     [TestMethod]

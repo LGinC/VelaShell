@@ -879,6 +879,7 @@ public sealed class SftpFileStream : Stream
             catch (OperationCanceledException) when (flushDeadline.IsCancellationRequested)
             {
                 failure = new SftpTransferInterruptedException(
+                    SshFailureReason.Timeout,
                     DurableLength,
                     $"关闭 {Path} 时等了 {CloseTimeout.TotalSeconds:0} 秒，服务端还没确认完在途的写入。" +
                     $"已连续确认 {DurableLength} 字节，从这里续传即可。");

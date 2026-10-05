@@ -29,11 +29,32 @@ namespace VelaShell.Ssh.Sftp;
 /// </remarks>
 public sealed class SftpTransferInterruptedException : SshException
 {
-    /// <summary>创建一个传输中断异常。</summary>
+    /// <summary>创建一个传输中断异常。原因码随中断的原因（<paramref name="innerException"/>）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/08 §二〕它承载好几种中断：断线（<see cref="SshFailureReason.ClosedByPeer"/>）、
+    /// 服务端拒写（磁盘满、配额、权限 —— 照 <see cref="SftpException"/> 的原因码）、调用方取消与本端释放（<see cref="SshFailureReason.Aborted"/>）。
+    /// 曾经一律是 <see cref="SshFailureReason.ClosedByPeer"/>：按原因码判断的调用方会把「磁盘满」当成断线、照样去续传。
+    /// 没有内层异常时按断线算。
+    /// </remarks>
     public SftpTransferInterruptedException(
         long durableLength, string message, Exception? innerException = null)
-        : base(SshFailureReason.ClosedByPeer, SshPhase.Open, message, innerException) =>
+        : this(ReasonOf(innerException), durableLength, message, innerException)
+    {
+    }
+
+    /// <summary>原因码另有出处的中断（关闭超时是 <see cref="SshFailureReason.Timeout"/>）。</summary>
+    internal SftpTransferInterruptedException(
+        SshFailureReason reason, long durableLength, string message, Exception? innerException = null)
+        : base(reason, SshPhase.Open, message, innerException) =>
         DurableLength = durableLength;
+
+    private static SshFailureReason ReasonOf(Exception? inner) => inner switch
+    {
+        null => SshFailureReason.ClosedByPeer,
+        SshException ssh => ssh.Reason,
+        OperationCanceledException or ObjectDisposedException => SshFailureReason.Aborted,
+        _ => SshFailureReason.Unknown,
+    };
 
     /// <summary>
     /// 从 0 开始<b>连续</b>已确认的字节数。断点续传从这里续。

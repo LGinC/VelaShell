@@ -102,6 +102,9 @@ internal sealed record TestSftpOptions
     /// <summary>从第几个 <c>WRITE</c> 起不再应答（模拟中途断开）。</summary>
     public int FailWritesAfter { get; init; } = int.MaxValue;
 
+    /// <summary>每个 <c>WRITE</c> 都以这个状态拒绝（模拟磁盘满、配额、权限），数据不写。</summary>
+    public SftpStatusCode? RejectWritesWith { get; init; }
+
     /// <summary>
     /// 这个偏移上的 <c>READ</c> 先不答，等收到一个偏移更靠后的 <c>READ</c> 才放行。
     /// </summary>
@@ -587,6 +590,11 @@ internal sealed class TestSftpServer
         if (WriteCount > _options.FailWritesAfter)
         {
             return null;   // 干脆不应答 —— 模拟中途断开
+        }
+
+        if (_options.RejectWritesWith is { } rejection)
+        {
+            return BuildStatus(id, rejection, "No space left on device");
         }
 
         if (!TryGetHandle(rest, out HandleState? state))
