@@ -295,8 +295,15 @@ public static class KnownHostsFile
         SshAlgorithmNames.SshRsaCertV01,
     ];
 
-    /// <summary>非 22 端口要按 <c>[host]:port</c> 匹配。</summary>
-    private static string FormatHostPattern(string host, int port) => port == 22 ? host : $"[{host}]:{port}";
+    /// <summary>非 22 端口要按 <c>[host]:port</c> 匹配；主机名一律小写。</summary>
+    /// <remarks>
+    /// OpenSSH 写 known_hosts 之前先把主机名小写化，散列行算的就是小写名字的 HMAC。
+    /// 曾经原样拿去算：用户填的是 <c>Server.Example.COM</c> 时散列行一条都对不上，结论是「没见过」——
+    /// 有中间人时，本该报「密钥变了」的连接成了「新主机，要信任吗」，类型偏好的保护也一并失效；
+    /// 反过来本库写出的散列行没小写化，OpenSSH 读不到。明文行一直不分大小写，两条分支口径不一致。
+    /// </remarks>
+    private static string FormatHostPattern(string host, int port) =>
+        port == 22 ? host.ToLowerInvariant() : $"[{host.ToLowerInvariant()}]:{port}";
 
     private static bool MatchesHost(KnownHostEntry entry, string host, int port, string plain)
     {

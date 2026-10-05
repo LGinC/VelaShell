@@ -234,6 +234,47 @@ public sealed class KnownHostsTests
             KnownHostsFile.Lookup(entries, "other.example.com", 22, key).Status);
     }
 
+    /// <summary>
+    /// OpenSSH 先把主机名小写化再散列。用户填的是大写时也要对得上 ——
+    /// 曾经对不上就是「没见过」：有中间人时，本该报「密钥变了」的连接成了「新主机，要信任吗」。
+    /// </summary>
+    [TestMethod]
+    public void 散列行按小写主机名比对_大小写不同也对得上()
+    {
+        SshPublicKey known = MakeKey();
+        SshPublicKey different = MakeKey();
+        byte[] salt = RandomNumberGenerator.GetBytes(20);
+
+#pragma warning disable CA5350 // 格式由 OpenSSH 规定就是 HMAC-SHA1
+        byte[] hash = HMACSHA1.HashData(salt, Encoding.UTF8.GetBytes("[server.example.com]:2222"));
+#pragma warning restore CA5350
+
+        string hashedHost = string.Create(
+            CultureInfo.InvariantCulture,
+            $"|1|{Convert.ToBase64String(salt)}|{Convert.ToBase64String(hash)}");
+        IReadOnlyList<KnownHostEntry> entries = KnownHostsFile.Parse(Line(hashedHost, known));
+
+        Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(entries, "Server.Example.COM", 2222, known).Status);
+        Assert.AreEqual(KnownHostStatus.Changed, KnownHostsFile.Lookup(entries, "Server.Example.COM", 2222, different).Status,
+            "大小写不同就当成没见过的话，中间人换一把钥只会换来一句「要信任吗」");
+        Assert.AreSequenceEqual([known.KeyType], [.. KnownHostsFile.KnownKeyTypes(entries, "SERVER.example.com", 2222)]);
+    }
+
+    [TestMethod]
+    public void 写出的散列行按小写主机名算_OpenSSH读得到()
+    {
+        SshPublicKey key = MakeKey();
+        string line = KnownHostsFile.FormatEntry("Server.Example.COM", 22, key, hashHostName: true);
+        IReadOnlyList<KnownHostEntry> entries = KnownHostsFile.Parse(line);
+
+        // 拆开散列行，按 OpenSSH 的口径（小写名字的 HMAC）自己验一遍。
+        string[] parts = entries[0].Patterns[0].Split('|');
+#pragma warning disable CA5350
+        byte[] expected = HMACSHA1.HashData(Convert.FromBase64String(parts[2]), Encoding.UTF8.GetBytes("server.example.com"));
+#pragma warning restore CA5350
+        Assert.AreEqual(Convert.ToBase64String(expected), parts[3]);
+    }
+
     [TestMethod]
     public void 写出来的行能被自己读回去()
     {
