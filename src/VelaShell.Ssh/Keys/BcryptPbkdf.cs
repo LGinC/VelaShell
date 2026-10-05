@@ -88,10 +88,13 @@ internal static class BcryptPbkdf
     /// <param name="salt">盐(来自私钥文件的 kdfoptions)。</param>
     /// <param name="rounds">迭代轮数(来自私钥文件的 kdfoptions)。</param>
     /// <param name="output">输出缓冲区,长度即要派生的字节数。</param>
+    /// <param name="cancellationToken">取消令牌：每一轮之前检查 —— 高轮数的私钥要算上好几秒，而这段计算是同步的。</param>
     /// <exception cref="ArgumentOutOfRangeException"><paramref name="rounds" /> 小于 1。</exception>
     /// <exception cref="ArgumentException">口令、盐或输出为空。</exception>
+    /// <exception cref="OperationCanceledException">被取消。</exception>
     public static void DeriveKey(
-        ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt, int rounds, Span<byte> output)
+        ReadOnlySpan<byte> password, ReadOnlySpan<byte> salt, int rounds, Span<byte> output,
+        CancellationToken cancellationToken = default)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(rounds, 1);
 
@@ -144,6 +147,8 @@ internal static class BcryptPbkdf
 
                 for (int round = 1; round < rounds; round++)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
+
                     // 下一轮的盐是**上一轮的输出**,这条链让轮数真的花掉时间。
                     SHA512.HashData(current, saltHash);
                     BcryptHash(passwordHash, saltHash, current);

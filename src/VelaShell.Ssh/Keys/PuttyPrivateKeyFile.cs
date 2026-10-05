@@ -43,7 +43,8 @@ internal static class PuttyPrivateKeyFile
         text is not null && text.StartsWith("PuTTY-User-Key-File-", StringComparison.Ordinal);
 
     /// <summary>解一段 <c>.ppk</c> 文本。</summary>
-    public static InMemorySshSigner Parse(string text, string? passphrase = null, string? origin = null)
+    public static InMemorySshSigner Parse(
+        string text, ReadOnlySpan<char> passphrase = default, string? origin = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(text);
         string where = origin is null ? "" : $"（{origin}）";
@@ -54,7 +55,7 @@ internal static class PuttyPrivateKeyFile
         {
             try
             {
-                VerifyMac(file, macKey: DeriveMacKey(file, passphrase: null), where);
+                VerifyMac(file, macKey: DeriveMacKey(file, passphrase: default), where);
                 return BuildSigner(file.PublicBlob, file.PrivateBlob, file.Algorithm, where);
             }
             finally
@@ -69,11 +70,12 @@ internal static class PuttyPrivateKeyFile
                 $"不支持的 .ppk 加密方式 {file.Encryption}{where}。");
         }
 
-        if (string.IsNullOrEmpty(passphrase))
+        if (passphrase.IsEmpty)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseRequired, $"这把 .ppk 需要口令{where}。");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();   // Argon2 一旦开算就停不下来
         (byte[] key, byte[] iv, byte[] macKey) = DeriveKeys(file, passphrase, where);
         byte[]? privateBlob = null;
         try
@@ -258,7 +260,7 @@ internal static class PuttyPrivateKeyFile
     // ------------------------------------------------------------ 口令派生
 
     private static (byte[] Key, byte[] Iv, byte[] MacKey) DeriveKeys(
-        PuttyFile file, string passphrase, string where)
+        PuttyFile file, ReadOnlySpan<char> passphrase, string where)
     {
         if (file.Version == 3)
         {
@@ -280,7 +282,7 @@ internal static class PuttyPrivateKeyFile
         // SHA-1 在这里不是当抗碰撞散列用的 —— 它是 PuTTY 定下的口令派生构造，
         // 换算法就读不了任何已有的 .ppk 了。
 #pragma warning disable CA5350 // .ppk v2 的 KDF 由格式规定就是 SHA-1
-        byte[] passBytes = Encoding.UTF8.GetBytes(passphrase);
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
         byte[] firstInput = [0, 0, 0, 0, .. passBytes];
         byte[] secondInput = [0, 0, 0, 1, .. passBytes];
         byte[] first = SHA1.HashData(firstInput);
@@ -310,7 +312,7 @@ internal static class PuttyPrivateKeyFile
     /// <summary>内存 × 遍数的上限（KiB·遍）：两个都顶到各自上限也要不了这么多。</summary>
     internal const long MaxArgon2Work = 8L * 1024 * 1024;
 
-    private static byte[] Argon2(PuttyFile file, string passphrase, string where)
+    private static byte[] Argon2(PuttyFile file, ReadOnlySpan<char> passphrase, string where)
     {
         // 这三个参数来自文件，也就是来自不可信输入，而且**在验 MAC 之前**就要用上 ——
         // MAC 密钥本身就是 Argon2 的输出。不设上限的话，Argon2-Memory 写一个 4194304
@@ -352,7 +354,7 @@ internal static class PuttyPrivateKeyFile
         generator.Init(parameters);
 
         byte[] output = new byte[80];
-        byte[] passBytes = Encoding.UTF8.GetBytes(passphrase);
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
         try
         {
             generator.GenerateBytes(passBytes, output);
@@ -364,7 +366,9 @@ internal static class PuttyPrivateKeyFile
         return output;
     }
 
-    private static byte[] DeriveMacKey(PuttyFile file, string? passphrase)
+    /// <param name="file">文件。</param>
+    /// <param name="passphrase">口令；不加密的文件给空。</param>
+    private static byte[] DeriveMacKey(PuttyFile file, ReadOnlySpan<char> passphrase)
     {
         if (file.Version == 3)
         {
@@ -373,9 +377,8 @@ internal static class PuttyPrivateKeyFile
         }
 
 #pragma warning disable CA5350 // 同上：格式规定
-        byte[] input = passphrase is null
-            ? Encoding.UTF8.GetBytes(MacKeyPhrase)
-            : [.. Encoding.UTF8.GetBytes(MacKeyPhrase), .. Encoding.UTF8.GetBytes(passphrase)];
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
+        byte[] input = [.. Encoding.UTF8.GetBytes(MacKeyPhrase), .. passBytes];
 
         try
         {
@@ -383,7 +386,7 @@ internal static class PuttyPrivateKeyFile
         }
         finally
         {
-            Clear(input);   // 带口令时它含着口令
+            Clear(input, passBytes);   // 带口令时它们含着口令
         }
 #pragma warning restore CA5350
     }

@@ -182,6 +182,67 @@ public sealed class EncryptedOpenSshKeyTests
         return $"{lines[0]}\n{Convert.ToBase64String(blob, Base64FormattingOptions.InsertLineBreaks)}\n{lines[^1]}\n";
     }
 
+    /// <summary>
+    /// 〔AU-D4〕口令放在调用方自己的 <c>char[]</c> 里给：读得出来，读完调用方自己清零 —— <see cref="string"/> 的口令清不掉。
+    /// OpenSSH、.ppk 与加密 PKCS#8 三条路都走这个重载。
+    /// </summary>
+    [TestMethod]
+    [DataRow("ed25519-aes256ctr", "ed25519-aes256ctr")]
+    [DataRow("putty-ed25519-v3-hi-enc.ppk", "putty-ed25519-v3-hi-enc")]
+    [DataRow("pkcs8-rsa-enc", "pkcs8-rsa-enc")]
+    public async Task 口令以字符缓冲给时照样读出(string file, string pub)
+    {
+        char[] passphrase = Passphrase.ToCharArray();
+        try
+        {
+            InMemorySshSigner fromMemory = await SshPrivateKeyFile.LoadAsync(FixturePath(file), passphrase.AsMemory(), TestContext.CancellationToken);
+            InMemorySshSigner fromSpan = SshPrivateKeyFile.Parse(await File.ReadAllTextAsync(FixturePath(file), TestContext.CancellationToken), passphrase);
+
+            Assert.AreSequenceEqual(ReadPublicBlob(pub), fromMemory.PublicKey.Blob.ToArray());
+            Assert.AreSequenceEqual(ReadPublicBlob(pub), fromSpan.PublicKey.Blob.ToArray());
+        }
+        finally
+        {
+            Array.Clear(passphrase);
+        }
+    }
+
+    /// <summary>〔AU-D4〕已经取消的令牌：抛取消，而不是被包成「私钥格式不对」。</summary>
+    [TestMethod]
+    public void 取消时抛取消而不是格式不对()
+    {
+        using CancellationTokenSource cancelled = new();
+        cancelled.Cancel();
+        string pem = File.ReadAllText(FixturePath("ed25519-aes256ctr"));
+
+        Assert.ThrowsExactly<OperationCanceledException>(() => SshPrivateKeyFile.Parse(pem, Passphrase.AsSpan(), cancellationToken: cancelled.Token));
+    }
+
+    /// <summary>〔AU-D4〕解一把高轮数的私钥算到一半被取消：抛取消，不被包成「私钥格式不对」，也不等算完。</summary>
+    [TestMethod]
+    public async Task 解私钥算到一半被取消时抛取消()
+    {
+        string pem = WithKdfRounds(File.ReadAllText(FixturePath("ed25519-aes256ctr")), SshPrivateKeyFile.MaxKdfRounds);
+        using CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(100));
+
+        Task parsing = Task.Run(() => SshPrivateKeyFile.Parse(pem, Passphrase.AsSpan(), cancellationToken: cancel.Token));
+
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => parsing.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
+    /// <summary>
+    /// 〔AU-D4〕bcrypt_pbkdf 逐轮看取消令牌：高轮数的钥要算上好几秒（这里给一个要算好几分钟的轮数），取消之后应当很快停下。
+    /// 曾经 LoadAsync 的令牌只管读文件，口令派生一旦开算就停不下来。
+    /// </summary>
+    [TestMethod]
+    public async Task 口令派生算到一半能取消()
+    {
+        using CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(100));
+        byte[] output = new byte[48];
+
+        Task deriving = Task.Run(() => BcryptPbkdf.DeriveKey("pw"u8, "salt"u8, 1_000_000, output, cancel.Token));
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => deriving.WaitAsync(TimeSpan.FromSeconds(10)));
+    }
     /// <summary>MSTest 注入的测试上下文。</summary>
     public TestContext TestContext { get; set; } = null!;
 }
