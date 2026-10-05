@@ -80,9 +80,13 @@ public sealed class SshChannel : IAsyncDisposable
     private Task? _stdinPump;
     private Task? _windowAdjustPump;
 
-    /// <summary>消费者已消费、但还没回补给对端的字节数。</summary>
+    /// <summary>消费者已消费、但还没回补给对端的字节数。跨轮累加，攒够回补阈值时由回补泵整笔取走。</summary>
     private long _consumedPendingAdjust;
     private readonly AsyncGate _consumedGate = new();
+    private int _windowAdjustPumpWakeups;
+
+    /// <summary>回补泵被叫醒过几次（测试用：离阈值还远时不该叫醒它）。</summary>
+    internal int WindowAdjustPumpWakeups => Volatile.Read(ref _windowAdjustPumpWakeups);
 
     /// <summary>stdin 泵已经交给会话发送的字节数（<see cref="WaitStandardInputSentAsync"/> 用）。</summary>
     private long _stdinSentBytes;
@@ -1007,35 +1011,41 @@ public sealed class SshChannel : IAsyncDisposable
             return;
         }
 
-        Interlocked.Add(ref _consumedPendingAdjust, bytes);
-        _consumedGate.Signal();
+        // 〔CH-P2〕攒够回补阈值才叫醒回补泵。曾经每消费一次都叫：消费者读得碎（逐行读几十字节）时，
+        // 每一次都是新建票、注册令牌、一次线程池调度，而绝大多数都是白醒 —— 离阈值还远。
+        // 不会漏醒：阈值只随窗口大小变，而窗口只由回补泵自己改，改完它接着重查。
+        if (Interlocked.Add(ref _consumedPendingAdjust, bytes) >= AdjustThreshold)
+        {
+            _consumedGate.Signal();
+        }
     }
+
+    /// <summary>
+    /// 攒够这么多已消费的字节再发 <c>WINDOW_ADJUST</c>：半个窗口。
+    /// </summary>
+    /// <remarks>
+    /// 每消费几十字节就发一个是在拿控制报文淹没链路。攒着不发也不会卡住对端：
+    /// 本地未消费的数据接近 0 时，对端手上至少还剩半个窗口。
+    /// </remarks>
+    private long AdjustThreshold => _receiveWindow.Size / 2;
 
     private async Task PumpWindowAdjustAsync(CancellationToken cancellationToken)
     {
         try
         {
-            // 已消费、但还没告诉对端的字节数。
-            //
-            // ⚠️ 它必须**跨轮累加**。攒不够阈值就把这一轮的 consumed 丢掉的话，
+            // ⚠️ 已消费、但还没告诉对端的字节数必须**跨轮累加**（_consumedPendingAdjust 本身就是那个累加器，
+            //    够了阈值才整笔取走）。攒不够阈值就把这一轮的 consumed 丢掉的话，
             //    对端视角的窗口会一点一点缩小，最后归零 —— 症状是传了一阵子之后
             //    通道永久停住，而本地账面上看窗口明明是满的。
             //    消费者每次只读几十字节（逐行读）时最容易撞上。
-            long unreported = 0;
-
             while (!cancellationToken.IsCancellationRequested)
             {
                 Task ticket = _consumedGate.NextChange();
 
-                unreported += Interlocked.Exchange(ref _consumedPendingAdjust, 0);
-
-                // 攒够半个窗口再发 —— 每消费几十字节就发一个 WINDOW_ADJUST
-                // 是在拿控制报文淹没链路。
-                //
-                // 攒着不发也不会卡住对端：本地未消费的数据接近 0 时，
-                // 对端手上至少还剩半个窗口。
-                if (unreported >= _receiveWindow.Size / 2)
+                if (Volatile.Read(ref _consumedPendingAdjust) >= AdjustThreshold)
                 {
+                    long unreported = Interlocked.Exchange(ref _consumedPendingAdjust, 0);
+
                     // 扩窗要**当场把多出来的额度授予对端**。
                     //
                     // 只改本地的 Size 而不多授一点，结果是：阈值（Size/2）涨了，
@@ -1051,11 +1061,11 @@ public sealed class SshChannel : IAsyncDisposable
                         await SendWindowAdjustAsync(delta, cancellationToken).ConfigureAwait(false);
                     }
 
-                    unreported = 0;
                     continue;
                 }
 
                 await ticket.WaitAsync(cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _windowAdjustPumpWakeups);
             }
         }
         catch (OperationCanceledException)

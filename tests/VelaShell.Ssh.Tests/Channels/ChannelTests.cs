@@ -822,6 +822,31 @@ public sealed class ChannelTests
         await onTime.DisposeAsync();
     }
 
+    /// <summary>
+    /// 〔CH-P2〕消费者读得碎（一次一个字节）、离回补阈值（半个窗口）还远时，不叫醒回补泵。
+    /// 曾经每消费一次都叫醒一次：新建票、注册令牌、一次线程池调度，全是白醒。
+    /// </summary>
+    [TestMethod]
+    public async Task 离回补阈值还远时逐字节读不叫醒回补泵()
+    {
+        byte[] output = new byte[4096];
+        Random.Shared.NextBytes(output);
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { StandardOutput = output, ExitCode = 0 });
+        await using SshCommand command = await harness.Connection.ExecuteAsync("吐", cancellationToken: harness.Token);
+
+        int read = 0;
+        while (read < output.Length)
+        {
+            ReadResult result = await command.StandardOutput.ReadAsync(harness.Token);
+            Assert.IsFalse(result.Buffer.IsEmpty && result.IsCompleted, "数据没到齐就结束了");
+            command.StandardOutput.AdvanceTo(result.Buffer.GetPosition(1));   // 一次只消费一个字节
+            read++;
+        }
+
+        Assert.IsLessThan(3, command.Channel.WindowAdjustPumpWakeups,
+            "4 KiB 离 128 KiB 的回补阈值还远，回补泵不该被一字节一字节地叫醒");
+    }
+
     /// <summary>同一个操作码再设一次是替换（留在原位），不是追加出第二条。</summary>
     [TestMethod]
     public void 终端模式重复设同一个操作码是替换()
