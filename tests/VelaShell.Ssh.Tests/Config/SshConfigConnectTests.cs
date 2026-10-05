@@ -114,6 +114,53 @@ public sealed class SshConfigConnectTests
         Assert.AreEqual(2022, jump.JumpHost.Port);
     }
 
+    /// <summary>
+    /// 〔FW-E12〕ProxyJump 链里第一跳之后的跳板经前一跳到达：它们自己的 ProxyJump / ProxyCommand 不去解析。
+    /// 曾经先解析一遍再丢掉：白批准一次 ProxyCommand（没给批准回调时整个连接直接失败），用不上的那条链里有环也报错。
+    /// </summary>
+    [TestMethod]
+    public async Task 第二跳及以后的跳板不解析自己的拨号设置()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host target
+                ProxyJump a,b
+            Host b
+                ProxyCommand nc %h %p
+            Host a
+                ProxyJump none
+            Host c
+                ProxyJump a,d
+            Host d
+                ProxyJump c
+            """);
+
+        // 没给 ApproveProxyCommand：b 的 ProxyCommand 用不上，不该去要批准。
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target");
+        var last = (SshJumpDialer)options.Dialer;
+        Assert.AreEqual("b", last.JumpHost.Host);
+        Assert.IsInstanceOfType<SshJumpDialer>(last.JumpHost.Dialer, "b 经 a 到达");
+
+        // d 自己的 ProxyJump 指回 c（会成环），但 d 经 a 到达，那条链用不上，不报环。
+        _ = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "c");
+    }
+
+    /// <summary>
+    /// 〔FW-E12〕Host *.corp 带出来的 ProxyJump 落到跳板自己身上（跳板忘了写 ProxyJump none）：跳板直连，不报「链有环」。
+    /// </summary>
+    [TestMethod]
+    public async Task 跳板的ProxyJump指向自己时当成直连()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *.corp
+                ProxyJump bastion.corp
+            """);
+
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "app.corp");
+
+        var jump = (SshJumpDialer)options.Dialer;
+        Assert.AreEqual("bastion.corp", jump.JumpHost.Host);
+        Assert.IsInstanceOfType<TcpTransportDialer>(jump.JumpHost.Dialer, "跳板自己直连");
+    }
     [TestMethod]
     public async Task 跳板链有环时明确报错()
     {

@@ -52,7 +52,7 @@ public static partial class SshConfigFile
 
         return CreateCoreAsync(
             blocks, host, settings ?? new SshConfigConnectOptions(), [], userOverride: null, portOverride: null,
-            isTarget: true, new IdentityCache(), cancellationToken);
+            isTarget: true, resolveDialer: true, new IdentityCache(), cancellationToken);
     }
 
     /// <summary>一次解析里已经读过的 <c>IdentityFile</c>（按完整路径）；<see langword="null"/> 表示读不出来、已跳过。</summary>
@@ -72,6 +72,7 @@ public static partial class SshConfigFile
         string? userOverride,
         int? portOverride,
         bool isTarget,
+        bool resolveDialer,
         IdentityCache identities,
         CancellationToken cancellationToken)
     {
@@ -109,8 +110,15 @@ public static partial class SshConfigFile
             options = options with { ConnectTimeout = TimeSpan.FromSeconds(timeout) };
         }
 
+        // 怎么到达这台主机由调用方定（ProxyJump 链里第一跳之后的那些经前一跳到达）：它自己的 ProxyJump / ProxyCommand 不看。
+        if (!resolveDialer)
+        {
+            return settings.Configure?.Invoke(options) ?? options;
+        }
+
         // 〔velashell-docs/zh/ssh/spec/09 §7〕ProxyJump 优先于 ProxyCommand。
-        if (IsSet(config.ProxyJump))
+        // 指向自己的 ProxyJump（Host *.corp 带出来、跳板忘了写 ProxyJump none）走不通，当成直连 —— 不报「链有环」。
+        if (IsSet(config.ProxyJump) && !IsJumpToSelf(config.ProxyJump!, host))
         {
             options = options with
             {
@@ -190,11 +198,13 @@ public static partial class SshConfigFile
                     $"ProxyJump 链有环：{string.Join(" → ", visiting)} → {jumpHost}。");
             }
 
+            // 第一个跳板用它自己的拨号器（它自己的 ProxyJump / ProxyCommand 照常生效）；其后每一个都经前一个到达。
+            // 〔FW-E12〕后面那些的拨号设置根本不去解析：曾经先把它们自己的跳板链整个解析一遍（白问一次口令、
+            // 白批准一次 ProxyCommand）再丢掉，那条用不上的链里有环时还会报「链有环」。
             SshConnectionOptions resolved = await CreateCoreAsync(
-                blocks, jumpHost, settings, visiting, jumpUser, jumpPort, isTarget: false, identities, cancellationToken)
+                blocks, jumpHost, settings, visiting, jumpUser, jumpPort, isTarget: false, resolveDialer: i == 0, identities, cancellationToken)
                 .ConfigureAwait(false);
 
-            // 第一个跳板用它自己的拨号器；其后每一个都经前一个到达。
             if (i > 0)
             {
                 resolved = resolved with { Dialer = new SshJumpDialer(jumpOptions[i - 1]) };
@@ -211,6 +221,10 @@ public static partial class SshConfigFile
 
         return new SshJumpDialer(jumpOptions[^1]);
     }
+
+    /// <summary>这台主机的 <c>ProxyJump</c> 是不是只有它自己一跳。</summary>
+    private static bool IsJumpToSelf(string proxyJump, string host) =>
+        ParseProxyJump(proxyJump) is [{ Host: { } only }] && string.Equals(only, host, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 解析 <c>ProxyJump</c> 的值：逗号分隔的 <c>[user@]host[:port]</c>，按经过的先后排列
