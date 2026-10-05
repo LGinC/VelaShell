@@ -46,6 +46,29 @@ public class SftpServiceTests
         _sftpService = new SftpService(_connectionService, _ => _sftpClient);
     }
 
+    /// <summary>
+    /// SFTP 通道死了(sftp-server 退出、服务端关掉闲置通道)而 SSH 连接还在:下一次操作换一个新客户端,
+    /// 旧的那个释放掉 —— 而不是让文件面板一直坏到整条 SSH 连接重连。
+    /// </summary>
+    [TestMethod]
+    public async Task DeadSftpChannel_IsReplacedAndDisposed()
+    {
+        ISftpClientWrapper first = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper second = Substitute.For<ISftpClientWrapper>();
+        first.IsConnected.Returns(true);
+        second.IsConnected.Returns(true);
+        Queue<ISftpClientWrapper> made = new([first, second]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await service.ListDirectoryAsync(_sessionId, "/");
+        first.IsConnected.Returns(false);   // 通道死了
+        await service.ListDirectoryAsync(_sessionId, "/");
+
+        await second.Received(1).ListDirectoryAsync("/", Arg.Any<CancellationToken>());
+        await first.Received(1).DisposeAsync();
+        Assert.IsEmpty(made, "死了才换,换一次");
+    }
+
     /// <summary>SSH 一断,挂在它上面的 SFTP 通道跟着收掉。</summary>
     /// <remarks>
     /// SFTP 复用的就是主 SSH 连接(DI 处 <c>OpenSftpClientAsync</c> 刻意不另开连接),

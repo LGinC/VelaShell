@@ -623,6 +623,36 @@ public sealed class SftpTests
     // ------------------------------------------------------------ 目录
 
     [TestMethod]
+    public async Task sftp_server退出之后IsConnected变假_Closed带出原因()
+    {
+        // sftp-server 崩溃、服务端按 ChannelTimeout 关掉闲置通道：这个对象不会自己恢复，
+        // 使用者得知道它死了、丢掉重建 —— 曾经没有这个信号，宿主的文件面板一直坏到整条连接重连。
+        await using Harness harness = await Harness.StartAsync(server => server.AddFile("/home/joe/a.txt", Text("x")));
+        Assert.IsTrue(harness.Sftp.IsConnected);
+        Assert.IsFalse(harness.Sftp.Closed.IsCompleted);
+
+        harness.SftpServer.Exit();
+
+        Exception reason = await harness.Sftp.Closed.WaitAsync(harness.Token);
+        Assert.IsFalse(harness.Sftp.IsConnected);
+        Assert.IsInstanceOfType<SshException>(reason);
+        await Assert.ThrowsAsync<SshException>(
+            async () => await harness.Sftp.GetAttributesAsync("/home/joe/a.txt", harness.Token));
+    }
+
+    [TestMethod]
+    public async Task 释放之后Closed以SftpUnavailable完成()
+    {
+        Harness harness = await Harness.StartAsync();
+        Task<Exception> closed = harness.Sftp.Closed;
+
+        await harness.DisposeAsync();
+
+        Assert.IsInstanceOfType<SftpUnavailableException>(await closed.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.IsFalse(harness.Sftp.IsConnected);
+    }
+
+    [TestMethod]
     public async Task 列目录跨多批()
     {
         await using Harness harness = await Harness.StartAsync(server =>

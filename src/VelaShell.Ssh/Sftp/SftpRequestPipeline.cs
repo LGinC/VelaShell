@@ -113,6 +113,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
     private Exception? _fault;
     private bool _disposed;
 
+    /// <summary>流水线坏掉（或释放）的那一刻完成，结果是原因。不以异常完成 —— 没人等它时也不会变成未观察的任务异常。</summary>
+    private readonly TaskCompletionSource<Exception> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>在一条已经起好 sftp 子系统的通道上建立流水线。</summary>
     /// <param name="channel">通道。</param>
     /// <param name="maxInFlight">在途请求数的起始值。</param>
@@ -152,6 +155,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
 
     /// <summary>流水线已经坏了（通道断了、收到了畸形报文）：之后的请求都会失败。</summary>
     internal bool IsFaulted => Volatile.Read(ref _fault) is not null;
+
+    /// <summary>流水线坏掉或释放时完成，结果是原因（见 <see cref="SftpFileSystem.Closed"/>）。</summary>
+    internal Task<Exception> Closed => _closed.Task;
 
     /// <summary>深度被调大过几次（诊断用）。</summary>
     public int DepthIncreases { get; private set; }
@@ -568,12 +574,15 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
     private void Fault(Exception exception)
     {
         PendingRequest[] pending;
+        Exception reason;
         lock (_stateLock)
         {
             _fault ??= exception;
+            reason = _fault;
             pending = [.. _pending.Values];
             _pending.Clear();
         }
+        _closed.TrySetResult(reason);
 
         // **一次性**把所有在途请求以同一个异常收尾。
         // 不这么做的话，通道断开时每个在途请求都会各自挂到取消或超时上 ——

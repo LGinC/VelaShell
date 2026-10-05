@@ -86,6 +86,25 @@ public sealed class SftpFileSystem : IAsyncDisposable
     /// <summary>实际使用的块大小。</summary>
     public int BlockSize { get; private set; }
 
+    /// <summary>这条 SFTP 会话还能用吗。</summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/06 §5.4〕为假时之后的每个请求都会失败，<b>这个对象不会自己恢复</b> —— 丢掉它、
+    /// 在同一条连接上再 <see cref="ConnectAsync"/> 一个。为假的原因：sftp-server 退出了、服务端按 <c>ChannelTimeout</c>
+    /// 关掉了闲置的通道、收到了畸形帧、整条连接断了，或者已经释放。原因在 <see cref="Closed"/> 里。
+    /// </para>
+    /// <para>
+    /// 曾经没有这个信号：宿主只能看「对象还在不在」，通道死了之后这个会话的文件面板一直坏着，直到整条 SSH 连接重连。
+    /// </para>
+    /// </remarks>
+    public bool IsConnected => !_pipeline.IsFaulted;
+
+    /// <summary>这条 SFTP 会话结束时完成，结果是结束的原因（释放时是 <see cref="SftpUnavailableException"/>）。</summary>
+    /// <remarks>
+    /// 以<b>成功</b>完成、结果是原因，而不是以异常完成：没人等它时也不会变成未观察的任务异常。
+    /// </remarks>
+    public Task<Exception> Closed => _pipeline.Closed;
+
     /// <summary>在一条会话上起 SFTP。</summary>
     /// <exception cref="SftpUnavailableException">服务端没有 sftp 子系统，或版本太低。</exception>
     public static async ValueTask<SftpFileSystem> ConnectAsync(

@@ -1126,6 +1126,12 @@ public class SftpService : ISftpService
             }
             ISftpClientWrapper client = _sftpClientFactory(session);
             await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+            // 换掉的那个(SFTP 通道已经死了)释放掉:它的通道、句柄表都还挂在连接上。
+            if (_sftpClients.TryGetValue(sessionId, out ISftpClientWrapper? stale) && !ReferenceEquals(stale, client))
+            {
+                await DisposeQuietlyAsync(stale).ConfigureAwait(false);
+            }
             _sftpClients[sessionId] = client;
             return client;
         }

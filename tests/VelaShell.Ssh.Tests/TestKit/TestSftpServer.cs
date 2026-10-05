@@ -194,13 +194,29 @@ internal sealed class TestSftpServer
     }
 
     /// <summary>跑服务端循环。</summary>
+    /// <summary>让这个 sftp-server 退出（模拟崩溃，或服务端按 <c>ChannelTimeout</c> 关掉闲置通道）：输出收尾，通道随之 EOF + CLOSE。</summary>
+    public void Exit()
+    {
+        Volatile.Write(ref _exited, true);
+        Volatile.Read(ref _input)?.CancelPendingRead();
+    }
+
+    private bool _exited;
+    private PipeReader? _input;
+
     public async Task RunAsync(PipeReader input, PipeWriter output, CancellationToken cancellationToken)
     {
+        Volatile.Write(ref _input, input);
         try
         {
             while (!cancellationToken.IsCancellationRequested)
             {
                 ReadResult read = await input.ReadAsync(cancellationToken);
+                if (Volatile.Read(ref _exited))
+                {
+                    break;
+                }
+
                 ReadOnlySequence<byte> buffer = read.Buffer;
                 SequencePosition consumed = buffer.Start;
 

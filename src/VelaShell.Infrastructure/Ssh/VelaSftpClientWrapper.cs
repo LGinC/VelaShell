@@ -26,7 +26,12 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     private bool _disposed;
 
     /// <inheritdoc />
-    public bool IsConnected => !_disposed && _fs is not null;
+    /// <remarks>
+    /// 看的是库那条 SFTP 会话自己还活着没有(<see cref="SftpFileSystem.IsConnected" />),不只是「对象还在」:
+    /// sftp-server 退出、服务端按 ChannelTimeout 关掉闲置通道之后,上层据此丢掉这个客户端重建一个,
+    /// 而不是让文件面板一直坏到整条 SSH 连接重连。
+    /// </remarks>
+    public bool IsConnected => !_disposed && _fs is { IsConnected: true };
 
     /// <inheritdoc />
     /// <remarks>SFTP 复用主连接的通道,这里没有自己的建链超时;保留只为满足契约。</remarks>
