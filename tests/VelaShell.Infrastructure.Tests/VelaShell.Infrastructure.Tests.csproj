@@ -23,6 +23,9 @@
   <ItemGroup>
     <!-- 真 ssh-keygen 生成的加密私钥(64 轮 bcrypt_pbkdf),口令见那边的 README。 -->
     <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\ed25519-rounds64" Link="Ssh\Fixtures\ed25519-rounds64" CopyToOutputDirectory="PreserveNewest" />
+    <!-- puttygen 生成的加密 .ppk(v3,Argon2id)与它导出的 .pub:导入「只有 .ppk」时用。 -->
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\putty-ed25519-v3-hi-enc.ppk" Link="Ssh\Fixtures\putty-ed25519-v3-hi-enc.ppk" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\putty-ed25519-v3-hi-enc.pub" Link="Ssh\Fixtures\putty-ed25519-v3-hi-enc.pub" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -57,9 +57,13 @@ public sealed class SshKeyService(
     /// 而 <c>~/.ssh</c> 里什么都没多。挑中一个随便的文本文件同样一路成功。
     /// </para>
     /// <para>
-    /// <b>没有 .pub 就明确拒绝。</b><see cref="ListKeysAsync" /> 是按 <c>*.pub</c> 枚举的,
-    /// 只导私钥的话文件确实抄进去了,列表里却一条都看不到 —— 用户看到"导入成功"随后
-    /// 密钥消失,只会以为程序把它弄丢了。与其如此,不如当场说清要连 <c>.pub</c> 一起选。
+    /// <b>没有 .pub 就从私钥文件里读出公钥、写一份。</b><see cref="ListKeysAsync" /> 是按 <c>*.pub</c> 枚举的,
+    /// 只抄私钥的话列表里一条都看不到。OpenSSH 容器的公钥段与 PuTTY <c>.ppk</c> 的 <c>Public-Lines</c> 是明文,
+    /// 私钥加了密也读得出(<see cref="SshPrivateKeyFile.TryReadPublicKey" />);只有加密的 PKCS#8 这类
+    /// 公钥也在密文里的,才要求连 <c>.pub</c> 一起选。曾经一律要求 <c>.pub</c>,而 PuTTY 用户手里通常只有一个 <c>.ppk</c>。
+    /// </para>
+    /// <para>
+    /// <b>认格式交给库。</b>曾经只看首行是不是 <c>-----BEGIN … PRIVATE KEY</c>,库能读的 <c>.ppk</c> 被当成「不是私钥」挡在门外。
     /// </para>
     /// <para>
     /// <b>私钥权限。</b>生成路径一直会设 0600,导入路径以前不设 —— 而 OpenSSH 对
@@ -69,7 +73,7 @@ public sealed class SshKeyService(
     /// <param name="sourcePrivateKeyPath">源私钥路径(选中 <c>.pub</c> 时自动换成同名私钥)。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>导入后的密钥;同名已存在时为 <see langword="null" />。</returns>
-    /// <exception cref="FileNotFoundException">源私钥或其 <c>.pub</c> 不存在。</exception>
+    /// <exception cref="FileNotFoundException">源私钥不存在,或 <c>.pub</c> 不存在而私钥文件里又读不出公钥。</exception>
     /// <exception cref="InvalidDataException">源文件不是私钥,或公钥无法解析。</exception>
     public async Task<SshKeyInfo?> ImportKeyAsync(string sourcePrivateKeyPath, CancellationToken cancellationToken = default)
     {
@@ -94,14 +98,19 @@ public sealed class SshKeyService(
             throw new FileNotFoundException(
                 Strings.Format("KeySvc_ImportPrivateKeyMissing", sourcePrivateKeyPath), sourcePrivateKeyPath);
         }
-        if (!File.Exists(sourcePub))
-        {
-            throw new FileNotFoundException(
-                Strings.Format("KeySvc_ImportPublicKeyMissing", Path.GetFileName(sourcePub)), sourcePub);
-        }
-        if (!await LooksLikePrivateKeyAsync(sourcePrivateKeyPath, cancellationToken).ConfigureAwait(false))
+        if (await ReadPrivateKeyTextAsync(sourcePrivateKeyPath, cancellationToken).ConfigureAwait(false) is not { } privateText)
         {
             throw new InvalidDataException(Strings.Format("KeySvc_ImportNotAPrivateKey", name));
+        }
+        string? derivedPublicLine = null;
+        if (!File.Exists(sourcePub))
+        {
+            if (!SshPrivateKeyFile.TryReadPublicKey(privateText, out SshPublicKey? publicKey))
+            {
+                throw new FileNotFoundException(
+                    Strings.Format("KeySvc_ImportPublicKeyMissing", Path.GetFileName(sourcePub)), sourcePub);
+            }
+            derivedPublicLine = publicKey.ToOpenSshFormat(name);
         }
 
         // ——— 再抄:两份一起,任一失败就把已抄的清掉,不留半套 ———
@@ -109,7 +118,14 @@ public sealed class SshKeyService(
         {
             File.Copy(sourcePrivateKeyPath, targetPrivate);
             ApplyPrivateKeyPermissions(targetPrivate);
-            File.Copy(sourcePub, targetPub);
+            if (derivedPublicLine is null)
+            {
+                File.Copy(sourcePub, targetPub);
+            }
+            else
+            {
+                File.WriteAllText(targetPub, derivedPublicLine + Environment.NewLine);
+            }
         }
         catch
         {
@@ -129,26 +145,30 @@ public sealed class SshKeyService(
         throw new InvalidDataException(Strings.Format("KeySvc_ImportBadPublicKey", Path.GetFileName(sourcePub)));
     }
 
+    /// <summary>私钥文件最大多少字节:最大的 RSA 私钥也不过十几 KiB,再大的不会是私钥。</summary>
+    private const long MaxPrivateKeyFileBytes = 1024 * 1024;
+
     /// <summary>
-    /// 粗看一眼是不是私钥:够用来挡住"选错文件"。
+    /// 读出私钥文件的文本;认不出是私钥(或读不了)时为 <see langword="null" />。够用来挡住"选错文件"。
     /// </summary>
     /// <remarks>
-    /// 只读首行,不做完整解析 —— 私钥格式有 OpenSSH、PKCS#1、PKCS#8 好几种,而且可能加密,
-    /// 真解析要密码短语。这里只要求它有 PEM 头,足以把 README、id_rsa.pub、截图挡在门外。
+    /// 格式由库认(<see cref="SshPrivateKeyFile.DetectFormat" />:OpenSSH、PKCS#1、PKCS#8、SEC1、PuTTY <c>.ppk</c>),
+    /// 不做完整解析 —— 私钥可能加了密,真解析要口令。这足以把 README、id_rsa.pub、截图挡在门外。
     /// </remarks>
-    private static async Task<bool> LooksLikePrivateKeyAsync(string path, CancellationToken cancellationToken)
+    private static async Task<string?> ReadPrivateKeyTextAsync(string path, CancellationToken cancellationToken)
     {
         try
         {
-            using var reader = new StreamReader(path);
-            string? first = await reader.ReadLineAsync(cancellationToken).ConfigureAwait(false);
-            return first is not null
-                   && first.StartsWith("-----BEGIN", StringComparison.Ordinal)
-                   && first.Contains("PRIVATE KEY", StringComparison.Ordinal);
+            if (new FileInfo(path).Length > MaxPrivateKeyFileBytes)
+            {
+                return null;
+            }
+            string text = await File.ReadAllTextAsync(path, cancellationToken).ConfigureAwait(false);
+            return SshPrivateKeyFile.DetectFormat(text) == SshPrivateKeyFormat.Unknown ? null : text;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return false;
+            return null;
         }
     }
 

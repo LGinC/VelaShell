@@ -1537,13 +1537,13 @@
     <value>{0} 不是可解析的 SSH 公钥,未导入任何内容。</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} 看起来不是私钥(没有 PEM 头),未导入任何内容。</value>
+    <value>{0} 看起来不是私钥(认不出格式;支持 OpenSSH、PKCS#1/#8、SEC1 与 PuTTY .ppk),未导入任何内容。</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>找不到私钥文件:{0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>缺少配对的公钥 {0}。请连同 .pub 一起导入 —— 只有私钥的密钥不会出现在本列表中。</value>
+    <value>缺少配对的公钥 {0},而这把私钥的加密格式不带明文公钥。请连同 .pub 一起导入 —— 只有私钥的密钥不会出现在本列表中。</value>
   </data>
   <data name="Main_CloseConfirmBody" xml:space="preserve">
     <value>仍有活动的会话，关闭窗口将断开所有连接。确定退出吗?</value>

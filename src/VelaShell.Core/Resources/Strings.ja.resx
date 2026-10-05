@@ -1127,13 +1127,13 @@
     <value>{0} は解析できる SSH 公開鍵ではありません。何もインポートされていません。</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} は秘密鍵ではないようです (PEM ヘッダーがありません)。何もインポートされていません。</value>
+    <value>{0} は秘密鍵ではないようです (形式を認識できません。OpenSSH、PKCS#1/#8、SEC1、PuTTY .ppk に対応しています)。何もインポートされていません。</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>秘密鍵が見つかりません: {0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>対になる公開鍵 {0} がありません。.pub も一緒にインポートしてください。公開鍵のない鍵はこの一覧に表示されません。</value>
+    <value>対になる公開鍵 {0} がありません。この秘密鍵の暗号化形式には平文の公開鍵が含まれていません。.pub も一緒にインポートしてください。公開鍵のない鍵はこの一覧に表示されません。</value>
   </data>
   <data name="KeyType" xml:space="preserve">
     <value>鍵の種類</value>

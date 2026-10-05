@@ -1428,13 +1428,13 @@ If this keeps happening, close any other VelaShell windows and try again.</value
     <value>{0} is not a readable SSH public key; nothing was imported.</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} does not look like a private key (no PEM header); nothing was imported.</value>
+    <value>{0} does not look like a private key (unrecognized format; OpenSSH, PKCS#1/#8, SEC1 and PuTTY .ppk are supported); nothing was imported.</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>Private key not found: {0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>The matching public key {0} is missing. Import both files — a key without its .pub does not show up in this list.</value>
+    <value>The matching public key {0} is missing, and this private key is encrypted in a format that does not keep its public key in the clear. Import both files — a key without its .pub does not show up in this list.</value>
   </data>
   <data name="Main_CloseConfirmBody" xml:space="preserve">
     <value>Active sessions are still running; closing the window will disconnect them all. Quit anyway?</value>
