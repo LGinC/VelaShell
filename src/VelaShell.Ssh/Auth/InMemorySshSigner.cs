@@ -9,11 +9,9 @@
 
 using System.Buffers;
 using System.Security.Cryptography;
-using Org.BouncyCastle.Crypto.Parameters;
-using Org.BouncyCastle.Crypto.Signers;
-using Org.BouncyCastle.Security;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Protocol;
+using BcEd25519 = Org.BouncyCastle.Math.EC.Rfc8032.Ed25519;
 
 namespace VelaShell.Ssh.Auth;
 
@@ -25,7 +23,14 @@ namespace VelaShell.Ssh.Auth;
 /// </remarks>
 public sealed class InMemorySshSigner : ISshSigner, IDisposable
 {
-    private readonly Ed25519PrivateKeyParameters? _ed25519;
+    /// <summary>Ed25519 的 32 字节种子（私钥）。释放时清零。</summary>
+    /// <remarks>
+    /// 自己持有种子、签名时交给 BouncyCastle 的静态 Ed25519 实现，而不是持有它的参数对象 ——
+    /// 曾经持有 <c>Ed25519PrivateKeyParameters</c>，<see cref="Dispose"/> 只释放 RSA / ECDsa，
+    /// 种子在托管堆上一直留到 GC，「释放即清零」对最常见的 Ed25519 恰恰不成立。
+    /// </remarks>
+    private readonly byte[]? _ed25519Seed;
+    private readonly byte[]? _ed25519Public;
     private readonly ECDsa? _ecdsa;
     private readonly RSA? _rsa;
     private readonly int _coordinateBytes;
@@ -34,14 +39,16 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
     private InMemorySshSigner(
         SshPublicKey publicKey,
         IReadOnlyList<string> algorithms,
-        Ed25519PrivateKeyParameters? ed25519,
+        byte[]? ed25519Seed,
+        byte[]? ed25519Public,
         ECDsa? ecdsa,
         RSA? rsa,
         int coordinateBytes)
     {
         PublicKey = publicKey;
         SignatureAlgorithms = algorithms;
-        _ed25519 = ed25519;
+        _ed25519Seed = ed25519Seed;
+        _ed25519Public = ed25519Public;
         _ecdsa = ecdsa;
         _rsa = rsa;
         _coordinateBytes = coordinateBytes;
@@ -64,22 +71,34 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             throw new ArgumentException("Ed25519 私钥种子必须是 32 字节。", nameof(privateKeySeed));
         }
 
-        Ed25519PrivateKeyParameters key = new(privateKeySeed.ToArray());
+        // 复制一份归自己所有：调用方的缓冲由调用方清，这一份由 Dispose 清。
+        byte[] seed = privateKeySeed.ToArray();
+        byte[] publicKey = new byte[BcEd25519.PublicKeySize];
+        BcEd25519.GeneratePublicKey(seed, publicKey);
+
         byte[] blob = BuildBlob(w =>
         {
             w.WriteUtf8String(SshAlgorithmNames.SshEd25519);
-            w.WriteString(key.GeneratePublicKey().GetEncoded());
+            w.WriteString(publicKey);
         });
 
         return new InMemorySshSigner(
-            SshPublicKey.Decode(blob), [SshAlgorithmNames.SshEd25519], key, null, null, 0);
+            SshPublicKey.Decode(blob), [SshAlgorithmNames.SshEd25519], seed, publicKey, null, null, 0);
     }
 
     /// <summary>生成一把新的 Ed25519 密钥并构造签名器（测试与临时密钥用）。</summary>
     public static InMemorySshSigner GenerateEd25519()
     {
-        Ed25519PrivateKeyParameters key = new(new SecureRandom());
-        return FromEd25519(key.GetEncoded());
+        // Ed25519 的私钥就是 32 个随机字节（RFC 8032 §5.1.5）。
+        byte[] seed = RandomNumberGenerator.GetBytes(BcEd25519.SecretKeySize);
+        try
+        {
+            return FromEd25519(seed);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(seed);
+        }
     }
 
     /// <summary>用一把 RSA 私钥构造。</summary>
@@ -102,7 +121,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         return new InMemorySshSigner(
             SshPublicKey.Decode(blob),
             [SshAlgorithmNames.RsaSha512, SshAlgorithmNames.RsaSha256, SshAlgorithmNames.SshRsa],
-            null, null, rsa, 0);
+            null, null, null, rsa, 0);
     }
 
     /// <summary>用一把 ECDSA 私钥构造。</summary>
@@ -131,7 +150,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             w.WriteString(point);
         });
 
-        return new InMemorySshSigner(SshPublicKey.Decode(blob), [name], null, ecdsa, null, coordinate);
+        return new InMemorySshSigner(SshPublicKey.Decode(blob), [name], null, null, ecdsa, null, coordinate);
     }
 
     /// <inheritdoc />
@@ -176,24 +195,21 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         SshDataWriter writer = new(output);
 
-        if (_ed25519 is not null)
+        if (_ed25519Seed is not null)
         {
-            byte[] seed = _ed25519.GetEncoded();
-            byte[] publicKey = _ed25519.GeneratePublicKey().GetEncoded();
-            byte[] secret = new byte[seed.Length + publicKey.Length];
+            byte[] secret = new byte[_ed25519Seed.Length + _ed25519Public!.Length];
             try
             {
                 // 种子在前、公钥在后，共 64 字节。
-                seed.CopyTo(secret, 0);
-                publicKey.CopyTo(secret, seed.Length);
+                _ed25519Seed.CopyTo(secret, 0);
+                _ed25519Public.CopyTo(secret, _ed25519Seed.Length);
 
                 writer.WriteUtf8String(SshAlgorithmNames.SshEd25519);
-                writer.WriteString(publicKey);
+                writer.WriteString(_ed25519Public);
                 writer.WriteString(secret);
             }
             finally
             {
-                CryptographicOperations.ZeroMemory(seed);
                 CryptographicOperations.ZeroMemory(secret);
             }
             return;
@@ -256,10 +272,11 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
 
     private byte[] SignEd25519(ReadOnlySpan<byte> data)
     {
-        Ed25519Signer signer = new();
-        signer.Init(forSigning: true, _ed25519!);
-        signer.BlockUpdate(data);
-        byte[] raw = signer.GenerateSignature();
+        // 纯 Ed25519（不带 context，RFC 8032 §5.1.6；RFC 8709 §6）。
+        // ⚠️ 公钥必须以 ReadOnlySpan 传：直接传 byte[] 时编译器挑中的是 Sign(sk, byte[] ctx, m, sig) ——
+        //    那是 Ed25519ctx，把公钥当成了 context，签出来的东西谁也验不过。
+        byte[] raw = new byte[BcEd25519.SignatureSize];
+        BcEd25519.Sign((ReadOnlySpan<byte>)_ed25519Seed, (ReadOnlySpan<byte>)_ed25519Public, data, raw);
 
         return BuildBlob(w =>
         {
@@ -337,7 +354,15 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             return;
         }
         _disposed = true;
+        if (_ed25519Seed is not null)
+        {
+            CryptographicOperations.ZeroMemory(_ed25519Seed);
+        }
         _ecdsa?.Dispose();
         _rsa?.Dispose();
     }
+
+    /// <summary>私钥材料是否已经清零（测试用）。</summary>
+    internal bool IsKeyMaterialCleared =>
+        _disposed && (_ed25519Seed is null || _ed25519Seed.AsSpan().IndexOfAnyExcept((byte)0) < 0);
 }
