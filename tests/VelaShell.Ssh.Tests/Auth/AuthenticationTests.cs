@@ -623,6 +623,28 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.IsFalse(seen[0].IsInformationalOnly);
     }
 
+    /// <summary>〔spec/04 §6.4〕一轮里每个字符串（名字、说明、提示）上限 4 KiB，超了是协议错误。曾经名字与说明放到了 64 KiB。</summary>
+    [TestMethod]
+    public async Task 键盘交互的说明超过4KiB是协议错误()
+    {
+        await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new KeyboardInteractiveCredential((_, _) => ValueTask.FromResult<IReadOnlyList<string>>(["123456"]))],
+            new TestAuthPolicy
+            {
+                OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                RequiredMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                KeyboardRounds =
+                [
+                    new TestKeyboardRound
+                    {
+                        Instruction = new string('x', 4 * 1024 + 1),
+                        Prompts = [("Verification code: ", false)],
+                        ExpectedAnswers = ["123456"],
+                    },
+                ],
+            }));
+    }
+
     [TestMethod]
     public async Task 键盘交互支持多轮()
     {

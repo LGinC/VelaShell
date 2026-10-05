@@ -48,6 +48,13 @@ internal sealed record SshAuthenticationResult(
 internal sealed class SshAuthenticator(SshPacketTransport transport, string userName, byte[] sessionId)
 {
     private const int MaxFieldBytes = 64 * 1024;
+
+    /// <summary>keyboard-interactive 一轮里每个字符串（名字、说明、语言标记、提示）的上限。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §6.4〕4 KiB。这些文字来自还没认证的对端、要原样摆到界面上；
+    /// 曾经名字与说明放到了 64 KiB（只有提示是 4 KiB），与规格不符。
+    /// </remarks>
+    private const int MaxKeyboardStringBytes = 4 * 1024;
     private const int MaxBannerBytes = 256 * 1024;
     private const int MaxBannerCount = 1024;
 
@@ -629,9 +636,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
         reader.ReadByte();   // InfoRequest
 
-        string name = reader.ReadUtf8String(MaxFieldBytes);
-        string instruction = reader.ReadUtf8String(MaxFieldBytes);
-        _ = reader.ReadUtf8String(MaxFieldBytes);   // 语言标记，忽略
+        string name = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        string instruction = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        _ = reader.ReadUtf8String(MaxKeyboardStringBytes);   // 语言标记，忽略
 
         uint count = reader.ReadUInt32();
         if (count > MaxKeyboardPrompts)
@@ -644,7 +651,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         List<SshKeyboardPrompt> prompts = [];
         for (uint i = 0; i < count; i++)
         {
-            string text = reader.ReadUtf8String(4 * 1024);
+            string text = reader.ReadUtf8String(MaxKeyboardStringBytes);
             bool echo = reader.ReadBoolean();
             prompts.Add(new SshKeyboardPrompt(text, echo));
         }
