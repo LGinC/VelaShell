@@ -181,6 +181,70 @@ public sealed class CipherSuiteConformanceTests
         }
     }
 
+    /// <summary>把一段字节切成每段 <paramref name="chunk"/> 字节的多段序列（模拟跨了管道段的帧）。</summary>
+    private static ReadOnlySequence<byte> Segmented(byte[] data, int chunk)
+    {
+        Segment first = new(data.AsMemory(0, Math.Min(chunk, data.Length)));
+        Segment last = first;
+        for (int offset = chunk; offset < data.Length; offset += chunk)
+        {
+            last = last.Append(data.AsMemory(offset, Math.Min(chunk, data.Length - offset)));
+        }
+        return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+    }
+
+    private sealed class Segment : ReadOnlySequenceSegment<byte>
+    {
+        public Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+
+        public Segment Append(ReadOnlyMemory<byte> memory)
+        {
+            Segment next = new(memory) { RunningIndex = RunningIndex + Memory.Length };
+            Next = next;
+            return next;
+        }
+    }
+
+    /// <summary>
+    /// 整帧在一段连续内存里时直接在输入上验、解进输出；跨了段时走拷贝的那条路。两条路拆出来的必须一样，
+    /// 篡改同样都查得出来。
+    /// </summary>
+    [TestMethod]
+    public void 跨段的帧与连续的帧拆出同样的载荷()
+    {
+        foreach ((string name, SuiteFactory factory) in AllSuites())
+        {
+            (ISshCipherSuite sender, ISshCipherSuite receiver) = factory();
+            using (sender)
+            using (receiver)
+            {
+                for (uint seq = 0; seq < 4; seq++)
+                {
+                    byte[] payload = RandomNumberGenerator.GetBytes(1000 + (int)seq);
+                    byte[] frame = Seal(sender, payload, seq);
+
+                    ArrayBufferWriter<byte> writer = new();
+                    ReadOnlySequence<byte> input = seq % 2 == 0 ? Segmented(frame, 7) : new ReadOnlySequence<byte>(frame);
+                    SshOpenStatus status = receiver.TryOpen(input, seq, MaxPacket, writer, out long consumed);
+
+                    Assert.AreEqual(SshOpenStatus.Opened, status, name);
+                    Assert.AreEqual(frame.Length, consumed, name);
+                    Assert.AreSequenceEqual(payload, writer.WrittenSpan.ToArray(), $"{name}：第 {seq} 帧（{(seq % 2 == 0 ? "跨段" : "连续")}）载荷失真");
+                }
+
+                if (!sender.Shape.IsEncrypted)
+                {
+                    continue; // 明文套件没有完整性保护，这是它的定义
+                }
+
+                byte[] tampered = Seal(sender, [1, 2, 3], 4);
+                tampered[^1] ^= 0x01;
+                Assert.ThrowsExactly<SshFrameFormatException>(
+                    () => receiver.TryOpen(Segmented(tampered, 5), 4, MaxPacket, new ArrayBufferWriter<byte>(), out _),
+                    $"{name}：跨段的帧被篡改也要查得出来");
+            }
+        }
+    }
     [TestMethod]
     public void 帧长满足对齐要求()
     {

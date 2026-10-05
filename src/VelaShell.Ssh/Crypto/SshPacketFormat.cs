@@ -16,6 +16,26 @@ namespace VelaShell.Ssh.Crypto;
 /// <remarks>各密码套件共用这些规则；套件之间的差异只在 <see cref="CipherSuiteShape"/>。</remarks>
 internal static class SshPacketFormat
 {
+    /// <summary>
+    /// 解密直接写进了输出时：核对 <c>padding_length</c>，把载荷挪到开头，清掉后面的填充，返回载荷长度。
+    /// </summary>
+    /// <param name="decrypted">解出来的 <c>padding_length ‖ payload ‖ padding</c>（就在输出缓冲里）。</param>
+    /// <exception cref="SshFrameFormatException"><c>padding_length</c> 非法。</exception>
+    public static int MoveDecryptedPayloadToFront(Span<byte> decrypted)
+    {
+        byte paddingLength = decrypted[0];
+        int payloadLength = decrypted.Length - PaddingLengthFieldBytes - paddingLength;
+        if (paddingLength < MinimumPadding || payloadLength < 0)
+        {
+            throw new SshFrameFormatException($"padding_length {paddingLength} 非法。");
+        }
+
+        // 重叠的拷贝：Span.CopyTo 按 memmove 处理，往低地址挪是安全的。
+        decrypted.Slice(PaddingLengthFieldBytes, payloadLength).CopyTo(decrypted);
+        decrypted[payloadLength..].Clear();
+        return payloadLength;
+    }
+
     /// <summary><c>packet_length</c> 字段的字节数。</summary>
     public const int LengthFieldBytes = 4;
 

@@ -149,6 +149,32 @@ internal sealed class AesGcmCipherSuite : ISshCipherSuite
             return SshOpenStatus.NeedMoreData;
         }
 
+        // 整帧在一段连续内存里（绝大多数时候如此）：密文与 tag 直接从输入里读，明文直接解进输出 ——
+        // 不拷密文、不租中转缓冲。曾经每帧拷一遍密文、租 2 × packet_length、再拷一遍载荷。
+        if (input.Slice(0, total).IsSingleSegment)
+        {
+            ReadOnlySpan<byte> frame = input.Slice(0, total).FirstSpan;
+            Span<byte> plain = payload.GetSpan((int)packetLength)[..(int)packetLength];
+            try
+            {
+                _aes.Decrypt(
+                    _nonce,
+                    frame.Slice(SshPacketFormat.LengthFieldBytes, (int)packetLength),
+                    frame.Slice(SshPacketFormat.LengthFieldBytes + (int)packetLength, TagBytes),
+                    plain,
+                    lengthField);
+            }
+            catch (AuthenticationTagMismatchException ex)
+            {
+                throw new SshFrameFormatException("报文完整性校验失败。", ex);
+            }
+
+            payload.Advance(SshPacketFormat.MoveDecryptedPayloadToFront(plain));
+            AdvanceNonce();
+            consumed = total;
+            return SshOpenStatus.Opened;
+        }
+
         byte[] rented = ArrayPool<byte>.Shared.Rent((int)packetLength * 2);
         try
         {

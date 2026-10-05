@@ -194,9 +194,40 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
             return SshOpenStatus.NeedMoreData;
         }
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent((int)total);
         Span<byte> polyKey = stackalloc byte[PolyKeyBytes];
         ChaChaEngine engine = Rewind(_payloadEngine, sequenceNumber);
+
+        // 整帧在一段连续内存里（绝大多数时候如此）：tag 直接在输入上验，载荷区直接解进输出 ——
+        // 不拷整帧、不租中转缓冲。曾经每帧先把整帧拷进租来的缓冲，再拷一遍载荷。
+        if (input.Slice(0, total).IsSingleSegment)
+        {
+            ReadOnlySpan<byte> frame = input.Slice(0, total).FirstSpan;
+            try
+            {
+                DerivePolyKey(engine, polyKey);
+
+                // **先验 tag，再解密。** 顺序反过来就是一个解密预言机。
+                Span<byte> expectedTag = stackalloc byte[TagBytes];
+                ComputeTag(polyKey, frame[..(SshPacketFormat.LengthFieldBytes + (int)packetLength)], expectedTag);
+                if (!CryptographicOperations.FixedTimeEquals(expectedTag, frame[^TagBytes..]))
+                {
+                    throw SshFrameFormatException.IntegrityCheckFailed();
+                }
+
+                Span<byte> plain = payload.GetSpan((int)packetLength)[..(int)packetLength];
+                engine.ProcessBytes(frame.Slice(SshPacketFormat.LengthFieldBytes, (int)packetLength), plain);
+                payload.Advance(SshPacketFormat.MoveDecryptedPayloadToFront(plain));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(polyKey);
+            }
+
+            consumed = total;
+            return SshOpenStatus.Opened;
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent((int)total);
         try
         {
             Span<byte> frame = rented.AsSpan(0, (int)total);
