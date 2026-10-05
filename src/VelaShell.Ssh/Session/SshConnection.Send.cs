@@ -65,19 +65,19 @@ public sealed partial class SshConnection
         });
 
     /// <summary>
-    /// 闸门本身不再限量：限量挪到了入队这一步（<see cref="_pendingSendBytes"/>），
+    /// 闸门本身不再限量：限量挪到了入队这一步（<see cref="_sendBudget"/>），
     /// 因为只有在那里才分得清「数据面的发送方」与「接收循环」—— 后者绝不能等。
     /// </summary>
     private readonly SendGate<ReadOnlyMemory<byte>> _sendGate = new(long.MaxValue);
 
-    private readonly Channels.AsyncGate _sendCapacityChanged = new();
+    /// <summary>排在发送泵前面、还没上线的字节数，以及排队等额度的数据面发送方。</summary>
+    private readonly SendBudget _sendBudget = new(MaxPendingSendBytes);
 
     /// <summary>让「登记账本 + 入队」成为一个动作。</summary>
     private readonly Lock _enqueueLock = new();
-    private long _pendingSendBytes;
 
     /// <summary>排在发送泵前面、还没上线的字节数（测试用来确认积压已经顶满）。</summary>
-    internal long PendingSendBytes => Volatile.Read(ref _pendingSendBytes);
+    internal long PendingSendBytes => _sendBudget.Pending;
     private readonly Task _sendPump;
 
     /// <summary>出站项的种类。</summary>
@@ -102,7 +102,7 @@ public sealed partial class SshConnection
     /// <summary>排队等发送泵处理的一项。</summary>
     /// <param name="Kind">种类。</param>
     /// <param name="Packet">报文（<see cref="OutboundKind.Frame"/> 时）。</param>
-    /// <param name="AccountedBytes">计入 <see cref="_pendingSendBytes"/> 的字节数；控制帧为 0。</param>
+    /// <param name="AccountedBytes">计入 <see cref="_sendBudget"/> 的字节数；控制帧为 0。</param>
     /// <param name="Completion">上线之后要通知的人；<see langword="null"/> 表示没人等。</param>
     /// <param name="Suite">新的发送密码套件（<see cref="OutboundKind.NewKeys"/> 时）。</param>
     /// <param name="Compressor">新的发送压缩器；<see langword="null"/> 表示不动压缩。</param>
@@ -214,25 +214,18 @@ public sealed partial class SshConnection
         bool jumpQueue = packet.Span[0] == (byte)SshMessageNumber.ChannelWindowAdjust;
 
         int accounted = 0;
-        if (applyBackpressure && !jumpQueue)
-        {
-            // 先取票、再查条件、最后等票 —— 顺序反过来会丢唤醒。
-            while (true)
-            {
-                Task changed = _sendCapacityChanged.NextChange();
-                ThrowIfFaulted();
-                if (Volatile.Read(ref _pendingSendBytes) < MaxPendingSendBytes)
-                {
-                    break;
-                }
-                await changed.WaitAsync(cancellationToken).ConfigureAwait(false);
-            }
-        }
-
         if (applyBackpressure)
         {
             accounted = packet.Length;
-            Interlocked.Add(ref _pendingSendBytes, accounted);
+            if (jumpQueue)
+            {
+                _sendBudget.Charge(accounted);
+            }
+            else
+            {
+                // 额度不够就按到达顺序排队，放行的那一刻已经替这一帧记上了账（见 SendBudget）。
+                await _sendBudget.ReserveAsync(accounted, cancellationToken).ConfigureAwait(false);
+            }
         }
 
         var completion = SendCompletion.Rent();
@@ -331,7 +324,7 @@ public sealed partial class SshConnection
         }
 
         // 投递的字节照样计入背压：应答攒多了，数据面的发送方就得等。
-        Interlocked.Add(ref _pendingSendBytes, packet.Length);
+        _sendBudget.Charge(packet.Length);
         if (!_outbound.Writer.TryWrite(
                 new OutboundItem(OutboundKind.Frame, packet, packet.Length, null, IsReply: true)))
         {
@@ -359,7 +352,7 @@ public sealed partial class SshConnection
             return false;
         }
 
-        Interlocked.Add(ref _pendingSendBytes, packet.Length);
+        _sendBudget.Charge(packet.Length);
         bool enqueued;
         lock (_enqueueLock)
         {
@@ -406,13 +399,8 @@ public sealed partial class SshConnection
         await done.ConfigureAwait(false);
     }
 
-    private void ReleasePendingBytes(int bytes)
-    {
-        if (bytes > 0)
-        {
-            Interlocked.Add(ref _pendingSendBytes, -bytes);
-        }
-    }
+    /// <summary>还回背压额度；有人在排队就按顺序放行。</summary>
+    private void ReleasePendingBytes(int bytes) => _sendBudget.Refund(bytes);
 
     private Exception ClosedException() =>
         Volatile.Read(ref _fault) ?? new SshConnectionClosedException(
@@ -465,8 +453,6 @@ public sealed partial class SshConnection
                     completion.SetResult();
                 }
                 flushed.Clear();
-
-                _sendCapacityChanged.Signal();
             }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -513,9 +499,10 @@ public sealed partial class SshConnection
         }
 
         _sendGate.DrainForAbort();
-        Interlocked.Exchange(ref _pendingSendBytes, 0);
         Interlocked.Exchange(ref _queuedReplyBytes, 0);
-        _sendCapacityChanged.Signal();
+
+        // 还在排队等额度的发送方拿到同一个原因；之后再来的也是。
+        _sendBudget.Close(reason);
     }
 
     /// <summary>处理一个出站项。</summary>
