@@ -138,6 +138,9 @@ internal sealed record TestChannelScript
 
     /// <summary>回放退出状态之前，先发这么多条客户端不认识的通道请求（每条带 1 KiB 载荷）。</summary>
     public int UnknownRequestsBeforeExit { get; init; }
+
+    /// <summary>退出状态 / 退出信号重复发几遍（恶意或有缺陷的服务端）；EOF 也跟着重复这么多遍。</summary>
+    public int RepeatExitReport { get; init; } = 1;
 }
 
 /// <summary>测试服务端收到的一条 <c>x11-req</c>。</summary>
@@ -1151,19 +1154,28 @@ internal sealed class TestChannelServer : IDisposable
                 writer.WriteBoolean(true);            // core dumped
                 writer.WriteUtf8String("测试服务端按剧本发出的退出信号。");
                 writer.WriteUtf8String("");
-                await SendChannelRequestAsync(serverChannel, "exit-signal", buffer.WrittenMemory, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendChannelRequestAsync(serverChannel, "exit-signal", buffer.WrittenMemory, cancellationToken);
+                }
             }
             else if (_script.ExitCode is { } code)
             {
                 ArrayBufferWriter<byte> buffer = new();
                 SshDataWriter writer = new(buffer);
                 writer.WriteUInt32((uint)code);
-                await SendChannelRequestAsync(serverChannel, "exit-status", buffer.WrittenMemory, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendChannelRequestAsync(serverChannel, "exit-status", buffer.WrittenMemory, cancellationToken);
+                }
             }
 
             if (_script.CloseAfterScript && _peerIds.TryGetValue(serverChannel, out uint clientChannel))
             {
-                await SendSimpleAsync(SshMessageNumber.ChannelEof, clientChannel, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendSimpleAsync(SshMessageNumber.ChannelEof, clientChannel, cancellationToken);
+                }
                 await SendSimpleAsync(SshMessageNumber.ChannelClose, clientChannel, cancellationToken);
             }
         }

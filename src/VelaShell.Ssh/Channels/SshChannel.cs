@@ -721,7 +721,10 @@ public sealed class SshChannel : IAsyncDisposable
     {
         lock (_stateLock)
         {
-            if (_state is SshChannelState.Closing or SshChannelState.Closed)
+            // 重复的 EOF 什么也不做：曾经它把 BothEof 退回 RemoteEof（本端随后可能再发一次 EOF），
+            // 每来一份还往事件流里塞一条 Eof —— 同样不受积压上限约束。
+            if (_state is SshChannelState.Closing or SshChannelState.Closed
+                or SshChannelState.RemoteEof or SshChannelState.BothEof)
             {
                 return;
             }
@@ -793,6 +796,15 @@ public sealed class SshChannel : IAsyncDisposable
     /// <returns>我们是否「认得」它。不认得且对端要应答时，调用方要回 <c>CHANNEL_FAILURE</c>。</returns>
     internal bool OnPeerRequest(string requestType, ReadOnlyMemory<byte> payload)
     {
+        // 退出状态 / 退出信号每条通道只有一次（RFC 4254 §6.10）：只收第一份，之后的照样「认得」但丢掉。
+        // 曾经每来一份都进事件流，而它们不受下面那个积压上限约束 —— 对端不停地发 exit-signal
+        // （每条带两个最长 64 KiB 的字符串），没人读事件流时内存无界增长，完全绕过窗口流控。
+        if (requestType is SshProtocolNames.RequestExitStatus or SshProtocolNames.RequestExitSignal
+            && Interlocked.Exchange(ref _exitReported, 1) != 0)
+        {
+            return true;
+        }
+
         if (requestType == SshProtocolNames.RequestExitStatus)
         {
             SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
@@ -829,8 +841,14 @@ public sealed class SshChannel : IAsyncDisposable
     }
 
     /// <summary>事件流里最多积压多少条没读的对端未知请求，超过就不再收。</summary>
-    /// <remarks>退出状态、EOF、关闭这几件不受它限制 —— 它们每条通道只有一次。</remarks>
+    /// <remarks>
+    /// 退出状态、EOF、关闭这几件不受它限制 —— 它们每条通道只进事件流一次（重复的照样丢掉，
+    /// 见 <see cref="OnPeerRequest"/> 与 <see cref="OnEof"/>）。
+    /// </remarks>
     internal const int MaxQueuedEvents = 64;
+
+    /// <summary>已经收到过退出状态或退出信号了。</summary>
+    private int _exitReported;
 
     /// <summary>事件流里还没被读走的 <see cref="SshChannelEvent.PeerRequest"/> 条数。</summary>
     private int _queuedPeerRequests;

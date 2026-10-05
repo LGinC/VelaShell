@@ -1131,6 +1131,42 @@ public sealed class ChannelTests
         Assert.IsTrue(sawClosed, "Closed 不受上限影响");
     }
 
+    /// <summary>
+    /// 退出状态、退出信号、EOF 每条通道只进事件流一次。曾经每来一份都进去，又不受积压上限约束 ——
+    /// 对端不停地发 exit-signal（每条两个最长 64 KiB 的字符串），没人读事件流时内存无界增长。
+    /// </summary>
+    [TestMethod]
+    [DataRow(false, DisplayName = "exit-status")]
+    [DataRow(true, DisplayName = "exit-signal")]
+    public async Task 重复的退出报告与EOF只进事件流一次(bool signal)
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            ExitCode = signal ? null : 3,
+            ExitSignal = signal ? "KILL" : null,
+            RepeatExitReport = 200,
+        });
+
+        await using SshCommand command = await harness.Connection.ExecuteAsync("灌", cancellationToken: harness.Token);
+        await WaitUntilAsync(() => command.Channel.State == SshChannelState.Closed, harness.Token);
+
+        int exitReports = 0;
+        int eofs = 0;
+        while (true)
+        {
+            SshChannelEvent channelEvent = await command.Channel.ReadEventAsync(harness.Token);
+            exitReports += channelEvent is SshChannelEvent.ExitStatus or SshChannelEvent.ExitSignal ? 1 : 0;
+            eofs += channelEvent is SshChannelEvent.Eof ? 1 : 0;
+            if (channelEvent is SshChannelEvent.Closed)
+            {
+                break;
+            }
+        }
+
+        Assert.AreEqual(1, exitReports, "重复的退出报告进了事件流");
+        Assert.AreEqual(1, eofs, "重复的 EOF 进了事件流");
+    }
+
     [TestMethod]
     public async Task 对端只发不收时应答积压超限就断开()
     {
