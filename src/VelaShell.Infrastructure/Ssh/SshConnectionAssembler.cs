@@ -166,10 +166,13 @@ internal static class SshConnectionAssembler
                     ? await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false)
                     : await jump.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (keyboard is { Cancelled: true } && !cancellationToken.IsCancellationRequested)
+            catch (SshConnectException ex) when (keyboard is not null
+                                                 && ex is { Reason: SshFailureReason.Aborted, Phase: SshPhase.Authenticating }
+                                                 && !cancellationToken.IsCancellationRequested)
             {
-                // 库以「方法试完了」收场(应答回调抛的异常按它的契约记成「凭据取不到材料」):
-                // 在这里认回来 —— 用户在动态码框上点了取消,是「不连了」而不是认证失败。
+                // 认证期间唯一会弹框的就是动态码框:库以 Aborted 结束,说明是它的应答回调抛了取消而调用方没取消
+                // —— 用户在框上点了取消,是「不连了」而不是认证失败(规格 08 §2.1)。
+                // 曾经库把这种取消报成认证超时,应答器只好自己记一笔、在这里按那一笔认回来。
                 throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"), ex);
             }
 

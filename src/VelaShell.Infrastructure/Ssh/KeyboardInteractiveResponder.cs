@@ -34,16 +34,6 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
     private bool _passwordUsed;
     private string? _pendingNotice;
 
-    /// <summary>
-    /// 用户在框上点了取消。
-    /// </summary>
-    /// <remarks>
-    /// 库把应答回调抛出的异常记成「凭据取不到材料」、接着以「方法试完了」收场(规格 04 §3.4),
-    /// 取消则会被它当成自己的计时器到点 —— 两条路都说不出「用户不连了」。
-    /// 所以取消记在这里,由装配处在连接失败之后认回来(见 <c>SshConnectionAssembler.ConnectAsync</c>)。
-    /// </remarks>
-    public bool Cancelled { get; private set; }
-
     /// <summary>按连接信息建应答器:密码认证把它的密码交给应答器代答口令提示,其余认证方式不代答。</summary>
     public static KeyboardInteractiveResponder For(Core.Models.ConnectionInfo info, IKeyboardInteractivePrompt prompt) =>
         new(prompt, $"{info.Username}@{info.Host}:{info.Port}",
@@ -53,6 +43,10 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
     public KeyboardInteractiveCredential ToCredential() => new(RespondAsync, "keyboard-interactive");
 
     /// <summary>应答一轮询问。</summary>
+    /// <exception cref="OperationCanceledException">
+    /// 用户在框上点了取消。库据此以 <c>Aborted</c> 结束这次连接(调用方没取消、认证计时器也没到点的取消,
+    /// 就是回调自己不连了,规格 08 §2.1),装配处再把它报成「已取消」—— 而不是认证失败或超时。
+    /// </exception>
     public async ValueTask<IReadOnlyList<string>> RespondAsync(SshKeyboardChallenge challenge, CancellationToken cancellationToken)
     {
         if (challenge.IsInformationalOnly)
@@ -96,11 +90,10 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
             .ConfigureAwait(false);
         if (answers is null)
         {
-            // 令牌触发(关了标签、认证超时)仍按取消上报,由库按它自己的口径处理;
-            // 只有用户在框上点了取消,才是「不连了」。
+            // 令牌触发(关了标签、认证超时)带着令牌抛,库按它自己的口径处理;
+            // 令牌没触发的取消就是用户在框上点了取消 —— 库认得出这一种(报 Aborted),不必在这里另记一笔。
             cancellationToken.ThrowIfCancellationRequested();
-            Cancelled = true;
-            throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"));
+            throw new OperationCanceledException(Strings.Get("SshErr_KbdAuthCancelled"));
         }
         // 条数对不上时库会报协议错误并卡在半截 —— 界面层的错不该变成一句看不懂的协议异常。
         return answers.Count == fields.Length

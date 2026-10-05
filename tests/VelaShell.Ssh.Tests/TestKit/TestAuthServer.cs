@@ -8,6 +8,7 @@
 //    它按配置放行或拒绝，没有任何速率限制，还刻意保留了「可配置地做错事」的开关。
 
 using System.Buffers;
+using System.Buffers.Binary;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
@@ -113,6 +114,9 @@ internal sealed class TestAuthObservation
 
     /// <summary>收到的签名是否全部验证通过。</summary>
     public bool AllSignaturesValid { get; set; } = true;
+
+    /// <summary>认证期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; set; }
 }
 
 /// <summary>测试服务端的认证侧。</summary>
@@ -163,6 +167,10 @@ internal sealed class TestAuthServer
             SshInboundPacket packet = await _transport.ReadPacketAsync(cancellationToken);
             if (packet.IsEndOfStream || packet.MessageNumber == SshMessageNumber.Disconnect)
             {
+                if (!packet.IsEndOfStream)
+                {
+                    Observation.ClientDisconnectReason = BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+                }
                 return false;   // 客户端放弃了
             }
 

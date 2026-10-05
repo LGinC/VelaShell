@@ -4,12 +4,15 @@
 // 规范依据(AGENTS.md §2 纪律 1):
 //   RFC 4253 §4  版本交换
 //   RFC 4252     认证
+//   RFC 4253 §11.1 DISCONNECT（用户取消认证时发 AUTH_CANCELLED_BY_USER）
 //   行为规格:    velashell-docs/zh/ssh/design/architecture.md §6.2;velashell-docs/zh/ssh/spec/08-failures.md
 
+using System.Buffers;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
+using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Transport;
 
 namespace VelaShell.Ssh.Session;
@@ -48,6 +51,10 @@ public sealed partial class SshConnection
         // 是同一句话，而这四件事的下一步完全不同。
         SshPhase phase = SshPhase.Dialing;
 
+        // 失败路径要据此分清「本库的计时器到点了」与「回调自己抛了取消」（见下面接取消的那一段）。
+        SshConnectDeadline? connectTimer = null;
+        CancellationTokenSource? authTimer = null;
+
         try
         {
             // ① 拨号 + 版本交换 + 密钥交换，共用一把连接计时器。
@@ -55,6 +62,7 @@ public sealed partial class SshConnection
             //    这里停表时外层也跟着停。
             using SshConnectDeadline connect = new(
                 options.ConnectTimeout, cancellationToken, options.OuterDeadline, options.TimeProvider);
+            connectTimer = connect;
 
             stream = await options.Dialer
                 .DialAsync(SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect }, connect.Token)
@@ -97,6 +105,7 @@ public sealed partial class SshConnection
             phase = SshPhase.Authenticating;
             using var auth = CancellationTokenSource
                 .CreateLinkedTokenSource(cancellationToken);
+            authTimer = auth;
 
             if (options.AuthenticationTimeout != Timeout.InfiniteTimeSpan)
             {
@@ -164,11 +173,33 @@ public sealed partial class SshConnection
             connection.Start();
             return connection;
         }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
+            // 〔velashell-docs/zh/ssh/spec/08 §2.1〕调用方没取消，也不一定是我们的计时器到了：判超时只看本库自己的那把。
+            // 都没到点却冒出了取消，是回调自己抛的 —— 用户在口令框、动态码框上点了「取消」，回调最自然的写法就是抛它。
+            // 曾经一律报成「限 120 秒」的超时，宿主只好在回调里另记一笔、失败之后再认回来。
+            bool timedOut = phase == SshPhase.Authenticating
+                ? authTimer?.IsCancellationRequested == true
+                : connectTimer?.IsExpired == true;
+
+            if (!timedOut)
+            {
+                if (phase == SshPhase.Authenticating && transport is not null)
+                {
+                    // 认证期间密钥已经装好：告诉服务端是用户不连了，而不是让它等到自己的 LoginGraceTime。
+                    await TrySendAuthCancelledAsync(transport).ConfigureAwait(false);
+                }
+                await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
+
+                throw new SshConnectException(
+                    SshFailureReason.Aborted, phase,
+                    $"连 {options.EndPoint} 时在 {phase} 这一步被使用者取消了（回调抛出了取消，而调用方的令牌与本库的计时器都没有触发）。",
+                    ex);
+            }
+
             await DisposeQuietlyAsync(transport, stream).ConfigureAwait(false);
 
-            // 取消不是调用方要求的 → 是我们自己的计时器到了。
+            // 是我们自己的计时器到了。
             (SshFailureReason reason, string what, TimeSpan budget) = phase switch
             {
                 SshPhase.Dialing =>
@@ -247,6 +278,28 @@ public sealed partial class SshConnection
         {
             transport.SetReceiveCompressor(
                 SshCompressorFactory.Create(algorithms.CompressionServerToClient));
+        }
+    }
+
+    /// <summary>尽力发一个 <c>DISCONNECT(AUTH_CANCELLED_BY_USER)</c>，最多等两秒；发不出去不报。</summary>
+    private static async ValueTask TrySendAuthCancelledAsync(SshPacketTransport transport)
+    {
+        try
+        {
+            ArrayBufferWriter<byte> buffer = new();
+            SshDataWriter writer = new(buffer);
+            writer.WriteMessageNumber(SshMessageNumber.Disconnect);
+            writer.WriteUInt32((uint)SshDisconnectReason.AuthCancelledByUser);
+            writer.WriteUtf8String("authentication cancelled by user");
+            writer.WriteUtf8String("");
+
+            transport.WritePacket(buffer.WrittenSpan);
+            using CancellationTokenSource flush = new(TimeSpan.FromSeconds(2));
+            await transport.FlushAsync(flush.Token).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 已经在断开的路上了。
         }
     }
 

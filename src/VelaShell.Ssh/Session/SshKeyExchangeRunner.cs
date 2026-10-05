@@ -450,11 +450,17 @@ internal sealed class SshKeyExchangeRunner
                 verdict = await SshCallbackFaultException.InvokeAsync(
                     () => _hostKeyPolicy.EvaluateAsync(context, decisionCts.Token)).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!outer.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!outer.IsCancellationRequested)
             {
-                throw new SshConnectException(
-                    SshFailureReason.Timeout, SshPhase.KeyExchange,
-                    $"主机密钥裁决超时（{HostKeyDecisionTimeout}）。");
+                // 判超时只看裁决自己的那把计时器（velashell-docs/zh/ssh/spec/08 §2.1）：没到点却抛了取消，
+                // 是策略自己不连了（用户关掉了询问框）。曾经一律报超时，不限时的时候报的是「裁决超时（-00:00:00.001）」。
+                throw decisionCts.IsCancellationRequested
+                    ? new SshConnectException(
+                        SshFailureReason.Timeout, SshPhase.KeyExchange,
+                        $"主机密钥裁决超时（{HostKeyDecisionTimeout}）。", ex)
+                    : new SshConnectException(
+                        SshFailureReason.Aborted, SshPhase.KeyExchange,
+                        $"{context.Target} 的主机密钥裁决被使用者取消了（策略抛出了取消）。", ex);
             }
 
             switch (verdict.Decision)

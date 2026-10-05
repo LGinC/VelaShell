@@ -112,14 +112,18 @@ public sealed class KeyboardInteractiveResponderTests
         Assert.AreEqual("Approve the push on your phone.\nOr type a code.", prompt.Requests.Single().Instruction);
     }
 
+    /// <summary>
+    /// 用户点取消:抛一个令牌没触发的取消 —— 库认得出这一种,以 Aborted 结束连接(规格 08 §2.1),
+    /// 装配处再报成「已取消」。
+    /// </summary>
     [TestMethod]
-    public async Task UserCancel_IsRememberedAndThrownAsCancelled()
+    public async Task UserCancel_IsThrownAsACancellationWithoutATriggeredToken()
     {
         var responder = new KeyboardInteractiveResponder(new ScriptedPrompt(_ => null), Target, "hunter2");
 
-        await Assert.ThrowsExactlyAsync<VelaSshAuthenticationCancelledException>(
+        OperationCanceledException error = await Assert.ThrowsExactlyAsync<OperationCanceledException>(
             () => Respond(responder, Round(("Verification code: ", false))));
-        Assert.IsTrue(responder.Cancelled);
+        Assert.IsFalse(error.CancellationToken.IsCancellationRequested);
     }
 
     [TestMethod]
@@ -133,9 +137,9 @@ public sealed class KeyboardInteractiveResponderTests
         });
         var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
+        OperationCanceledException error = await Assert.ThrowsAsync<OperationCanceledException>(
             () => responder.RespondAsync(Challenge(Round(("Verification code: ", false))), cts.Token).AsTask());
-        Assert.IsFalse(responder.Cancelled, "关了标签 / 认证超时不是用户在框上点的取消");
+        Assert.AreEqual(cts.Token, error.CancellationToken, "关了标签 / 认证超时带着令牌抛:库按它自己的口径处理,不是用户在框上点的取消");
     }
 
     [TestMethod]

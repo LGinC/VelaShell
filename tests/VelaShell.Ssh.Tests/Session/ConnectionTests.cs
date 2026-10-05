@@ -42,6 +42,9 @@ public sealed class ConnectionTests
         /// <summary>服务端出示的主机公钥（第一条连接建立之后才有）。</summary>
         public SshPublicKey? HostKey { get; private set; }
 
+        /// <summary>最近一条连接的认证侧观察（走到认证之后才有）。</summary>
+        public TestAuthObservation? AuthObservation { get; private set; }
+
         public ISshTransportDialer CreateDialer() => new Dialer(this);
 
         private sealed class Dialer(FakeServer owner) : ISshTransportDialer
@@ -68,6 +71,7 @@ public sealed class ConnectionTests
                 HostKey = SshPublicKey.Decode(handshake.HostKeyBlob);
 
                 TestAuthServer auth = new(server.Transport, handshake.ExchangeHash, _authPolicy);
+                AuthObservation = auth.Observation;
                 await auth.RunAsync(_cts.Token);
 
                 TestChannelServer channels = new(server.Transport, _script);
@@ -617,6 +621,89 @@ public sealed class ConnectionTests
         {
             File.Delete(path);
         }
+    }
+
+    // ------------------------------------------------------------ 回调自己抛的取消
+
+    /// <summary>
+    /// 用户在口令框上点了「取消」，回调抛 <see cref="OperationCanceledException"/>：调用方没取消、认证计时器也没到点，
+    /// 这是「不连了」—— 报 <see cref="SshFailureReason.Aborted"/>，并告诉服务端是用户取消的。
+    /// 曾经报成「认证超时（限 120 秒）」，宿主只好在回调里另记一笔、失败之后再认回来。
+    /// </summary>
+    [TestMethod]
+    public async Task 认证回调自己抛的取消报成使用者取消而不是超时()
+    {
+        await using FakeServer server = new();
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            Credentials = [new PasswordCredential(_ => throw new OperationCanceledException())],
+        };
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(options));
+
+        Assert.AreEqual(SshFailureReason.Aborted, error.Reason);
+        Assert.AreEqual(SshPhase.Authenticating, error.Phase);
+        Assert.IsFalse(error.IsRetryable);
+
+        // DISCONNECT 在出口之前就发出去了，服务端那边读到它要再等一会儿。
+        for (int i = 0; i < 200 && server.AuthObservation?.ClientDisconnectReason is null; i++)
+        {
+            await Task.Delay(10);
+        }
+        Assert.AreEqual((uint)SshDisconnectReason.AuthCancelledByUser, server.AuthObservation?.ClientDisconnectReason);
+    }
+
+    /// <summary>
+    /// 主机密钥策略同理：不限时的裁决里冒出取消，是用户关掉了询问框。
+    /// 曾经报的是「主机密钥裁决超时（-00:00:00.001）」。
+    /// </summary>
+    [TestMethod]
+    public async Task 主机密钥策略自己抛的取消报成使用者取消()
+    {
+        await using FakeServer server = new();
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(
+                Options(server, new FailingPolicy(onEvaluate: new OperationCanceledException()))));
+
+        Assert.AreEqual(SshFailureReason.Aborted, error.Reason);
+        Assert.AreEqual(SshPhase.KeyExchange, error.Phase);
+        Assert.DoesNotContain("超时", error.Message);
+    }
+
+    /// <summary>裁决之外（记的时候）冒出的取消走建连出口那一道判断：连接计时器没到点，同样是使用者取消。</summary>
+    [TestMethod]
+    public async Task 记主机密钥时自己抛的取消报成使用者取消()
+    {
+        await using FakeServer server = new();
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConnection.ConnectAsync(
+                Options(server, new FailingPolicy(onPersist: new OperationCanceledException()))));
+
+        Assert.AreEqual(SshFailureReason.Aborted, error.Reason);
+        Assert.AreEqual(SshPhase.KeyExchange, error.Phase);
+    }
+
+    /// <summary>调用方自己取消的，照旧原样当取消交还 —— 不是「使用者在框上点了取消」那一种。</summary>
+    [TestMethod]
+    public async Task 调用方取消时照旧抛取消()
+    {
+        await using FakeServer server = new();
+        using CancellationTokenSource cts = new();
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            Credentials = [new PasswordCredential(async ct =>
+            {
+                await cts.CancelAsync();
+                ct.ThrowIfCancellationRequested();
+                return "hunter2";
+            })],
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            async () => await SshConnection.ConnectAsync(options, cts.Token));
     }
 
     /// <summary>记下被问了几次；问到就放行。</summary>
