@@ -465,7 +465,8 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            Fault(new SftpUnavailableException("SFTP 流水线已收工。"));
+            // 本端在收工（关闭文件系统、连接释放）：那是中止，不是「服务端不支持 SFTP」。
+            Fault(new SftpUnavailableException(SshFailureReason.Aborted, "SFTP 流水线已收工。"));
         }
         catch (Exception ex)
         {

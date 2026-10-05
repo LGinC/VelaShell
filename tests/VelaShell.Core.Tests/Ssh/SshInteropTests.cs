@@ -4,6 +4,7 @@ using VelaShell.Infrastructure.Ssh;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Sftp;
 
@@ -136,6 +137,30 @@ public sealed class SshInteropTests
         Assert.IsInstanceOfType<VelaSshAuthenticationException>(translated);
         Assert.Contains("id_ed25519", translated!.Message,
             "逐条尝试记录必须进到消息里 —— 它是用户唯一能据以判断下一步的东西");
+        Assert.StartsWith(Strings.Format("SshErr_AuthExhausted", "publickey, keyboard-interactive"), translated.Message,
+            "主句按原因码用界面语言说,带上服务端接受的方法");
+    }
+
+    [TestMethod]
+    public void Translate_TwoFactorRequired_UsesLocalizedTextAndPartialSuccess()
+    {
+        SshAuthenticationException original = new(
+            SshFailureReason.TwoFactorRequired, "服务端要求键盘交互式认证。", [], ["keyboard-interactive"], partialSuccessAchieved: true);
+
+        string message = SshInterop.Translate(original)!.Message;
+
+        Assert.StartsWith(Strings.Format("SshErr_TwoFactorRequired", "keyboard-interactive"), message);
+        Assert.Contains(Strings.Get("SshErr_AuthPartialSuccess"), message);
+        Assert.Contains("[TwoFactorRequired @ Authenticating]", message);
+    }
+
+    [TestMethod]
+    public void Translate_PasswordExpired_UsesLocalizedText()
+    {
+        SshAuthenticationException original = new(
+            SshFailureReason.PasswordExpired, "服务端要求先修改密码。", [], ["password"], partialSuccessAchieved: false);
+
+        Assert.StartsWith(Strings.Get("SshErr_PasswordExpired"), SshInterop.Translate(original)!.Message);
     }
 
     /// <summary>
@@ -215,6 +240,50 @@ public sealed class SshInteropTests
 
         VelaSftpTransferInterruptedException interrupted = Assert.IsInstanceOfType<VelaSftpTransferInterruptedException>(translated);
         Assert.AreEqual(123_456, interrupted.DurableLength);
+        Assert.StartsWith(Strings.Format("SftpErr_TransferInterrupted", 123_456), interrupted.Message);
+    }
+
+    /// <summary>服务端拒写引起的中断:带上 SFTP 的那一句(「磁盘满」与「断线」的下一步不一样)。</summary>
+    [TestMethod]
+    public void Translate_SftpTransferInterruptedByRejectedWrite_IncludesServerReason()
+    {
+        SftpException rejected = new(SftpStatusCode.Failure, "No space left on device", "/data/big.iso", SftpOperation.Write);
+
+        string message = SshInterop.Translate(new SftpTransferInterruptedException(4096, "中断", rejected))!.Message;
+
+        Assert.Contains("No space left on device", message);
+        Assert.Contains(Strings.Get("SftpErr_Failure"), message);
+    }
+
+    [TestMethod]
+    public void Translate_SftpUnavailable_UsesLocalizedText()
+    {
+        Exception? translated = SshInterop.Translate(new SftpUnavailableException("服务端没有 SFTP 子系统。"));
+
+        Assert.IsInstanceOfType<VelaSshClientException>(translated);
+        Assert.StartsWith(Strings.Get("SftpErr_Unavailable"), translated!.Message);
+    }
+
+    [TestMethod]
+    public void Translate_ProtocolError_UsesLocalizedText()
+    {
+        SshProtocolException original = new(SshPhase.KeyExchange, "启用严格 KEX 时，对端的第一个报文必须是 KEXINIT。");
+
+        Exception? translated = SshInterop.Translate(original);
+
+        Assert.IsInstanceOfType<VelaSshConnectionException>(translated);
+        Assert.StartsWith(Strings.Get("SshErr_ProtocolError"), translated!.Message);
+        Assert.AreSame(original, translated.InnerException, "具体是哪一条协议违规留在内层");
+    }
+
+    [TestMethod]
+    [DataRow(SshFailureReason.LimitExceeded, "SshErr_LimitExceeded")]
+    [DataRow(SshFailureReason.Aborted, "SshErr_Aborted")]
+    public void Translate_FallbackReasons_UseLocalizedText(SshFailureReason reason, string key)
+    {
+        Exception? translated = SshInterop.Translate(new SshForwardException(reason, "转发通道数到了上限。"));
+
+        Assert.StartsWith(Strings.Get(key), translated!.Message);
     }
 
     /// <summary>v4 起的「路径不存在」(10):多版本服务端在 v3 会话里也会回它,同样分到「没这个文件」。</summary>

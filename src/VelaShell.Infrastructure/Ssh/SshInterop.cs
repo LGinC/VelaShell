@@ -51,14 +51,15 @@ internal static class SshInterop
             SshAuthenticationException auth => new VelaSshAuthenticationException(Describe(auth), auth),
             SshPrivateKeyException key => TranslatePrivateKey(key),
             SshCertificateException cert => new VelaSshAuthenticationException(Localize(cert), cert),
-            SftpTransferInterruptedException sftp => new VelaSftpTransferInterruptedException(sftp.Message, sftp.DurableLength, sftp),
+            SftpTransferInterruptedException sftp => new VelaSftpTransferInterruptedException(LocalizeInterrupted(sftp), sftp.DurableLength, sftp),
+            SftpUnavailableException unavailable => new VelaSshClientException(LocalizeUnavailable(unavailable), unavailable),
             SftpException sftp => TranslateSftp(sftp),
             SshNegotiationException negotiation => new VelaSshConnectionException(Describe(negotiation), negotiation),
             SshChannelException channel => new VelaSshClientException(Localize(channel), channel),
             SshForwardException forward => new VelaSshClientException(Localize(forward), forward),
             SshConnectionClosedException closed => new VelaSshConnectionException(Localize(closed), closed),
             SshConnectException connect => TranslateConnect(connect),
-            SshProtocolException protocol => new VelaSshConnectionException(protocol.Message, protocol),
+            SshProtocolException protocol => new VelaSshConnectionException(Localize(protocol), protocol),
             OperationCanceledException => new VelaSshOperationTimeoutException(ex.Message, ex),
             SshException other => new VelaSshClientException(Localize(other), other),
             _ => null,
@@ -98,6 +99,8 @@ internal static class SshInterop
     /// <para>
     /// 私钥读不出、格式不对、证书与私钥不是一对、配置不成立、端口占用这几类也不翻:
     /// 库的消息里带着文件路径、指纹、端口号这些具体信息,换成一句通用文案反而帮不上忙。
+    /// <see cref="SshFailureReason.ForwardSetupFailed" />(消息里是拿不到的 X 显示、xauth 的输出)与
+    /// <see cref="SshFailureReason.Unsupported" />(消息里是不支持的算法、密钥类型、格式版本)同理。
     /// <see cref="SshFailureReason.HostKeyStoreFailed" /> 同理(消息里是 known_hosts 的路径与 IO 错误);
     /// 而且宿主的信任库不走库的 known_hosts,它只在调用方换用 <c>KnownHostsPolicy</c> 时才会出现。
     /// </para>
@@ -130,10 +133,41 @@ internal static class SshInterop
             SshFailureReason.AgentNotRunning => "SshErr_AgentNotRunning",
             SshFailureReason.ChannelRequestRejected => "SshErr_ChannelRequestRejected",
             SshFailureReason.ForwardRejected => "SshErr_ForwardRejected",
+            // 对端违反了协议:具体是哪一条(Terrapin 的报文位置、截断的名单……)对用户没有下一步可言,原文留在内层。
+            SshFailureReason.ProtocolError => "SshErr_ProtocolError",
+            SshFailureReason.LimitExceeded => "SshErr_LimitExceeded",
+            SshFailureReason.Aborted => "SshErr_Aborted",
             _ => null,
         };
 
         return key is null ? ex.Message : $"{Strings.Get(key)} [{ex.Reason} @ {ex.Phase}]";
+    }
+
+    /// <summary>传输中断:界面语言的一句话带上续传点;服务端拒写(磁盘满、配额、权限)时再带上 SFTP 的那一句。</summary>
+    /// <remarks>
+    /// 中断的原因在 <see cref="SshException.Reason" /> 与内层异常上(库按实情报,见规格 08 §二):
+    /// 内层是 SFTP 错误时它比「中断了」更有用 —— 「磁盘满」与「断线」的下一步不一样。
+    /// </remarks>
+    internal static string LocalizeInterrupted(SftpTransferInterruptedException ex)
+    {
+        string text = Strings.Format("SftpErr_TransferInterrupted", ex.DurableLength);
+        if (ex.InnerException is SftpException sftp)
+        {
+            text = $"{text} {LocalizeSftp(sftp)}";
+        }
+        return $"{text} [{ex.Reason} @ {ex.Phase}]";
+    }
+
+    /// <summary>SFTP 子系统起不来:握手超时与「服务端没开 SFTP」分开说;别的原因(库内收尾)按原因码。</summary>
+    internal static string LocalizeUnavailable(SftpUnavailableException ex)
+    {
+        string? key = ex.Reason switch
+        {
+            SshFailureReason.Timeout => "SftpErr_HandshakeTimeout",
+            SshFailureReason.Unsupported or SshFailureReason.ChannelRequestRejected => "SftpErr_Unavailable",
+            _ => null,
+        };
+        return key is null ? Localize(ex) : $"{Strings.Get(key)} [{ex.Reason} @ {ex.Phase}]";
     }
 
     /// <summary>
@@ -212,8 +246,35 @@ internal static class SshInterop
     /// </remarks>
     private static string Describe(SshAuthenticationException ex)
     {
+        string main = LocalizeAuth(ex);
         string attempts = ex.DescribeAttempts();
-        return string.IsNullOrWhiteSpace(attempts) ? ex.Message : $"{ex.Message}{Environment.NewLine}{attempts}";
+        return string.IsNullOrWhiteSpace(attempts) ? main : $"{main}{Environment.NewLine}{attempts}";
+    }
+
+    /// <summary>认证失败的主句:原因码加上服务端接受的方法、有没有过一关,足够拼出界面语言的那句话。</summary>
+    /// <remarks>
+    /// 逐条尝试记录(<see cref="SshAuthenticationException.DescribeAttempts" />)仍是库的原文 ——
+    /// 要翻它得先给它补结构化的出处(库 AGENTS 4.8)。方法名来自服务端,拼进来之前先清一遍。
+    /// </remarks>
+    internal static string LocalizeAuth(SshAuthenticationException ex)
+    {
+        string offered = PeerText.Sanitize(string.Join(", ", ex.ServerOffered), 256);
+        string? main = ex.Reason switch
+        {
+            SshFailureReason.TwoFactorRequired => Strings.Format("SshErr_TwoFactorRequired", offered),
+            SshFailureReason.PasswordExpired => Strings.Get("SshErr_PasswordExpired"),
+            SshFailureReason.AuthenticationMethodExhausted => Strings.Format("SshErr_AuthExhausted", offered),
+            _ => null,
+        };
+        if (main is null)
+        {
+            return ex.Message;
+        }
+        if (ex.PartialSuccessAchieved)
+        {
+            main = $"{main} {Strings.Get("SshErr_AuthPartialSuccess")}";
+        }
+        return $"{main} [{ex.Reason} @ {ex.Phase}]";
     }
 
     /// <summary>

@@ -564,8 +564,38 @@
   <data name="Copy" xml:space="preserve">
     <value>Copy</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>The server&apos;s SFTP subsystem did not respond in time.</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>The transfer was interrupted. {0} bytes were confirmed; it can resume from there.</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>The server&apos;s SFTP subsystem is not available (SFTP may be disabled on the server).</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>Cannot verify where to resume {0} (the source cannot be read back, or the target cannot resume), so it is handled as a same-name conflict.</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>The operation was cancelled.</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>All authentication methods were tried and none succeeded. The server accepts: {0}.</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>At least one step succeeded; authentication is stuck on a later step.</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>A local concurrency limit was reached (forwarded connections, agent or X11 channels). Try again after some of them close.</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>The server requires the password to be changed first (it has expired, or the administrator requires a new one). VelaShell cannot change passwords; sign in once with another client to change it.</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>The server violated the SSH protocol.</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>The server requires keyboard-interactive authentication (a one-time code), but none is configured. The server accepts: {0}.</value>
   </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>{0} chars selected</value>

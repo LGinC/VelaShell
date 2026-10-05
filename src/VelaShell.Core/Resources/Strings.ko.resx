@@ -1021,6 +1021,15 @@
   <data name="Msg_Relaying" xml:space="preserve">
     <value>전송 중</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>서버의 SFTP 하위 시스템이 제때 응답하지 않았습니다.</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>전송이 중단되었습니다. {0}바이트가 확인되었으며 거기서부터 이어서 전송할 수 있습니다.</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>서버의 SFTP 하위 시스템을 사용할 수 없습니다(서버에서 SFTP가 비활성화되어 있을 수 있습니다).</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>{0}의 이어받기 위치를 확인할 수 없어(원본을 다시 읽을 수 없거나 대상이 이어받기를 지원하지 않음) 같은 이름 충돌로 처리합니다.</value>
   </data>
@@ -1222,6 +1231,27 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>인증 실패: {0}의 사용자 이름, 비밀번호 또는 키가 올바르지 않습니다.</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>작업이 취소되었습니다.</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>모든 인증 방식을 시도했지만 성공하지 못했습니다. 서버가 허용하는 방식: {0}.</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>최소 한 단계는 통과했으며 이후 단계에서 막혔습니다.</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>로컬 동시 실행 한도에 도달했습니다(포워딩 연결 수, agent / X11 채널 수). 일부가 닫힌 뒤 다시 시도하세요.</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>서버가 먼저 비밀번호 변경을 요구합니다(만료되었거나 관리자가 변경을 요구함). VelaShell은 비밀번호를 변경할 수 없으니 다른 클라이언트로 한 번 로그인해 변경하세요.</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>서버가 SSH 프로토콜을 위반했습니다.</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>서버가 키보드 대화형 인증(일회용 코드)을 요구하지만 설정되어 있지 않습니다. 서버가 허용하는 방식: {0}.</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>지금 다시 연결</value>

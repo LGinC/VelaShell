@@ -1021,6 +1021,15 @@
   <data name="Msg_Relaying" xml:space="preserve">
     <value>転送中</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>サーバーの SFTP サブシステムが時間内に応答しませんでした。</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>転送が中断されました。{0} バイトが確認済みで、そこから再開できます。</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>サーバーの SFTP サブシステムを利用できません(サーバーで SFTP が無効になっている可能性があります)。</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>{0} の再開位置を確認できないため(転送元を読み戻せないか、転送先が再開に対応していません)、同名の競合として処理します。</value>
   </data>
@@ -1222,6 +1231,27 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>認証に失敗しました: {0} のユーザー名、パスワードまたは鍵が正しくありません。</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>操作はキャンセルされました。</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>すべての認証方式を試しましたが、成功しませんでした。サーバーが受け付ける方式: {0}。</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>少なくとも 1 つのステップは成功しており、後続のステップで止まっています。</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>ローカルの同時実行数の上限に達しました(転送接続数、agent / X11 チャネル数)。いくつか閉じてから再試行してください。</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>サーバーは先にパスワードの変更を求めています(期限切れ、または管理者による変更要求)。VelaShell はパスワードを変更できないため、別のクライアントで一度ログインして変更してください。</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>サーバーが SSH プロトコルに違反しました。</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>サーバーはキーボード対話型認証(ワンタイムコード)を要求していますが、設定されていません。サーバーが受け付ける方式: {0}。</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>今すぐ再接続</value>

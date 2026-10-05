@@ -302,7 +302,7 @@ TFM、`LangVersion`、`Nullable` 由仓库根 `Directory.Build.props` 统一给�
 - **两个上帝类。** `SshConnection` 约 2,960 行（四个 partial，`SshConnection.cs` 自己 1,576 行），`SshChannel` 1,388 行，都远过 4.4 的 800 行。
   拆法：`SshChannel` 的收发窗口与 stdin 泵提成 internal 协作者；`SshConnection` 的收包分发、全局请求账本同理。
   纯重构，不混行为改动，单独开 PR（已记入仓库根 `feature-plan.md`）。
-- **还透传库原文的界面文案。** 宿主已按 `Reason` 翻了连接、超时、保活、私钥口令、agent 拒绝、通道请求被拒、转发被拒几类，代理失败由
+- **还透传库原文的界面文案。** 宿主已按 `Reason` 翻了连接、超时、保活、私钥口令、agent 拒绝、通道请求被拒、转发被拒、认证失败的主句、SFTP 的状态码 / 中断 / 不可用、协议错误、并发上限与取消几类，代理失败由
   `ProxyTransportDialer` 用界面语言拼。仍是库的中文原文的有：认证的逐条尝试记录（`SshAuthAttempt.ToString` 与 `Detail`）、
   通道开不成时的建议（`SshChannelException` 的消息）、带具体信息的私钥 / 证书 / 配置 / 端口占用消息、`KnownHostLookup.CertificateProblem`。
   要翻就先给它们加结构化的出处（枚举 / 属性），不要在宿主里解析句子。

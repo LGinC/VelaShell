@@ -618,8 +618,38 @@
   <data name="Copy" xml:space="preserve">
     <value>複製</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>伺服器的 SFTP 子系統沒有及時回應。</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>傳輸中斷。已確認 {0} 位元組,可以從這裡續傳。</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>伺服器的 SFTP 子系統無法使用(伺服器可能沒有啟用 SFTP)。</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>無法核實 {0} 的續傳起點(來源端不能回讀,或目標端不支援續傳),依同名衝突處理。</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>操作已取消。</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>所有驗證方法都已嘗試,均未成功。伺服器接受:{0}。</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>其中至少有一步已經通過,卡在後續步驟。</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>達到了本機的並行上限(轉送連線數、agent / X11 通道數)。等其中一些關閉後再試。</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>伺服器要求先修改密碼(密碼已過期或管理員要求更換)。VelaShell 不支援修改密碼,請先用別的用戶端登入一次改掉密碼。</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>伺服器違反了 SSH 協定。</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>伺服器要求鍵盤互動式驗證(動態碼 / OTP),但沒有設定。伺服器接受:{0}。</value>
   </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>已選 {0} 字元</value>
