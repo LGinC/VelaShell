@@ -179,6 +179,18 @@ public sealed class ProxyDialerTests
 $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob:pw"))}\r\n", request);
     }
 
+    /// <summary>〔FW-E11〕代理先回一个或几个 1xx 中间响应再回 200：跳过它们照常连上（曾经当成拒绝）。</summary>
+    [TestMethod]
+    public async Task HTTP代理先回1xx中间响应时照常连上()
+    {
+        await using var proxy = FakeHttpProxy.Start(
+            "HTTP/1.1 100 Continue\r\n\r\nHTTP/1.1 102 Processing\r\nX-Note: wait\r\n\r\nHTTP/1.1 200 Connection established");
+
+        await using SshConnection connection = await ConnectAsync(DialerChain.HttpConnect("127.0.0.1", proxy.Port));
+
+        Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
+    }
+
     [TestMethod]
     [DataRow("evil.example\r\nX-Injected: 1", DisplayName = "CR LF 注入头部")]
     [DataRow("evil.example\nHost: other", DisplayName = "LF")]

@@ -145,41 +145,64 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         try
         {
             int filled = 0;
-            int headerEnd;
+
+            // 当前这个响应头在 buffer 里的起点：前面的是已经跳过的 1xx 中间响应。它们合起来也受 MaxResponseHeaderBytes 约束。
+            int start = 0;
             while (true)
             {
-                int read = await stream.ReadAsync(buffer.AsMemory(filled, MaxResponseHeaderBytes - filled), cancellationToken)
-                    .ConfigureAwait(false);
-                if (read == 0)
+                int headerEnd = buffer.AsSpan(start, filled - start).IndexOf(HeaderTerminator);
+                if (headerEnd < 0)
                 {
-                    throw new EndOfStreamException("响应头还没读完连接就关了。");
-                }
-                filled += read;
+                    if (filled == MaxResponseHeaderBytes)
+                    {
+                        throw ProxyDialing.Refused(
+                            $"HTTP 代理 {Proxy} 的响应头超过了 {MaxResponseHeaderBytes / 1024} KiB —— 它可能不是一个 HTTP 代理。");
+                    }
 
-                headerEnd = buffer.AsSpan(0, filled).IndexOf(HeaderTerminator);
-                if (headerEnd >= 0)
-                {
-                    break;
+                    int read = await stream.ReadAsync(buffer.AsMemory(filled, MaxResponseHeaderBytes - filled), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException("响应头还没读完连接就关了。");
+                    }
+                    filled += read;
+                    continue;
                 }
 
-                if (filled == MaxResponseHeaderBytes)
+                headerEnd += start;
+                string head = Encoding.Latin1.GetString(buffer, start, headerEnd - start);
+                int bodyStart = headerEnd + HeaderTerminator.Length;
+
+                // 〔FW-E11〕1xx 是中间响应（RFC 9110 §15.2：客户端必须能在最终响应之前读过一个或多个 1xx），跳过它接着读。
+                // 曾经当成拒绝。101（切换协议）对 CONNECT 没有意义，照最终响应处理。
+                if (StatusOf(head) is >= 100 and < 200 and not 101)
                 {
-                    throw ProxyDialing.Refused(
-                        $"HTTP 代理 {Proxy} 的响应头超过了 {MaxResponseHeaderBytes / 1024} KiB —— 它可能不是一个 HTTP 代理。");
+                    start = bodyStart;
+                    continue;
                 }
+
+                ThrowIfNotSuccess(head, target);
+
+                byte[] leftover = buffer.AsSpan(bodyStart, filled - bodyStart).ToArray();
+                return leftover.Length == 0 ? stream : new PrefixedStream(leftover, stream);
             }
-
-            string head = Encoding.Latin1.GetString(buffer, 0, headerEnd);
-            ThrowIfNotSuccess(head, target);
-
-            int bodyStart = headerEnd + HeaderTerminator.Length;
-            byte[] leftover = buffer.AsSpan(bodyStart, filled - bodyStart).ToArray();
-            return leftover.Length == 0 ? stream : new PrefixedStream(leftover, stream);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    /// <summary>响应头里的状态码；状态行不是 <c>HTTP/x 三位数</c> 的样子时为 <see langword="null"/>。</summary>
+    private static int? StatusOf(string head)
+    {
+        string statusLine = head.Split("\r\n", 2)[0];
+        string[] parts = statusLine.Split(' ', 3);
+        return parts.Length >= 2
+            && parts[0].StartsWith("HTTP/", StringComparison.Ordinal)
+            && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int status)
+                ? status
+                : null;
     }
 
     private void ThrowIfNotSuccess(string head, SshEndPoint target)
@@ -188,10 +211,7 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         string statusLine = lines[0];
 
         // 状态行：HTTP/1.x 空格 三位状态码 空格 原因短语。
-        string[] parts = statusLine.Split(' ', 3);
-        if (parts.Length < 2
-            || !parts[0].StartsWith("HTTP/", StringComparison.Ordinal)
-            || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int status))
+        if (StatusOf(head) is not { } status)
         {
             throw ProxyDialing.Refused($"{Proxy} 回的不是 HTTP 响应（「{Truncate(statusLine)}」）—— 它可能是 SOCKS 代理，或者根本不是代理。");
         }
