@@ -204,7 +204,7 @@ public static class SshPrivateKeyFile
                 $"这个文件里有 {keyCount} 把密钥{where}，本库只处理一把。");
         }
 
-        _ = reader.ReadString(64 * 1024);        // 公钥（下面从私钥里重新导出，不用它）
+        byte[] publicSection = reader.ReadStringAsArray(64 * 1024);   // 公钥：解出私钥之后拿来核对
         byte[] privateSection = reader.ReadStringAsArray(1024 * 1024);
 
         // AEAD 的认证标签在那个 string 的**外面** —— 容器末尾的裸字节，不带长度前缀。
@@ -212,21 +212,35 @@ public static class SshPrivateKeyFile
         // 标签永远验不过」的结果（流密码解前缀照样是对的），查起来极其费劲。
         byte[] tag = reader.ReadRemaining().ToArray();
 
+        InMemorySshSigner signer;
         if (cipherName == "none" && kdfName == "none")
         {
-            return ParseOpenSshPrivateSection(privateSection, encrypted: false, where);
+            signer = ParseOpenSshPrivateSection(privateSection, encrypted: false, where);
+        }
+        else
+        {
+            byte[] decrypted = DecryptOpenSshSection(
+                privateSection, tag, cipherName, kdfName, kdfOptions, passphrase, where);
+            try
+            {
+                signer = ParseOpenSshPrivateSection(decrypted, encrypted: true, where);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(decrypted);
+            }
         }
 
-        byte[] decrypted = DecryptOpenSshSection(
-            privateSection, tag, cipherName, kdfName, kdfOptions, passphrase, where);
-        try
+        // 〔velashell-docs/zh/ssh/spec/04 §4.6〕公钥段（文件里明文的那一份）必须与私钥导出的是同一把。
+        // 曾经直接丢掉不看：公钥段被改过、或者两个文件拼错了，拿到的是「不是你以为的那把」钥 ——
+        // 症状只是服务端一句「不接受这把公钥」，而 ssh-keygen -y、agent 列出来的都是公钥段那一把。
+        if (!signer.PublicKey.Blob.Span.SequenceEqual(publicSection))
         {
-            return ParseOpenSshPrivateSection(decrypted, encrypted: true, where);
+            signer.Dispose();
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                $"OpenSSH 私钥文件里的公钥与私钥不是一对{where} —— 文件被改过，或者拼错了。");
         }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(decrypted);
-        }
+        return signer;
     }
 
     /// <summary>用 <c>bcrypt_pbkdf</c> 派生密钥，再解开私钥区。</summary>
@@ -381,7 +395,7 @@ public static class SshPrivateKeyFile
 
     private static InMemorySshSigner ReadEd25519(scoped ref SshDataReader reader, string where)
     {
-        _ = reader.ReadString(64);                                  // 公钥
+        byte[] publicKey = reader.ReadStringAsArray(64);            // 公钥
         byte[] secret = reader.ReadStringAsArray(128);              // 种子 ‖ 公钥
 
         try
@@ -392,8 +406,22 @@ public static class SshPrivateKeyFile
                     $"Ed25519 私钥应当是 64 字节（种子 32 + 公钥 32），实际 {secret.Length} 字节{where}。");
             }
 
+            // 私钥区里公钥出现两次（单独一份、种子后面一份），种子还能导出第三份 —— 三份必须是同一把。
+            if (!secret.AsSpan(32).SequenceEqual(publicKey))
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥区里的两份公钥对不上{where}，文件多半损坏了。");
+            }
+
             // 签名器复制一份归自己所有；这一份由这里清。
-            return InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            if (!signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
+            {
+                signer.Dispose();
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 的种子导出的公钥与文件里写的不一致{where}，文件多半损坏了。");
+            }
+            return signer;
         }
         finally
         {
@@ -419,6 +447,13 @@ public static class SshPrivateKeyFile
             BigInteger bigD = ToPositive(d);
             BigInteger bigP = ToPositive(p);
             BigInteger bigQ = ToPositive(q);
+
+            // n 必须正好是 p·q（p、q 都大于 1）：不核对的话，坏文件的症状是签名验不过 ——「服务端不接受这把公钥」。
+            if (bigP <= BigInteger.One || bigQ <= BigInteger.One || bigP * bigQ != ToPositive(n))
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"RSA 私钥的 p·q 与 n 对不上{where}，文件多半损坏了。");
+            }
 
             byte[] dp = ToFixedLength(bigD % (bigP - BigInteger.One), p.Length);
             byte[] dq = ToFixedLength(bigD % (bigQ - BigInteger.One), q.Length);
@@ -464,6 +499,12 @@ public static class SshPrivateKeyFile
             "nistp521" => (ECCurve.NamedCurves.nistP521, 66),
             _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported, $"不支持的曲线 {curveName}{where}。"),
         };
+
+        if (keyType != $"ecdsa-sha2-{curveName}")
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                $"密钥类型是 {keyType}，曲线却写的是 {curveName}{where} —— 两者对不上，文件多半损坏了。");
+        }
 
         if (point.Length != 1 + (coordinateBytes * 2) || point[0] != 0x04)
         {

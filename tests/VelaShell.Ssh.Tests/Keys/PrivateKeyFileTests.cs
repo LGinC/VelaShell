@@ -186,6 +186,109 @@ public sealed class PrivateKeyFileTests
         Assert.Contains("不支持的 .ppk 版本", error.Message);
     }
 
+    // ------------------------------------------------------------ OpenSSH 格式：内部一致性
+
+    private static byte[] Ed25519Blob(byte[] publicKey)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriterBox box = new(buffer);
+        box.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+        box.WriteString(publicKey);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    /// <summary>
+    /// 〔spec/04 §4.6〕公钥段必须与私钥是一对。曾经直接丢掉不看：被改过或拼错的文件拿到「不是你以为的那把」钥，
+    /// 症状只是「服务端不接受这把公钥」。
+    /// </summary>
+    [TestMethod]
+    public void OpenSSH私钥的公钥段与私钥不是一对时拒绝()
+    {
+        Ed25519PrivateKeyParameters key = new(new SecureRandom());
+        byte[] publicKey = key.GeneratePublicKey().GetEncoded();
+        byte[] otherPublic = new Ed25519PrivateKeyParameters(new SecureRandom()).GeneratePublicKey().GetEncoded();
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                w.WriteString(publicKey);
+                w.WriteString([.. key.GetEncoded(), .. publicKey]);
+            },
+            Ed25519Blob(otherPublic));
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void Ed25519私钥区里的两份公钥对不上时拒绝()
+    {
+        Ed25519PrivateKeyParameters key = new(new SecureRandom());
+        byte[] publicKey = key.GeneratePublicKey().GetEncoded();
+        byte[] otherPublic = new Ed25519PrivateKeyParameters(new SecureRandom()).GeneratePublicKey().GetEncoded();
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                w.WriteString(otherPublic);                           // 单独的那份写错了
+                w.WriteString([.. key.GetEncoded(), .. publicKey]);
+            },
+            Ed25519Blob(publicKey));
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void ECDSA的密钥类型与曲线名对不上时拒绝()
+    {
+        using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        ECParameters p = ecdsa.ExportParameters(true);
+        byte[] point = [0x04, .. p.Q.X!, .. p.Q.Y!];
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.EcdsaSha2Nistp256);   // 类型说 P-256
+                w.WriteUtf8String("nistp384");                            // 曲线却是 P-384
+                w.WriteString(point);
+                w.WriteMpint(p.D!);
+            },
+            []);
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("对不上", error.Message);
+    }
+
+    [TestMethod]
+    public void RSA的p乘q不等于n时拒绝()
+    {
+        using RSA rsa = RSA.Create(2048);
+        using RSA other = RSA.Create(2048);
+        RSAParameters p = rsa.ExportParameters(true);
+        RSAParameters o = other.ExportParameters(true);
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshRsa);
+                w.WriteMpint(p.Modulus!);
+                w.WriteMpint(p.Exponent!);
+                w.WriteMpint(p.D!);
+                w.WriteMpint(p.InverseQ!);
+                w.WriteMpint(p.P!);
+                w.WriteMpint(o.Q!);                                       // 另一把钥的 q
+            },
+            []);
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("p·q", error.Message);
+    }
+
     // ------------------------------------------------------------ OpenSSH 格式
 
     [TestMethod]
