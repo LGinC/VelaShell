@@ -373,7 +373,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         writer.WriteBoolean(false);        // 不是改密码请求
         writer.WriteUtf8String(password);
 
+        // 请求里是明文密码：封进传输的缓冲之后就把这一份清零（velashell-docs/zh/ssh/spec/04 §5.2）。
         _transport.WritePacket(request.WrittenSpan);
+        request.Clear();
         await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
 
         // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ：服务端要求先改密码。
@@ -598,7 +600,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 responseWriter.WriteUtf8String(answer);
             }
 
+            // 应答里是明文的口令 / 动态码：封进传输的缓冲之后就把这一份清零（velashell-docs/zh/ssh/spec/04 §5.2）。
             _transport.WritePacket(response.WrittenSpan);
+            response.Clear();
             await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
     }
