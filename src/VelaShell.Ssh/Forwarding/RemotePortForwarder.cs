@@ -9,6 +9,7 @@
 
 using System.Buffers;
 using System.Buffers.Binary;
+using System.Collections.Concurrent;
 using System.Net.Sockets;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Diagnostics;
@@ -84,6 +85,15 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     /// <summary>Unix 套接字变体：本机要连过去的那个套接字路径。</summary>
     private readonly string? _targetSocketPath;
     private readonly SemaphoreSlim _connectionSlots;
+
+    /// <summary>
+    /// <c>GetOptionsAsync</c> 里连好的本机目标，等 <c>HandleAsync</c> 取走（或 <c>OnOpenAborted</c> 丢掉）。
+    /// </summary>
+    /// <remarks>
+    /// 连的都是同一个目标，彼此可以互换 —— 不必与某一条通道对上号，只要「每放进一个，就恰好有一次
+    /// <c>HandleAsync</c> 或 <c>OnOpenAborted</c> 来取」：连接对每一次成功的 <c>GetOptionsAsync</c> 恰好调用其中之一。
+    /// </remarks>
+    private readonly ConcurrentQueue<Socket> _readyTargets = new();
 
     /// <summary>这个转发器的一切连接都挂在它上面：释放时取消，搬运随之中止。</summary>
     /// <remarks>不释放它：回连的处理可能在释放之后才开始读它的令牌，而它没有要还的资源。</remarks>
@@ -398,7 +408,12 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     // ------------------------------------------------------------ 入站通道
 
     /// <inheritdoc />
-    ValueTask<SshChannelOptions> IIncomingChannelHandler.GetOptionsAsync(
+    /// <remarks>
+    /// 〔FW-D2，velashell-docs/zh/ssh/spec/07 §4.1〕<b>本机目标在确认通道之前连好</b>：连不上就回 <c>CHANNEL_OPEN_FAILURE</c>
+    /// （原因码 2，connect failed），远端看到的是「连不上」，服务端日志里也有这一句。曾经先确认、再去连：
+    /// 目标连不上时远端看到的是「接受之后立刻关闭」。与 agent 转发同一个时序。这里不在接收循环上（连接把「问处理器」放在后台做）。
+    /// </remarks>
+    async ValueTask<SshChannelOptions> IIncomingChannelHandler.GetOptionsAsync(
         string channelType, ReadOnlyMemory<byte> typeSpecificPayload, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -436,13 +451,73 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 SshFailureReason.LimitExceeded, $"并发连接数已达上限 {_options.MaxConnections}。");
         }
 
-        return ValueTask.FromResult(_options.Channel);
+        try
+        {
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
+            _readyTargets.Enqueue(await ConnectTargetAsync(linked.Token).ConfigureAwait(false));
+        }
+        catch (Exception)
+        {
+            _connectionSlots.Release();
+            throw;
+        }
+
+        return _options.Channel;
     }
 
+    /// <summary>连本机目标。连不上时记一笔错误、抛出带「连不上」原因码的异常 —— 拒绝理由发给服务端，只说连不上，本机的地址不往外送。</summary>
+    private async Task<Socket> ConnectTargetAsync(CancellationToken cancellationToken)
+    {
+        string target = TargetName;
+        Socket outbound = _targetSocketPath is null
+            ? new Socket(SocketType.Stream, ProtocolType.Tcp)
+            : new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            if (_targetSocketPath is null)
+            {
+                await outbound.ConnectAsync(_targetHost, _targetPort, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await outbound.ConnectAsync(new UnixDomainSocketEndPoint(_targetSocketPath), cancellationToken).ConfigureAwait(false);
+            }
+            return outbound;
+        }
+        catch (SocketException ex)
+        {
+            outbound.Dispose();
+
+            // 连不上本机目标：拒掉这一条，转发器继续跑。
+            Report(ForwardErrorReason.TargetConnect, $"连不上本机目标 {target}：{ex.SocketErrorCode}。", ex);
+            throw new SshForwardException(ReasonFor(ex.SocketErrorCode), "连不上转发的本机目标。", ex);
+        }
+        catch
+        {
+            outbound.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>连本机目标失败的原因码（会被译成 <c>CHANNEL_OPEN_FAILURE</c> 的 connect failed）。</summary>
+    private static SshFailureReason ReasonFor(SocketError error) => error switch
+    {
+        SocketError.ConnectionRefused => SshFailureReason.TcpRefused,
+        SocketError.TimedOut => SshFailureReason.TcpTimeout,
+        SocketError.HostNotFound or SocketError.TryAgain or SocketError.NoData or SocketError.NoRecovery => SshFailureReason.DnsFailure,
+        _ => SshFailureReason.TcpUnreachable,
+    };
+
     /// <inheritdoc />
-    /// <remarks>还回 <c>GetOptionsAsync</c> 占的连接槽位。</remarks>
-    void IIncomingChannelHandler.OnOpenAborted(string channelType, ReadOnlyMemory<byte> typeSpecificPayload) =>
+    /// <remarks>还回 <c>GetOptionsAsync</c> 占的连接槽位，关掉为它连好的那个本机目标。</remarks>
+    void IIncomingChannelHandler.OnOpenAborted(string channelType, ReadOnlyMemory<byte> typeSpecificPayload)
+    {
+        if (_readyTargets.TryDequeue(out Socket? ready))
+        {
+            ready.Dispose();
+        }
         _connectionSlots.Release();
+    }
 
     /// <inheritdoc />
     async Task IIncomingChannelHandler.HandleAsync(
@@ -457,31 +532,13 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         cancellationToken = linked.Token;
 
-        Socket? outbound = null;
+        // 本机目标在确认之前已经连好（见 GetOptionsAsync）。取不到只会发生在转发器刚被释放、把队列清空了的时候 ——
+        // 那这条通道本来也不该再转发了。
+        _readyTargets.TryDequeue(out Socket? outbound);
         try
         {
-            outbound = _targetSocketPath is null
-                ? new Socket(SocketType.Stream, ProtocolType.Tcp)
-                : new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
-
-            try
+            if (outbound is null)
             {
-                if (_targetSocketPath is null)
-                {
-                    await outbound.ConnectAsync(_targetHost, _targetPort, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                else
-                {
-                    await outbound.ConnectAsync(
-                        new UnixDomainSocketEndPoint(_targetSocketPath), cancellationToken)
-                        .ConfigureAwait(false);
-                }
-            }
-            catch (SocketException ex)
-            {
-                // 连不上本机目标：关掉这一条，转发器继续跑。
-                Report(ForwardErrorReason.TargetConnect, $"连不上本机目标 {target}：{ex.SocketErrorCode}。", ex);
                 return;
             }
 
@@ -572,6 +629,12 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         catch (Exception)
         {
             // 释放路径不抛。
+        }
+
+        // 连好了、还没被取走的本机目标（对应的通道还没确认）：关掉。
+        while (_readyTargets.TryDequeue(out Socket? ready))
+        {
+            ready.Dispose();
         }
 
         // 不 Dispose 槽位信号量与 _lifetime：还在收尾的回连要 Release 前者、读后者的令牌，

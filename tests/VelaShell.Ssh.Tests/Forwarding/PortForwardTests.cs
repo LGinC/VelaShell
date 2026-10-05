@@ -725,6 +725,44 @@ public sealed class PortForwardTests
         await remote.DisposeAsync();
     }
 
+    /// <summary>
+    /// 〔FW-D2〕远程转发的本机目标连不上：回 CHANNEL_OPEN_FAILURE（connect failed），而不是先确认、再立刻关掉；
+    /// 本地照样记一笔 TargetConnect 错误。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程转发的本机目标连不上时回连接失败()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34570 });
+
+        int deadPort;
+        using (Socket probe = new(SocketType.Stream, ProtocolType.Tcp))
+        {
+            probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            deadPort = ((IPEndPoint)probe.LocalEndPoint!).Port;   // 关掉之后没人在听
+        }
+
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartAsync(
+            harness.Connection, "127.0.0.1", deadPort,
+            new RemotePortForwardOptions { BindAddress = "localhost", BindPort = 34570 }, harness.Token);
+        List<ForwardErrorEventArgs> errors = [];
+        forwarder.Error += (_, e) => errors.Add(e);
+
+        ArrayBufferWriter<byte> header = new();
+        SshDataWriter writer = new(header);
+        writer.WriteUtf8String("localhost");
+        writer.WriteUInt32(34570);
+        writer.WriteUtf8String("127.0.0.1");
+        writer.WriteUInt32(40002);
+        Stream? remote = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+
+        Assert.IsNull(remote, "连不上本机目标时不该确认通道");
+        Assert.AreEqual(SshChannelOpenFailureReason.ConnectFailed, harness.Observed.LastClientOpenFailure);
+        await WaitUntilAsync(() => errors.Count > 0, harness.Token);
+        Assert.AreEqual(ForwardErrorReason.TargetConnect, errors[0].Reason);
+        Assert.AreEqual(0, forwarder.ActiveConnections, "槽位要还回去");
+    }
+
     [TestMethod]
     public async Task 远程转发释放的宽限期里照常接在途的回连()
     {

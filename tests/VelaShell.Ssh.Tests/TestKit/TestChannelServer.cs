@@ -265,6 +265,9 @@ internal sealed class TestChannelObservation
     /// <summary>被拒绝的 <c>CHANNEL_OPEN</c> 次数。</summary>
     public int RejectedOpens { get; set; }
 
+    /// <summary>服务端发起的通道最近一次被客户端拒绝时的原因码。</summary>
+    public SshChannelOpenFailureReason? LastClientOpenFailure { get; set; }
+
     /// <summary>收到的 <c>CHANNEL_OPEN</c> 次数（拒绝的、还扣着确认的都算）。</summary>
     public int ReceivedOpens => Volatile.Read(ref _receivedOpens);
 
@@ -1124,6 +1127,10 @@ internal sealed class TestChannelServer : IDisposable
                 _sendWindow[serverChannel] = clientWindow;
             }
             Observation.ClientAnnounced = (clientWindow, clientMaxPacket);
+        }
+        else
+        {
+            Observation.LastClientOpenFailure = (SshChannelOpenFailureReason)reader.ReadUInt32();
         }
 
         completion.TrySetResult(accepted);

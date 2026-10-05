@@ -1242,6 +1242,21 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         return default;
     }
 
+    /// <summary>处理器拒绝时回给对端的原因码（RFC 4254 §5.1）。</summary>
+    /// <remarks>
+    /// 〔FW-D2〕连不上要连的东西（远程转发的本机目标、agent 转发的本机 agent）回 2（connect failed），
+    /// 并发名额满了回 4（resource shortage），其余回 1（administratively prohibited）。曾经一律回 1：
+    /// 远端分不出是「不让连」还是「连不上」，服务端日志里也没有 connect failed。
+    /// </remarks>
+    private static SshChannelOpenFailureReason OpenFailureReasonFor(Exception refusal) => (refusal as SshException)?.Reason switch
+    {
+        SshFailureReason.TcpRefused or SshFailureReason.TcpTimeout or SshFailureReason.TcpUnreachable
+            or SshFailureReason.DnsFailure or SshFailureReason.AgentUnavailable or SshFailureReason.AgentNotRunning
+            => SshChannelOpenFailureReason.ConnectFailed,
+        SshFailureReason.LimitExceeded => SshChannelOpenFailureReason.ResourceShortage,
+        _ => SshChannelOpenFailureReason.AdministrativelyProhibited,
+    };
+
     /// <summary>问处理器要不要接，接的话建通道、回确认、交给处理器（后台执行，见 <see cref="OnPeerChannelOpenAsync"/>）。</summary>
     private async Task AcceptPeerChannelAsync(
         string channelType,
@@ -1256,6 +1271,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         IIncomingChannelHandler? handler = null;
         SshChannelOptions options = SshChannelOptions.Default;
         string refusal = "";
+        SshChannelOpenFailureReason refusalCode = SshChannelOpenFailureReason.AdministrativelyProhibited;
         foreach (IIncomingChannelHandler candidate in candidates)
         {
             try
@@ -1273,12 +1289,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             {
                 // 处理器拒绝（例如远程转发的路由表里找不到这个绑定地址）。
                 refusal = ex.Message;
+                refusalCode = OpenFailureReasonFor(ex);
             }
         }
 
         if (handler is null)
         {
-            PostOpenFailure(senderChannel, SshChannelOpenFailureReason.AdministrativelyProhibited, refusal);
+            PostOpenFailure(senderChannel, refusalCode, refusal);
             return;
         }
 
