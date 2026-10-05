@@ -233,6 +233,30 @@ public sealed class SshInteropTests
         Assert.Contains("Disk quota exceeded", translated!.Message);
     }
 
+    /// <summary>
+    /// 服务端原话只出现一次,而且清洗过;前半句按状态码换成界面语言。
+    /// </summary>
+    /// <remarks>
+    /// 曾经在库的消息(里面已经有清洗过的「服务端说:…」)后面再追加一遍原文:同一句话显示两遍,
+    /// 第二遍绕过了清洗,终端转义序列照样进了界面。
+    /// </remarks>
+    [TestMethod]
+    public void Translate_SftpServerMessage_ShownOnceAndSanitized()
+    {
+        const string hostile = "quota\u001b]52;c;cm0=\u0007 exceeded";
+        Exception? translated = SshInterop.Translate(
+            new SftpException(SftpStatusCode.Failure, hostile, "/home/joe/\u001b[2Jbig.bin", SftpOperation.Write));
+
+        string message = translated!.Message;
+        Assert.StartsWith(Strings.Get("SftpErr_Failure"), message);
+        Assert.AreEqual(1, message.Split("quota").Length - 1, "服务端原话只出现一次");
+        foreach (char c in message)
+        {
+            Assert.IsFalse(char.IsControl(c), $"消息里不该有控制字符 U+{(int)c:X4}:{message}");
+        }
+        Assert.Contains("big.bin", message, "路径照样带上");
+    }
+
     // ------------------------------------------------------------ 界面语言
 
     /// <summary>

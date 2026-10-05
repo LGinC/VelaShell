@@ -5258,6 +5258,30 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>The server refused the forwarding request. Check AllowAgentForwarding / AllowTcpForwarding / X11Forwarding in sshd_config.</value>
   </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>No such file or directory</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>Permission denied</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>The server does not support this operation</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>The server rejected the request as malformed</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>The connection was lost</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>The operation failed</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}: {1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}. Server said: {1}</value>
+  </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>Agent</value>
   </data>

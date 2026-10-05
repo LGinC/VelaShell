@@ -5253,6 +5253,30 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>サーバーが転送要求を拒否しました。sshd_config の AllowAgentForwarding / AllowTcpForwarding / X11Forwarding を確認してください。</value>
   </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>ファイルまたはディレクトリが存在しません</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>アクセス権がありません</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>サーバーはこの操作をサポートしていません</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>サーバーが要求の形式を不正と判断しました</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>接続が切断されました</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>操作に失敗しました</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}: {1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}。サーバーの応答: {1}</value>
+  </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>エージェント</value>
   </data>

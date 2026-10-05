@@ -5712,6 +5712,30 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>服务器拒绝了转发请求。检查 sshd_config 里的 AllowAgentForwarding / AllowTcpForwarding / X11Forwarding。</value>
   </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>文件或目录不存在</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>权限不足</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>服务器不支持这个操作</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>服务器认为请求的格式不对</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>连接已断开</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>操作失败</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}:{1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}。服务器说:{1}</value>
+  </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>Agent</value>
   </data>

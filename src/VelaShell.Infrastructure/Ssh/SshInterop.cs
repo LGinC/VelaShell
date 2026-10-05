@@ -137,17 +137,9 @@ internal static class SshInterop
     /// <summary>
     /// SFTP 的失败要分出「没这个文件」与「没权限」—— 上层据此决定是提示用户还是静默跳过。
     /// </summary>
-    /// <remarks>
-    /// <b>服务端原话(<see cref="SftpException.ServerMessage" />)必须带上。</b>
-    /// SFTP v3 只有 9 个状态码,而码 4(Failure)承载了绝大多数真实错误 ——
-    /// 「目录非空」「文件已存在」「磁盘满」「配额超限」全是同一个码,
-    /// 服务端给的那段文本是唯一能区分它们的信息。
-    /// </remarks>
     private static VelaSftpOperationException TranslateSftp(SftpException ex)
     {
-        string message = string.IsNullOrWhiteSpace(ex.ServerMessage)
-            ? ex.Message
-            : $"{ex.Message}({ex.ServerMessage})";
+        string message = LocalizeSftp(ex);
 
         return ex.StatusCode switch
         {
@@ -155,6 +147,51 @@ internal static class SshInterop
             SftpStatusCode.PermissionDenied => new VelaSftpPermissionDeniedException(message, ex),
             _ => new VelaSftpOperationException(message, ex),
         };
+    }
+
+    /// <summary>SFTP 的失败按状态码换成界面语言,带上路径与服务端原话。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>服务端原话(<see cref="SftpException.ServerMessage" />)必须带上。</b>
+    /// SFTP v3 只有 9 个状态码,而码 4(Failure)承载了绝大多数真实错误 ——
+    /// 「目录非空」「文件已存在」「磁盘满」「配额超限」全是同一个码,
+    /// 服务端给的那段文本是唯一能区分它们的信息。
+    /// </para>
+    /// <para>
+    /// ⚠️ 原话与路径都来自服务端,<b>拼进来之前先清一遍</b>(<see cref="PeerText.Sanitize" />)。
+    /// 曾经是在库的消息(里面已经有清洗过的「服务端说:…」)后面再追加一遍原文:同一句话显示两遍,
+    /// 第二遍绕过了清洗 —— 终端转义序列、双向控制符照样进了界面。
+    /// </para>
+    /// <para>不认识的状态码沿用库的消息(已经清洗过)。</para>
+    /// </remarks>
+    internal static string LocalizeSftp(SftpException ex)
+    {
+        string? key = ex.StatusCode switch
+        {
+            SftpStatusCode.NoSuchFile => "SftpErr_NoSuchFile",
+            SftpStatusCode.PermissionDenied => "SftpErr_PermissionDenied",
+            SftpStatusCode.OperationUnsupported => "SftpErr_Unsupported",
+            SftpStatusCode.BadMessage => "SftpErr_BadMessage",
+            SftpStatusCode.NoConnection or SftpStatusCode.ConnectionLost => "SftpErr_ConnectionLost",
+            SftpStatusCode.Failure => "SftpErr_Failure",
+            _ => null,
+        };
+
+        if (key is null)
+        {
+            return ex.Message;
+        }
+
+        string text = Strings.Get(key);
+        if (!string.IsNullOrEmpty(ex.Path))
+        {
+            text = Strings.Format("SftpErr_WithPath", text, PeerText.Sanitize(ex.Path));
+        }
+        if (!string.IsNullOrWhiteSpace(ex.ServerMessage))
+        {
+            text = Strings.Format("SftpErr_ServerSaid", text, PeerText.Sanitize(ex.ServerMessage));
+        }
+        return text;
     }
 
     /// <summary>

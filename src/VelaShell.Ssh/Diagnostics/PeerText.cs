@@ -5,7 +5,7 @@ using System.Text;
 
 namespace VelaShell.Ssh.Diagnostics;
 
-/// <summary>把对端给的文本放进异常消息之前先清一遍。</summary>
+/// <summary>把对端给的文本放进消息之前先清一遍。</summary>
 /// <remarks>
 /// <para>
 /// 版本标识串、<c>DISCONNECT</c> 的描述、拒绝开通道的理由、SFTP 的状态消息、代理的应答 ——
@@ -16,8 +16,11 @@ namespace VelaShell.Ssh.Diagnostics;
 /// 只清<b>进消息</b>的那一份：原话照样放在专门的属性里（如 <c>PeerDescription</c>、<c>ServerMessage</c>），
 /// 那些属性的文档都写明了是不可信输入。
 /// </para>
+/// <para>
+/// 公开出来，是给要把那些原话自己拼进界面文案的使用者用的 —— 同一套规则，不必各写一份。
+/// </para>
 /// </remarks>
-internal static class PeerText
+public static class PeerText
 {
     /// <summary>默认最多留多少个字符。</summary>
     public const int DefaultMaxLength = 256;
