@@ -43,6 +43,15 @@ public readonly record struct SshRekeyPolicy
     /// </remarks>
     public const long MinimumPackets = 1024;
 
+    /// <summary>报文数阈值的上限，也是与策略无关、关不掉的那条硬线：2³¹。</summary>
+    /// <remarks>
+    /// 序号是 32 位的，同一套密钥下走满 2³² 个报文就回绕（chacha20-poly1305 的 nonce 重用、HMAC 可被重放）。
+    /// 曾经这里可以设得比 2³² 还大，<see cref="Disabled"/> 也会把它一并关掉 —— 一条能被公开 API 关掉的密码学硬约束。
+    /// 现在阈值不许超过 2³¹；会话不论策略如何，任一方向在同一套密钥下到 2³¹ 个报文就主动重协商，
+    /// 传输层在 2³² 处还有最后一道保险。
+    /// </remarks>
+    public const long MaximumPackets = 1L << 31;
+
     /// <summary>建一组重协商阈值。</summary>
     /// <param name="maxBytes">任一方向累计字节数上限；0 表示不看。下限 <see cref="MinimumBytes"/>。</param>
     /// <param name="maxInterval">距上次密钥交换的时长上限；<see cref="TimeSpan.Zero"/> 表示不看。下限 <see cref="MinimumInterval"/>。</param>
@@ -66,6 +75,13 @@ public readonly record struct SshRekeyPolicy
             throw new ArgumentOutOfRangeException(
                 nameof(maxPackets), maxPackets,
                 $"重协商的报文数阈值不能低于 {MinimumPackets}。");
+        }
+
+        if (maxPackets > MaximumPackets)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(maxPackets), maxPackets,
+                $"重协商的报文数阈值不能高于 {MaximumPackets} —— 序号是 32 位的，再往上就有回绕的风险。");
         }
 
         if (maxInterval > TimeSpan.Zero && maxInterval < MinimumInterval)
@@ -92,7 +108,8 @@ public readonly record struct SshRekeyPolicy
     /// <summary>时长阈值的下限。</summary>
     public static TimeSpan MinimumInterval => TimeSpan.FromMinutes(1);
 
-    /// <summary>不主动发起（仍然会接住对端发起的）。</summary>
+    /// <summary>不按字节、时长或自定的报文数主动发起（仍然会接住对端发起的）。</summary>
+    /// <remarks>报文数的硬线（<see cref="MaximumPackets"/>）不受它影响，到了照样主动发起。</remarks>
     public static SshRekeyPolicy Disabled => default;
 
     /// <summary>默认：1 GiB / 1 小时 / 2³¹ 个报文（RFC 4253 §9 的建议 + 硬约束）。</summary>

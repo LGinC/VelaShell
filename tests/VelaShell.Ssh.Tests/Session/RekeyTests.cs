@@ -506,6 +506,35 @@ public sealed class RekeyTests
         Assert.AreEqual(0, after.ExitCode, "重协商之后连接还要能用");
     }
 
+    /// <summary>
+    /// 报文数的硬线与策略无关：策略关掉了，同一套密钥下的报文数到了照样主动重协商。
+    /// 曾经它只是策略的一项，<see cref="SshRekeyPolicy.Disabled"/> 会把它一并关掉 —— 序号一路走到回绕。
+    /// </summary>
+    [TestMethod]
+    public async Task 策略关掉时报文数的硬线照样触发重协商()
+    {
+        const int maxPacket = 256;
+        byte[] bulk = new byte[300 * 1024];
+        Random.Shared.NextBytes(bulk);
+
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = bulk, ExitCode = 0 },
+            rekey: SshRekeyPolicy.Disabled,
+            rekeyCheckInterval: TimeSpan.FromMilliseconds(30),
+            rekeyHardPacketLimit: SshRekeyPolicy.MinimumPackets);
+
+        SshCommandOptions options = new()
+        {
+            Channel = SshChannelOptions.Default with { ReceiveMaxPacketBytes = maxPacket },
+        };
+
+        SshCommandResult output = await host.Connection.RunAsync("灌", options, host.Token);
+        Assert.AreEqual(0, output.ExitCode);
+
+        await WaitForRekeyAsync(host, expected: 1);
+        Assert.Contains("硬线", host.Connection.LastRekeyReason!, $"实际：{host.Connection.LastRekeyReason}");
+    }
+
     [TestMethod]
     public void 阈值低于下限会被当场拒绝()
     {
@@ -519,6 +548,11 @@ public sealed class RekeyTests
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
             () => new SshRekeyPolicy(maxPackets: 8));
+
+        // 上限同样是硬的：序号是 32 位的，阈值设到 2³² 以上就等于允许回绕。
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new SshRekeyPolicy(maxPackets: SshRekeyPolicy.MaximumPackets + 1));
+        _ = new SshRekeyPolicy(maxPackets: SshRekeyPolicy.MaximumPackets);
 
         // 默认值与「关掉」都必须合法（能构造出来本身就说明过了校验）。
         Assert.IsFalse(SshRekeyPolicy.Disabled.IsEnabled, "关掉之后不该有任何阈值是开的");

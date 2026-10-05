@@ -224,7 +224,8 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
 
         // 只有工厂建的连接才谈得上主动发起重协商（要用 RekeyContext）。
-        if (RekeyPolicy.IsEnabled && RekeyContext is not null)
+        // 不看策略开没开：报文数的硬线（见 RekeyHardPacketLimit）关不掉，监视循环总要在。
+        if (RekeyContext is not null)
         {
             _rekeyMonitorLoop ??= Task.Run(() => RekeyMonitorLoopAsync(_lifetime.Token));
         }

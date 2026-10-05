@@ -109,6 +109,28 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// <summary>当前允许的最大 <c>packet_length</c>。认证成功后由会话放宽。</summary>
     public int MaxPacketLength { get; set; } = SshPacketFormat.PreAuthMaxPacketLength;
 
+    /// <summary>
+    /// 同一套密钥下，任一方向最多处理多少个报文。默认 2³²：再多一个，序号就回绕到这套密钥用过的值上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这是<b>最后一道</b>保险，与重协商策略无关、关不掉。chacha20-poly1305 的 nonce 就是序号 ——
+    /// 同一把钥下序号重复，密钥流与 Poly1305 的一次性密钥一起重用，报文可以被伪造；HMAC 套件则可以被重放
+    /// （RFC 4344 §3.1：序号回绕之前必须换钥）。正常情况下会话在 2³¹ 处就主动重协商了，走不到这里。
+    /// </para>
+    /// <para>只有测试会把它调小。</para>
+    /// </remarks>
+    internal long MaxPacketsPerKey { get; init; } = 1L << 32;
+
+    private long _sendPacketsUnderKey;
+    private long _receivePacketsUnderKey;
+
+    /// <summary>当前这套密钥下已经发了多少个报文。</summary>
+    internal long SendPacketsUnderKey => Volatile.Read(ref _sendPacketsUnderKey);
+
+    /// <summary>当前这套密钥下已经收了多少个报文。</summary>
+    internal long ReceivePacketsUnderKey => Volatile.Read(ref _receivePacketsUnderKey);
+
     /// <summary>接收方向的当前序号（下一个要收的报文用它）。</summary>
     public uint ReceiveSequenceNumber { get; private set; }
 
@@ -242,6 +264,12 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
             if (!buffer.IsEmpty)
             {
+                if (_receivePacketsUnderKey >= MaxPacketsPerKey)
+                {
+                    _reader.AdvanceTo(buffer.Start, buffer.End);
+                    throw SequenceExhausted("接收");
+                }
+
                 _payloadBuffer.ResetWrittenCount();
                 SshOpenStatus status;
                 try
@@ -255,6 +283,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                         // 序号在**成功取出一帧之后**才推进，与密码套件的约定一致。
                         ReceiveSequenceNumber = unchecked(ReceiveSequenceNumber + 1);
                         PacketsReceived++;
+                        Interlocked.Increment(ref _receivePacketsUnderKey);
                     }
                 }
                 catch
@@ -306,6 +335,11 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
+        if (_sendPacketsUnderKey >= MaxPacketsPerKey)
+        {
+            throw SequenceExhausted("发送");
+        }
+
         // **先压缩，再加密。**反过来的话压缩器面对的是密文 ——
         // 密文没有可压缩性，压出来只会更长，而且会泄漏明文的统计特征。
         if (_sendCompressor.IsActive)
@@ -321,7 +355,13 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
         SendSequenceNumber = unchecked(SendSequenceNumber + 1);
         PacketsSent++;
+        Interlocked.Increment(ref _sendPacketsUnderKey);
     }
+
+    /// <summary>同一套密钥下的序号要用完了，重协商却没有完成：宁可断开，也不让序号回绕。</summary>
+    private SshFrameFormatException SequenceExhausted(string direction) =>
+        new($"{direction}方向在同一套密钥下已经处理了 {MaxPacketsPerKey} 个报文，重协商却没有完成 —— " +
+            "再处理一个序号就会回绕（nonce 重用），为此断开连接。");
 
     /// <summary>把刚解密出来的载荷解压。</summary>
     private ReadOnlyMemory<byte> DecompressPayload(ReadOnlyMemory<byte> compressed)
@@ -386,6 +426,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
         _receiveSuite.Dispose();
         _receiveSuite = suite;
+        Volatile.Write(ref _receivePacketsUnderKey, 0);
         if (resetSequenceNumber)
         {
             ReceiveSequenceNumber = 0;
@@ -406,6 +447,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
         _sendSuite.Dispose();
         _sendSuite = suite;
+        Volatile.Write(ref _sendPacketsUnderKey, 0);
         if (resetSequenceNumber)
         {
             SendSequenceNumber = 0;

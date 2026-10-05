@@ -53,6 +53,12 @@ public sealed partial class SshConnection
     /// <summary>阈值多久看一眼。见 <c>SshConnectionOptions.RekeyCheckInterval</c>。</summary>
     internal TimeSpan RekeyCheckInterval { get; init; } = TimeSpan.FromSeconds(5);
 
+    /// <summary>
+    /// 报文数的硬线：任一方向在同一套密钥下到这么多个报文，<b>不论 <see cref="RekeyPolicy"/> 如何</b>都主动重协商。
+    /// </summary>
+    /// <remarks>默认 <see cref="SshRekeyPolicy.MaximumPackets"/>（2³¹），离序号回绕（2³²）留出一半的余量。只有测试会调小。</remarks>
+    internal long RekeyHardPacketLimit { get; init; } = SshRekeyPolicy.MaximumPackets;
+
     /// <summary>一次重协商最多等多久：我们的 <c>KEXINIT</c> 等不到回应，或者交换卡在半路。</summary>
     /// <remarks>
     /// 重协商期间闸门关着，通道数据一律暂存 —— 对端永远不完成的话，发送就永远停着，
@@ -246,9 +252,17 @@ public sealed partial class SshConnection
             _transport.PacketsSent - Volatile.Read(ref _packetsAtLastKex),
             _transport.PacketsReceived - Volatile.Read(ref _packetsReceivedAtLastKex));
 
-        // ⚠️ 报文数这一条**最要紧**：序号是 32 位的，而 AES-GCM 的 nonce
-        //    每个报文推进一次 —— 回绕会重用 nonce，对 GCM 是灾难性的。
-        //    字节数与时长只是 RFC 4253 §9 的建议，这一条是硬约束。
+        // ⚠️ 报文数这一条**最要紧**：序号是 32 位的，chacha20-poly1305 的 nonce 就是序号 ——
+        //    同一套密钥下回绕会重用 nonce，可以伪造报文；HMAC 套件则可以被重放（RFC 4344 §3.1）。
+        //    字节数与时长只是 RFC 4253 §9 的建议，这一条是硬约束：先看与策略无关的那条硬线。
+        //    曾经它只是策略的一项，SshRekeyPolicy.Disabled 会把它一并关掉。
+        long underKey = Math.Max(_transport.SendPacketsUnderKey, _transport.ReceivePacketsUnderKey);
+        if (underKey >= RekeyHardPacketLimit)
+        {
+            reason = $"同一套密钥下单向报文数达到 {underKey}（硬线 {RekeyHardPacketLimit}，与策略无关）";
+            return true;
+        }
+
         if (policy.MaxPackets > 0 && packets >= policy.MaxPackets)
         {
             reason = $"单向报文数达到 {packets}（阈值 {policy.MaxPackets}）";

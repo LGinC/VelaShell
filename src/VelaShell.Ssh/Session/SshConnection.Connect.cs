@@ -155,6 +155,7 @@ public sealed partial class SshConnection
                 KeepAlive = options.KeepAlive,
                 RekeyPolicy = options.Rekey,
                 RekeyCheckInterval = options.RekeyCheckInterval,
+                RekeyHardPacketLimit = options.RekeyHardPacketLimit,
                 RekeyTimeout = options.RekeyTimeout,
                 Description = $"{options.UserName}@{options.EndPoint}",
             };

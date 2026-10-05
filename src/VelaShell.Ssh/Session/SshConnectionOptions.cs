@@ -109,9 +109,13 @@ public sealed record SshConnectionOptions
     /// <remarks>
     /// 与保活不同，<b>这一条默认是开着的</b> —— 它防的是 nonce 回绕那一类
     /// 灾难性后果，不是一个可选的优化。<see cref="SshRekeyPolicy.Disabled"/>
-    /// 能关掉主动发起，但接住对端发起的那一半永远开着。
+    /// 能关掉按字节与时长的主动发起，但关不掉报文数的硬线（<see cref="SshRekeyPolicy.MaximumPackets"/>），
+    /// 接住对端发起的那一半也永远开着。
     /// </remarks>
     public SshRekeyPolicy Rekey { get; init; } = SshRekeyPolicy.Default;
+
+    /// <summary>报文数的硬线（见 <c>SshConnection.RekeyHardPacketLimit</c>）。internal：只有用例需要把它调小。</summary>
+    internal long RekeyHardPacketLimit { get; init; } = SshRekeyPolicy.MaximumPackets;
 
     /// <summary>阈值多久看一眼。</summary>
     /// <remarks>
