@@ -45,6 +45,9 @@ public readonly record struct SftpFileAttributes
     /// <summary>最后修改时间（Unix 秒，有符号）。</summary>
     public int ModifyTime { get; init; }
 
+    /// <summary>扩展属性最多留多少对；多出来的读掉、丢弃。</summary>
+    internal const int MaxExtendedFields = 1024;
+
     /// <summary>厂商扩展属性。</summary>
     /// <remarks><c>default(SftpFileAttributes)</c> 里它也是空列表而不是 <see langword="null"/>。</remarks>
     public IReadOnlyList<SftpExtendedField> Extended
@@ -196,12 +199,22 @@ public readonly record struct SftpFileAttributes
         {
             uint count = reader.ReadUInt32();
 
-            // 上限防一个畸形报文让我们空转。
-            for (uint i = 0; i < count && i < 1024; i++)
+            // 只留前 MaxExtendedFields 对，但**每一对都要读掉**：曾经读到上限就停，剩下的字节留在原地 ——
+            // 在 NAME 应答里，下一项就从这些字节中间开始解析，名字、属性全是错的。
+            // 不会空转：每一对至少 8 个字节，计数再大，循环次数也被报文长度封住（读到头就抛）。
+            for (uint i = 0; i < count; i++)
             {
-                extended.Add(new SftpExtendedField(
-                    reader.ReadUtf8String(SftpProtocol.MaxPathLength),
-                    reader.ReadUtf8String(SftpProtocol.MaxPathLength)));
+                if (extended.Count < MaxExtendedFields)
+                {
+                    extended.Add(new SftpExtendedField(
+                        reader.ReadUtf8String(SftpProtocol.MaxPathLength),
+                        reader.ReadUtf8String(SftpProtocol.MaxPathLength)));
+                }
+                else
+                {
+                    reader.ReadString(SftpProtocol.MaxPathLength);
+                    reader.ReadString(SftpProtocol.MaxPathLength);
+                }
             }
         }
 

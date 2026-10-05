@@ -365,6 +365,36 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 扩展属性超过上限时多出来的读掉_下一项照常解析()
+    {
+        // 曾经读到 1024 对就停，剩下的字节留在原地 —— NAME 应答里的下一项从它们中间开始解析。
+        ArrayBufferWriter<byte> payload = new();
+        Ssh.Protocol.SshDataWriter writer = new(payload);
+        writer.WriteUInt32(2);
+        writer.WriteUtf8String("first");
+        writer.WriteUtf8String("longname-1");
+        writer.WriteUInt32((uint)SftpAttributeFields.Extended);
+        writer.WriteUInt32(SftpFileAttributes.MaxExtendedFields + 100);
+        for (int i = 0; i < SftpFileAttributes.MaxExtendedFields + 100; i++)
+        {
+            writer.WriteUtf8String($"type{i}@example.com");
+            writer.WriteUtf8String("data");
+        }
+        writer.WriteUtf8String("second");
+        writer.WriteUtf8String("longname-2");
+        writer.WriteUInt32((uint)SftpAttributeFields.Size);
+        writer.WriteUInt64(42);
+
+        IReadOnlyList<SftpNameEntry> entries =
+            SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()), SftpNameCodec.Utf8);
+
+        Assert.HasCount(2, entries);
+        Assert.HasCount(SftpFileAttributes.MaxExtendedFields, entries[0].Attributes.Extended, "只留上限那么多");
+        Assert.AreEqual("second", entries[1].Name);
+        Assert.AreEqual(42UL, entries[1].Attributes.Size);
+    }
+
+    [TestMethod]
     public void DATA比请求的还多时报协议错()
     {
         ArrayBufferWriter<byte> payload = new();
