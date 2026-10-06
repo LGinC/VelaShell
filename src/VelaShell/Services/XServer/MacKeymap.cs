@@ -102,16 +102,13 @@ internal static partial class MacKeymap
                 return null;
             }
             uint keyboardType = LMGetKbdType();
-            return HostKeymap.Assemble([.. HostKeymap.Keycodes().Select(keycode =>
-            {
-                if (HostKeymap.Fixed(keycode) is { } fixedSyms)
-                {
-                    return (fixedSyms.Item1, fixedSyms.Item2, 0u, 0u);
-                }
-                int vk = VirtualKeyFor(keycode);
-                return vk < 0 ? default : (Translate(layout, (ushort)vk, 0, keyboardType), Translate(layout, (ushort)vk, ShiftState, keyboardType),
+            (uint, uint, uint, uint) Levels(int vk) => vk < 0 ? default
+                : (Translate(layout, (ushort)vk, 0, keyboardType), Translate(layout, (ushort)vk, ShiftState, keyboardType),
                     Translate(layout, (ushort)vk, OptionState, keyboardType), Translate(layout, (ushort)vk, ShiftState | OptionState, keyboardType));
-            })]);
+            HostKeymapResult main = HostKeymap.Assemble([.. HostKeymap.Keycodes().Select(keycode =>
+                HostKeymap.Fixed(keycode) is { } fixedSyms ? (fixedSyms.Item1, fixedSyms.Item2, 0u, 0u) : Levels(VirtualKeyFor(keycode)))]);
+            // JIS 键盘的 Ro(kVK_JIS_Underscore)与 Yen(kVK_JIS_Yen)不在 VirtualKeyFor 的主键区表里,按自己的虚拟键取。
+            return HostKeymap.WithExtras(main, [.. HostKeymap.ExtraKeys.Select(k => Levels(k.MacVirtualKey))]);
         }
         finally
         {

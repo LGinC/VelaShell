@@ -242,4 +242,22 @@ public sealed class XkbTests
         Assert.AreEqual(0x10, state.Bytes[11]);
         Assert.IsTrue((await c.RequestAsync(44, 0)).Bytes.Skip(8).All(b => b == 0), "QueryKeymap:没有按着的键(没合成按键)");
     }
+
+    [TestMethod]
+    public async Task 日文键盘的Ro与Yen_F13到F24_多媒体键都有键值与XKB键名()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XMessage map = await c.RequestAsync(101, 0, b => b.U8(97).U8(1).U16(0));   // GetKeyboardMapping:键码 97(Ro)
+        int per = map.Bytes[1];
+        Assert.AreEqual(0x5Cu, map.U32(32), "Ro:backslash");
+        Assert.AreEqual(0x5Fu, map.U32(36), "Shift+Ro:underscore(JIS 打下划线就靠它)");
+        XMessage yen = await c.RequestAsync(101, 0, b => b.U8(132).U8(1).U16(0));
+        Assert.AreEqual(0x7Cu, yen.U32(36), "Shift+Yen:bar");
+        XMessage f13 = await c.RequestAsync(101, 0, b => b.U8(191).U8(1).U16(0));
+        Assert.AreEqual(0xFFCAu, f13.U32(32), "F13");
+        XMessage mute = await c.RequestAsync(101, 0, b => b.U8(121).U8(1).U16(0));
+        Assert.AreEqual(0x1008FF12u, mute.U32(32), "XF86AudioMute");
+        Assert.IsGreaterThanOrEqualTo(2, per);
+    }
 }

@@ -103,7 +103,11 @@ internal static partial class LinuxKeymap
                     : (Level(keymap, keycode, group, 0), Level(keymap, keycode, group, 1),
                         level3 ? Level(keymap, keycode, group, 2) : 0, level3 ? Level(keymap, keycode, group, 3) : 0));
             }
-            return HostKeymap.Assemble(levels);
+            // Ro、Yen 的键码与桌面 X 的一样(evdev + 8),直接按键码取。
+            List<(uint, uint, uint, uint)> extras = [.. HostKeymap.ExtraKeys.Select(k =>
+                (Level(keymap, k.Keycode, group, 0), Level(keymap, k.Keycode, group, 1),
+                    level3 ? Level(keymap, k.Keycode, group, 2) : 0, level3 ? Level(keymap, k.Keycode, group, 3) : 0))];
+            return HostKeymap.WithExtras(HostKeymap.Assemble(levels), extras);
         }
         finally
         {

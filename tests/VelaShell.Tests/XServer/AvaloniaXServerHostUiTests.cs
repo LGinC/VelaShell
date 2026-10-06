@@ -45,6 +45,28 @@ public sealed class AvaloniaXServerHostUiTests
         Assert.AreEqual(StandardCursorType.BottomRightCorner, XInputMap.Cursor(XCursorShape.ResizeSouthEast));
     }
 
+    /// <summary>日文 JIS / 巴西 ABNT2 / 韩文键盘的键、F13–F24、多媒体键都有 X 键码;Ro、Yen 按系统布局推出的键值并进键位表。</summary>
+    [TestMethod]
+    public void InputMap_CoversInternationalFunctionAndMediaKeys_AndExtrasJoinTheKeymap()
+    {
+        Assert.AreEqual(XKeycodes.IntlRo, XInputMap.Keycode(PhysicalKey.IntlRo));
+        Assert.AreEqual(XKeycodes.IntlYen, XInputMap.Keycode(PhysicalKey.IntlYen));
+        Assert.AreEqual(XKeycodes.Henkan, XInputMap.Keycode(PhysicalKey.Convert));
+        Assert.AreEqual(XKeycodes.F13, XInputMap.Keycode(PhysicalKey.F13));
+        Assert.AreEqual(XKeycodes.F24, XInputMap.Keycode(PhysicalKey.F24));
+        Assert.AreEqual(XKeycodes.AudioMute, XInputMap.Keycode(PhysicalKey.AudioVolumeMute));
+
+        HostKeymapResult us = HostKeymap.FromBundled("us")!;
+        Assert.IsEmpty(us.Extras, "手选布局:随程序带的表里没有 Ro / Yen,服务端沿用起步的 JIS 键值");
+        // ABNT2:Ro 是 / ?;Yen 这台键盘没有(第一层 0 跳过)。
+        HostKeymapResult abnt2 = HostKeymap.WithExtras(us, [('/', '?', 0, 0), (0, 0, 0, 0)]);
+        Assert.HasCount(1, abnt2.Extras);
+        Assert.AreEqual(XKeycodes.IntlRo, abnt2.Extras[0].Keycode);
+        Assert.AreSequenceEqual([(uint)'/', '?'], abnt2.Extras[0].Columns);
+        Assert.IsFalse(abnt2.SameAs(us), "多了额外的键就不是同一个结果");
+        Assert.AreEqual(2, abnt2.ToXKeymap().KeysymsPerKeycode);
+    }
+
     [TestMethod]
     public void HostKeymap_MapsCharactersAndDeadKeysToKeysyms()
     {
