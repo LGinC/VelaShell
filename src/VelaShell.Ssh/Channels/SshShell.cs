@@ -34,6 +34,23 @@ public sealed record SshShellOptions : SshSessionRequestOptions
     /// <summary>终端模式。</summary>
     public SshTerminalModes Modes { get; init; } = SshTerminalModes.Empty;
 
+    /// <summary>
+    /// 在伪终端里跑的命令（相当于 <c>ssh -t host 命令</c>）；<see langword="null"/>（默认）开登录 shell。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §7.2〕给了命令时，<c>pty-req</c> 之后发的是 <c>exec</c> 而不是 <c>shell</c>：
+    /// 要终端的命令（<c>sudo</c>、<c>top</c>、交互式的 TUI）一次跑完，不必开一整个登录 shell。
+    /// 结果仍是 <see cref="SshShell"/> —— 有伪终端就只有一条输出流、尺寸变化发 <c>window-change</c>，
+    /// 这正是这个类型与 <see cref="SshCommand"/> 分开的理由；命令跑完通道就关，退出码照常取。
+    /// </para>
+    /// <para>
+    /// 与 <see cref="Session.SshConnectionExtensions.ExecuteAsync"/> 一样，命令是<b>一整条字符串、由远端的登录 shell 解释</b>：
+    /// 拼进不可信的内容就是注入，库不能替使用者转义。
+    /// </para>
+    /// </remarks>
+    public string? Command { get; init; }
+
     /// <summary>默认参数。</summary>
     public static SshShellOptions Default { get; } = new();
 }

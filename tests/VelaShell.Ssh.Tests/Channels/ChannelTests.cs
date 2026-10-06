@@ -757,6 +757,48 @@ public sealed class ChannelTests
     }
 
     /// <summary>
+    /// 在伪终端里跑一条命令（<c>ssh -t host cmd</c>）：<c>pty-req</c> 之后发 <c>exec</c>（带着那条命令）而不是 <c>shell</c>，
+    /// 输出从唯一那条流读到，退出码照常取。
+    /// </summary>
+    [TestMethod]
+    public async Task 在伪终端里跑命令时pty请求之后发exec()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            StandardOutput = Text("top - 10:00:00\r\n"),
+            ExitCode = 3,
+        });
+
+        await using SshShell shell = await harness.Connection.OpenShellAsync(
+            new SshShellOptions { Command = "top -n 1", Size = new SshTerminalSize(100, 30) }, harness.Token);
+
+        TestChannelObservation observed = harness.ChannelServer.Observation;
+        Assert.AreSequenceEqual(
+            [SshProtocolNames.RequestPty, SshProtocolNames.RequestExec],
+            [.. observed.Requests.Where(r => r is SshProtocolNames.RequestPty or SshProtocolNames.RequestShell or SshProtocolNames.RequestExec)]);
+        Assert.AreSequenceEqual(["top -n 1"], observed.Commands);
+        Assert.AreEqual(new SshTerminalSize(100, 30), observed.PtyRequests.Single().Size);
+
+        ReadResult read = await shell.StandardOutput.ReadAtLeastAsync(1, harness.Token);
+        Assert.StartsWith("top - ", Encoding.UTF8.GetString(read.Buffer));
+        shell.StandardOutput.AdvanceTo(read.Buffer.End);
+        Assert.AreEqual(3, (await shell.WaitAsync(harness.Token)).ExitCode);
+    }
+
+    /// <summary>服务端拒绝 exec（ForceCommand 之类）：说清楚是命令被拒，而不是 shell 被拒。</summary>
+    [TestMethod]
+    public async Task 在伪终端里跑命令被拒时说是命令被拒()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { RejectCommand = true });
+
+        SshChannelException error = await Assert.ThrowsExactlyAsync<SshChannelException>(
+            async () => await harness.Connection.OpenShellAsync(new SshShellOptions { Command = "top" }, harness.Token));
+
+        Assert.AreEqual(SshFailureReason.ChannelRequestRejected, error.Reason);
+        Assert.Contains("命令", error.Message);
+    }
+
+    /// <summary>
     /// 关闭原因看的是谁先发的 CLOSE：本端先关、对端回 CLOSE 时是 <see cref="SshChannelCloseReason.ClosedLocally"/>；
     /// 对端先关时是 <see cref="SshChannelCloseReason.ClosedByPeer"/>。状态也照实走：本端先关才经过 Closing。
     /// </summary>

@@ -602,6 +602,32 @@ public sealed class OpenSshInteropTests
         Assert.Contains("/dev/pts", output.ToString());
     }
 
+    /// <summary>在伪终端里跑一条命令（<c>ssh -t host tty</c>）：命令看得到终端，跑完通道就关、退出码照常取。</summary>
+    [TestMethod]
+    public async Task 在伪终端里跑命令()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshShell shell = await connection.OpenShellAsync(new SshShellOptions { Command = "tty; exit 7" });
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        StringBuilder output = new();
+        while (true)
+        {
+            System.IO.Pipelines.ReadResult read = await shell.StandardOutput.ReadAsync(timeout.Token);
+            output.Append(Encoding.UTF8.GetString(read.Buffer.ToArray()));
+            shell.StandardOutput.AdvanceTo(read.Buffer.End);
+            if (read.IsCompleted)
+            {
+                break;
+            }
+        }
+
+        Assert.StartsWith("/dev/pts/", output.ToString(), "exec 前发了 pty-req，命令就有终端");
+        Assert.AreEqual(7, (await shell.WaitAsync(timeout.Token)).ExitCode);
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {
