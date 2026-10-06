@@ -400,7 +400,17 @@ internal sealed class TestSshServer : IAsyncDisposable
             negotiated, shape.HashAlgorithm, response.SharedSecret, shape.SharedSecretEncoding,
             exchangeHash, effectiveSessionId);
 
-        await send(new[] { (byte)SshMessageNumber.NewKeys }, cancellationToken);
+        try
+        {
+            await send(new[] { (byte)SshMessageNumber.NewKeys }, cancellationToken);
+        }
+        catch (Exception) when (isInitial)
+        {
+            // 客户端可能已经拒绝了主机密钥：发了 DISCONNECT 就关了连接，我们的 NEWKEYS 写不出去。
+            // 机器忙的时候正是这个次序（CI 上见过）。那条 DISCONNECT 还在接收方向上 —— 读出来记下原因码，再照原样失败。
+            await TryReadPendingAsync(read, cancellationToken);
+            throw;
+        }
         // 客户端派生出的「发送套件」是我们的「接收套件」，反之亦然。
         Transport.SetSendCipherSuite(serverToClient, negotiated.StrictKeyExchange);
 
@@ -509,6 +519,22 @@ internal sealed class TestSshServer : IAsyncDisposable
     {
         Transport.WritePacket(packet.Span);
         await Transport.FlushAsync(cancellationToken);
+    }
+
+    /// <summary>尽力再读一个报文（最多等两秒）：写不出去之前对端发来的东西还在接收方向上，读到 <c>DISCONNECT</c> 就记下原因码。</summary>
+    private static async ValueTask TryReadPendingAsync(
+        Func<CancellationToken, ValueTask<SshInboundPacket>> read, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            limit.CancelAfter(TimeSpan.FromSeconds(2));
+            await read(limit.Token);
+        }
+        catch (Exception)
+        {
+            // 读不到就算了：照原样失败。
+        }
     }
 
     /// <summary>握手期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>

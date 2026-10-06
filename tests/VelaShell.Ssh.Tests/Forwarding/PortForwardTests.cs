@@ -224,11 +224,8 @@ public sealed class PortForwardTests
 
         using (Socket client = new(SocketType.Stream, ProtocolType.Tcp))
         {
-            await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
-
             // 〔spec 07 §二〕拒绝也是出错：本机那条连接被重置（RST），不是一个像正常结束的 FIN。
-            SocketException reset = await Assert.ThrowsExactlyAsync<SocketException>(
-                async () => await ReadAllAsync(client, new byte[16], harness.Token));
+            SocketException reset = await ConnectAndExpectResetAsync(client, forwarder.BoundEndPoint!, harness.Token);
             Assert.AreEqual(SocketError.ConnectionReset, reset.SocketErrorCode);
         }
 
@@ -242,9 +239,22 @@ public sealed class PortForwardTests
 
         // 再来一条，仍然能被接受（并仍然失败）。
         using Socket second = new(SocketType.Stream, ProtocolType.Tcp);
-        await second.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+        await ConnectAndExpectResetAsync(second, forwarder.BoundEndPoint!, harness.Token);
         await WaitUntilAsync(() => errors.Count > 1, harness.Token);
     }
+
+    /// <summary>连上本机的监听、一直读到连接被重置为止，交回那个异常。</summary>
+    /// <remarks>
+    /// 内存里的服务端拒得快，转发器重置本机连接的 RST 可能在 <c>ConnectAsync</c> 交回之前就到 ——
+    /// Linux 上那时 connect 本身就报 <see cref="SocketError.ConnectionReset"/>（CI 上见过）。两种都是「本机那条连接被重置」。
+    /// 转发器要是给了一个 FIN，读会正常结束、这里抛断言失败。
+    /// </remarks>
+    private static Task<SocketException> ConnectAndExpectResetAsync(Socket client, EndPoint endPoint, CancellationToken cancellationToken) =>
+        Assert.ThrowsExactlyAsync<SocketException>(async () =>
+        {
+            await client.ConnectAsync(endPoint, cancellationToken);
+            await ReadAllAsync(client, new byte[16], cancellationToken);
+        });
 
     /// <summary>
     /// 〔Q5〕默认同时听 127.0.0.1 与 ::1（同一个端口）：先试 ::1 的客户端也连得上；同端口的 IPv6 环回被别的进程占着时不起这个转发，
@@ -489,9 +499,7 @@ public sealed class PortForwardTests
         await using (var local = LocalPortForwarder.Start(harness.Connection, "slow", 80, quick))
         {
             using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
-            await client.ConnectAsync(local.BoundEndPoint!, harness.Token);
-            SocketException reset = await Assert.ThrowsExactlyAsync<SocketException>(
-                async () => await ReadAllAsync(client, new byte[16], harness.Token));
+            SocketException reset = await ConnectAndExpectResetAsync(client, local.BoundEndPoint!, harness.Token);
             Assert.AreEqual(SocketError.ConnectionReset, reset.SocketErrorCode);
         }
 

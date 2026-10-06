@@ -38,15 +38,17 @@ public sealed class TcpDialerTests
         await Assert.ThrowsExactlyAsync<SshConnectException>(
             async () => await new TcpTransportDialer { LocalAddresses = [IPAddress.IPv6Loopback] }.DialAsync(target));
 
-        // 从 127.0.0.2 发起（整个 127/8 都是环回）：对面看到的来源就是它。
+        // 从 127.0.0.2 发起（Linux 与 Windows 上整个 127/8 都是环回）：对面看到的来源就是它。
+        // macOS 的 lo0 上默认只有 127.0.0.1，绑 127.0.0.2 报 AddressNotAvailable —— 那里退回 127.0.0.1。
+        IPAddress local = OperatingSystem.IsMacOS() ? IPAddress.Loopback : IPAddress.Parse("127.0.0.2");
         Task<Socket> accepting = listener.AcceptSocketAsync();
         await using Stream stream = await new TcpTransportDialer
         {
             AddressFamily = AddressFamily.InterNetwork,
-            LocalAddresses = [IPAddress.Parse("127.0.0.2")],
+            LocalAddresses = [local],
         }.DialAsync(target);
         using Socket accepted = await accepting;
-        Assert.AreEqual(IPAddress.Parse("127.0.0.2"), ((IPEndPoint)accepted.RemoteEndPoint!).Address);
+        Assert.AreEqual(local, ((IPEndPoint)accepted.RemoteEndPoint!).Address);
     }
 
     /// <summary>一条真连上的套接字（连到本机的一个监听上）。</summary>
