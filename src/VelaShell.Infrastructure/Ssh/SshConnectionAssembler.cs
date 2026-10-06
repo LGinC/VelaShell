@@ -178,10 +178,11 @@ internal static class SshConnectionAssembler
                                                  && ex is { Reason: SshFailureReason.Aborted, Phase: SshPhase.Authenticating }
                                                  && !cancellationToken.IsCancellationRequested)
             {
-                // 认证期间唯一会弹框的就是动态码框:库以 Aborted 结束,说明是它的应答回调抛了取消而调用方没取消
+                // 认证期间会弹的框只有动态码框与「修改密码」框:库以 Aborted 结束,说明是应答回调抛了取消而调用方没取消
                 // —— 用户在框上点了取消,是「不连了」而不是认证失败(规格 08 §2.1)。
                 // 曾经库把这种取消报成认证超时,应答器只好自己记一笔、在这里按那一笔认回来。
-                throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"), ex);
+                throw new VelaSshAuthenticationCancelledException(
+                    Strings.Get(keyboard.PasswordChangeCancelled ? "SshErr_PasswordChangeCancelled" : "SshErr_KbdAuthCancelled"), ex);
             }
 
             // 「自动加载密钥到 Agent」:认证成功之后才加(配错的钥不该进 agent),而且丢到后台 ——
@@ -330,18 +331,26 @@ internal static class SshConnectionAssembler
     internal static async ValueTask<IReadOnlyList<SshCredential>> BuildCredentialsAsync(
         VelaConnectionInfo info, CancellationToken cancellationToken, KeyboardInteractiveResponder? keyboard = null)
     {
-        IReadOnlyList<SshCredential> primary = await PrimaryCredentialsAsync(info, keyboard is not null, cancellationToken)
+        IReadOnlyList<SshCredential> primary = await PrimaryCredentialsAsync(info, keyboard, cancellationToken)
             .ConfigureAwait(false);
         return keyboard is null ? primary : [.. primary, keyboard.ToCredential()];
     }
 
     private static async ValueTask<IReadOnlyList<SshCredential>> PrimaryCredentialsAsync(
-        VelaConnectionInfo info, bool keyboardInteractive, CancellationToken cancellationToken)
+        VelaConnectionInfo info, KeyboardInteractiveResponder? keyboard, CancellationToken cancellationToken)
     {
         switch (info.AuthMethod)
         {
             case AuthMethod.Password:
-                return [new PasswordCredential(info.Password ?? "") { AlsoAnswerKeyboardInteractive = !keyboardInteractive }];
+                // 有界面时,服务端要求先改密码(密码过期)就弹框问新密码(规格 04 §5.1);没界面就不改,报「要先改密码」。
+                return
+                [
+                    new PasswordCredential(info.Password ?? "")
+                    {
+                        AlsoAnswerKeyboardInteractive = keyboard is null,
+                        NewPasswordProvider = keyboard is null ? null : keyboard.AskNewPasswordAsync,
+                    }
+                ];
 
             case AuthMethod.PrivateKey:
                 {

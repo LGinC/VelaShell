@@ -1248,7 +1248,7 @@
     <value>ローカルの同時実行数の上限に達しました(転送接続数、agent / X11 チャネル数)。いくつか閉じてから再試行してください。</value>
   </data>
   <data name="SshErr_PasswordExpired" xml:space="preserve">
-    <value>サーバーは先にパスワードの変更を求めています(期限切れ、または管理者による変更要求)。VelaShell はパスワードを変更できないため、別のクライアントで一度ログインして変更してください。</value>
+    <value>サーバーは先にパスワードの変更を求めています(期限切れ、または管理者による変更要求)が、パスワードは変更されませんでした。</value>
   </data>
   <data name="SshErr_ProtocolError" xml:space="preserve">
     <value>サーバーが SSH プロトコルに違反しました。</value>
@@ -5264,6 +5264,27 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
     <value>2 段階認証をキャンセルしました。</value>
+  </data>
+  <data name="SshErr_PasswordChangeCancelled" xml:space="preserve">
+    <value>パスワードの変更をキャンセルしました。</value>
+  </data>
+  <data name="SshPwdChange_Title" xml:space="preserve">
+    <value>パスワードの変更</value>
+  </data>
+  <data name="SshPwdChange_Required" xml:space="preserve">
+    <value>サインインする前にパスワードを変更するよう、サーバーから求められています。保存済みのパスワードは自動では更新されません。</value>
+  </data>
+  <data name="SshPwdChange_Rejected" xml:space="preserve">
+    <value>新しいパスワードはサーバーに受け入れられませんでした。別のパスワードを指定してください。</value>
+  </data>
+  <data name="SshPwdChange_NewPassword" xml:space="preserve">
+    <value>新しいパスワード</value>
+  </data>
+  <data name="SshPwdChange_ConfirmPassword" xml:space="preserve">
+    <value>新しいパスワード(確認)</value>
+  </data>
+  <data name="SshPwdChange_Mismatch" xml:space="preserve">
+    <value>2 回入力したパスワードが一致しないか、空です。もう一度入力してください。</value>
   </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>接続がタイムアウトしました。</value>

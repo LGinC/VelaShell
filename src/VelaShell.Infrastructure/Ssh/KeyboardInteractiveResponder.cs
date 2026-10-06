@@ -42,6 +42,52 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
     /// <summary>包成库的凭据。</summary>
     public KeyboardInteractiveCredential ToCredential() => new(RespondAsync, "keyboard-interactive");
 
+    /// <summary>用户在「修改密码」框上点了取消(装配处据此报「已取消修改密码」而不是「已取消两步验证」)。</summary>
+    public bool PasswordChangeCancelled { get; private set; }
+
+    /// <summary>
+    /// 服务端要求先改密码(规格 04 §5.1):弹框让用户把新密码输两遍,对上了交给库(<see cref="PasswordCredential.NewPasswordProvider" />)。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 协议里没有「再输一次」这一步,输错了的新密码会直接成为账户的密码 —— 所以两遍对不上(或空着)就再问,不交给库。
+    /// 用的是动态码那个框(两条不回显的提示),标题、说明换成改密码的。
+    /// </para>
+    /// <para>
+    /// 用户点了取消与动态码那一问同一个口径:抛 <see cref="OperationCanceledException" />,库以 <c>Aborted</c> 结束。
+    /// 改成之后,连接里保存着的旧密码就过时了:下次用它登录被拒,走登录框重输、存回的那条路。框里先说一声。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<string?> AskNewPasswordAsync(SshPasswordChangeRequest request, CancellationToken cancellationToken)
+    {
+        string server = Clean(request.Prompt, MaxInstructionLength);
+        string notice = Strings.Get(request.Attempt == 1 ? "SshPwdChange_Required" : "SshPwdChange_Rejected");
+        KeyboardInteractiveField[] fields =
+        [
+            new(Strings.Get("SshPwdChange_NewPassword"), Echo: false),
+            new(Strings.Get("SshPwdChange_ConfirmPassword"), Echo: false),
+        ];
+
+        while (true)
+        {
+            string instruction = server.Length == 0 ? notice : $"{notice}\n{server}";
+            IReadOnlyList<string>? answers = await prompt
+                .AskAsync(new(target, Strings.Get("SshPwdChange_Title"), instruction, fields), cancellationToken)
+                .ConfigureAwait(false);
+            if (answers is null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PasswordChangeCancelled = true;
+                throw new OperationCanceledException(Strings.Get("SshErr_PasswordChangeCancelled"));
+            }
+            if (answers is [{ Length: > 0 } first, { } second] && first == second)
+            {
+                return first;
+            }
+            notice = Strings.Get("SshPwdChange_Mismatch");
+        }
+    }
+
     /// <summary>应答一轮询问。</summary>
     /// <exception cref="OperationCanceledException">
     /// 用户在框上点了取消。库据此以 <c>Aborted</c> 结束这次连接(调用方没取消、认证计时器也没到点的取消,

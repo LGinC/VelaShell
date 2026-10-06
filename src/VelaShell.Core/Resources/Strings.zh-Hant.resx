@@ -643,7 +643,7 @@
     <value>達到了本機的並行上限(轉送連線數、agent / X11 通道數)。等其中一些關閉後再試。</value>
   </data>
   <data name="SshErr_PasswordExpired" xml:space="preserve">
-    <value>伺服器要求先修改密碼(密碼已過期或管理員要求更換)。VelaShell 不支援修改密碼,請先用別的用戶端登入一次改掉密碼。</value>
+    <value>伺服器要求先修改密碼(密碼已過期或管理員要求更換),密碼沒有改成。</value>
   </data>
   <data name="SshErr_ProtocolError" xml:space="preserve">
     <value>伺服器違反了 SSH 協定。</value>
@@ -5723,6 +5723,27 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
     <value>已取消兩步驗證。</value>
+  </data>
+  <data name="SshErr_PasswordChangeCancelled" xml:space="preserve">
+    <value>已取消修改密碼。</value>
+  </data>
+  <data name="SshPwdChange_Title" xml:space="preserve">
+    <value>修改密碼</value>
+  </data>
+  <data name="SshPwdChange_Required" xml:space="preserve">
+    <value>伺服器要求先修改密碼才能登入。已儲存的密碼不會隨之自動更新。</value>
+  </data>
+  <data name="SshPwdChange_Rejected" xml:space="preserve">
+    <value>伺服器沒有接受這個新密碼,請換一個。</value>
+  </data>
+  <data name="SshPwdChange_NewPassword" xml:space="preserve">
+    <value>新密碼</value>
+  </data>
+  <data name="SshPwdChange_ConfirmPassword" xml:space="preserve">
+    <value>再輸入一次新密碼</value>
+  </data>
+  <data name="SshPwdChange_Mismatch" xml:space="preserve">
+    <value>兩次輸入的新密碼不一致或為空,請重新輸入。</value>
   </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>連線逾時。</value>

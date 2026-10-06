@@ -58,6 +58,7 @@ public class SshCredentialSetupTests
 
         var credential = (PasswordCredential)credentials[0];
         Assert.IsTrue(credential.AlsoAnswerKeyboardInteractive);
+        Assert.IsNull(credential.NewPasswordProvider, "没有界面时不改密码:服务端要求先改就报「要先改密码」");
     }
 
     /// <summary>
@@ -76,6 +77,7 @@ public class SshCredentialSetupTests
 
         Assert.HasCount(2, credentials);
         Assert.IsFalse(((PasswordCredential)credentials[0]).AlsoAnswerKeyboardInteractive);
+        Assert.IsNotNull(((PasswordCredential)credentials[0]).NewPasswordProvider, "有界面时服务端要求先改密码就弹框问新密码");
         Assert.IsInstanceOfType<KeyboardInteractiveCredential>(credentials[1]);
     }
 

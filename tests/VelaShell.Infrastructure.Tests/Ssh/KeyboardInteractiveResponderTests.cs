@@ -1,3 +1,4 @@
+using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Ssh;
 using VelaShell.Ssh.Auth;
@@ -124,6 +125,72 @@ public sealed class KeyboardInteractiveResponderTests
         OperationCanceledException error = await Assert.ThrowsExactlyAsync<OperationCanceledException>(
             () => Respond(responder, Round(("Verification code: ", false))));
         Assert.IsFalse(error.CancellationToken.IsCancellationRequested);
+    }
+
+    /// <summary>服务端要求先改密码:新密码输两遍、对上了才交给库;框里带着服务端的原话(清洗过)。</summary>
+    [TestMethod]
+    public async Task PasswordChange_TheNewPasswordIsAskedTwiceAndHandedOverWhenBothMatch()
+    {
+        var prompt = new ScriptedPrompt(_ => ["n3w-secret", "n3w-secret"]);
+        var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
+
+        string? newPassword = await responder.AskNewPasswordAsync(
+            new SshPasswordChangeRequest { Prompt = "Your password has expired.\u001b[2J", Attempt = 1 }, TestContext.CancellationToken);
+
+        Assert.AreEqual("n3w-secret", newPassword);
+        KeyboardInteractiveRequest asked = prompt.Requests.Single();
+        Assert.AreEqual(Target, asked.Target);
+        Assert.AreEqual(Strings.Get("SshPwdChange_Title"), asked.Name);
+        Assert.AreSequenceEqual(
+            new[] { new KeyboardInteractiveField(Strings.Get("SshPwdChange_NewPassword"), false), new KeyboardInteractiveField(Strings.Get("SshPwdChange_ConfirmPassword"), false) },
+            asked.Fields.ToArray());
+        Assert.StartsWith(Strings.Get("SshPwdChange_Required"), asked.Instruction);
+        Assert.Contains("Your password has expired.", asked.Instruction);
+        Assert.DoesNotContain("\u001b", asked.Instruction, "对端文字先清洗再上界面");
+    }
+
+    /// <summary>两遍对不上、或者空着:不交给库(协议里没有确认这一步,输错的会直接成为账户密码),说明原因再问。</summary>
+    [TestMethod]
+    public async Task PasswordChange_MismatchedOrEmptyEntriesAreAskedAgain()
+    {
+        Queue<IReadOnlyList<string>> script = new([["abc", "abd"], ["", ""], ["n3w-secret", "n3w-secret"]]);
+        var prompt = new ScriptedPrompt(_ => script.Dequeue());
+        var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
+
+        string? newPassword = await responder.AskNewPasswordAsync(
+            new SshPasswordChangeRequest { Prompt = "", Attempt = 1 }, TestContext.CancellationToken);
+
+        Assert.AreEqual("n3w-secret", newPassword);
+        Assert.HasCount(3, prompt.Requests);
+        Assert.AreEqual(Strings.Get("SshPwdChange_Required"), prompt.Requests[0].Instruction);
+        Assert.AreEqual(Strings.Get("SshPwdChange_Mismatch"), prompt.Requests[1].Instruction);
+        Assert.AreEqual(Strings.Get("SshPwdChange_Mismatch"), prompt.Requests[2].Instruction);
+    }
+
+    /// <summary>服务端不接受上一次的新密码(第二次问):说明换成「请换一个」。</summary>
+    [TestMethod]
+    public async Task PasswordChange_ASecondAttemptSaysTheLastOneWasRejected()
+    {
+        var prompt = new ScriptedPrompt(_ => ["n3w-secret", "n3w-secret"]);
+        var responder = new KeyboardInteractiveResponder(prompt, Target, "hunter2");
+
+        await responder.AskNewPasswordAsync(
+            new SshPasswordChangeRequest { Prompt = "Password too short.", Attempt = 2 }, TestContext.CancellationToken);
+
+        Assert.AreEqual($"{Strings.Get("SshPwdChange_Rejected")}\nPassword too short.", prompt.Requests.Single().Instruction);
+    }
+
+    /// <summary>在改密码框上点取消:与动态码框同一个口径(令牌没触发的取消),并记下是改密码框 —— 装配处据此报「已取消修改密码」。</summary>
+    [TestMethod]
+    public async Task PasswordChange_UserCancelIsACancellationAndIsRemembered()
+    {
+        var responder = new KeyboardInteractiveResponder(new ScriptedPrompt(_ => null), Target, "hunter2");
+
+        OperationCanceledException error = await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+            () => responder.AskNewPasswordAsync(new SshPasswordChangeRequest { Prompt = "", Attempt = 1 }, TestContext.CancellationToken).AsTask());
+
+        Assert.IsFalse(error.CancellationToken.IsCancellationRequested);
+        Assert.IsTrue(responder.PasswordChangeCancelled);
     }
 
     [TestMethod]
