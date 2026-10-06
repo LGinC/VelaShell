@@ -342,7 +342,7 @@ public sealed partial class X11Server
         // 报警器先改:结束等待会就地执行那个客户端暂存的请求,那些请求可能增删报警器。
         foreach (XSyncAlarm alarm in _alarms)
         {
-            if (ReferenceEquals(alarm.Trigger.Counter, counter))
+            if (alarm.State != XSyncAlarm.Destroyed && ReferenceEquals(alarm.Trigger.Counter, counter))
             {
                 alarm.Trigger.Counter = null;
                 alarm.State = XSyncAlarm.Inactive;
@@ -358,11 +358,31 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>
+    /// 报警器不再参与求值:标成 Destroyed,列表里攒够一半死项才压缩一次 —— 原先每次 List.Remove(O(n)),
+    /// 求值时每个报警器又 List.Contains 一遍(O(n)),几千个报警器一轮求值就是几千万次比较。
+    /// </summary>
+    private void ForgetAlarm(XSyncAlarm alarm)
+    {
+        if (alarm.State == XSyncAlarm.Destroyed)
+        {
+            return;
+        }
+        alarm.State = XSyncAlarm.Destroyed;
+        if (++_destroyedAlarms > _alarms.Count / 2)
+        {
+            _alarms.RemoveAll(a => a.State == XSyncAlarm.Destroyed);
+            _destroyedAlarms = 0;
+        }
+    }
+
+    /// <summary>列表里还留着的已销毁报警器个数(见 <see cref="ForgetAlarm" />)。</summary>
+    private int _destroyedAlarms;
+
     private void DestroyAlarm(XSyncAlarm alarm)
     {
         RemoveResource(alarm.Id);
-        _alarms.Remove(alarm);
-        alarm.State = XSyncAlarm.Destroyed;
+        ForgetAlarm(alarm);
         SendAlarmNotify(alarm, CounterValue(alarm.Trigger.Counter ?? _serverTimeCounter!));
     }
 
@@ -513,7 +533,7 @@ public sealed partial class X11Server
         }
         foreach (XSyncAlarm alarm in _alarms.ToArray())
         {
-            if (alarm.State != XSyncAlarm.Active || alarm.Trigger.Counter is not { } counter || !_alarms.Contains(alarm))
+            if (alarm.State != XSyncAlarm.Active || alarm.Trigger.Counter is not { } counter)
             {
                 continue;
             }
@@ -684,7 +704,7 @@ public sealed partial class X11Server
             alarm.Listeners.Remove(client);
             if (ReferenceEquals(alarm.Owner, client))
             {
-                _alarms.Remove(alarm);
+                ForgetAlarm(alarm);
             }
         }
     }

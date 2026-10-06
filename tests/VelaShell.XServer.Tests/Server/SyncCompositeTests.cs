@@ -256,6 +256,29 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task 几千个报警器的建立与销毁是线性的_销毁的不再触发()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint counter = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(0));
+        const int count = 4000;
+        uint[] alarms = [.. Enumerable.Range(0, count).Select(_ => c.NewId())];
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        // 等待值 100 万、PositiveComparison:一个都不会触发,但每建一个都要整轮求值一遍。原先每个报警器还要在列表里 Contains 一遍。
+        await c.SendManyAsync(alarms.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (sync, 9, b => b.U32(id).U32(1 | 2 | 4 | 8 | 16)
+            .U32(counter).U32(0).I32(0).U32(1_000_000).U32(2).I32(0).U32(1))));
+        await c.SendManyAsync(alarms.Take(count - 1).Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (sync, 11, b => b.U32(id))));
+        await c.SyncAsync();
+        Assert.IsLessThan(5_000, watch.ElapsedMilliseconds);
+
+        await c.SendAsync(sync, 3, b => b.U32(counter).I32(0).U32(2_000_000));   // SetCounter:只剩最后一个报警器会触发
+        XMessage fired = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == syncEvent + 1 && m.Bytes[28] == 0);
+        Assert.AreEqual(alarms[^1], fired.U32(4), "销毁了的报警器不触发");
+    }
+
+    [TestMethod]
     public async Task SYNC报警器触发后按delta推进_栅栏可查询()
     {
         await using X11Server server = new();
