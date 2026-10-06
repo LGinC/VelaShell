@@ -425,6 +425,7 @@ public sealed partial class SshConnection
         // 接收循环不需要等它 —— 接收循环在这里等任何发送都有自锁的风险。
         PostControl(OutboundKind.CloseGate);
 
+        SshRekeyEventArgs? completed = null;
         try
         {
             SshAlgorithmSet algorithms = RekeyAlgorithms(context);
@@ -514,8 +515,8 @@ public sealed partial class SshConnection
 
             TimeSpan duration = Time.GetElapsedTime(startedAt);
             Volatile.Write(ref _lastRekeyDurationTicks, Math.Max(duration.Ticks, 1));
-            RaiseRekeyed(new SshRekeyEventArgs(
-                LastRekey ?? new SshRekeyCause(SshRekeyTrigger.Peer), duration, RekeyCount, result.Algorithms));
+            completed = new SshRekeyEventArgs(
+                LastRekey ?? new SshRekeyCause(SshRekeyTrigger.Peer), duration, RekeyCount, result.Algorithms);
         }
         finally
         {
@@ -529,6 +530,13 @@ public sealed partial class SshConnection
             {
                 _kexInProgress = false;
             }
+        }
+
+        // 在「可以再发起」之后才报：订阅者收到事件就发起下一次时，不会因为还记着「在谈」而被当成空操作悄悄吞掉。
+        // 曾经在清掉之前就报 —— 一个「每次重协商完就再来一次」的订阅者，第二次就停了。
+        if (completed is not null)
+        {
+            RaiseRekeyed(completed);
         }
     }
 

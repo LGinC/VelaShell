@@ -158,6 +158,37 @@ public sealed class RekeyTests
     }
 
     /// <summary>
+    /// 收到 <see cref="SshConnection.Rekeyed"/> 就再发起一次：第二次不能被当成「还在谈」的空操作悄悄吞掉 ——
+    /// 事件在可以再发起之后才报。曾经在那之前报，「每次完了就再来一次」的订阅者第二次就停了。
+    /// </summary>
+    [TestMethod]
+    public async Task 收到重协商完成的事件就再发起一次不会被吞掉()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(new TestChannelScript
+        {
+            StandardOutput = Encoding.UTF8.GetBytes("ok\n"),
+            ExitCode = 0,
+        });
+
+        TaskCompletionSource second = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Connection.Rekeyed += (_, e) =>
+        {
+            if (e.Count == 1)
+            {
+                _ = host.Connection.StartRekeyAsync(host.Token).AsTask();
+            }
+            else
+            {
+                second.TrySetResult();
+            }
+        };
+
+        await host.Connection.StartRekeyAsync(host.Token);
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(10), host.Token);
+        Assert.AreEqual(2, host.Connection.RekeyCount);
+        Assert.AreEqual("ok\n", (await host.Connection.RunAsync("ok", cancellationToken: host.Token)).StandardOutput);
+    }
+    /// <summary>
     /// 重协商期间闸门关着、发送一律暂存 —— 对端永远不完成的话，连接不能无声地停在那里。
     /// </summary>
     [TestMethod]
