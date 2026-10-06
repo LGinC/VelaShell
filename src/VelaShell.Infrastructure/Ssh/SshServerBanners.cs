@@ -13,6 +13,10 @@ namespace VelaShell.Infrastructure.Ssh;
 /// 版本交换之前的前导行(有的设备在标识串之前就打印法律声明、维护公告,规格 02 §3)也收进来,
 /// 排在那一跳认证横幅的前面 —— 曾经库把它们收集起来却没人接,用户看不到。
 /// </para>
+/// <para>
+/// 服务端标着「一定要给用户看」的调试消息(<c>SSH_MSG_DEBUG</c> 的 always_display,规格 05 §八)同样收进来:
+/// OpenSSH 的服务端用它说明 authorized_keys 里的限制之类。开过 shell 之后才到的不再显示(没有地方摆)。
+/// </para>
 /// </remarks>
 public sealed class SshServerBanners
 {

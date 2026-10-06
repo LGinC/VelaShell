@@ -396,6 +396,55 @@ public sealed class ConnectionTests
         Assert.AreSequenceEqual(["未经授权的访问将被记录。"], banners);
     }
 
+    /// <summary>
+    /// 〔spec 05 §八〕标着 always_display 的 SSH_MSG_DEBUG 交给回调（认证期间与连上之后都交），清洗过；
+    /// 不带 always_display 的不交。曾经一律丢掉。
+    /// </summary>
+    [TestMethod]
+    public async Task 标着always_display的调试消息交给回调()
+    {
+        List<string> shown = [];
+        TaskCompletionSource afterLogin = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        await using FakeServer server = new(
+            new TestChannelScript { DebugMessagesOnStart = [(false, "仅排错"), (true, "连上之后：\u001b[31m注意")] },
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                DebugMessages = [(true, "这把钥不许转发端口。"), (false, "认证细节")],
+            });
+
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = server.CreateDialer(),
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+            DebugMessageHandler = (text, _) =>
+            {
+                lock (shown)
+                {
+                    shown.Add(text);
+                    if (shown.Count == 2)
+                    {
+                        afterLogin.TrySetResult();
+                    }
+                }
+                return ValueTask.CompletedTask;
+            },
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+        await afterLogin.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+        lock (shown)
+        {
+            Assert.AreEqual("这把钥不许转发端口。", shown[0], "认证期间的");
+            Assert.StartsWith("连上之后：", shown[1]);
+            Assert.DoesNotContain("\u001b", shown[1], "对端文本要清洗");
+            Assert.HasCount(2, shown, "不带 always_display 的不交");
+        }
+    }
+
     [TestMethod]
     public async Task 连不上的目标给出带原因的异常()
     {

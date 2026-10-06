@@ -158,6 +158,7 @@ public sealed partial class SshConnection
             SshAuthenticator authenticator = new(transport, options.UserName, kex.SessionId)
             {
                 BannerHandler = options.BannerHandler,
+                DebugMessageHandler = options.DebugMessageHandler,
                 AllowSha1RsaSignatures = options.AllowSha1RsaSignatures,
                 SessionProof = kex.CreateSessionProof(),
                 PeerKexInitHandler = async (peerKexInit, ct) =>
@@ -229,6 +230,7 @@ public sealed partial class SshConnection
                 PeerSupportsPing = authenticated?.ServerExtensions.Contains(SshProtocolNames.ExtPing) == true,
                 MetricsHost = metricsHost,
                 HostKeyPersistFailure = runner.HostKeyPersistFailure,
+                DebugMessageHandler = options.DebugMessageHandler,
             };
 
             connection.Start();

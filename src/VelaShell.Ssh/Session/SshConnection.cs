@@ -192,6 +192,44 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>给人看的描述（<c>user@host:port</c>），进日志与异常。</summary>
     internal string Description { get; init; } = "";
 
+    /// <summary>标着 <c>always_display</c> 的 <c>SSH_MSG_DEBUG</c> 的回调（<see cref="SshConnectionOptions.DebugMessageHandler"/>）。</summary>
+    internal Func<string, CancellationToken, ValueTask>? DebugMessageHandler { get; init; }
+
+    /// <summary>连上之后的调试消息：在线程池上交给回调，不挡接收循环；回调抛的丢掉，格式不对的照 RFC 忽略。</summary>
+    private void OnDebugMessage(ReadOnlyMemory<byte> payload)
+    {
+        if (DebugMessageHandler is not { } handler)
+        {
+            return;
+        }
+
+        SshDebugMessage message;
+        try
+        {
+            message = SshDebugMessage.Decode(payload);
+        }
+        catch (SshWireFormatException)
+        {
+            return;
+        }
+
+        if (message.AlwaysDisplay && PeerText.Sanitize(message.Message) is { Length: > 0 } text)
+        {
+            CancellationToken token = Disconnected;
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await handler(text, token).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    // 接收循环之外的通知：回调抛的不影响连接。
+                }
+            }, CancellationToken.None);
+        }
+    }
+
     /// <summary>度量的 <c>host</c> 标签（逻辑目标）；<see langword="null"/>（测试里直接建的连接）时不记度量。</summary>
     internal string? MetricsHost { get; init; }
 
@@ -954,8 +992,11 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             //   · UNIMPLEMENTED —— 对 UNIMPLEMENTED 再回 UNIMPLEMENTED 只会让两边互相回声；
             //   · EXT_INFO —— RFC 8308 §2.4 允许服务端在认证成功后再发一次。
             case SshMessageNumber.Ignore:
-            case SshMessageNumber.Debug:
             case SshMessageNumber.Unimplemented:
+                return;
+
+            case SshMessageNumber.Debug:
+                OnDebugMessage(packet.Payload);
                 return;
 
             // RFC 8308 §2.4 允许服务端在认证成功后再发一次（OpenSSH 在这一次里宣告 ping@openssh.com 之类）。

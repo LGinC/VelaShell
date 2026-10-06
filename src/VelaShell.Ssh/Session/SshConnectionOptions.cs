@@ -150,6 +150,17 @@ public sealed record SshConnectionOptions
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
 
     /// <summary>
+    /// 服务端标着「一定要给用户看」（<c>always_display</c>）的调试消息（<c>SSH_MSG_DEBUG</c>，RFC 4253 §11.3）的回调；
+    /// 文本已按对端文本清洗。<see langword="null"/>（默认）表示不交出。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §八〕认证期间收到的在认证流程里依次交出，回调自己抛的照实交还（与 <see cref="BannerHandler"/> 一样）；
+    /// 连上之后收到的在线程池上交出、不挡接收循环，回调抛的丢掉。不带 <c>always_display</c> 的不交出 —— 那是给排错用的。
+    /// 曾经一律丢掉，RFC 说的是「应当展示」。
+    /// </remarks>
+    public Func<string, CancellationToken, ValueTask>? DebugMessageHandler { get; init; }
+
+    /// <summary>
     /// 服务端在标识串<b>之前</b>发的前导行（法律声明、公告，RFC 4253 §4.2）的回调；有前导行时在版本交换之后调一次。
     /// <see langword="null"/>（默认）表示不交出。
     /// </summary>

@@ -73,6 +73,9 @@ internal sealed record TestAuthPolicy
     /// <summary>认证开始前发出的横幅文本。</summary>
     public IReadOnlyList<string> Banners { get; init; } = [];
 
+    /// <summary>认证开始前发出的 <c>SSH_MSG_DEBUG</c>（是否 always_display、正文）。</summary>
+    public IReadOnlyList<(bool AlwaysDisplay, string Text)> DebugMessages { get; init; } = [];
+
     /// <summary>
     /// 紧挨着 <c>USERAUTH_SUCCESS</c> 之前发出的横幅 —— 此时客户端的请求已经发出、正在等应答。
     /// </summary>
@@ -192,6 +195,11 @@ internal sealed class TestAuthServer
         }
 
         await ExpectServiceRequestAsync(cancellationToken);
+
+        foreach ((bool alwaysDisplay, string text) in _policy.DebugMessages)
+        {
+            await SendDebugAsync(_transport, alwaysDisplay, text, cancellationToken);
+        }
 
         foreach (string banner in _policy.Banners)
         {
@@ -610,6 +618,19 @@ internal sealed class TestAuthServer
                 return packet;
             }
         }
+    }
+
+    /// <summary>发一条 <c>SSH_MSG_DEBUG</c>。</summary>
+    internal static async Task SendDebugAsync(SshPacketTransport transport, bool alwaysDisplay, string text, CancellationToken cancellationToken)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter w = new(buffer);
+        w.WriteMessageNumber(SshMessageNumber.Debug);
+        w.WriteBoolean(alwaysDisplay);
+        w.WriteUtf8String(text);
+        w.WriteUtf8String("");   // 语言标记
+        transport.WritePacket(buffer.WrittenSpan);
+        await transport.FlushAsync(cancellationToken);
     }
 
     private async Task SendBannerAsync(string text, CancellationToken cancellationToken)

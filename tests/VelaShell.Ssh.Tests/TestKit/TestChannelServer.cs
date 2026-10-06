@@ -112,6 +112,9 @@ internal sealed record TestChannelScript
     /// <summary>一开始先宣告 <c>ping@openssh.com</c>（认证之后的 EXT_INFO），再发一个 PING（数据是这几个字节）。</summary>
     public byte[]? PingOnStart { get; init; }
 
+    /// <summary>认证之后一开始就发出的 <c>SSH_MSG_DEBUG</c>（是否 always_display、正文）。</summary>
+    public IReadOnlyList<(bool AlwaysDisplay, string Text)> DebugMessagesOnStart { get; init; } = [];
+
     /// <summary>回客户端的 PING（宣告了 <see cref="PingOnStart"/> 时）。</summary>
     public bool AnswerPings { get; init; }
 
@@ -418,6 +421,17 @@ internal sealed class TestChannelServer : IDisposable
         _running.TrySetResult();
         try
         {
+            foreach ((bool alwaysDisplay, string text) in _script.DebugMessagesOnStart)
+            {
+                ArrayBufferWriter<byte> debug = new();
+                SshDataWriter debugWriter = new(debug);
+                debugWriter.WriteMessageNumber(SshMessageNumber.Debug);
+                debugWriter.WriteBoolean(alwaysDisplay);
+                debugWriter.WriteUtf8String(text);
+                debugWriter.WriteUtf8String("");
+                await SendAsync(debug.WrittenMemory, cancellationToken);
+            }
+
             if (_script.PingOnStart is { } pingData)
             {
                 ArrayBufferWriter<byte> extInfo = new();

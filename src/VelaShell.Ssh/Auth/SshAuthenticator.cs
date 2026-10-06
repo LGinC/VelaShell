@@ -116,6 +116,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// <summary>横幅回调。文本来自**未认证**的对端，是注入面。</summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
 
+    /// <summary>标着 <c>always_display</c> 的 <c>SSH_MSG_DEBUG</c> 的回调（<c>SshConnectionOptions.DebugMessageHandler</c>）。</summary>
+    public Func<string, CancellationToken, ValueTask>? DebugMessageHandler { get; init; }
+
     /// <summary>认证期间对端发起了重协商（收到 <c>KEXINIT</c>，载荷交进来）：就地把这次交换做完。</summary>
     /// <remarks>
     /// 〔RFC 4253 §9〕任何时刻都可以重协商 —— 用户找动态码花了几分钟，服务端按时间的 <c>RekeyLimit</c> 就会发起。
@@ -953,7 +956,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                     continue;
 
                 case SshMessageNumber.Ignore:
+                    continue;
+
                 case SshMessageNumber.Debug:
+                    await DeliverDebugMessageAsync(packet.Payload, cancellationToken).ConfigureAwait(false);
                     continue;
 
                 case SshMessageNumber.Disconnect:
@@ -990,6 +996,30 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         if (BannerHandler is { } handler)
         {
             // 〔velashell-docs/zh/ssh/spec/04 §3.4〕回调自己抛的照实交还：不当成跳过，也不归成「对端断开」。
+            await SshCallbackFaultException.InvokeAsync(() => handler(text, cancellationToken)).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>标着 <c>always_display</c> 的调试消息清洗之后交给回调；格式不对的照 RFC 忽略。</summary>
+    private async ValueTask DeliverDebugMessageAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (DebugMessageHandler is not { } handler)
+        {
+            return;
+        }
+
+        SshDebugMessage message;
+        try
+        {
+            message = SshDebugMessage.Decode(payload);
+        }
+        catch (SshWireFormatException)
+        {
+            return;
+        }
+
+        if (message.AlwaysDisplay && PeerText.Sanitize(message.Message) is { Length: > 0 } text)
+        {
             await SshCallbackFaultException.InvokeAsync(() => handler(text, cancellationToken)).ConfigureAwait(false);
         }
     }
