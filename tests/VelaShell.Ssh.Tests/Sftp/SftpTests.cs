@@ -1567,6 +1567,24 @@ public sealed class SftpTests
             "目标文件不该反过来变成一个链接 —— 那正是参数顺序弄反的症状");
     }
 
+    /// <summary>
+    /// 〔Q12〕建完回读自检：服务端按 draft 的顺序解析时，链接建在了本想指向的位置上 —— 删掉建错的那一条、报错。
+    /// 曾经不查，链接建错地方而且不报错。
+    /// </summary>
+    [TestMethod]
+    public async Task 服务端按相反顺序建了链接时删掉建错的那条并报错()
+    {
+        await using Harness harness = await Harness.StartAsync(sftpOptions: new TestSftpOptions { SymLinkInDraftOrder = true });
+
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(async () =>
+            await harness.Sftp.CreateSymbolicLinkAsync("/home/joe/mylink", "/home/joe/not-yet", harness.Token));
+
+        Assert.AreEqual(SftpOperation.CreateSymbolicLink, error.Operation);
+        Assert.Contains("相反的参数顺序", error.Message);
+        Assert.IsFalse(harness.SftpServer.Nodes.ContainsKey("/home/joe/not-yet"), "建错的那条要删掉");
+        Assert.IsFalse(harness.SftpServer.Nodes.ContainsKey("/home/joe/mylink"));
+    }
+
     [TestMethod]
     public async Task 读符号链接拿到原文()
     {

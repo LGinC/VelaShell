@@ -48,6 +48,9 @@ internal sealed record TestSftpOptions
     /// <summary>宣告的版本号。</summary>
     public uint Version { get; init; } = 3;
 
+    /// <summary>按 draft-02 的顺序解析 <c>SSH_FXP_SYMLINK</c>（先 linkpath、后 targetpath）—— 与 OpenSSH 相反的那种服务端。</summary>
+    public bool SymLinkInDraftOrder { get; init; }
+
     /// <summary>
     /// 本测试桩不认识的扩展怎么答（扩展名、请求载荷 → 应答载荷）：返回 <see langword="null"/> 回 <c>STATUS OK</c>，
     /// 抛 <see cref="InvalidOperationException"/> 回 <c>FAILURE</c>。扩展名还得出现在 <see cref="Extensions"/> 里。
@@ -821,6 +824,10 @@ internal sealed class TestSftpServer
         SshDataReader reader = new(rest);
         string targetPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         string linkPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        if (_options.SymLinkInDraftOrder)
+        {
+            (targetPath, linkPath) = (linkPath, targetPath);
+        }
 
         if (_nodes.ContainsKey(linkPath))
         {

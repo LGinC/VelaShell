@@ -104,20 +104,79 @@ public sealed partial class SftpFileSystem
     /// <param name="targetPath">链接<b>指向</b>哪里。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <remarks>
+    /// <para>
     /// 参数顺序上的坑在 <see cref="SftpWire.WriteSymLink"/> 里说明了 ——
     /// 这里按人话的顺序（先在哪建、再指向哪），发出去时按 OpenSSH 的顺序。
+    /// </para>
+    /// <para>
+    /// 〔决策 velashell-docs/zh/ssh/spec/06 §4.5〕<b>建完回读一次</b>（自检，不是开关）：<paramref name="linkPath"/> 上读得到链接就算成了
+    /// （指向的文字服务端可能规范化过，不逐字比）；读不到、而 <paramref name="targetPath"/> 上多了一条指回 <paramref name="linkPath"/> 的链接，
+    /// 就是服务端按 draft 的顺序解析了 —— 删掉建错的那一条，报错。服务端不支持 <c>READLINK</c> 时不查。
+    /// 曾经不查：参数顺序与服务端相反时链接建错地方，而且不报错。
+    /// </para>
     /// </remarks>
+    /// <exception cref="SftpException">服务端拒绝；或者链接没有建在 <paramref name="linkPath"/> 上。</exception>
     public async ValueTask CreateSymbolicLinkAsync(
         string linkPath, string targetPath, CancellationToken cancellationToken = default)
     {
         ValidatePath(linkPath);
         ValidatePath(targetPath);
 
-        using SftpResponse response = await _pipeline.SendAsync(
+        using (SftpResponse response = await _pipeline.SendAsync(
             (output, id) => SftpWire.WriteSymLink(output, id, targetPath, linkPath, _names),
-            cancellationToken: cancellationToken).ConfigureAwait(false);
+            cancellationToken: cancellationToken).ConfigureAwait(false))
+        {
+            response.ThrowIfError(linkPath, SftpOperation.CreateSymbolicLink, SftpMessageType.Status);
+        }
 
-        response.ThrowIfError(linkPath, SftpOperation.CreateSymbolicLink, SftpMessageType.Status);
+        await VerifySymbolicLinkAsync(linkPath, targetPath, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>建完回读：链接得在 <paramref name="linkPath"/> 上；建反了就删掉建错的那一条并报错（见 <see cref="CreateSymbolicLinkAsync"/>）。</summary>
+    private async ValueTask VerifySymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken)
+    {
+        try
+        {
+            _ = await ReadSymbolicLinkAsync(linkPath, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        catch (SftpException ex) when (ex.StatusCode == SftpStatusCode.OperationUnsupported)
+        {
+            return;   // 读不了链接的服务端：查不了，不查
+        }
+        catch (SftpException)
+        {
+            // linkPath 上没有链接：往下看是不是建反了。
+        }
+
+        bool swapped;
+        try
+        {
+            swapped = string.Equals(
+                await ReadSymbolicLinkAsync(targetPath, cancellationToken).ConfigureAwait(false), linkPath, StringComparison.Ordinal);
+        }
+        catch (SftpException)
+        {
+            swapped = false;
+        }
+
+        if (swapped)
+        {
+            try
+            {
+                await DeleteFileAsync(targetPath, cancellationToken).ConfigureAwait(false);   // REMOVE 删的是链接本身
+            }
+            catch (SftpException)
+            {
+                // 删不掉也照样报错：消息里说清楚它在哪。
+            }
+        }
+
+        throw new SftpException(
+            SftpStatusCode.Failure, serverMessage: "", linkPath, SftpOperation.CreateSymbolicLink,
+            swapped
+                ? $"服务端按与 OpenSSH 相反的参数顺序建了链接（建在了 {PeerText.Sanitize(targetPath)} 上），已删掉建错的那一条"
+                : "服务端回了成功，可链接没有建在这里");
     }
 
     /// <summary>建硬链接（需要 <c>hardlink@openssh.com</c>）。</summary>
