@@ -1484,6 +1484,7 @@ public sealed class ChannelTests
             async () => await harness.Connection.OpenSessionChannelAsync(null, harness.Token));
 
         Assert.Contains("上限 2", error.Message);
+        Assert.AreEqual(SshFailureReason.LimitExceeded, error.Reason, "本端的上限，不是对端拒绝开通道");
         Assert.IsTrue(harness.Connection.IsAlive, "限额是本端的事，不该连累会话");
 
         await first.DisposeAsync();
@@ -1509,6 +1510,7 @@ public sealed class ChannelTests
             async () => await harness.Connection.OpenSessionChannelAsync(options, harness.Token));
 
         Assert.Contains("总预算", error.Message);
+        Assert.AreEqual(SshFailureReason.LimitExceeded, error.Reason, "本端的上限，不是对端拒绝开通道");
         Assert.IsTrue(harness.Connection.IsAlive);
 
         await first.DisposeAsync();

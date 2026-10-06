@@ -419,21 +419,22 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         {
             ThrowIfFaulted();
 
-            // 限额撞满**不断开会话** —— 通道是独立的失败域。
+            // 限额撞满**不断开会话** —— 通道是独立的失败域。原因码是 LimitExceeded（本端的上限），
+            // 不是 ChannelOpenFailed：后者说的是对端拒绝，而且曾经连 OpenFailureReason 都没有。
             //
             // 只数 `_channels`：正在打开的那条**也在里面**（见下面的登记），
             // 两个字典加起来会把它数两遍，等于把上限砍了一半。
             if (_channels.Count >= _limits.MaxChannels)
             {
                 throw new SshChannelException(
-                    SshFailureReason.ChannelOpenFailed,
+                    SshFailureReason.LimitExceeded,
                     $"本端的并发通道数已达上限 {_limits.MaxChannels}。");
             }
 
             if (_windowBudgetUsed + window > _limits.SessionWindowBudgetBytes)
             {
                 throw new SshChannelException(
-                    SshFailureReason.ChannelOpenFailed,
+                    SshFailureReason.LimitExceeded,
                     $"会话的接收窗口总预算已用尽（{_limits.SessionWindowBudgetBytes / (1024 * 1024)} MiB）。" +
                     "把窗口策略调小，或者少开几条并发通道。");
             }
