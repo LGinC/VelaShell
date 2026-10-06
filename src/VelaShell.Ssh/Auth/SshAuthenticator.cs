@@ -383,33 +383,93 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         string password = await FromCredentialAsync(() => credential.GetPasswordAsync(cancellationToken))
             .ConfigureAwait(false);
 
+        await SendPasswordRequestAsync(password, newPassword: null, cancellationToken).ConfigureAwait(false);
+
+        // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ：服务端要求先改密码（〔velashell-docs/zh/ssh/spec/04 §5.1〕）。
+        // 配了取新密码的回调就改；没配、或者没改成，**要把原因说清楚** ——
+        // 「客户端直接断开且不说为什么」是用户最难自救的一种失败。
+        for (int attempt = 1; ; attempt++)
+        {
+            string? changePrompt = null;
+            AuthStepResult outcome = await ReadAuthOutcomeAsync(
+                onMethodSpecific: (number, payload) =>
+                {
+                    if (number != PasswordChangeRequest)
+                    {
+                        return null;
+                    }
+                    changePrompt = ParsePasswordChangeRequest(payload);
+                    return new AuthStepResult(SshAuthOutcome.Failure);
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            if (changePrompt is null)
+            {
+                // 认证有了结论。发过改密码请求的话，结论就是改密码的结果（RFC 4252 §8）。
+                if (attempt == 1)
+                {
+                    return outcome;
+                }
+                if (outcome.Outcome is SshAuthOutcome.Success or SshAuthOutcome.PartialSuccess)
+                {
+                    _passwordChangeRequested = false;
+                    return outcome with { Detail = "已按服务端的要求修改了密码。" };
+                }
+                return outcome with { Detail = "服务端要求先修改密码，但没有改成：服务端不支持改密码，或旧密码不对。" };
+            }
+
+            // 记下来：方法都试完时据此报 PasswordExpired，而不是笼统的「方法用尽」。
+            _passwordChangeRequested = true;
+            if (credential.NewPasswordProvider is not { } provider)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码（没有配置取新密码的回调）。");
+            }
+            if (attempt > PasswordCredential.MaxNewPasswordAttempts)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure,
+                    $"服务端要求先修改密码，连续 {PasswordCredential.MaxNewPasswordAttempts} 次不接受新密码：" +
+                    PeerText.Sanitize(changePrompt, 256));
+            }
+
+            // 此时服务端的应答已经读完，没有请求在途：回调出错换下一条凭据不会让应答错位。
+            SshPasswordChangeRequest ask = new() { Prompt = changePrompt, Attempt = attempt };
+            string? newPassword = await FromCredentialAsync(() => provider(ask, cancellationToken)).ConfigureAwait(false);
+            if (newPassword is null)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码，这次没有给出新密码。");
+            }
+
+            await SendPasswordRequestAsync(password, newPassword, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>发 <c>password</c> 请求；带 <paramref name="newPassword"/> 时是改密码请求（RFC 4252 §8）。</summary>
+    private async ValueTask SendPasswordRequestAsync(string password, string? newPassword, CancellationToken cancellationToken)
+    {
         ArrayBufferWriter<byte> request = new();
         SshDataWriter writer = new(request);
         WriteRequestHeader(ref writer, SshProtocolNames.AuthPassword);
-        writer.WriteBoolean(false);        // 不是改密码请求
+        writer.WriteBoolean(newPassword is not null);   // 是不是改密码请求
         writer.WriteUtf8String(password);
+        if (newPassword is not null)
+        {
+            writer.WriteUtf8String(newPassword);
+        }
 
         // 请求里是明文密码：封进传输的缓冲之后就把这一份清零（velashell-docs/zh/ssh/spec/04 §5.2）。
         _transport.WritePacket(request.WrittenSpan);
         request.Clear();
         await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
 
-        // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ：服务端要求先改密码。
-        // 〔决策 velashell-docs/zh/ssh/spec/04 §5.1〕我们不实现改密码流程，但**要把原因说清楚** ——
-        // 「客户端直接断开且不说为什么」是用户最难自救的一种失败。
-        return await ReadAuthOutcomeAsync(
-            onMethodSpecific: (number, payload) =>
-            {
-                if (number != PasswordChangeRequest)
-                {
-                    return null;
-                }
-
-                // 记下来：方法都试完时据此报 PasswordExpired，而不是笼统的「方法用尽」。
-                _passwordChangeRequested = true;
-                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码（本库尚未实现改密码流程）。");
-            },
-            cancellationToken).ConfigureAwait(false);
+    /// <summary>解 <c>SSH_MSG_USERAUTH_PASSWD_CHANGEREQ</c>：提示文本（语言标记忽略）。</summary>
+    private static string ParsePasswordChangeRequest(ReadOnlyMemory<byte> payload)
+    {
+        SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+        reader.ReadByte();   // PasswordChangeRequest
+        string prompt = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        _ = reader.ReadUtf8String(MaxKeyboardStringBytes);   // 语言标记
+        return prompt;
     }
 
     private async ValueTask<AuthStepResult> TryPublicKeyAsync(
@@ -994,8 +1054,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         {
             (true, _) => (
                 SshFailureReason.PasswordExpired,
-                "服务端要求先修改密码（密码已过期或被管理员要求更换），本库没有改密码流程。" +
-                "请先用别的客户端登录一次改掉密码。"),
+                "服务端要求先修改密码（密码已过期或被管理员要求更换），密码没有改成。"),
             (_, true) => (
                 SshFailureReason.TwoFactorRequired,
                 "服务端要求键盘交互式认证（动态码 / OTP），但没有配置相应的凭据。" +

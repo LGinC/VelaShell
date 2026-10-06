@@ -177,9 +177,107 @@ public sealed class AuthenticationTests
         // 本库不实现改密码流程，但**必须说清楚为什么连不上** ——
         // 「直接断开且不说原因」是用户最难自救的一种失败。
         SshAuthenticationException error = run.Failed;
+        Assert.AreEqual(SshFailureReason.PasswordExpired, error.Reason);
         Assert.Contains(
             a => a.Detail is not null && a.Detail.Contains("修改密码", StringComparison.Ordinal), error.Attempts,
             $"应当说明服务端要求改密码：{Environment.NewLine}{error.DescribeAttempts()}");
+        Assert.IsEmpty(run.Observation.PasswordChanges, "没配取新密码的回调，不该发改密码请求");
+    }
+
+    /// <summary>配了取新密码的回调：带着旧密码与新密码发改密码请求，改成了就登录成功（RFC 4252 §8）。</summary>
+    [TestMethod]
+    public async Task 服务端要求改密码时按回调给的新密码改_改成了就登录成功()
+    {
+        List<SshPasswordChangeRequest> asked = [];
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult<string?>("correct horse");
+            },
+        };
+
+        AuthRun run = await RunAsync([credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual(new[] { ("hunter2", "correct horse") }, run.Observation.PasswordChanges);
+        Assert.HasCount(1, asked);
+        Assert.AreEqual("你的密码已过期。", asked[0].Prompt);
+        Assert.AreEqual(1, asked[0].Attempt);
+    }
+
+    /// <summary>服务端嫌新密码不好会再回 PASSWD_CHANGEREQ：再问一次（提示是服务端的新说法），给对了就成。</summary>
+    [TestMethod]
+    public async Task 新密码不被接受时再问一次()
+    {
+        List<SshPasswordChangeRequest> asked = [];
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult<string?>(request.Attempt == 1 ? "123" : "correct horse");
+            },
+        };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, RejectNewPasswords = 1 });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual(new[] { 1, 2 }, asked.Select(a => a.Attempt).ToArray());
+        Assert.AreEqual("新密码太简单。", asked[1].Prompt);
+        Assert.AreSequenceEqual(new[] { ("hunter2", "123"), ("hunter2", "correct horse") }, run.Observation.PasswordChanges);
+    }
+
+    /// <summary>服务端一直不接受：最多问 <see cref="PasswordCredential.MaxNewPasswordAttempts"/> 次，然后报「要先改密码」。</summary>
+    [TestMethod]
+    public async Task 新密码一直不被接受时问够次数就停()
+    {
+        int calls = 0;
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (_, _) =>
+            {
+                calls++;
+                return ValueTask.FromResult<string?>($"try{calls}");
+            },
+        };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, RejectNewPasswords = 100 });
+
+        Assert.AreEqual(PasswordCredential.MaxNewPasswordAttempts, calls);
+        Assert.HasCount(PasswordCredential.MaxNewPasswordAttempts, run.Observation.PasswordChanges);
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.Contains(a => a.Detail?.Contains("新密码太简单", StringComparison.Ordinal) == true, run.Failed.Attempts);
+    }
+
+    /// <summary>回调返回 null（用户这次不改）：不发改密码请求，报「要先改密码」。</summary>
+    [TestMethod]
+    public async Task 回调不给新密码时不发改密码请求()
+    {
+        PasswordCredential credential = new("hunter2") { NewPasswordProvider = (_, _) => ValueTask.FromResult<string?>(null) };
+
+        AuthRun run = await RunAsync([credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true });
+
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.IsEmpty(run.Observation.PasswordChanges);
+    }
+
+    /// <summary>改密码请求被回 FAILURE（不支持改密码，或旧密码不对）：说清楚没改成。</summary>
+    [TestMethod]
+    public async Task 服务端不支持改密码时说清楚没改成()
+    {
+        PasswordCredential credential = new("hunter2") { NewPasswordProvider = (_, _) => ValueTask.FromResult<string?>("correct horse") };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, PasswordChangeUnsupported = true });
+
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.HasCount(1, run.Observation.PasswordChanges);
+        Assert.Contains(a => a.Detail?.Contains("没有改成", StringComparison.Ordinal) == true, run.Failed.Attempts,
+            run.Failed.DescribeAttempts());
     }
 
     // ------------------------------------------------------------ 公钥

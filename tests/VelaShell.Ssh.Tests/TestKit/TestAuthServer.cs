@@ -96,8 +96,14 @@ internal sealed record TestAuthPolicy
     /// </summary>
     public IReadOnlyList<string>? ServerSignatureAlgorithms { get; init; }
 
-    /// <summary>密码认证一律回 <c>PASSWD_CHANGEREQ</c>（60）。</summary>
+    /// <summary>密码认证（不是改密码请求时）一律回 <c>PASSWD_CHANGEREQ</c>（60）。</summary>
     public bool RequestPasswordChange { get; init; }
+
+    /// <summary>头几次改密码请求嫌新密码太简单，再回 <c>PASSWD_CHANGEREQ</c>（RFC 4252 §8）。</summary>
+    public int RejectNewPasswords { get; init; }
+
+    /// <summary>改密码请求一律回 <c>FAILURE</c>：不支持改密码（RFC 4252 §8，与「旧密码不对」同一个应答）。</summary>
+    public bool PasswordChangeUnsupported { get; init; }
 
     /// <summary>是否真的验签。</summary>
     public bool VerifyPublicKeySignature { get; init; } = true;
@@ -132,6 +138,9 @@ internal sealed class TestAuthObservation
 
     /// <summary>keyboard-interactive 收到的答案，按轮。</summary>
     public List<IReadOnlyList<string>> KeyboardAnswers { get; } = [];
+
+    /// <summary>收到的改密码请求（旧密码、新密码），按顺序。</summary>
+    public List<(string Old, string New)> PasswordChanges { get; } = [];
 
     /// <summary>收到的签名是否全部验证通过。</summary>
     public bool AllSignaturesValid { get; set; } = true;
@@ -312,6 +321,7 @@ internal sealed class TestAuthServer
 
         public bool PasswordIsChange { get; init; }
         public string Password { get; init; } = "";
+        public string NewPassword { get; init; } = "";
 
         public bool HasSignature { get; init; }
         public string Algorithm { get; init; } = "";
@@ -330,13 +340,15 @@ internal sealed class TestAuthServer
         if (method == SshProtocolNames.AuthPassword)
         {
             bool isChange = reader.ReadBoolean();
+            string password = reader.ReadUtf8String(MaxField);
             return new ParsedAuthRequest
             {
                 UserName = userName,
                 Service = service,
                 Method = method,
                 PasswordIsChange = isChange,
-                Password = reader.ReadUtf8String(MaxField),
+                Password = password,
+                NewPassword = isChange ? reader.ReadUtf8String(MaxField) : "",
             };
         }
 
@@ -364,20 +376,44 @@ internal sealed class TestAuthServer
 
     private async Task<bool> HandlePasswordAsync(ParsedAuthRequest request, CancellationToken cancellationToken)
     {
-        if (_policy.RequestPasswordChange && !request.PasswordIsChange)
+        if (request.PasswordIsChange)
         {
-            ArrayBufferWriter<byte> buffer = new();
-            SshDataWriter w = new(buffer);
-            w.WriteByte(60);                       // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ
-            w.WriteUtf8String("你的密码已过期。");
-            w.WriteUtf8String("");                 // 语言标记
-            _transport.WritePacket(buffer.WrittenSpan);
-            await _transport.FlushAsync(cancellationToken);
-            _alreadyAnswered = true;
+            // RFC 4252 §8：FAILURE（不带 partial）= 没改成（不支持，或旧密码不对）；PASSWD_CHANGEREQ = 新密码不行；放行 = 改成了。
+            Observation.PasswordChanges.Add((request.Password, request.NewPassword));
+            if (_policy.PasswordChangeUnsupported || _policy.AcceptPassword != request.Password)
+            {
+                return false;
+            }
+            if (_newPasswordsRejected < _policy.RejectNewPasswords)
+            {
+                _newPasswordsRejected++;
+                await SendPasswordChangeRequestAsync("新密码太简单。", cancellationToken);
+                return false;
+            }
+            return true;
+        }
+
+        if (_policy.RequestPasswordChange)
+        {
+            await SendPasswordChangeRequestAsync("你的密码已过期。", cancellationToken);
             return false;
         }
 
         return _policy.AcceptPassword is { } expected && request.Password == expected;
+    }
+
+    private int _newPasswordsRejected;
+
+    private async Task SendPasswordChangeRequestAsync(string prompt, CancellationToken cancellationToken)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter w = new(buffer);
+        w.WriteByte(60);                       // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ
+        w.WriteUtf8String(prompt);
+        w.WriteUtf8String("");                 // 语言标记
+        _transport.WritePacket(buffer.WrittenSpan);
+        await _transport.FlushAsync(cancellationToken);
+        _alreadyAnswered = true;
     }
 
     private async Task<bool> HandlePublicKeyAsync(
