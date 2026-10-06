@@ -87,6 +87,22 @@ public sealed class AgentListIdentitiesTests
         Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
     }
 
+    /// <summary>agent 回了空报文、或者回的类型不是这条请求该有的：同样只报 SshAgentException，不把它当成应答去解。</summary>
+    [TestMethod]
+    [DataRow(new byte[0], false, DisplayName = "身份列表:空报文")]
+    [DataRow(new byte[] { 14, 0, 0, 0, 0 }, false, DisplayName = "身份列表:回了签名应答")]
+    [DataRow(new byte[] { 6 }, false, DisplayName = "身份列表:回了 SUCCESS")]
+    [DataRow(new byte[0], true, DisplayName = "签名:空报文")]
+    [DataRow(new byte[] { 12, 0, 0, 0, 0 }, true, DisplayName = "签名:回了身份列表")]
+    [DataRow(new byte[] { 6 }, true, DisplayName = "签名:回了 SUCCESS")]
+    public async Task agent回了空报文或类型不对时报SshAgentException(byte[] reply, bool sign)
+    {
+        await Assert.ThrowsExactlyAsync<SshAgentException>(
+            async () => await WithScriptedReplyAsync(reply, client => sign
+                ? client.SignAsync(new byte[] { 1 }, new byte[] { 2 }, "ssh-ed25519").AsTask()
+                : client.ListIdentitiesAsync().AsTask()));
+    }
+
     [TestMethod]
     public async Task agent回了畸形的签名应答时报SshAgentException()
     {
