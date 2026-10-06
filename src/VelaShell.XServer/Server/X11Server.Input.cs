@@ -785,6 +785,20 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>宿主的锁定键状态(见 <see cref="SetLockState" />):锁定位按键位表里 Caps_Lock / Num_Lock 所在的修饰位改,变了照常通知。</summary>
+    private void ApplyLockState(bool capsLock, bool numLock)
+    {
+        byte locked = _lockedMods;
+        byte capsBit = (byte)_keymap.ModifierBitOf(XKeycodes.CapsLock), numBit = (byte)_keymap.ModifierBitOf(XKeycodes.NumLock);
+        locked = capsLock ? (byte)(locked | capsBit) : (byte)(locked & ~capsBit);
+        locked = numLock ? (byte)(locked | numBit) : (byte)(locked & ~numBit);
+        if (locked != _lockedMods)
+        {
+            _lockedMods = locked;
+            UpdateModifierState(0, 0);
+        }
+    }
+
     /// <summary>从按着的修饰键重新算 base,合成生效状态;变了就通知(XKB 的 StateNotify)。</summary>
     private void UpdateModifierState(byte keycode, byte eventType, byte requestMajor = 0, byte requestMinor = 0)
     {

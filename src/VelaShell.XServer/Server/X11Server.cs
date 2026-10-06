@@ -250,6 +250,13 @@ public sealed partial class X11Server : IAsyncDisposable
         Post(null, () => ApplyKey(keycode, pressed));
     }
 
+    /// <summary>
+    /// 宿主的锁定键状态(CapsLock、NumLock)换进服务端,不合成按键:客户端收到 XKB 的 StateNotify,之后的按键按它解释。
+    /// 宿主在 X 窗口得到焦点时按系统的真实状态推一次 —— 服务端起步时两个都关着,用户在别的程序里切过也不会知道;
+    /// 原先 Windows 上开着 NumLock,小键盘在 X 里却是方向键。
+    /// </summary>
+    public void SetLockState(bool capsLock, bool numLock) => Post(null, () => ApplyLockState(capsLock, numLock));
+
     // ================================================================== 宿主注入:窗口管理器
 
     /// <summary>宿主让某个顶层窗口得到键盘焦点(用户激活了它的原生窗口);null = 所有顶层都失去焦点。</summary>

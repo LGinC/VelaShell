@@ -223,4 +223,23 @@ public sealed class XkbTests
         Assert.IsTrue(refused.IsError);
         Assert.AreEqual(2, refused.Bytes[1], "BadValue");
     }
+
+    [TestMethod]
+    public async Task 宿主换进锁定键状态_不合成按键_客户端读得到()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte xkb, _) = await XkbAsync(c);
+        server.SetLockState(capsLock: true, numLock: true);
+        await c.SyncAsync();
+        XMessage state = await c.RequestAsync(xkb, 4, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(0x02 | 0x10, state.Bytes[11], "locked:Lock 与 Mod2(Num_Lock)");
+        Assert.AreEqual(0x02 | 0x10, state.Bytes[8] & 0x12, "生效的修饰里也有");
+
+        server.SetLockState(capsLock: false, numLock: true);
+        await c.SyncAsync();
+        state = await c.RequestAsync(xkb, 4, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(0x10, state.Bytes[11]);
+        Assert.IsTrue((await c.RequestAsync(44, 0)).Bytes.Skip(8).All(b => b == 0), "QueryKeymap:没有按着的键(没合成按键)");
+    }
 }

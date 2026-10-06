@@ -444,6 +444,10 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             return;
         }
         server.FocusTopLevel(window.Handle);
+        if (HostLockState.Read(server.DisplayNumber) is var (capsLock, numLock))
+        {
+            server.SetLockState(capsLock, numLock);   // 用户可能在别的程序里切过 CapsLock / NumLock
+        }
         ApplyKeyboardLayout(server);   // 用户可能在别的程序里切了输入法 / 布局
         FireAndForget.Run(() => OfferSystemClipboardAsync(server, window));
     }

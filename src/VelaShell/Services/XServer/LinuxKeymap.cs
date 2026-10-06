@@ -123,6 +123,60 @@ internal static partial class LinuxKeymap
         }
     }
 
+    /// <summary>桌面 X 显示此刻的锁定键状态(XKB 的锁定修饰位 Lock、Mod2);读不到为 null。</summary>
+    [SupportedOSPlatform("linux")]
+    public static unsafe (bool CapsLock, bool NumLock)? ReadLockState(int ownDisplay)
+    {
+        string? display = Environment.GetEnvironmentVariable("DISPLAY");
+        if (string.IsNullOrEmpty(display) || DisplayNumber(display) == ownDisplay)
+        {
+            return null;
+        }
+        nint connection = xcb_connect(null, null);
+        if (connection == 0)
+        {
+            return null;
+        }
+        nint context = 0, keymap = 0, state = 0;
+        try
+        {
+            if (xcb_connection_has_error(connection) != 0
+                || xkb_x11_setup_xkb_extension(connection, 1, 0, 0, null, null, null, null) != 1)
+            {
+                return null;
+            }
+            int device = xkb_x11_get_core_keyboard_device_id(connection);
+            context = device < 0 ? 0 : xkb_context_new(0);
+            keymap = context == 0 ? 0 : xkb_x11_keymap_new_from_device(context, connection, device, 0);
+            state = keymap == 0 ? 0 : xkb_x11_state_new_from_device(keymap, connection, device);
+            if (state == 0)
+            {
+                return null;
+            }
+            const int locked = 1 << 2;   // XKB_STATE_MODS_LOCKED
+            return (xkb_state_mod_name_is_active(state, "Lock", locked) > 0, xkb_state_mod_name_is_active(state, "Mod2", locked) > 0);
+        }
+        finally
+        {
+            if (state != 0)
+            {
+                xkb_state_unref(state);
+            }
+            if (keymap != 0)
+            {
+                xkb_keymap_unref(keymap);
+            }
+            if (context != 0)
+            {
+                xkb_context_unref(context);
+            }
+            xcb_disconnect(connection);
+        }
+    }
+
+    [LibraryImport(XkbCommon, StringMarshalling = StringMarshalling.Utf8)]
+    private static partial int xkb_state_mod_name_is_active(nint state, string name, int type);
+
     /// <summary>键码在布局组 <paramref name="group" /> 第 <paramref name="level" /> 级(从 0 数)的第一个键值;没有为 0。</summary>
     [SupportedOSPlatform("linux")]
     private static unsafe uint Level(nint keymap, uint keycode, uint group, uint level)
