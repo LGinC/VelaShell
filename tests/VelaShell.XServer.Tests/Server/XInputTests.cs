@@ -254,4 +254,71 @@ public sealed class XInputTests
         XMessage release = await NextXiAsync(c, xi, 5);
         Assert.AreEqual(0x02, release.Bytes[80] & 0x02, "松开:事件之前还按着");
     }
+
+    /// <summary>XIPassiveGrabDevice(在根窗口上抓按钮或按键,掩码 1 个单位为 0)。</summary>
+    private static Task<XMessage> PassiveGrabAsync(XTestClient c, byte xi, uint detail, byte grabType, params uint[] modifiers) =>
+        c.RequestAsync(xi, 54, b =>
+        {
+            b.U32(0).U32(c.RootWindow).U32(0).U32(detail).U16(2).U16((ushort)modifiers.Length).U16(1)
+                .U8(grabType).U8(1).U8(1).U8(0).U16(0).U32(0);
+            foreach (uint m in modifiers)
+            {
+                b.U32(m);
+            }
+        });
+
+    [TestMethod]
+    public async Task XI2被动抓取与别的客户端冲突的修饰组合回报为AlreadyGrabbed()
+    {
+        await using X11Server server = new();
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(a);
+        await XiAsync(b);
+        XMessage first = await PassiveGrabAsync(a, xi, 1, 0, 0);
+        Assert.AreEqual(0, first.U16(8), "a 的抓取都成");
+
+        XMessage second = await PassiveGrabAsync(b, xi, 1, 0, 0, 4);
+        Assert.AreEqual(1, second.U16(8), "b 的 0 号组合与 a 冲突");
+        Assert.AreEqual(0u, second.U32(32));
+        Assert.AreEqual(1, second.Bytes[36], "AlreadyGrabbed");
+
+        // AnyButton(0)与 AnyModifier 跟谁都冲突。
+        XMessage any = await PassiveGrabAsync(b, xi, 0, 0, 0x80000000);
+        Assert.AreEqual(1, any.U16(8));
+    }
+
+    [TestMethod]
+    public async Task XI2被动抓取的detail与修饰位按规范校验()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        XMessage keycode = await PassiveGrabAsync(c, xi, 5, 1, 0);
+        Assert.IsTrue(keycode.IsError, "键码 5 不合法");
+        Assert.AreEqual(2, keycode.Detail, "BadValue");
+        XMessage huge = await PassiveGrabAsync(c, xi, 70000, 0, 0);
+        Assert.AreEqual(2, huge.Detail, "detail 超过 255");
+        XMessage modifier = await PassiveGrabAsync(c, xi, 1, 0, 0x100);
+        Assert.AreEqual(2, modifier.Detail, "核心修饰位之外的位");
+    }
+
+    [TestMethod]
+    public async Task 一个客户端在一个窗口上的XI2被动抓取有上限()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint[] all = [.. Enumerable.Range(0, 256).Select(m => (uint)m)];
+        XMessage? error = null;
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        for (uint button = 1; button <= 20 && error is null; button++)
+        {
+            XMessage m = await PassiveGrabAsync(c, xi, button, 0, all);
+            error = m.IsError ? m : null;
+        }
+        Assert.IsNotNull(error, "16 × 256 = 4096 个之后应当回 BadAlloc");
+        Assert.AreEqual(11, error.Detail);
+        Assert.IsLessThan(5_000, watch.ElapsedMilliseconds);
+    }
 }

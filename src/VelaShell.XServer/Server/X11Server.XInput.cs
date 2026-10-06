@@ -669,38 +669,93 @@ public sealed partial class X11Server
             bool ownerEvents = r.Bool();
             r.Skip(2);
             ulong mask = ReadXiMask(r, units);
-            List<uint> modifiers = [];
-            for (int i = 0; i < modifierCount; i++)
-            {
-                modifiers.Add(r.U32());
-            }
+            List<(uint Raw, ushort Core)> modifiers = ReadXiGrabModifiers(r, modifierCount);
+            List<uint> failed = [];
             if (grabType is 0 or 1)
             {
+                CheckXiGrabDetail(grabType, detail);
                 List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-                foreach (uint mods in modifiers)
+                // 一趟去掉这个客户端在同一 detail 上要被替换的旧抓取(原先每个修饰组合都 RemoveAll 一遍整张表:O(组合数 × 表长))。
+                HashSet<ushort> wanted = [.. modifiers.Select(m => m.Core)];
+                list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == (int)detail && wanted.Contains(g.Modifiers));
+                // 与别的客户端的被动抓取冲突的组合不登记,回报给客户端(XI 2.2「XIPassiveGrabDevice」:AlreadyGrabbed)。
+                List<PassiveGrab> others = [.. list.Where(g => !ReferenceEquals(g.Client, c) && !g.Client.Closed
+                                                               && (g.Detail == 0 || detail == 0 || g.Detail == (int)detail))];
+                int mine = list.Count(g => ReferenceEquals(g.Client, c));
+                bool deviceSync = grabMode == 0, pairedSync = pairedMode == 0;
+                XCursorResource? cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId);
+                foreach ((uint raw, ushort core) in modifiers)
                 {
-                    ushort core = mods == 0x80000000 ? (ushort)0x8000 : (ushort)(mods & 0xFF);   // XIAnyModifier
-                    list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == (int)detail && g.Modifiers == core);
+                    if (others.Any(g => g.Modifiers == 0x8000 || core == 0x8000 || g.Modifiers == core))
+                    {
+                        failed.Add(raw);
+                        continue;
+                    }
+                    if (++mine > MaxPassiveGrabsPerWindow)
+                    {
+                        throw new XProtocolError(XErrorCode.Alloc);   // 一个客户端在一个窗口上登记这么多被动抓取,不会是真实程序
+                    }
                     // 按钮抓取:grab_mode 管指针、paired 管键盘;按键抓取反过来。
-                    bool deviceSync = grabMode == 0, pairedSync = pairedMode == 0;
-                    list.Add(new PassiveGrab(c, (int)detail, core, ownerEvents, 0, null,
-                        cursorId == 0 ? null : Lookup<XCursorResource>(cursorId), Xi2: true, Xi2Mask: mask,
+                    list.Add(new PassiveGrab(c, (int)detail, core, ownerEvents, 0, null, cursor, Xi2: true, Xi2Mask: mask,
                         PointerSync: grabType == 0 ? deviceSync : pairedSync, KeyboardSync: grabType == 0 ? pairedSync : deviceSync));
                 }
             }
-            // Enter / FocusIn / Touch 类被动抓取不支持;规范允许以「全部修饰组合都失败」回应 —— 这里回空列表,表示没有冲突。
-            c.Reply(54, w => w.U16(0).Zero(22));
+            else
+            {
+                // Enter / FocusIn / Touch 类被动抓取不支持:按规范以「这些组合都没抓成」回应。
+                failed.AddRange(modifiers.Select(m => m.Raw));
+            }
+            c.Reply(54, w =>
+            {
+                w.U16((ushort)failed.Count).Zero(22);
+                foreach (uint mods in failed)
+                {
+                    w.U32(mods).U8(1).Zero(3);   // GRABMODIFIERINFO:status AlreadyGrabbed
+                }
+            });
         }
         else
         {
             r.Skip(3);
-            for (int i = 0; i < modifierCount; i++)
+            List<(uint Raw, ushort Core)> modifiers = ReadXiGrabModifiers(r, modifierCount);
+            HashSet<ushort> removing = [.. modifiers.Select(m => m.Core)];
+            List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+            list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Xi2 && g.Detail == (int)detail && removing.Contains(g.Modifiers));
+        }
+    }
+
+    /// <summary>一个客户端在一个窗口上最多登记这么多个(按钮或按键)被动抓取。</summary>
+    internal const int MaxPassiveGrabsPerWindow = 4096;
+
+    /// <summary>
+    /// 被动抓取的修饰组合:XIAnyModifier(0x80000000)换成核心的 AnyModifier(0x8000);其余只认 8 个核心修饰位,
+    /// 带了别的位回 BadValue —— 原先直接截成低 8 位,0x100 会变成「不带修饰」。
+    /// </summary>
+    private static List<(uint Raw, ushort Core)> ReadXiGrabModifiers(XRequestReader r, int count)
+    {
+        if (count * 4L > r.Remaining)
+        {
+            throw new XProtocolError(XErrorCode.Length);
+        }
+        List<(uint, ushort)> modifiers = [with(count)];
+        for (int i = 0; i < count; i++)
+        {
+            uint mods = r.U32();
+            if (mods != 0x80000000 && (mods & ~0xFFu) != 0)
             {
-                uint mods = r.U32();
-                ushort core = mods == 0x80000000 ? (ushort)0x8000 : (ushort)(mods & 0xFF);
-                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-                list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Xi2 && g.Detail == (int)detail && g.Modifiers == core);
+                throw new XProtocolError(XErrorCode.Value, mods);
             }
+            modifiers.Add((mods, mods == 0x80000000 ? (ushort)0x8000 : (ushort)mods));
+        }
+        return modifiers;
+    }
+
+    /// <summary>被动抓取的 detail:按钮 0(XIAnyButton)–255,键码 0(XIAnyKeycode)或 8–255;其余 BadValue。</summary>
+    private static void CheckXiGrabDetail(byte grabType, uint detail)
+    {
+        if (detail > 255 || (grabType == 1 && detail is not 0 and < Keymap.MinKeycode))
+        {
+            throw new XProtocolError(XErrorCode.Value, detail);
         }
     }
 
