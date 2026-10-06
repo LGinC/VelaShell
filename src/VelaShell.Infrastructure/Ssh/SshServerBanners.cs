@@ -7,7 +7,7 @@ namespace VelaShell.Infrastructure.Ssh;
 /// </summary>
 /// <remarks>
 /// 曾经宿主不设 <c>BannerHandler</c>,横幅被静默丢掉 —— 而那常常正是服务端唯一一次告诉用户「密码快过期了」。
-/// 横幅来自<b>未认证</b>的对端,是注入面:逐行去掉控制字符与双向控制符(终端转义序列就此失效)再交出去,
+/// 横幅来自<b>未认证</b>的对端,是注入面:逐行把控制字符与双向控制符换成 ?(终端转义序列就此失效,规则是库的 PeerText)再交出去,
 /// 行数与行长都有上限。跳板链上每一跳的横幅都收,按到达的先后。
 /// </remarks>
 public sealed class SshServerBanners

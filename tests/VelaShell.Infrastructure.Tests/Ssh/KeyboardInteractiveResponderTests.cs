@@ -161,8 +161,9 @@ public sealed class KeyboardInteractiveResponderTests
             name: "Bank\u0000", instruction: "line1\r\nline2\t" + new string('x', 5000));
 
         KeyboardInteractiveRequest asked = prompt.Requests.Single();
-        Assert.AreEqual("[31mCode:", asked.Fields[0].Prompt, "ESC、BEL 与 RLO 这类控制符要去掉");
-        Assert.AreEqual("Bank", asked.Name);
+        // 规则是库的 PeerText.Sanitize：换成 ? 而不是删掉 —— 被塞了控制字符这件事看得见。
+        Assert.AreEqual("?[31mCode?:?", asked.Fields[0].Prompt, "ESC、BEL 与 RLO 这类控制符不能原样进界面");
+        Assert.AreEqual("Bank?", asked.Name);
         Assert.StartsWith("line1\nline2 ", asked.Instruction);
         Assert.AreEqual(2048, asked.Instruction.Length);
         StringAssert.EndsWith(asked.Instruction, "…");

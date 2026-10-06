@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.Ssh.Auth;
+using VelaShell.Ssh.Diagnostics;
 
 namespace VelaShell.Infrastructure.Ssh;
 
@@ -106,23 +106,23 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
         PasswordWords().IsMatch(text) && !OneTimeCodeWords().IsMatch(text);
 
     /// <summary>
-    /// 去掉控制字符与双向文本控制符、统一换行、限长 —— 文字来自尚未认证的对端。
+    /// 净化来自尚未认证的对端的文字：规则用库的 <see cref="PeerText.Sanitize"/>（控制字符、<c>DEL</c>、C1 控制码与双向文本控制符换成 <c>?</c>）。
     /// </summary>
+    /// <remarks>
+    /// 曾经这里另写了一份规则（把它们删掉），与库的那一份各管各的 —— 库把净化器公开出来，正是为了使用者不必各写一份。
+    /// 换成 <c>?</c> 而不是删掉，被塞了控制字符这件事在界面上看得见。这里只多做两件库不做的事：
+    /// 保留换行（多行的说明要分行显示）、制表符换成空格；再整体去掉首尾空白、限长。
+    /// </remarks>
     internal static string Clean(string text, int maxLength)
     {
-        var builder = new StringBuilder(Math.Min(text.Length, maxLength));
-        foreach (char c in text.Replace("\r\n", "\n", StringComparison.Ordinal))
-        {
-            if (c is '\n' or '\t' || !(char.IsControl(c) || IsBidiControl(c)))
-            {
-                builder.Append(c is '\t' ? ' ' : c);
-            }
-        }
-        string cleaned = builder.ToString().Trim();
+        string[] lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace('\t', ' ')
+            .Split('\n');
+        string cleaned = string.Join('\n', lines.Select(line => PeerText.Sanitize(line, line.Length))).Trim();
         return cleaned.Length <= maxLength ? cleaned : string.Concat(cleaned.AsSpan(0, maxLength - 1), "…");
     }
-
-    private static bool IsBidiControl(char c) => c is >= '‪' and <= '‮' or >= '⁦' and <= '⁩' or '‎' or '‏' or '؜';
 
     [GeneratedRegex(@"\bpass(word|phrase)?\b|密码|口令|密碼|パスワード|비밀번호|암호", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PasswordWords();
