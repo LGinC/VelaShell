@@ -50,6 +50,7 @@ internal static class PuttyPrivateKeyFile
         string where = origin is null ? "" : $"（{origin}）";
 
         var file = PuttyFile.Parse(text, where);
+        EnsureComplete(file, where);
 
         if (file.Encryption == "none")
         {
@@ -192,9 +193,16 @@ internal static class PuttyPrivateKeyFile
                     int count = int.Parse(value, CultureInfo.InvariantCulture);
                     StringBuilder body = new();
 
-                    for (int i = 0; i < count && index < lines.Length; i++)
+                    int read = 0;
+                    for (; read < count && index < lines.Length; read++)
                     {
                         body.Append(lines[index++].Trim());
+                    }
+                    if (read < count)
+                    {
+                        // 截断的文件（复制粘贴丢了尾行）：当场报，不去派生口令（见 EnsureComplete）。
+                        throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                            $".ppk 的 {name} 段说有 {count} 行，文件里只剩 {read} 行{where} —— 文件多半被截断了。");
                     }
 
                     byte[] blob;
@@ -435,6 +443,38 @@ internal static class PuttyPrivateKeyFile
     /// 试两次的代价是一次 HMAC，而赌错的代价是读不了真实的 .ppk。
     /// </para>
     /// </remarks>
+    /// <summary>
+    /// 派生口令之前先把结构核完：<c>Private-MAC</c> 在、长度对（v2 是 HMAC-SHA-1 的 20 字节，v3 是 HMAC-SHA-256 的 32 字节），
+    /// 加密的私钥区是 AES 块长的整数倍。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §5.2〕这几样残缺都说明文件不完整，与口令无关。曾经要先跑一遍 Argon2（v3 的参数可以很重）才在 MAC 上发现，
+    /// 而且报成「口令多半不对」—— 截断的文件让人一遍遍重输正确的口令。
+    /// </remarks>
+    private static void EnsureComplete(PuttyFile file, string where)
+    {
+        if (file.Mac.Length == 0)
+        {
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 缺少 Private-MAC{where} —— v{file.Version} 的 MAC 是必填的，没有它就验不了文件有没有被改过。");
+        }
+
+        int expected = file.Version == 3 ? 32 : 20;
+        if (file.Mac.Length != expected)
+        {
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 的 Private-MAC 是 {file.Mac.Length} 字节，v{file.Version} 应当是 {expected} 字节{where} —— 文件多半被截断或改过。");
+        }
+
+        if (file.Encryption == "aes256-cbc" && file.PrivateBlob.Length % 16 != 0)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                $".ppk 的私钥区长度不是 16 的倍数{where}，文件多半损坏了。");
+        }
+    }
+
     private static void VerifyMac(
         PuttyFile file, byte[] macKey, string where, bool wrongPassphraseLikely = false)
     {
