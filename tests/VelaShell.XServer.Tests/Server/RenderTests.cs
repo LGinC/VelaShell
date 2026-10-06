@@ -105,6 +105,30 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task AddGlyphs的尺寸与个数按不会回绕的算法核长度_回BadLength而不是分配几个GB()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.Argb32));
+        // 32768² 的 a8r8g8b8:每行 131072 字节 × 32768 行 = 2³²,按 int 算回绕成 0 —— 原先长度检查放行、随后分配 4 GB。
+        XMessage huge = await c.RequestAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65)
+            .U16(32768).U16(32768).I16(0).I16(0).I16(0).I16(0));
+        Assert.IsTrue(huge.IsError);
+        Assert.AreEqual(16, huge.Detail, "BadLength");
+
+        // 个数 ≥ 2³¹:按 int 读是负数。
+        XMessage negative = await c.RequestAsync(s.Major, 20, b => b.U32(glyphSet).U32(0x80000000));
+        Assert.IsTrue(negative.IsError);
+        Assert.AreEqual(16, negative.Detail, "BadLength 而不是 BadImplementation");
+
+        // 渐变的色标个数同理(CreateLinearGradient)。
+        XMessage stops = await c.RequestAsync(s.Major, 34, b => b.U32(c.NewId()).I32(0).I32(0).I32(0x10000).I32(0).U32(0x80000000));
+        Assert.IsTrue(stops.IsError);
+        Assert.AreEqual(16, stops.Detail);
+    }
+
+    [TestMethod]
     public async Task 字形用纯色源画到窗口()
     {
         await using Setup s = await SetupAsync();

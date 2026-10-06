@@ -316,8 +316,8 @@ public sealed partial class X11Server
     /// <summary>色标:n 个位置(FIXED),再 n 个颜色(非预乘)。</summary>
     private static (double[] Stops, Argb[] Colors) ReadStops(XRequestReader r)
     {
-        int count = (int)r.U32();
-        if ((long)count * 12 > r.Remaining)
+        uint count = r.U32();   // 按无符号读:当成 int 时 2³¹ 以上是负数,检查放行、随后分配抛异常(BadImplementation)
+        if (count * 12L > r.Remaining)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
@@ -697,8 +697,8 @@ public sealed partial class X11Server
     private void AddGlyphs(XClient c, XRequestReader r)
     {
         GlyphTable table = GlyphSet(r.U32()).Table;
-        int count = (int)r.U32();
-        if ((long)count * 16 > r.Remaining)
+        uint count = r.U32();
+        if (count * 16L > r.Remaining)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
@@ -717,12 +717,13 @@ public sealed partial class X11Server
         for (int i = 0; i < count; i++)
         {
             (ushort w, ushort h, short x, short y, short xOff, short yOff) = infos[i];
-            int size = BitmapStride(w * bpp) * h;
+            // 按 long 算:32768² 的 a8r8g8b8 字形是 4 GB,按 int 算回绕成 0,长度检查放行、随后按宽 × 高分配 4 GB。
+            long size = (long)BitmapStride(w * bpp) * h;
             if (size > r.Remaining)
             {
                 throw new XProtocolError(XErrorCode.Length);
             }
-            byte[] data = r.Bytes(size);
+            byte[] data = r.Bytes((int)size);
             // 字形位图记在加它的客户端名下(xs_plan X-2),在解码分配之前核账;同一个 ID 的旧字形退还。
             ChargeMemory(c, (long)w * h * (format.HasColor ? 4 : 1));
             if (table.Glyphs.TryGetValue(ids[i], out XRenderGlyph? previous))
