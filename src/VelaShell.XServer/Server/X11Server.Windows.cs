@@ -359,6 +359,14 @@ public sealed partial class X11Server
 
     internal void Map(XClient? requester, XWindow window)
     {
+        if (window.Mapped && requester is not null && window.IsTopLevel && !window.OverrideRedirect
+            && _topLevelHandles.TryGetValue(window, out XTopLevelWindow? iconic) && (iconic.Snapshot.States & XWindowStates.Hidden) != 0)
+        {
+            // ICCCM §4.1.4:从 IconicState 回到 NormalState,客户端 map 窗口(Tk 的 wm deiconify、Emacs 的 make-frame-visible、
+            // xdotool windowmap)。最小化时窗口在 X 里仍映射着,这一下原先是空操作;转成「去掉 Hidden」请宿主还原。
+            _host.WindowManagerRequested(new XStateChangeRequest(iconic, XWindowStates.None, XWindowStates.Hidden));
+            return;
+        }
         if (window.Mapped || window.IsRoot)
         {
             return;

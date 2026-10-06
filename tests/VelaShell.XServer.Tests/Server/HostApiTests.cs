@@ -273,6 +273,20 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 最小化之后客户端MapWindow还原_请宿主去掉Hidden()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        server.SetTopLevelStates(host.Mapped[top], XWindowStates.Hidden);   // 用户在宿主里最小化了它
+        await c.SyncAsync();
+
+        await c.SendAsync(8, 0, b => b.U32(top));   // Tk 的 wm deiconify:MapWindow
+        await host.WaitForAsync(() => host.Requests.Any(r => r is XStateChangeRequest { Remove: XWindowStates.Hidden } s && s.Window.Id == top));
+    }
+
+    [TestMethod]
     public async Task 同一批里的窗口变化合并_映射了又取消的抵消()
     {
         using RecordingHost host = new();
