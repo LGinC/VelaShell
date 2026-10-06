@@ -8,6 +8,7 @@
 //   多个图元以 Add 累加进遮罩)
 
 using System.Buffers;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Drawing;
 
@@ -22,6 +23,16 @@ internal static class RenderCompositor
     public static XRect Composite(byte op, RenderSource src, RenderSource? mask, bool componentAlpha, RenderTarget dst,
         int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
     {
+        // 工作量按真正要合成的像素数先扣(快路径与逐像素路径一样算,见 WorkBudget)。
+        XRect requested = new(dstX + dst.OriginX, dstY + dst.OriginY, width, height);
+        long work = 1;
+        foreach (XRect clip in dst.Clip)
+        {
+            XRect r = clip.Intersect(requested);
+            work += 1 + ((long)r.Width * r.Height);
+        }
+        WorkBudget.Charge(work);
+
         // 源 / 遮罩与目标是同一块缓冲(同一张像素图、同一个顶层里的窗口):先把要读的那一块拷出来。逐行从上往下合成时,
         // 目标在源下面(或同一行靠右)的话,后面要读的源行已经被前面写过了 —— 结果得像「先读完源再写」。
         if (src is ImageSource sharedSource && ReferenceEquals(sharedSource.Buffer, dst.Buffer))
@@ -416,6 +427,7 @@ internal sealed class CoverageMask
         const float weight = 1f / SubRows;
         for (int row = (int)Math.Floor(yStart); row < (int)Math.Ceiling(yEnd); row++)
         {
+            WorkBudget.Charge(SubRows);
             for (int k = 0; k < SubRows; k++)
             {
                 double y = row + ((k + 0.5) / SubRows);
@@ -439,6 +451,7 @@ internal sealed class CoverageMask
         }
         int offset = (row - Bounds.Y) * Bounds.Width;
         int first = (int)Math.Floor(left), last = (int)Math.Ceiling(right) - 1;
+        WorkBudget.Charge(1 + Math.Max(0, last - first + 1));
         for (int px = first; px <= last; px++)
         {
             double covered = Math.Min(right, px + 1) - Math.Max(left, px);

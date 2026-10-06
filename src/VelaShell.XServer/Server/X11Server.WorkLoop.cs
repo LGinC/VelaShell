@@ -8,6 +8,7 @@
 
 using System.Diagnostics;
 using System.Threading.Channels;
+using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Server;
 
 namespace VelaShell.XServer;
@@ -199,6 +200,9 @@ public sealed partial class X11Server
             _deferred.Add(item);
             return;
         }
+        long started = Stopwatch.GetTimestamp();
+        // 每项工作一份预算(X-1):扣光时请求回 Alloc,而不是持着像素锁跑上几分钟、让宿主界面陪着冻住。
+        WorkBudget.Begin(RequestWorkBudget);
         try
         {
             if (item.Request is { } request)
@@ -214,7 +218,26 @@ public sealed partial class X11Server
         {
             Log($"work item failed: {ex}");
         }
+        finally
+        {
+            WorkBudget.End();
+        }
+        long elapsed = Stopwatch.GetTimestamp() - started;
+        if (elapsed >= SlowItemTicks && ShouldLogFrequent())
+        {
+            // 预算之内的单项也可能慢(合法但昂贵的请求):点名客户端,宿主日志里才找得到是谁让界面卡了一下。
+            string what = item.Request is { } r
+                ? $"{item.Client} opcode {r[0]}{(r[0] >= XOpcode.FirstExtension ? $".{r[1]}" : "")}"
+                : item.Client is { } owner ? $"{owner} (internal)" : "host or timer";
+            Log($"slow work item: {what} held the pixel lock for {elapsed * 1000 / Stopwatch.Frequency} ms");
+        }
     }
+
+    /// <summary>一项工作持锁超过这么久就记一行日志(见 <see cref="RunItem" />)。</summary>
+    private static readonly long SlowItemTicks = Stopwatch.Frequency / 4;   // 250 毫秒
+
+    /// <summary>每项工作的工作量预算(<see cref="WorkBudget" />);测试可以调小。</summary>
+    internal long RequestWorkBudget { get; set; } = WorkBudget.DefaultUnits;
 
     /// <summary>GrabServer 结束(或持有者断开):把暂存的请求按原顺序重新排进去。</summary>
     private void ReleaseServerGrab()

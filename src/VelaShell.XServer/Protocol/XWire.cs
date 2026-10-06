@@ -13,7 +13,7 @@ namespace VelaShell.XServer.Protocol;
 /// <summary>请求执行失败:按协议发一条错误给客户端。</summary>
 /// <param name="code">错误码。</param>
 /// <param name="badValue">出错的值(资源 ID、原子、越界的数);没有意义时为 0。</param>
-internal sealed class XProtocolError(XErrorCode code, uint badValue = 0)
+internal class XProtocolError(XErrorCode code, uint badValue = 0)
     : Exception($"X error {code} (bad value 0x{badValue:x})")
 {
     /// <summary>错误码。</summary>

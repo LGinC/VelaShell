@@ -98,6 +98,51 @@ public sealed class XTopLevelWindow
             _pixelGate.ExitHost();
         }
     }
+
+    /// <summary>
+    /// 同 <see cref="ReadPixels" />,但最多等 <paramref name="timeout" />:执行线程此刻在执行一条很慢的请求时返回
+    /// <see cref="XPixelReadResult.Busy" />,不调 <paramref name="reader" />。每帧读像素的 UI 线程用它 —— 拿不到就跳过这一帧、
+    /// 留着损伤下一帧再取,宿主界面不会陪着一个慢客户端冻住。
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException"><paramref name="timeout" /> 为负(<see cref="Timeout.InfiniteTimeSpan" /> 除外)。</exception>
+    public XPixelReadResult TryReadPixels(XPixelReader reader, TimeSpan timeout)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout), timeout, "等待时间不能为负。");
+        }
+        if (!_pixelGate.TryEnterHost(timeout))
+        {
+            return XPixelReadResult.Busy;
+        }
+        try
+        {
+            if (Window.Buffer is not { } buffer)
+            {
+                return XPixelReadResult.NoBuffer;
+            }
+            reader(buffer.Pixels.AsSpan(0, buffer.Width * buffer.Height), buffer.Width, buffer.Height);
+            return XPixelReadResult.Read;
+        }
+        finally
+        {
+            _pixelGate.ExitHost();
+        }
+    }
+}
+
+/// <summary><see cref="XTopLevelWindow.TryReadPixels" /> 的结果。</summary>
+public enum XPixelReadResult
+{
+    /// <summary>读到了:<see cref="XPixelReader" /> 已经调过。</summary>
+    Read,
+
+    /// <summary>窗口已经没有缓冲(销毁、被 reparent 走):没调回调。</summary>
+    NoBuffer,
+
+    /// <summary>限时之内没拿到像素锁(执行线程正在执行一条慢请求):没调回调,稍后再试。</summary>
+    Busy,
 }
 
 /// <summary>

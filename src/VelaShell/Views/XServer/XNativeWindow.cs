@@ -568,6 +568,9 @@ public sealed class XNativeWindow : Window
 
         private readonly XNativeWindow _owner;
         private readonly XTopLevelWindow _handle;
+        /// <summary>每帧取像素时最多等像素锁这么久;等不到就把这一帧让给界面,下一帧再取。</summary>
+        private static readonly TimeSpan PixelLockWait = TimeSpan.FromMilliseconds(8);
+
         private readonly XPixelReader _reader;
         private readonly Action<TimeSpan> _onFrame;
         private readonly List<XRect> _damage = [];
@@ -682,18 +685,23 @@ public sealed class XNativeWindow : Window
                     _damage.Add(new XRect(0, 0, _width, _height));
                 }
                 LockDamagedTiles();
-                bool read;
+                XPixelReadResult read;
                 try
                 {
-                    read = _handle.ReadPixels(_reader);
+                    // 限时拿像素锁:服务端正在执行一条慢请求时跳过这一帧(损伤留着,下一帧再取),UI 线程不陪着等。
+                    read = _handle.TryReadPixels(_reader, PixelLockWait);
                 }
                 finally
                 {
                     UnlockTiles();
                 }
-                if (!read)
+                if (read == XPixelReadResult.Busy)
                 {
-                    return;   // 窗口已经没有缓冲(取消映射 / 销毁):等宿主把原生窗口收掉
+                    break;
+                }
+                if (read == XPixelReadResult.NoBuffer)
+                {
+                    return;   // 窗口已经没有缓冲(销毁 / 被 reparent 走):等宿主把原生窗口收掉
                 }
                 if (_resizeTo is { } size)
                 {

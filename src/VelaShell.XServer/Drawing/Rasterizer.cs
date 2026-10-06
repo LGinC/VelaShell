@@ -8,6 +8,7 @@
 //   「PolyFillArc」(像素的取舍:细线含两端点、CapNotLast 不画末点;填充按像素中心是否落在形状内)
 
 using VelaShell.XServer.Fonts;
+using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Resources;
 
 namespace VelaShell.XServer.Drawing;
@@ -140,6 +141,7 @@ internal sealed class Rasterizer
     /// <summary>画一个像素(按填充样式)。</summary>
     public void PlotPixel(int dx, int dy, bool useBackground = false)
     {
+        WorkBudget.Charge(1 + _clip.Count);
         int bx = dx + _ox, by = dy + _oy;
         if (!InClip(bx, by) || !ClipMaskAllows(dx, dy))
         {
@@ -154,6 +156,7 @@ internal sealed class Rasterizer
     /// <summary>写一个给定的源像素(CopyArea / PutImage 用:不走填充样式)。</summary>
     public void PutPixel(int dx, int dy, uint src)
     {
+        WorkBudget.Charge(1 + _clip.Count);
         int bx = dx + _ox, by = dy + _oy;
         if (InClip(bx, by) && ClipMaskAllows(dx, dy))
         {
@@ -167,6 +170,7 @@ internal sealed class Rasterizer
     /// </summary>
     public void PutPixelCopy(int dx, int dy, uint src)
     {
+        WorkBudget.Charge(1 + _clip.Count);
         int bx = dx + _ox, by = dy + _oy;
         if (InClip(bx, by) && ClipMaskAllows(dx, dy))
         {
@@ -210,6 +214,8 @@ internal sealed class Rasterizer
     public void Blit(ReadOnlySpan<uint> pixels, int stride, int width, int height, int dx, int dy, bool preMasked = false)
     {
         XRect dest = new(dx + _ox, dy + _oy, width, height);
+        XRect reachable = new XRect(dx, dy, width, height).Intersect(ClipBounds);
+        WorkBudget.Charge(1 + _clip.Count + ((long)reachable.Width * reachable.Height));
         bool fast = _gc.Function == 3 && _gc.ClipPixmap is null && (_gc.PlaneMask & _depthMask) == _depthMask;
         foreach (XRect clip in _clip)
         {
@@ -273,6 +279,7 @@ internal sealed class Rasterizer
         {
             return;
         }
+        ChargeSpan(x1, x2);
         int by = dy + _oy;
         int bx1 = x1 + _ox, bx2 = x2 + _ox;
         bool fast = _gc.ClipPixmap is null && (_gc.PlaneMask & _depthMask) == _depthMask;
@@ -348,6 +355,7 @@ internal sealed class Rasterizer
         {
             return;
         }
+        ChargeSpan(x1, x2);
         int by = dy + _oy;
         int bx1 = x1 + _ox, bx2 = x2 + _ox;
         bool fastSolid = _gc.FillStyle == 0 && _gc.Function == 3 && _gc.ClipPixmap is null
@@ -383,6 +391,10 @@ internal sealed class Rasterizer
             }
         }
     }
+
+    /// <summary>一行 [x1, x2) 的工作量:扫一遍裁剪矩形,再加上画得到的那几个像素(见 <see cref="WorkBudget" />)。</summary>
+    private void ChargeSpan(int x1, int x2) =>
+        WorkBudget.Charge(1 + _clip.Count + Math.Max(0, (long)Math.Min(x2, ClipBounds.Right) - Math.Max(x1, ClipBounds.X)));
 
     public void FillRect(int x, int y, int width, int height)
     {
@@ -503,6 +515,7 @@ internal sealed class Rasterizer
         for (int pi = 0; pi < polygons.Count; pi++)
         {
             IReadOnlyList<(double X, double Y)> poly = polygons[pi];
+            WorkBudget.Charge(1 + poly.Count);
             List<Edge> edges = [with(poly.Count)];
             for (int i = 0; i < poly.Count; i++)
             {
@@ -549,6 +562,7 @@ internal sealed class Rasterizer
             for (int pi = 0; pi < polygons.Count; pi++)
             {
                 List<Edge> edges = edgeLists[pi], live = active[pi];
+                WorkBudget.Charge(1 + live.Count);
                 while (next[pi] < edges.Count && edges[next[pi]].Top <= sampleY)
                 {
                     live.Add(edges[next[pi]++]);
