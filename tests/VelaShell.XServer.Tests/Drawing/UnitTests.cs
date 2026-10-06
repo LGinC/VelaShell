@@ -103,6 +103,11 @@ public sealed class UnitTests
     [DataRow("#f00", 0xF000, 0, 0)]
     [DataRow("#336699", 0x3300, 0x6600, 0x9900)]
     [DataRow("rgb:ff/80/0", 0xFFFF, 0x8080, 0)]
+    [DataRow("red3", 0xCDCD, 0, 0)]
+    [DataRow("VioletRed4", 0x8B8B, 0x2222, 0x5252)]
+    [DataRow("dark slate gray", 0x2F2F, 0x4F4F, 0x4F4F)]
+    [DataRow("gray", 0xBEBE, 0xBEBE, 0xBEBE)]
+    [DataRow("Blue1", 0, 0, 0xFFFF)]
     public void 颜色名与数值写法(string spec, int r, int g, int b)
     {
         (ushort R, ushort G, ushort B)? rgb = ColorNames.Lookup(spec);

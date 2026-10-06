@@ -31,6 +31,7 @@ Specification* 1.3、*The OpenGL Graphics System* 1.5,操作码与枚举值取�
 | 数据 | 来源 | 许可 | 用途 |
 | --- | --- | --- | --- |
 | `Fonts/Data/*.bdf` | X.Org [`font-misc-misc`](https://gitlab.freedesktop.org/xorg/font/misc-misc)(6x13、6x13B、9x15、9x15B、10x20;按字符范围裁剪,字形未改) | 公有领域("Public domain font. Share and enjoy.") | 核心字体 `fixed` 等 |
+| `Resources/Data/rgb.txt` | X.Org [`rgb`](https://gitlab.freedesktop.org/xorg/app/rgb) 的 `rgb.txt`(原样) | MIT / X11(Copyright 1985, 1989, 1998 The Open Group;Copyright (c) 1994, 2008, Oracle and/or its affiliates —— 许可原文见上游 `COPYING`) | 颜色名(AllocNamedColor、LookupColor) |
 
 ## 第三方组件(Third-Party Components)
 
