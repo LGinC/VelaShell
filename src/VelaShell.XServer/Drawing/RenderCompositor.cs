@@ -227,7 +227,7 @@ internal static class RenderCompositor
     /// 两种占绝大多数的情形不逐行取样,直接按源的存储整块算(比 <see cref="CombineRow" /> 那条整数路径还省一次取样):
     /// <list type="number">
     /// <item>纯色源 + 单字节遮罩(字形、梯形覆盖率)+ Over → 8888 目标(Xft 画字、cairo 画抗锯齿图形);</item>
-    /// <item>8888 图像源(无变换、取样范围在图像之内)+ 无遮罩 + Src / Over → 8888 目标(cairo 贴图、窗口间拷贝)。</item>
+    /// <item>8888 图像源(无变换、取样范围在图像与它的缓冲之内)+ 无遮罩 + Src / Over → 8888 目标(cairo 贴图、窗口间拷贝)。</item>
     /// </list>
     /// 条件不满足时返回 false,由通用路径处理。
     /// </summary>
@@ -245,7 +245,10 @@ internal static class RenderCompositor
             return true;
         }
         if (mask is null && op is RenderOps.Src or RenderOps.Over && src is ImageSource image && Is8888(image.Format)
-            && srcX >= 0 && srcY >= 0 && srcX + width <= image.Width && srcY + height <= image.Height)
+            && srcX >= 0 && srcY >= 0 && srcX + width <= image.Width && srcY + height <= image.Height
+            // 还要整块在缓冲之内:窗口 picture 伸出顶层之外的部分不在缓冲里(交给通用路径,读到的是透明)。
+            && image.OriginX + srcX >= 0 && image.OriginY + srcY >= 0
+            && image.OriginX + srcX + width <= image.Buffer.Width && image.OriginY + srcY + height <= image.Buffer.Height)
         {
             dirty = BlitImage(op, image, dst, srcX - dstX, srcY - dstY, dstX, dstY, width, height);
             return true;

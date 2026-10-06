@@ -499,7 +499,9 @@ public sealed partial class X11Server
                 }
                 buffer = b;
                 (ox, oy) = w.OffsetInTopLevel();
-                bounds = new XRect(0, 0, w.Width, w.Height);
+                // 窗口里只有落在顶层缓冲之内的部分拿得到:伸出祖先之外的子窗口、被 PixelBuffer.MaxPixels 削掉的行都不在缓冲里
+                // (原先只按窗口尺寸裁,下标越界回 BadImplementation,伸出右边时读到折到下一行开头的像素)。
+                bounds = new XRect(0, 0, w.Width, w.Height).Intersect(new XRect(-ox, -oy, b.Width, b.Height));
                 break;
             default:
                 throw new XProtocolError(XErrorCode.Drawable, drawable);
@@ -928,8 +930,21 @@ public sealed partial class X11Server
             throw new XProtocolError(XErrorCode.Match);
         }
 
-        // 矩形已核对在可绘对象之内:拿得到的就是整块,按请求宽度排列(池化,编完码就还)。
-        uint[]? pooled = ReadSource(drawable, x, y, width, height, out byte depth)?.Pixels;
+        // 矩形已核对在可绘对象之内,按请求宽度排列(池化,编完码就还)。窗口伸出顶层之外的部分拿不到(核心协议:
+        // 被遮住的区域内容未定义),补 0 —— 回 BadMatch 的话,Xlib 默认的错误处理会让程序直接退出。
+        (uint[] Pixels, XRect Available)? source = ReadSource(drawable, x, y, width, height, out byte depth);
+        uint[]? pooled = source?.Pixels;
+        if (source is { } s && s.Available != new XRect(x, y, width, height))
+        {
+            pooled = ArrayPool<uint>.Shared.Rent(Math.Max(1, width * height));
+            Array.Clear(pooled, 0, Math.Max(1, width * height));
+            XRect a = s.Available;
+            for (int row = 0; row < a.Height; row++)
+            {
+                Array.Copy(s.Pixels, row * a.Width, pooled, ((a.Y - y + row) * width) + a.X - x, a.Width);
+            }
+            ArrayPool<uint>.Shared.Return(s.Pixels);
+        }
         uint[] pixels = pooled ?? new uint[Math.Max(1, width * height)];
         uint depthMask = PixelBuffer.DepthMaskOf(depth);
         if ((planeMask & depthMask) == depthMask)

@@ -208,4 +208,40 @@ public sealed class ImageTests
         XMessage missing = await c.RequestAsync(62, 0, b => b.U32(pixmap).U32(0x7FFFFF).U32(gc).I16(0).I16(0).I16(0).I16(0).U16(8).U16(8));
         Assert.AreEqual(9, missing.Detail, "BadDrawable");
     }
+    private static async Task<uint> MapChildAsync(XTestClient c, uint parent, int x, int y, int width, int height, uint background)
+    {
+        uint id = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(id).U32(parent).I16((short)x).I16((short)y).U16((ushort)width).U16((ushort)height)
+            .U16(0).U16(1).U32(0).U32(0x2).U32(background));
+        await c.SendAsync(8, 0, b => b.U32(id));
+        return id;
+    }
+
+    [TestMethod]
+    public async Task 子窗口伸出顶层_GetImage与CopyArea只读缓冲里的部分_不回BadImplementation也不读到折行像素()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint top, _) = await MapWindowAsync(c, host);   // 64×48,黑底
+        uint left = await MapChildAsync(c, top, -20, 0, 40, 10, 0x112233);    // 左边 20 列伸出顶层
+        uint right = await MapChildAsync(c, top, 44, 0, 40, 10, 0x445566);    // 右边 20 列伸出顶层
+
+        XMessage overhang = await c.RequestAsync(73, 2, b => b.U32(left).I16(0).I16(0).U16(40).U16(10).U32(0xFFFFFFFF));
+        Assert.IsTrue(overhang.IsReply, "原先下标越界回 BadImplementation");
+        Assert.AreEqual(0u, overhang.U32(32 + (5 * 4)), "伸出去的部分拿不到,补 0");
+        Assert.AreEqual(0x112233u, overhang.U32(32 + (25 * 4)) & 0xFFFFFF);
+
+        XMessage spill = await c.RequestAsync(73, 2, b => b.U32(right).I16(0).I16(0).U16(40).U16(10).U32(0xFFFFFFFF));
+        Assert.IsTrue(spill.IsReply);
+        Assert.AreEqual(0x445566u, spill.U32(32 + (5 * 4)) & 0xFFFFFF);
+        Assert.AreEqual(0u, spill.U32(32 + (25 * 4)), "原先读到折到下一行开头的像素(左边子窗口的 0x112233)");
+
+        // 在左边的子窗口里滚动:源只拿得到 x ≥ 20 的部分,其余的发 GraphicsExposure 请客户端补画。
+        uint gc = await CreateGcAsync(c, left);
+        await c.SendAsync(62, 0, b => b.U32(left).U32(left).U32(gc).I16(0).I16(0).I16(5).I16(0).U16(30).U16(10));
+        XMessage exposure = await c.NextAsync(m => m.IsError || (!m.IsReply && m.EventCode == 13));
+        Assert.IsFalse(exposure.IsError, "原先回 BadImplementation");
+        Assert.AreEqual("5,0,20,10", $"{exposure.U16(8)},{exposure.U16(10)},{exposure.U16(12)},{exposure.U16(14)}", "目标里对应源拿不到的那一块");
+    }
 }

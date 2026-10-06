@@ -277,4 +277,27 @@ public sealed class RenderTests
         Assert.AreEqual(0x00FF00u, s.Pixel(5, 2), "原来第 1 行的绿");
         Assert.AreEqual(0x0000FFu, s.Pixel(5, 3), "原来第 2 行的蓝");
     }
+    [TestMethod]
+    public async Task 伸出顶层的子窗口做源合成到另一个顶层_只取缓冲里的部分_不回BadImplementation()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint other = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(other).U32(c.RootWindow).I16(100).I16(0).U16(40).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(other));
+        await s.Host.WaitForAsync(() => s.Host.Mapped.ContainsKey(other));
+        uint child = c.NewId();   // 左边 20 列伸出它的顶层
+        await c.SendAsync(1, 0, b => b.U32(child).U32(other).I16(-20).I16(0).U16(40).U16(10).U16(0).U16(1).U32(0)
+            .U32(0x2).U32(0x0000FF));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        uint source = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(source).U32(child).U32(s.Formats.Rgb24).U32(0));
+
+        // Src,源 (0, 0) 40×10 → 目标 (0, 10)。原先快路径只查 picture 尺寸,按缓冲取下标时越界。
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(source).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(0).I16(10).U16(40).U16(10));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError, 200));
+        Assert.AreEqual(0x0000FFu, s.Pixel(25, 12), "源在缓冲里的部分照常取到");
+    }
 }
