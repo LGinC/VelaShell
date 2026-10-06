@@ -1433,6 +1433,9 @@ If this keeps happening, close any other VelaShell windows and try again.</value
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>Host fingerprint of {0} changed; the user confirmed permanent trust of the new fingerprint: {1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
+    <value>The server {0} proved it holds another host key, which is now trusted: {1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>Host fingerprint of {0} changed; the user chose to trust it this time only (not saved): {1}</value>
   </data>

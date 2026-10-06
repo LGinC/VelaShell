@@ -107,13 +107,16 @@ public sealed partial class SshConnection
         {
             return new SshHostKeyUpdate([], "服务端的宣告里没有这次连接用的主机密钥，没理会。");
         }
-        IReadOnlyList<SshPublicKey> known = await rotation.GetKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
-        if (!known.Any(k => k.Blob.Span.SequenceEqual(HostKey.Blob.Span)))
+        HashSet<string> known = new(
+            (await rotation.GetKnownHostKeyFingerprintsAsync(host, port, cancellationToken).ConfigureAwait(false))
+                .Select(SshPublicKey.NormalizeFingerprint),
+            StringComparer.Ordinal);
+        if (!known.Contains(HostKey.Sha256Fingerprint))
         {
             return new SshHostKeyUpdate([], "这次连接用的主机密钥没有作为普通钥记在 known_hosts 里，不做轮换。");
         }
 
-        SshPublicKey[] fresh = [.. offered.Where(o => !known.Any(k => k.Blob.Span.SequenceEqual(o.Blob.Span)))];
+        SshPublicKey[] fresh = [.. offered.Where(o => !known.Contains(o.Sha256Fingerprint))];
         if (fresh.Length == 0)
         {
             return new SshHostKeyUpdate([], null);

@@ -32,6 +32,29 @@ public sealed class VelaHostKeyPolicyTests
         Assert.AreSequenceEqual(["ssh-ed25519", "ssh-rsa"], (await preference.GetKnownKeyTypesAsync("old.example", 22)).ToArray());
     }
 
+    /// <summary>
+    /// 〔F1〕主机密钥轮换:交给库的是记着的指纹(换库之前存的裸 base64 也交,库按归一之后比),
+    /// 服务端证明过的新钥按类型补记进信任库、并告诉用户一声。
+    /// </summary>
+    [TestMethod]
+    public async Task 轮换_交出记着的指纹并补记证明过的新钥()
+    {
+        IHostKeyService store = Substitute.For<IHostKeyService>();
+        store.FindKnownHostKeysAsync("rot.example", 22, Arg.Any<CancellationToken>())
+            .Returns([new KnownHost { Host = "rot.example", Port = 22, KeyType = "ssh-rsa", Fingerprint = "bareBase64Fingerprint" }]);
+        ISecurityAlertService alerts = Substitute.For<ISecurityAlertService>();
+
+        VelaHostKeyPolicy policy = new(store, settings: null, prompt: null, alerts);
+        Assert.IsTrue(policy.AllowHostKeyUpdates);
+        Assert.AreSequenceEqual(["bareBase64Fingerprint"], (await policy.GetKnownHostKeyFingerprintsAsync("rot.example", 22)).ToArray());
+
+        using InMemorySshSigner fresh = InMemorySshSigner.GenerateEd25519();
+        await policy.RecordHostKeysAsync("rot.example", 22, [fresh.PublicKey]);
+
+        await store.Received(1).TrustHostKeyAsync("rot.example", 22, "ssh-ed25519", fresh.PublicKey.Sha256Fingerprint, Arg.Any<CancellationToken>());
+        await alerts.Received(1).RaiseAsync("hostkey-learned", Arg.Is<string>(m => m.Contains(fresh.PublicKey.Sha256Fingerprint)), Arg.Any<object?>());
+    }
+
     [TestMethod]
     public async Task 没记过的主机返回空()
     {

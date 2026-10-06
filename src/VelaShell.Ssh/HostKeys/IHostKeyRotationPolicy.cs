@@ -23,11 +23,16 @@ public interface IHostKeyRotationPolicy
     /// <summary>做不做轮换。</summary>
     bool AllowHostKeyUpdates { get; }
 
-    /// <summary>这台主机记着的<b>普通</b>主机密钥（不含 CA、不含作废的）。</summary>
+    /// <summary>这台主机记着的<b>普通</b>主机密钥（不含 CA、不含作废的）的 SHA-256 指纹。</summary>
     /// <param name="host">主机（与裁决时同一个名字）。</param>
     /// <param name="port">端口。</param>
     /// <param name="cancellationToken">取消令牌。</param>
-    ValueTask<IReadOnlyList<SshPublicKey>> GetKnownHostKeysAsync(string host, int port, CancellationToken cancellationToken = default);
+    /// <returns><see cref="SshPublicKey.Sha256Fingerprint"/> 的样子；带不带 <c>=</c> 填充、有没有 <c>SHA256:</c> 前缀都认。</returns>
+    /// <remarks>
+    /// 交指纹而不是整把公钥：信任库常常只存指纹（宿主的就是），而 SHA-256 指纹覆盖整个公钥 blob，比指纹与比 blob 一样。
+    /// 曾经要交整把公钥，只存指纹的信任库就实现不了轮换。
+    /// </remarks>
+    ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(string host, int port, CancellationToken cancellationToken = default);
 
     /// <summary>记下服务端证明过持有的新主机密钥（只追加）。</summary>
     /// <param name="host">主机。</param>

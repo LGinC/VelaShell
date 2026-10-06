@@ -1542,6 +1542,9 @@
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户确认永久信任新指纹:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
+    <value>服务器 {0} 证明了它还持有另一把主机密钥,已补记为受信:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户选择仅本次信任(不落盘):{1}</value>
   </data>

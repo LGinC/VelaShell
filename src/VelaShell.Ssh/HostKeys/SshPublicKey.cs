@@ -145,6 +145,21 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     public string Sha256Fingerprint =>
         "SHA256:" + Convert.ToBase64String(SHA256.HashData(PlainKey._blob)).TrimEnd('=');
 
+    /// <summary>归一成 <see cref="Sha256Fingerprint"/> 的样子：<c>SHA256:</c> + 不带填充的 base64。</summary>
+    /// <remarks>
+    /// 〔AU-D3〕从别处复制来、或者从别的存储里读回来的指纹常带 <c>=</c> 填充、前后带空白、前缀大小写不一，或者干脆没有前缀。
+    /// 钉住的指纹与主机密钥轮换都按它比。
+    /// </remarks>
+    internal static string NormalizeFingerprint(string fingerprint)
+    {
+        string text = fingerprint.Trim();
+        if (text.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase))
+        {
+            text = text["SHA256:".Length..];
+        }
+        return "SHA256:" + text.TrimEnd('=');
+    }
+
     /// <summary>
     /// OpenSSH 风格的指纹图（<c>ssh-keygen -lv</c> 画的那种）：17×9 的画布，按 SHA-256 指纹的摘要随机游走。
     /// </summary>

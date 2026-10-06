@@ -35,7 +35,7 @@ internal sealed class VelaHostKeyPolicy(
     IHostKeyService hostKey,
     ISettingsService? settings,
     IHostKeyPrompt? prompt,
-    ISecurityAlertService? alerts) : IHostKeyPolicy, IHostKeyTypePreference
+    ISecurityAlertService? alerts) : IHostKeyPolicy, IHostKeyTypePreference, IHostKeyRotationPolicy
 {
     /// <inheritdoc />
     /// <remarks>
@@ -63,6 +63,48 @@ internal sealed class VelaHostKeyPolicy(
         {
             System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
             return [];
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 开着(OpenSSH 的 <c>UpdateHostKeys</c> 默认也开):服务端证明持有的新主机密钥补记进信任库,
+    /// 运维给服务器加一把 Ed25519、或者轮换掉老的 RSA 钥之后,用户不会看到「指纹已变更」。
+    /// 只增不删;只在这次用的钥已经永久信任过时才做(库里核对),「仅本次信任」的不算。信任库按类型分开记(API-H4),补记的就是新类型的那几条。
+    /// </remarks>
+    public bool AllowHostKeyUpdates => true;
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+            return [.. known.Select(entry => entry.Fingerprint).Where(fingerprint => !string.IsNullOrEmpty(fingerprint))];
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
+            return [];
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>补记一把就告诉用户一声(安全告警),与 OpenSSH 的「Learned new hostkey」同一个意思。</remarks>
+    public async ValueTask RecordHostKeysAsync(
+        string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        string target = port == 22 ? host : $"{host}:{port}";
+        foreach (SshPublicKey key in keys)
+        {
+            await hostKey.TrustHostKeyAsync(host, port, key.PlainKeyType, key.Sha256Fingerprint, cancellationToken).ConfigureAwait(false);
+            if (alerts is not null)
+            {
+                await alerts.RaiseAsync("hostkey-learned",
+                    Strings.Format("KeySvc_AlertHostKeyLearned", target, $"{key.PlainKeyType} {key.Sha256Fingerprint}")).ConfigureAwait(false);
+            }
         }
     }
 

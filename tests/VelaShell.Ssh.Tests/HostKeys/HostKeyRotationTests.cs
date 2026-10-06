@@ -153,8 +153,8 @@ public sealed class HostKeyRotationTests
         public ValueTask<SshHostKeyVerdict> EvaluateAsync(SshHostKeyContext context, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(SshHostKeyVerdict.Accept);
 
-        public ValueTask<IReadOnlyList<SshPublicKey>> GetKnownHostKeysAsync(string host, int port, CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult<IReadOnlyList<SshPublicKey>>([]);
+        public ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(string host, int port, CancellationToken cancellationToken = default) =>
+            ValueTask.FromResult<IReadOnlyList<string>>([]);
 
         public ValueTask RecordHostKeysAsync(string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default) =>
             throw new InvalidOperationException("不该记");

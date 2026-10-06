@@ -25,7 +25,7 @@ public sealed class PinnedFingerprintHostKeyPolicy : IHostKeyPolicy
     {
         ArgumentNullException.ThrowIfNull(sha256Fingerprints);
         _fingerprints = new HashSet<string>(
-            sha256Fingerprints.Select(Normalize), StringComparer.Ordinal);
+            sha256Fingerprints.Select(SshPublicKey.NormalizeFingerprint), StringComparer.Ordinal);
     }
 
     /// <inheritdoc />
@@ -35,25 +35,13 @@ public sealed class PinnedFingerprintHostKeyPolicy : IHostKeyPolicy
         ArgumentNullException.ThrowIfNull(context);
 
         string actual = context.Key.Sha256Fingerprint;
-        return ValueTask.FromResult(_fingerprints.Contains(Normalize(actual))
+        return ValueTask.FromResult(_fingerprints.Contains(SshPublicKey.NormalizeFingerprint(actual))
             ? SshHostKeyVerdict.Accept
             : SshHostKeyVerdict.Reject(
                 $"{context.Target} 的主机密钥指纹不在允许列表里。" +
                 $"对端出示：{actual}（{context.Key.KeyType}, {context.Key.KeyBits} 位）。"));
     }
 
-    /// <summary>归一成 <see cref="SshPublicKey.Sha256Fingerprint"/> 的样子：<c>SHA256:</c> + 不带填充的 base64。</summary>
-    /// <remarks>
-    /// 〔AU-D3〕从别处复制来的指纹常带 <c>=</c> 填充（别的工具这么写）、前后带空白。
-    /// 曾经只补前缀，带 <c>=</c> 的指纹永远比对不上 —— 钉住的主机一个也连不上，报的却是「指纹不在允许列表里」。
-    /// </remarks>
-    private static string Normalize(string fingerprint)
-    {
-        string text = fingerprint.Trim();
-        if (text.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase))
-        {
-            text = text["SHA256:".Length..];
-        }
-        return "SHA256:" + text.TrimEnd('=');
-    }
+    // 〔AU-D3〕指纹按 SshPublicKey.NormalizeFingerprint 归一之后比：曾经只补前缀，带 = 填充的指纹永远比对不上 ——
+    // 钉住的主机一个也连不上，报的却是「指纹不在允许列表里」。
 }

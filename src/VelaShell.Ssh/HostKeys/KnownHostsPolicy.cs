@@ -95,13 +95,13 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
     public bool AllowHostKeyUpdates { get; init; }
 
     /// <inheritdoc />
-    public async ValueTask<IReadOnlyList<SshPublicKey>> GetKnownHostKeysAsync(
+    public async ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(
         string host, int port, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(host);
         IReadOnlyList<KnownHostEntry> entries =
             _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
-        return KnownHostsFile.KnownHostKeys(entries, host, port);
+        return [.. KnownHostsFile.KnownHostKeys(entries, host, port).Select(key => key.Sha256Fingerprint)];
     }
 
     /// <inheritdoc />
