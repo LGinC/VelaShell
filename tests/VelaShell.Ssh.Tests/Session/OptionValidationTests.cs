@@ -141,6 +141,17 @@ public sealed class OptionValidationTests
         Assert.IsNull((new AgentForwardOptions { LocalConnector = Connector } with { AgentEndpoint = null }).AgentEndpoint);
     }
 
+    /// <summary>枚举的零值是安全的那个（未知 / 拒绝）：<c>default</c> 出来的不该是一个具体的、偏宽松的取值。</summary>
+    [TestMethod]
+    public void 枚举的零值是安全的那个()
+    {
+        Assert.AreEqual(nameof(UnknownHostBehavior.Reject), Enum.GetName(typeof(UnknownHostBehavior), 0));
+        Assert.AreEqual(nameof(ForwardErrorReason.Unknown), Enum.GetName(typeof(ForwardErrorReason), 0));
+        Assert.AreEqual(nameof(Diagnostics.SshDisconnectReason.Unknown), Enum.GetName(typeof(Diagnostics.SshDisconnectReason), 0u));
+        Assert.AreEqual(typeof(uint), Enum.GetUnderlyingType(typeof(Diagnostics.SshDisconnectReason)), "与线上的 uint32 一致");
+        Assert.AreEqual(UnknownHostBehavior.Ask, new KnownHostsPolicy().UnknownHost, "策略的默认值仍然是问");
+    }
+
     /// <summary>异常消息是纯文本，不带 Markdown 记号：到了界面上反引号会原样显示出来。</summary>
     [TestMethod]
     public void 异常消息里没有反引号()

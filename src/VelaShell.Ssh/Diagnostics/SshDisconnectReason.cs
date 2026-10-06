@@ -11,8 +11,12 @@
 
 namespace VelaShell.Ssh.Diagnostics;
 /// <summary><c>SSH_MSG_DISCONNECT</c> 的原因码（RFC 4250 §4.2.2）。</summary>
-public enum SshDisconnectReason
+/// <remarks>底层类型与线上一致（<c>uint32</c>）。协议没有定义 0；对端发来表外的值照样原样保留（强转进来）。</remarks>
+public enum SshDisconnectReason : uint
 {
+    /// <summary>不是协议定义的原因码（零值）。</summary>
+    Unknown = 0,
+
     /// <summary>主机不允许连接。</summary>
     HostNotAllowedToConnect = 1,
 

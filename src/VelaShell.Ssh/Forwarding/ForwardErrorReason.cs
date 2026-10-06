@@ -8,6 +8,9 @@ namespace VelaShell.Ssh.Forwarding;
 /// <summary>一条转发连接为什么失败了（<see cref="ForwardErrorEventArgs.Reason"/>，也是 metrics 的 <c>reason</c> 标签值）。</summary>
 public enum ForwardErrorReason
 {
+    /// <summary>说不清（零值）。曾经零值是 <see cref="Accept"/>，<c>default</c> 出来的就是一个具体的原因。</summary>
+    Unknown = 0,
+
     /// <summary>接受入站连接失败（监听套接字出错，如句柄耗尽）。</summary>
     Accept,
 

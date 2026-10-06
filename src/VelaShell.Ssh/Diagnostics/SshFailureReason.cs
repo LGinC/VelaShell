@@ -86,9 +86,8 @@ public enum SshFailureReason
     HostKeyStoreFailed,
 
     // ---- 认证 ----
-
-    /// <summary>一次认证尝试失败。</summary>
-    AuthenticationFailed,
+    // 曾经还有一个 AuthenticationFailed（「一次认证尝试失败」）：全库没有产生者，却列在 IsRetryable 里。
+    // 认证失败报的是 AuthenticationMethodExhausted（带逐条尝试记录），那不该重试。
 
     /// <summary>
     /// 所有可用的认证方法都试完了。
