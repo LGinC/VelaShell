@@ -32,33 +32,27 @@ public enum SshAlgorithmKind
 /// <c>^a,b</c> 提到最前,不带前缀则整个替换。
 /// </para>
 /// <para>
-/// 「能写哪些名字」以库实际实现了的为准:默认清单 + <see cref="SshAlgorithmSet.WithLegacyInterop" /> 放开的那几个。
+/// 「能写哪些名字」以库的算法目录为准(<see cref="SshAlgorithmCatalog" />):实现了的照常收,
+/// 常见却没实现的说「没实现」(写了也谈不成),都不是的说「不认识」。
 /// 不在其中的一律当场报出来 —— 库在拨号前也会拒掉没实现的名字,但那时的错误指向一次连接,而不是这条配置。
+/// 曾经宿主用 <c>Default.WithLegacyInterop()</c> 推算实现了哪些,再手工维护一份「认得但没实现」的名单。
 /// </para>
 /// </remarks>
 public static partial class SshAlgorithmPreferences
 {
     private static readonly SshAlgorithmSet Legacy = SshAlgorithmSet.Default.WithLegacyInterop();
 
-    /// <summary>
-    /// OpenSSH 认得、本版却没实现的常见算法:写了它们要说「没实现」而不是「不认识」——
-    /// 抄过来的配置里最常见的就是这几个,用户要知道的是「放开也没用」。
-    /// </summary>
-    private static readonly HashSet<string> KnownButUnimplemented =
-    [
-        with(StringComparer.Ordinal),
-        "aes128-cbc", "aes192-cbc", "aes256-cbc", "3des-cbc", "blowfish-cbc", "cast128-cbc",
-        "arcfour", "arcfour128", "arcfour256", "rijndael-cbc@lysator.liu.se",
-        "diffie-hellman-group1-sha1", "diffie-hellman-group-exchange-sha1", "diffie-hellman-group-exchange-sha256",
-        "diffie-hellman-group18-sha512", "ssh-dss", "ssh-dss-cert-v01@openssh.com",
-        "hmac-md5", "hmac-md5-96", "hmac-md5-etm@openssh.com", "hmac-md5-96-etm@openssh.com",
-        "hmac-sha1-96", "hmac-sha1-96-etm@openssh.com", "hmac-ripemd160", "hmac-ripemd160@openssh.com",
-        "umac-64@openssh.com", "umac-128@openssh.com", "umac-64-etm@openssh.com", "umac-128-etm@openssh.com",
-        "ssh-rsa-cert-v01@openssh.com", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
-    ];
-
     /// <summary>本版实现了、可以写进这一类清单的算法。</summary>
-    public static IReadOnlyList<string> Available(SshAlgorithmKind kind) => Select(Legacy, kind);
+    public static IReadOnlyList<string> Available(SshAlgorithmKind kind) => SshAlgorithmCatalog.Implemented(CategoryOf(kind));
+
+    /// <summary>宿主的类别对到库的目录类别。</summary>
+    private static SshAlgorithmCategory CategoryOf(SshAlgorithmKind kind) => kind switch
+    {
+        SshAlgorithmKind.KeyExchange => SshAlgorithmCategory.KeyExchange,
+        SshAlgorithmKind.HostKey => SshAlgorithmCategory.HostKey,
+        SshAlgorithmKind.Cipher => SshAlgorithmCategory.Encryption,
+        _ => SshAlgorithmCategory.Mac,
+    };
 
     /// <summary>不写自定义清单时这一类用的清单。</summary>
     /// <param name="kind">类别。</param>
@@ -108,7 +102,7 @@ public static partial class SshAlgorithmPreferences
             }
             if (!available.Contains(name, StringComparer.Ordinal))
             {
-                error = KnownButUnimplemented.Contains(name)
+                error = SshAlgorithmCatalog.KnownUnimplemented(CategoryOf(kind)).Contains(name, StringComparer.Ordinal)
                     ? Strings.Format("Ssh_AlgoSpecUnimplemented", name)
                     : Strings.Format("Ssh_AlgoSpecUnknown", name);
                 return false;
