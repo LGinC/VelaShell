@@ -1519,6 +1519,62 @@ public sealed class SftpTests
         Assert.IsTrue(error.IsUnsupported);
     }
 
+    // ------------------------------------------------------------ 服务端内复制
+
+    /// <summary>copy-data：按段复制（每段一个请求），每段报一次进度，内容与源逐字节一致，目标按源的权限位创建。</summary>
+    [TestMethod]
+    public async Task 服务端内复制按段进行且每段报进度()
+    {
+        byte[] content = [.. Enumerable.Range(0, 10_000).Select(i => (byte)(i * 7))];
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/src.bin", content, permissions: 0b111_101_000),
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.CopyData] });
+        harness.Sftp.CopySegmentBytes = 4096;
+        List<long> reported = [];
+
+        await harness.Sftp.CopyFileAsync("/home/joe/src.bin", "/home/joe/dst.bin", progress: new SyncProgress<long>(reported.Add), cancellationToken: harness.Token);
+
+        Assert.AreSequenceEqual(content, await harness.Sftp.ReadAllBytesAsync("/home/joe/dst.bin", harness.Token));
+        Assert.AreEqual(3, harness.SftpServer.CopyDataRequests, "10000 字节按 4096 一段是三段");
+        Assert.AreSequenceEqual(new long[] { 4096, 8192, 10_000 }, reported.ToArray());
+        Assert.AreEqual(0b111_101_000u, (await harness.Sftp.GetAttributesAsync("/home/joe/dst.bin", harness.Token)).PermissionBits);
+    }
+
+    /// <summary>不覆盖时目标已存在就失败、目标原样不动；覆盖时截短重写。</summary>
+    [TestMethod]
+    public async Task 服务端内复制不覆盖时目标已存在就失败_覆盖时重写()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server =>
+            {
+                server.AddFile("/home/joe/src.txt", Text("新"));
+                server.AddFile("/home/joe/dst.txt", Text("原来的长内容"));
+            },
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.CopyData] });
+
+        await Assert.ThrowsExactlyAsync<SftpException>(async () =>
+            await harness.Sftp.CopyFileAsync("/home/joe/src.txt", "/home/joe/dst.txt", cancellationToken: harness.Token));
+        Assert.AreEqual("原来的长内容", Encoding.UTF8.GetString(await harness.Sftp.ReadAllBytesAsync("/home/joe/dst.txt", harness.Token)));
+
+        await harness.Sftp.CopyFileAsync("/home/joe/src.txt", "/home/joe/dst.txt", overwrite: true, cancellationToken: harness.Token);
+        Assert.AreEqual("新", Encoding.UTF8.GetString(await harness.Sftp.ReadAllBytesAsync("/home/joe/dst.txt", harness.Token)));
+    }
+
+    /// <summary>没有 copy-data：如实报不支持，而且什么都没打开、没建。</summary>
+    [TestMethod]
+    public async Task 没有copy_data时报不支持且不建目标()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/src.txt", Text("x")),
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits] });
+
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(async () =>
+            await harness.Sftp.CopyFileAsync("/home/joe/src.txt", "/home/joe/dst.txt", cancellationToken: harness.Token));
+
+        Assert.IsTrue(error.IsUnsupported);
+        Assert.IsFalse(await harness.Sftp.ExistsAsync("/home/joe/dst.txt", harness.Token));
+    }
+
     // ------------------------------------------------------------ 按句柄设时间 / 不跟随链接设属性
 
     /// <summary>

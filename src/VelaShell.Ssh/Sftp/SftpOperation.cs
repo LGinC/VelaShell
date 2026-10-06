@@ -82,4 +82,7 @@ public enum SftpOperation
 
     /// <summary>展开 <c>~</c>（<c>expand-path@openssh.com</c> / <c>home-directory</c>）。</summary>
     ExpandPath,
+
+    /// <summary>服务端内复制（<c>copy-data</c>）。</summary>
+    CopyData,
 }

@@ -1360,6 +1360,108 @@ public sealed class SftpFileSystem : IAsyncDisposable
         return SftpWire.ReadStatVfs(response.Payload);
     }
 
+    /// <summary>服务端内复制时每个 <c>copy-data</c> 请求最多复制多少字节。</summary>
+    /// <remarks>
+    /// OpenSSH 的 sftp-server 是单线程的：一个请求复制几个 GB，整条 SFTP 通道就被它堵住几分钟，
+    /// 期间列目录、别的传输都等着。分段之后每段之间别的请求插得进来，也顺带有了进度、取消得了。
+    /// </remarks>
+    internal long CopySegmentBytes { get; set; } = 64L * 1024 * 1024;
+
+    /// <summary>服务端内复制一个文件（需要 <c>copy-data</c>）：数据不出服务器。</summary>
+    /// <param name="sourcePath">源文件。</param>
+    /// <param name="destinationPath">目标文件。</param>
+    /// <param name="overwrite">目标已存在时覆盖（截短再写）；<see langword="false"/> 时目标已存在就失败。</param>
+    /// <param name="progress">已复制的字节数，每复制完一段报一次。</param>
+    /// <param name="cancellationToken">在两段之间生效；正在服务端执行的那一段停不下来。</param>
+    /// <exception cref="SftpException">
+    /// 服务端没有这个扩展（<see cref="SftpStatusCode.OperationUnsupported"/>，看 <see cref="SftpCapabilities.HasCopyData"/>），
+    /// 源不存在、目标已存在（不覆盖时）、没有权限、磁盘满之类。
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕同一台服务器上的复制不必下载再上传：省掉双倍的网络流量与本机的临时文件，
+    /// 几 GB 的文件从几分钟变成几秒。目标按源的权限位（rwx）创建，与 <c>cp</c> 一致不带 setuid 之类。
+    /// 按 <see cref="CopySegmentBytes"/> 分段复制；中途失败或取消时目标留着已复制的部分（与 <c>cp</c> 一致）。
+    /// </para>
+    /// <para>
+    /// 源的长度在开始时取一次：复制期间源还在变长，多出来的不复制。
+    /// </para>
+    /// </remarks>
+    public async ValueTask CopyFileAsync(
+        string sourcePath,
+        string destinationPath,
+        bool overwrite = false,
+        IProgress<long>? progress = null,
+        CancellationToken cancellationToken = default)
+    {
+        ValidatePath(sourcePath);
+        ValidatePath(destinationPath);
+
+        if (!Capabilities.HasCopyData)
+        {
+            throw new SftpException(
+                SftpStatusCode.OperationUnsupported,
+                serverMessage: "",
+                sourcePath,
+                SftpOperation.CopyData,
+                detail: "这台服务端没有 copy-data");
+        }
+
+        await using SftpFileStream source = await OpenAsync(sourcePath, SftpOpenModes.Read, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        SftpFileAttributes sourceAttributes = await source.GetAttributesAsync(cancellationToken).ConfigureAwait(false);
+
+        SftpOpenModes modes = SftpOpenModes.Write | SftpOpenModes.Create
+            | (overwrite ? SftpOpenModes.Truncate : SftpOpenModes.Exclusive);
+        SftpFileAttributes create = sourceAttributes.HasPermissions
+            ? SftpFileAttributes.WithPermissions(sourceAttributes.PermissionBits & 0x1FF)
+            : default;
+        await using SftpFileStream destination = await OpenAsync(destinationPath, modes, create, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+
+        if (!sourceAttributes.HasSize)
+        {
+            // 服务端没给长度：一个请求复制到源的末尾（长度 0 的意思就是「到 EOF」），没有中间进度。
+            await CopyDataAsync(source, 0, 0, destination, sourcePath, cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
+        ulong total = sourceAttributes.Size;
+        ulong done = 0;
+        while (done < total)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ulong segment = Math.Min((ulong)CopySegmentBytes, total - done);
+            await CopyDataAsync(source, done, segment, destination, sourcePath, cancellationToken).ConfigureAwait(false);
+            done += segment;
+            progress?.Report((long)done);
+        }
+    }
+
+    /// <summary>一个 <c>copy-data</c> 请求：源与目标在同一个偏移上。</summary>
+    private async ValueTask CopyDataAsync(
+        SftpFileStream source, ulong offset, ulong length, SftpFileStream destination, string pathForErrors,
+        CancellationToken cancellationToken)
+    {
+        byte[] readHandle = source.Handle.ToArray();
+        byte[] writeHandle = destination.Handle.ToArray();
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) =>
+            {
+                ArrayBufferWriter<byte> inner = new();
+                SshDataWriter writer = new(inner);
+                writer.WriteString(readHandle);
+                writer.WriteUInt64(offset);
+                writer.WriteUInt64(length);
+                writer.WriteString(writeHandle);
+                writer.WriteUInt64(offset);
+                SftpWire.WriteExtended(output, id, SftpExtensionNames.CopyData, inner.WrittenSpan);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(pathForErrors, SftpOperation.CopyData, SftpMessageType.Status);
+    }
+
     // ------------------------------------------------------------ 内部
 
     /// <summary>等一个句柄额度（服务端宣告了 <c>max-open-handles</c> 时）。</summary>

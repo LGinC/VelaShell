@@ -801,6 +801,9 @@ public sealed class SftpFileStream : Stream
         _acked.TruncateTo(value);
     }
 
+    /// <summary>服务端给的句柄（<c>copy-data</c> 这类要两个句柄的扩展用）。</summary>
+    internal ReadOnlySpan<byte> Handle => _handle;
+
     /// <summary>按句柄设属性（<c>FSETSTAT</c>）。</summary>
     /// <remarks>先等攒着的与在途的写都落地：之后才到的写会把修改时间又改成「现在」。</remarks>
     public async ValueTask SetAttributesAsync(SftpFileAttributes attributes, CancellationToken cancellationToken = default)

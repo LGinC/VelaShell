@@ -36,6 +36,7 @@ using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Session;
 using VelaShell.Ssh.Sftp;
+using VelaShell.Ssh.Tests.TestKit;
 
 namespace VelaShell.Ssh.Tests.Interop;
 
@@ -681,6 +682,30 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual(ulong.Parse(fields[1], CultureInfo.InvariantCulture), info.TotalBlocks);
         Assert.AreEqual(ulong.Parse(fields[2], CultureInfo.InvariantCulture), info.MaxNameLength);
         Assert.IsLessThanOrEqualTo(info.FreeBlocks, info.AvailableBlocks);
+    }
+
+    /// <summary>服务端内复制（copy-data）：真 OpenSSH 上复制出来的文件与源的 sha256 一致。</summary>
+    [TestMethod]
+    public async Task SFTP服务端内复制与源一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasCopyData, "OpenSSH 的 sftp-server 宣告 copy-data");
+
+        string dir = $"/tmp/vela-copy-{Guid.NewGuid():N}";
+        await connection.RunAsync($"mkdir {dir} && head -c 3000000 /dev/urandom > {dir}/src.bin");
+        sftp.CopySegmentBytes = 1024 * 1024;   // 三段
+
+        long last = 0;
+        await sftp.CopyFileAsync($"{dir}/src.bin", $"{dir}/dst.bin", progress: new SyncProgress<long>(v => last = v));
+
+        string sums = (await connection.RunAsync($"sha256sum {dir}/src.bin {dir}/dst.bin | cut -c1-64; rm -rf {dir}")).StandardOutput;
+        string[] lines = sums.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.HasCount(2, lines);
+        Assert.AreEqual(lines[0], lines[1]);
+        Assert.AreEqual(3_000_000, last);
     }
 
     /// <summary>展开 ~：真 OpenSSH 宣告 expand-path@openssh.com，~ 是登录用户的 $HOME，~root 是 /root。</summary>

@@ -202,6 +202,9 @@ internal sealed class TestSftpServer
     /// <summary>当前还开着的句柄数 —— <b>泄漏检查看这个</b>。</summary>
     public int OpenHandleCount => _handles.Count;
 
+    /// <summary>收到过几个 <c>copy-data</c> 请求（验分段）。</summary>
+    public int CopyDataRequests { get; private set; }
+
     /// <summary>收到的 <c>WRITE</c> 次数。</summary>
     public int WriteCount { get; private set; }
 
@@ -867,6 +870,39 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.Fsync)
         {
+            return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.CopyData)
+        {
+            CopyDataRequests++;
+            if (!TryGetHandle(rest.Slice(reader.Consumed), out HandleState? from))
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, "无效的读句柄");
+            }
+            _ = reader.ReadStringAsArray(SftpProtocol.MaxHandleLength);
+            ulong readOffset = reader.ReadUInt64();
+            ulong readLength = reader.ReadUInt64();
+            if (!TryGetHandle(rest.Slice(reader.Consumed), out HandleState? to))
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, "无效的写句柄");
+            }
+            _ = reader.ReadStringAsArray(SftpProtocol.MaxHandleLength);
+            ulong writeOffset = reader.ReadUInt64();
+
+            List<byte> source = _nodes[from.Path].Content;
+            List<byte> target = _nodes[to.Path].Content;
+            int start = (int)Math.Min(readOffset, (ulong)source.Count);
+            int count = readLength == 0 ? source.Count - start : (int)Math.Min(readLength, (ulong)(source.Count - start));
+            byte[] chunk = [.. source.GetRange(start, count)];
+            while (target.Count < (int)writeOffset + count)
+            {
+                target.Add(0);
+            }
+            for (int i = 0; i < count; i++)
+            {
+                target[(int)writeOffset + i] = chunk[i];
+            }
             return BuildStatus(id, SftpStatusCode.Ok, "");
         }
 
