@@ -64,3 +64,17 @@ docker compose -f docker-compose.test.yml up -d --build ssh-2fa   # 端口 2224,
 ```bash
 docker compose -f docker-compose.test.yml up -d --build ssh-legacy   # 端口 2225,账号 vela-legacy / velapass
 ```
+
+## ssh-pq —— 面向 FIPS 的后量子混合密钥交换靶子(不是插件夹具)
+
+[ssh-pq](ssh-pq/Dockerfile) 是一台 AlmaLinux 10.2 的 sshd:它的 OpenSSH 9.9p1 带着 RHEL 10.2 的下游补丁,
+`mlkem768nistp256-sha256` 与 `mlkem1024nistp384-sha384`(RFC 10042)两种都有 —— 上游 OpenSSH 到 10.6p1 才有前一种、默认不开,
+后一种还没有。密钥交换清单照「开了 FIPS 模式的服务端」来配:没有 X25519、没有 sntrup761,只剩这两种混合与普通 ECDH。
+服务的是 `VelaShell.Ssh.Tests` 里这两种密钥交换的互操作用例:线上格式只有对着别人的实现才验得出来。
+
+同一个容器里另起两个 sshd:本机 2227 只给 `mlkem1024nistp384-sha384`,2228 照 RHEL 10.2 的 DEFAULT 策略(三种 ML-KEM 混合,X25519 那种在前),
+用来看服务端给的清单不同时,默认清单与 FIPS 清单各谈成哪一种。
+
+```bash
+docker compose -f docker-compose.test.yml up -d --build ssh-pq   # 端口 2226 / 2227 / 2228,账号 vela-pq / velapass
+```

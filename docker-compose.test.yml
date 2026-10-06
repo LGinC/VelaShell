@@ -76,5 +76,24 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  # 面向 FIPS 的后量子混合密钥交换靶子:mlkem768nistp256-sha256 / mlkem1024nistp384-sha384(RFC 10042)。
+  # AlmaLinux 10.2 的 OpenSSH 带着 RHEL 的下游补丁,两种都有;清单照开了 FIPS 模式的服务端配(没有 X25519)。
+  # 见 tests/fixtures/ssh-pq/Dockerfile。
+  ssh-pq:
+    build: ./tests/fixtures/ssh-pq
+    image: velashell-test-pq:latest
+    container_name: velashell-test-pq
+    hostname: velashell-test-pq
+    ports:
+      - "2226:2222"   # FIPS 模式的清单
+      - "2227:2223"   # 只给 mlkem1024nistp384-sha384
+      - "2228:2224"   # RHEL 10.2 的 DEFAULT 策略(连 X25519 那种也给)
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c '</dev/tcp/127.0.0.1/2222' || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
 volumes:
   ssh-test-config:

@@ -38,8 +38,14 @@ internal static class SshAlgorithmNames
 {
     // ---------------------------------------------------------------- 密钥交换
 
-    /// <summary>ML-KEM-768 与 X25519 的混合，SHA-256。后量子。</summary>
+    /// <summary>ML-KEM-768 与 X25519 的混合，SHA-256。后量子。RFC 10042。</summary>
     public const string MlKem768X25519Sha256 = "mlkem768x25519-sha256";
+
+    /// <summary>ML-KEM-768 与 P-256 ECDH 的混合，SHA-256。后量子，只用 FIPS 认可的原语。RFC 10042。</summary>
+    public const string MlKem768Nistp256Sha256 = "mlkem768nistp256-sha256";
+
+    /// <summary>ML-KEM-1024 与 P-384 ECDH 的混合，SHA-384。后量子，只用 FIPS 认可的原语。RFC 10042。</summary>
+    public const string MlKem1024Nistp384Sha384 = "mlkem1024nistp384-sha384";
 
     /// <summary>sntrup761 与 X25519 的混合，SHA-512。后量子。</summary>
     public const string Sntrup761X25519Sha512 = "sntrup761x25519-sha512";

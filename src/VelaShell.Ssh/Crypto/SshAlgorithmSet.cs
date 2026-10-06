@@ -161,6 +161,11 @@ public sealed record SshAlgorithmSet
             [
                 // 后量子混合排最前：「先截获、以后再解」的攻击今天就在发生。
                 SshAlgorithmNames.MlKem768X25519Sha256,
+
+                // 〔velashell-docs/zh/ssh/spec/00 §6.1〕面向 FIPS 的两种排在 X25519 那种之后（三种都给的服务端照旧谈成它）、
+                // sntrup761 与不带后量子的椭圆曲线之前：开了 FIPS 策略的服务端不给 X25519，没有它们就只剩 ecdh-sha2-nistp256。
+                SshAlgorithmNames.MlKem768Nistp256Sha256,
+                SshAlgorithmNames.MlKem1024Nistp384Sha384,
                 SshAlgorithmNames.Sntrup761X25519Sha512,
                 SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh,
                 SshAlgorithmNames.Curve25519Sha256,
@@ -210,18 +215,20 @@ public sealed record SshAlgorithmSet
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 〔velashell-docs/zh/ssh/spec/00 §6〕合规环境要求客户端也只谈认可的算法时用它：密钥交换只用 NIST 曲线的 ECDH 与 DH 标准群，
+    /// 〔velashell-docs/zh/ssh/spec/00 §6.6〕合规环境要求客户端也只谈认可的算法时用它：密钥交换先是两种面向 FIPS 的后量子混合
+    /// （<c>mlkem768nistp256-sha256</c>、<c>mlkem1024nistp384-sha384</c>），再是 NIST 曲线的 ECDH 与 DH 标准群；
     /// 主机密钥只用 ECDSA 与 SHA-2 的 RSA（含对应的证书），加密只用 AES（GCM 与 CTR），MAC 只用 HMAC-SHA2。
-    /// 不含 X25519、Ed25519、ChaCha20-Poly1305 与后量子混合（sntrup761、带 X25519 的 ML-KEM）。
+    /// 不含 X25519、Ed25519、ChaCha20-Poly1305，也不含带 X25519 或 sntrup761 的后量子混合。
+    /// </para>
+    /// <para>
+    /// 两种混合排最前：它们只用 FIPS 认可的原语（ML-KEM、P-256 / P-384 上的 ECDH、SHA-2），不给 X25519 的服务端上，
+    /// 没有它们就只剩不带后量子的 ECDH。不支持它们的服务端照旧谈成 <c>ecdh-sha2-nistp256</c>。
+    /// 〔历史〕最初不含这两种：那时还没有能对照验证线上格式的服务端（velashell-docs/zh/ssh/spec/03 §3.7）。
     /// </para>
     /// <para>
     /// ⚠️ <b>这只限定了算法，不等于本库通过了 FIPS 140 验证。</b>AES、SHA-2、ECDH、ECDSA、RSA 走 BCL
     /// （Windows 上是经过验证的 CNG，Linux / macOS 上取决于系统的 OpenSSL 与是否开了 FIPS 模式），
-    /// DH 标准群的模幂走 BouncyCastle。
-    /// </para>
-    /// <para>
-    /// 面向 FIPS 的后量子混合（<c>mlkem768nistp256-sha256</c> / <c>mlkem1024nistp384-sha384</c>）没有收进来：
-    /// 还没有能对照验证线上格式的服务端实现，写了也只能自己证明自己。
+    /// ML-KEM 在平台支持时走 BCL、否则与 DH 标准群的模幂一样走 BouncyCastle。
     /// </para>
     /// </remarks>
     public static SshAlgorithmSet FipsApprovedOnly { get; } = CreateFipsApprovedOnly();
@@ -247,6 +254,8 @@ public sealed record SshAlgorithmSet
         {
             KeyExchange =
             [
+                SshAlgorithmNames.MlKem768Nistp256Sha256,
+                SshAlgorithmNames.MlKem1024Nistp384Sha384,
                 SshAlgorithmNames.EcdhSha2Nistp256,
                 SshAlgorithmNames.EcdhSha2Nistp384,
                 SshAlgorithmNames.EcdhSha2Nistp521,

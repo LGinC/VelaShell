@@ -65,6 +65,9 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
     /// <inheritdoc />
     public string Name { get; }
 
+    /// <summary>一个坐标的字节数（P-256 是 32、P-384 是 48、P-521 是 66）：后量子混合要按它把 X 坐标补成定长（spec/03 §3.7.2）。</summary>
+    internal int CoordinateBytes => _coordinateBytes;
+
     /// <inheritdoc />
     public HashAlgorithmName HashAlgorithm { get; }
 
