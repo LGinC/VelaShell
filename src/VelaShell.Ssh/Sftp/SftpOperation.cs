@@ -85,4 +85,7 @@ public enum SftpOperation
 
     /// <summary>服务端内复制（<c>copy-data</c>）。</summary>
     CopyData,
+
+    /// <summary>把 uid / gid 翻成名字（<c>users-groups-by-id@openssh.com</c>）。</summary>
+    LookupNames,
 }

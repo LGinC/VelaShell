@@ -1360,6 +1360,65 @@ public sealed class SftpFileSystem : IAsyncDisposable
         return SftpWire.ReadStatVfs(response.Payload);
     }
 
+    /// <summary>一次最多问多少个 uid / gid（两者各算）：防一个巨大的目录让请求长到被服务端拒掉。</summary>
+    public const int MaxIdsPerLookup = 4096;
+
+    /// <summary>把数字 uid / gid 翻成用户名与组名（需要 <c>users-groups-by-id@openssh.com</c>）。</summary>
+    /// <param name="userIds">要翻的 uid。</param>
+    /// <param name="groupIds">要翻的 gid。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>与传入的 id 一一对应的名字；服务端不认识的 id 为 <see langword="null"/>。</returns>
+    /// <exception cref="SftpException">服务端没有这个扩展（<see cref="SftpStatusCode.OperationUnsupported"/>，看 <see cref="SftpCapabilities.HasUsersGroupsById"/>）。</exception>
+    /// <exception cref="ArgumentException">一次问的 id 超过 <see cref="MaxIdsPerLookup"/> 个。</exception>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕SFTP v3 的属性里只有数字 id，名字得另外查。有 shell 的账号可以 exec <c>getent</c>，
+    /// 只开了 SFTP 的账号（chroot 的 internal-sftp）没有 exec，就靠它。名字来自服务端，是不可信文本，摆上界面前要清洗。
+    /// </remarks>
+    public async ValueTask<SftpIdNames> LookupUserAndGroupNamesAsync(
+        IReadOnlyList<uint> userIds, IReadOnlyList<uint> groupIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(userIds);
+        ArgumentNullException.ThrowIfNull(groupIds);
+        if (userIds.Count > MaxIdsPerLookup || groupIds.Count > MaxIdsPerLookup)
+        {
+            throw new ArgumentException($"一次最多问 {MaxIdsPerLookup} 个 uid、{MaxIdsPerLookup} 个 gid。");
+        }
+
+        if (!Capabilities.HasUsersGroupsById)
+        {
+            throw new SftpException(
+                SftpStatusCode.OperationUnsupported,
+                serverMessage: "",
+                path: null,
+                SftpOperation.LookupNames,
+                detail: "这台服务端没有 users-groups-by-id@openssh.com");
+        }
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) =>
+            {
+                ArrayBufferWriter<byte> inner = new();
+                SshDataWriter writer = new(inner);
+                writer.WriteString(PackIds(userIds));
+                writer.WriteString(PackIds(groupIds));
+                SftpWire.WriteExtended(output, id, SftpExtensionNames.UsersGroupsById, inner.WrittenSpan);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(path: null, SftpOperation.LookupNames, SftpMessageType.ExtendedReply);
+        return SftpWire.ReadIdNames(response.Payload, userIds.Count, groupIds.Count);
+    }
+
+    private static byte[] PackIds(IReadOnlyList<uint> ids)
+    {
+        byte[] packed = new byte[ids.Count * 4];
+        for (int i = 0; i < ids.Count; i++)
+        {
+            System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(packed.AsSpan(i * 4), ids[i]);
+        }
+        return packed;
+    }
+
     /// <summary>服务端内复制时每个 <c>copy-data</c> 请求最多复制多少字节。</summary>
     /// <remarks>
     /// OpenSSH 的 sftp-server 是单线程的：一个请求复制几个 GB，整条 SFTP 通道就被它堵住几分钟，

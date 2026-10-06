@@ -36,4 +36,7 @@ public static class SftpExtensionNames
 
     /// <summary>设属性但不跟随符号链接（改链接自身）。</summary>
     public const string LSetStat = "lsetstat@openssh.com";
+
+    /// <summary>把数字 uid / gid 翻成用户名与组名。</summary>
+    public const string UsersGroupsById = "users-groups-by-id@openssh.com";
 }

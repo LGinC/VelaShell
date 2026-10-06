@@ -1519,6 +1519,49 @@ public sealed class SftpTests
         Assert.IsTrue(error.IsUnsupported);
     }
 
+    // ------------------------------------------------------------ uid / gid 翻成名字
+
+    /// <summary>users-groups-by-id：与问的 id 一一对应，不认识的为 null。</summary>
+    [TestMethod]
+    public async Task 把uid与gid翻成名字_不认识的为null()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.UsersGroupsById] });
+
+        SftpIdNames names = await harness.Sftp.LookupUserAndGroupNamesAsync([1000, 7, 0], [100], harness.Token);
+
+        Assert.AreSequenceEqual(new string?[] { "joe", null, "root" }, names.UserNames.ToArray());
+        Assert.AreSequenceEqual(new string?[] { "users" }, names.GroupNames.ToArray());
+    }
+
+    /// <summary>回的名字比问的 id 少：对端的错，报格式不对，而不是把名字错位地安到别的 id 上。</summary>
+    [TestMethod]
+    public async Task 名字条数对不上时报格式不对()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.UsersGroupsById], DropOneIdName = true });
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(async () =>
+            await harness.Sftp.LookupUserAndGroupNamesAsync([1000, 0], [], harness.Token));
+        Assert.Contains("users-groups-by-id", error.Message);
+    }
+
+    /// <summary>没有扩展时报不支持；一次问太多个 id 时在发请求之前就拒。</summary>
+    [TestMethod]
+    public async Task 没有扩展时报不支持_问太多时当场拒()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits] });
+
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(async () =>
+            await harness.Sftp.LookupUserAndGroupNamesAsync([0], [0], harness.Token));
+        Assert.IsTrue(error.IsUnsupported);
+
+        uint[] tooMany = [.. Enumerable.Range(0, SftpFileSystem.MaxIdsPerLookup + 1).Select(i => (uint)i)];
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () =>
+            await harness.Sftp.LookupUserAndGroupNamesAsync(tooMany, [], harness.Token));
+    }
+
     // ------------------------------------------------------------ 服务端内复制
 
     /// <summary>copy-data：按段复制（每段一个请求），每段报一次进度，内容与源逐字节一致，目标按源的权限位创建。</summary>

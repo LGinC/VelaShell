@@ -60,6 +60,15 @@ internal sealed record TestSftpOptions
     /// <summary><c>limits@openssh.com</c> 宣告的读写上限。</summary>
     public SftpLimits Limits { get; init; } = new(262_144, 261_120, 261_120, 0);
 
+    /// <summary><c>users-groups-by-id@openssh.com</c> 认得的 uid → 用户名。</summary>
+    public IReadOnlyDictionary<uint, string> UserNames { get; init; } = new Dictionary<uint, string> { [0] = "root", [1000] = "joe" };
+
+    /// <summary><c>users-groups-by-id@openssh.com</c> 认得的 gid → 组名。</summary>
+    public IReadOnlyDictionary<uint, string> GroupNames { get; init; } = new Dictionary<uint, string> { [0] = "root", [100] = "users" };
+
+    /// <summary><c>users-groups-by-id@openssh.com</c> 的应答少回一个名字（坏服务端）。</summary>
+    public bool DropOneIdName { get; init; }
+
     /// <summary><c>WRITE</c> 把文件的修改时间改成「现在」（真实文件系统就是这样）。</summary>
     public bool WriteTouchesModifyTime { get; init; }
 
@@ -871,6 +880,32 @@ internal sealed class TestSftpServer
         if (name == SftpExtensionNames.Fsync)
         {
             return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.UsersGroupsById)
+        {
+            byte[] uids = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+            byte[] gids = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+
+            ArrayBufferWriter<byte> users = new();
+            SshDataWriter usersWriter = new(users);
+            for (int i = 0; i + 4 <= uids.Length - (_options.DropOneIdName ? 4 : 0); i += 4)
+            {
+                usersWriter.WriteUtf8String(_options.UserNames.GetValueOrDefault(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(uids.AsSpan(i))) ?? "");
+            }
+            ArrayBufferWriter<byte> groups = new();
+            SshDataWriter groupsWriter = new(groups);
+            for (int i = 0; i + 4 <= gids.Length; i += 4)
+            {
+                groupsWriter.WriteUtf8String(_options.GroupNames.GetValueOrDefault(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(gids.AsSpan(i))) ?? "");
+            }
+
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            writer.WriteString(users.WrittenSpan);
+            writer.WriteString(groups.WrittenSpan);
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
         }
 
         if (name == SftpExtensionNames.CopyData)

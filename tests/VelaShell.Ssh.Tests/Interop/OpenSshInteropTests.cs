@@ -684,6 +684,26 @@ public sealed class OpenSshInteropTests
         Assert.IsLessThanOrEqualTo(info.FreeBlocks, info.AvailableBlocks);
     }
 
+    /// <summary>users-groups-by-id：真 OpenSSH 翻出来的名字与远端 id 命令一致，不认识的 id 为 null。</summary>
+    [TestMethod]
+    public async Task SFTP把uid与gid翻成名字与远端id一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasUsersGroupsById, "OpenSSH 的 sftp-server 宣告 users-groups-by-id@openssh.com");
+
+        string[] me = (await connection.RunAsync("id -u; id -g; id -un; id -gn")).StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        uint uid = uint.Parse(me[0], CultureInfo.InvariantCulture);
+        uint gid = uint.Parse(me[1], CultureInfo.InvariantCulture);
+
+        SftpIdNames names = await sftp.LookupUserAndGroupNamesAsync([0, uid, 4_242_424], [0, gid, 4_242_424]);
+
+        Assert.AreSequenceEqual(new string?[] { "root", me[2], null }, names.UserNames.ToArray());
+        Assert.AreSequenceEqual(new string?[] { "root", me[3], null }, names.GroupNames.ToArray());
+    }
+
     /// <summary>服务端内复制（copy-data）：真 OpenSSH 上复制出来的文件与源的 sha256 一致。</summary>
     [TestMethod]
     public async Task SFTP服务端内复制与源一致()

@@ -416,6 +416,41 @@ internal static class SftpWire
         }
     }
 
+    /// <summary>
+    /// 解 <c>users-groups-by-id@openssh.com</c> 的应答：两个 <c>string</c>，各装着一串 <c>string</c>（用户名、组名），
+    /// 与请求里的 id 一一对应；空串表示服务端不认识那个 id。条数对不上是对端的错。
+    /// </summary>
+    public static SftpIdNames ReadIdNames(ReadOnlySequence<byte> payloadAfterRequestId, int userCount, int groupCount)
+    {
+        try
+        {
+            SshDataReader reader = new(payloadAfterRequestId);
+            byte[] users = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+            byte[] groups = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+            return new SftpIdNames(ReadNames(users, userCount), ReadNames(groups, groupCount));
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw Malformed(SftpExtensionNames.UsersGroupsById, ex);
+        }
+
+        static IReadOnlyList<string?> ReadNames(byte[] packed, int expected)
+        {
+            SshDataReader names = new(new ReadOnlySequence<byte>(packed));
+            List<string?> result = new(expected);
+            for (int i = 0; i < expected; i++)
+            {
+                string name = names.ReadUtf8String(SftpProtocol.MaxPathLength);
+                result.Add(name.Length == 0 ? null : name);
+            }
+            if (names.Remaining != 0)
+            {
+                throw new SshWireFormatException($"名字比问的 id 多（应当 {expected} 个）。");
+            }
+            return result;
+        }
+    }
+
     /// <summary>解 <c>statvfs@openssh.com</c> 的应答：11 个 <c>uint64</c>，顺序同 POSIX 的 <c>statvfs</c>。</summary>
     public static SftpFileSystemInfo ReadStatVfs(ReadOnlySequence<byte> payloadAfterRequestId)
     {
