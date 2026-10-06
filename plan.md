@@ -1675,10 +1675,28 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **测试缺口**(T1–T14):KEX / MAC 互操作矩阵、AEAD 独立参照、真 puttygen 样本、畸形输入、收尾竞态(CH-E2 的那一刻用测试钩子摆出来)、恶意对端、跳板计时、ECDH 无效点、SFTP 的链接 / 改名 / 落盘对真 sftp-server。
 
 **三、没做的**(理由;要做的已记入 `feature-plan.md`):
-- **等拍板**:第八节 Q1、Q2、Q4、Q5、Q7、Q8、Q9、Q11、Q12(Q3、Q6、Q10 已随相关条目解决)。主机密钥轮换「删掉服务端不再出示的旧钥」要等 Q4(known_hosts 只追加还是允许改写)。
+- **拍板之后落地**:第八节 Q1、Q4、Q5、Q7、Q8、Q9、Q11、Q12 见 §162(主机密钥轮换「删掉服务端不再出示的旧钥」随 Q4 一起做了);Q2 维持不做(`feature-plan.md`「确认不做」);Q3、Q6、Q10 已随相关条目解决。
 - **有意不做**:SF-P3 小文件并发 FSTAT 与按已知长度收尾(Seek(End) 与下载中变长的文件,提交里写了理由);SF-P4 DATA 应答的那一次复制(要让接收循环直接写进调用方的缓冲,取消之后迟到的应答会写进已经还回去的内存);F16 宿主处理 xon-xoff(真 OpenSSH 不发);ssh_config 的 `RequestTTY`(shell 总带伪终端,不带的跑命令是另一个入口)与记号 `%i`(没有取 uid 的托管接口)。
 - **缺验证环境或硬件**:F7 gssapi-with-mic(要 KDC)、F12 后量子混合 KEX(没有服务端可对照)、F2 第二阶段(直接驱动 FIDO 硬件)、F3 的 PKCS#11 与 Secure Enclave、F4 的 `restrict-destination` 约束(velashell-docs 还没有规格)。
 - **宿主侧还没接的库能力**:连接信息面板(O7)、CNG 签名器、按键时序混淆、报文旁路、转发吞吐与限速、TLS 拨号器、远程动态转发、Unix 套接字转发、ssh_config 转发项的导入;成功建连时经过的每一跳(拨号器只在失败时记跳信息)。
 - **单独排期的纯重构**:拆 `SshConnection` / `SshChannel` 两个上帝类(`feature-plan.md` 已有,CH-D8 列了不能断的耦合点)。
 
 **四、验证**:`VelaShell.Ssh.Tests` 从 822 例(799 通过 / 23 按环境跳过)到 1341 例:不开互操作 1296 通过 / 45 跳过,开互操作(Docker 靶机 OpenSSH 10.3)1333 通过 / 8 跳过(要 X11、压缩重协商之类环境的几条)。大多数修复做过变异检验(把修复退回去,瞄准的用例变红);协议行为对真工具做过黑盒核对:GEX 与重协商、agent 的证书 / 删钥 / 锁、`nc -X 5` 经远程动态转发、Unix 套接字转发到 ssh-agent、`limits@openssh.com`、hostkeys-prove 的签名、sk 钥指纹与 `ssh-keygen -lf` 一致、CNG 不可导出的钥登录、PING / PONG、按键混淆下的真 shell、`HostKeyAlias` 的记法(OpenSSH 10.5 客户端)。全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`;宿主相关的用例(`Core.Tests` / `Infrastructure.Tests` / `VelaShell.Tests` 的 SSH、SFTP、主机密钥、本地化守门)通过。已知:`Core.Tests` 的 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 因靶机镜像建于 Dockerfile 那次改动之前而失败(同 §159,重建靶机即可),与这一批无关。
+
+## ✅ 162. 2026-10-06 SSH 库:第八节的质疑决策拍板落地(Q1 / Q4 / Q5 / Q7 / Q8 / Q9 / Q11 / Q12;Q2 维持不做)
+
+**一、来由**:§161 留下 `ssh_plan.md` 第八节的九条质疑决策没动。维护者 2026-10-06 拍板:「除了 Q2 不支持旧的 legacy 外,其他按照推荐内容调整」。照第八节的推荐逐条改,规格先行,一条一个本地提交:`dev` 上 8 个,velashell-docs `fix/ssh-review-fixes` 上 8 个(`zh/` 与 `en/` 一起改)。提交信息里写着每条的理由与验证;这里只记全貌。
+
+**二、做了什么**:
+- **Q12 SYMLINK 建完回读自检**:建完对 linkPath 做一次 READLINK;那里没有链接、targetPath 上却冒出一条指回 linkPath 的,说明服务端按相反的参数顺序建了 —— 删掉建错的那条、报错。不设开关;服务端不支持 READLINK 时照旧信它。
+- **Q9 服务端回的 SFTP 版本高于 3 时不连**:draft-02 §4 要求回双方较小的那个;回得更大的服务端会按自己的版本说话,按 v3 解析就把属性读错。报 `SftpUnavailableException`(`ProtocolError`),不再「降到 3 继续」。
+- **Q8 SFTP 时间按无符号 32 位**:`SftpFileAttributes.AccessTime` / `ModifyTime` 改成 `uint`,读写都无符号,2038 年之后照常(到 2106 年)。对真 sftp-server 与 OpenSSH `sftp` 客户端黑盒核对过。
+- **Q1 默认不按时长主动重协商**:`SshRekeyPolicy.Default` 只剩 1 GiB / 2³¹ 个报文。黑盒核对 OpenSSH 客户端与服务端的默认都不按时长(`ssh -G` 是 `rekeylimit 0 0`,`sshd_config` 默认 `RekeyLimit default none`),顺手更正了文档里「OpenSSH 默认 1 GiB 或 1 小时」的说法。
+- **Q5 本地与动态转发默认同时听 `127.0.0.1` 与 `::1`**:`LocalPortForwardOptions.BindAddress` 可空,默认是两个环回、同一个端口(`BoundEndPoints`);没有 IPv6 时只听 IPv4;`[::1]` 那个端口被别的进程占着时不起这个转发,IPv4 的监听也不留。ssh_config 与宿主写 `localhost` 时同一口径,宿主的隧道端口预检两个环回都查。
+- **Q4 known_hosts 的改写路径**:平时照旧只追加。「密钥变了」确认后一键删旧记录(`KnownHostsPolicy.RemoveHostKeysAsync`)与主机密钥轮换删旧钥(`IHostKeyRotationPolicy.ForgetHostKeysAsync`,接口默认实现不删)两处才改写,都落到 `KnownHostsFile.RemoveHostKeysAsync`:只动专属于这台主机的记录(散列行整行删,几个名字的行只拿掉这台主机的名字,`@revoked` / `@cert-authority` / 通配行不动),「临时文件 + 原子替换 + 冲突重试」。轮换只在宣告完整、证明全过时才删(`SshHostKeyUpdate.RemovedFingerprints`);宿主信任库按类型删并发安全告警(五份 resx)。对真 sshd 核对:记着一把它没有的钥,连上之后被删掉、别的行一字不动。
+- **Q11 SFTP 顺序读遇到短读只补缺口**:缺口的请求插到队首,后面已发的预读照用、窗口不动;整块在已知长度之内还读不满时,学到服务端实际给的读长度(不低于 4 KiB)。曾经整队作废,对每块都短读的服务端吞吐塌到一块 / RTT。
+- **Q7 终端走交互道**:先核对了「每条通道同一时刻至多一帧数据在发送队列里」(stdin 泵等上一帧刷出去才发下一帧)—— 积压来自很多条通道各排一帧,按通道轮询对单条 FIFO 没有改进。改成交互式通道(`SshChannelOptions.IsInteractive`,`OpenShellAsync` 开的自动是)的报文进交互道,发送泵在窗口回补之后让它与普通队列轮流出队:按键至多等一帧,粘贴大段也不饿死别的通道。一条通道的报文(含接收循环替它回的 CLOSE 与请求应答)全走开通道时定下的那条道,自身顺序不变。
+- **Q2 维持不做**:CBC 不实现,理由记进 `feature-plan.md`「确认不做」。
+- 顺带:CH-E2 的竞态用例偶发失败(断言早于钩子跑完),改成等钩子真的跑完再断言。
+
+**三、验证**:`VelaShell.Ssh.Tests` 1354 例:不开互操作 1308 通过 / 46 跳过,开互操作(Docker 靶机 OpenSSH 10.3)的 46 例 38 通过 / 8 跳过(要另外环境的几条)。每条都做过变异检验:编得过的变异体(把修复退回去,或者绕开关键的那一步)让瞄准的用例变红 —— Q7 的按键在积压之后才上线、Q11 的读两遍与等不到更靠后的请求、Q4 的冲突时丢掉别人刚追加的那一条与宣告不完整时误删、Q5 的只听 IPv4。Q7 改了发送泵,全套连跑三遍没有新的偶发失败。宿主 `Infrastructure.Tests` 625 通过 / 4 跳过,本地化守门通过;全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`。
