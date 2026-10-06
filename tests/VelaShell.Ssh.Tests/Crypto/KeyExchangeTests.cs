@@ -122,6 +122,62 @@ public sealed class KeyExchangeTests
             algorithms, HashAlgorithmName.SHA256, new byte[32], SshKexValueEncoding.Mpint, new byte[32], new byte[32]));
     }
 
+    /// <summary>
+    /// ECDH 的「点在不在曲线上」先由库自己查（方程与坐标范围），不全靠平台后端的导入校验 ——
+    /// 那一层各平台各是各的（CNG / OpenSSL / Apple），曾经只在 Windows 上验证过。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp256, 32)]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp384, 48)]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp521, 66)]
+    public void ECDH自己核对点在曲线上(string name, int coord)
+    {
+        using EcdhKeyExchange exchange = new(name);
+        ECCurve curve = name switch
+        {
+            SshAlgorithmNames.EcdhSha2Nistp256 => ECCurve.NamedCurves.nistP256,
+            SshAlgorithmNames.EcdhSha2Nistp384 => ECCurve.NamedCurves.nistP384,
+            _ => ECCurve.NamedCurves.nistP521,
+        };
+
+        // 平台造出来的公钥一定在曲线上。
+        using ECDiffieHellman peer = ECDiffieHellman.Create(curve);
+        ECParameters q = peer.ExportParameters(includePrivateParameters: false);
+        byte[] x = new byte[coord];
+        byte[] y = new byte[coord];
+        q.Q.X!.CopyTo(x, coord - q.Q.X!.Length);
+        q.Q.Y!.CopyTo(y, coord - q.Q.Y!.Length);
+        Assert.IsTrue(exchange.IsOnCurve(x, y), "合法的点被拒了");
+
+        // y 改一个比特就不在曲线上了；全零（无穷远点写不出来）也不在。
+        byte[] tampered = (byte[])y.Clone();
+        tampered[^1] ^= 1;
+        Assert.IsFalse(exchange.IsOnCurve(x, tampered));
+        Assert.IsFalse(exchange.IsOnCurve(new byte[coord], new byte[coord]));
+
+        // 曲线常数与平台给的一致（支持导出显式参数的平台上核对；macOS 不支持就只靠上面的用例）。
+        try
+        {
+            ECParameters explicitParameters = peer.ExportExplicitParameters(includePrivateParameters: false);
+            System.Numerics.BigInteger p = new(explicitParameters.Curve.Prime!, isUnsigned: true, isBigEndian: true);
+            System.Numerics.BigInteger a = new(explicitParameters.Curve.A!, isUnsigned: true, isBigEndian: true);
+            Assert.AreEqual(p - 3, a, "三条 NIST 曲线的 a 都是 −3");
+
+            // P-521 的坐标有 66 字节、p 只有 521 位：x + p 编得进去，与 x 同余、方程照样成立，必须按「坐标不小于 p」拦下。
+            if (name == SshAlgorithmNames.EcdhSha2Nistp521)
+            {
+                System.Numerics.BigInteger shifted = new System.Numerics.BigInteger(x, isUnsigned: true, isBigEndian: true) + p;
+                byte[] big = shifted.ToByteArray(isUnsigned: true, isBigEndian: true);
+                byte[] encoded = new byte[coord];
+                big.CopyTo(encoded, coord - big.Length);
+                Assert.IsFalse(exchange.IsOnCurve(encoded, y), "坐标不小于 p 的编码不合法");
+            }
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
+    }
+
     [TestMethod]
     public void Curve25519拒绝长度不对的公钥()
     {
