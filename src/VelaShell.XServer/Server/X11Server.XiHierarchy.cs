@@ -160,8 +160,8 @@ public sealed partial class X11Server
                             }
                             _xiDevices.Remove(pointerMaster.Id);
                             _xiDevices.Remove(keyboardMaster.Id);
-                            _deviceProperties.Remove(pointerMaster.Id);
-                            _deviceProperties.Remove(keyboardMaster.Id);
+                            DropDeviceProperties(pointerMaster.Id);
+                            DropDeviceProperties(keyboardMaster.Id);
                             Note(pointerMaster.Id, 2);
                             Note(keyboardMaster.Id, 2);
                             break;

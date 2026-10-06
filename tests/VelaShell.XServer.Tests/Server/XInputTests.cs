@@ -321,4 +321,43 @@ public sealed class XInputTests
         Assert.AreEqual(11, error.Detail);
         Assert.IsLessThan(5_000, watch.ElapsedMilliseconds);
     }
+
+    private static Task<ushort> XiChangePropertyAsync(XTestClient c, byte xi, byte mode, byte format, uint property, uint type, byte[] values) =>
+        c.SendAsync(xi, 57, b => b.U16(2).U8(mode).U8(format).U32(property).U32(type).U32((uint)(values.Length / (format / 8))).Bytes(values).Pad());
+
+    [TestMethod]
+    public async Task XI设备属性按核心属性的规则校验_按本机序存放_变化发XI_PropertyEvent()
+    {
+        await using X11Server server = new();
+        await using XTestClient big = await XTestClient.ConnectAsync(server, bigEndian: true);
+        await using XTestClient little = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(big);
+        await XiAsync(little);
+        const uint property = 1, integer = 19;   // PRIMARY 当属性名用;INTEGER
+
+        // little 在根窗口上选 XI_PropertyEvent(第 12 位)。
+        await SelectAsync(little, xi, little.RootWindow, 0, 1u << 12);
+        await little.SyncAsync();
+
+        // 大端客户端写一个 32 位值,小端客户端读到的是同一个数。
+        await XiChangePropertyAsync(big, xi, 0, 32, property, integer, [0x11, 0x22, 0x33, 0x44]);
+        XMessage created = await NextXiAsync(little, xi, 12);
+        Assert.AreEqual(property, created.U32(16));
+        Assert.AreEqual(1, created.Bytes[20], "PropertyCreated");
+        XMessage read = await little.RequestAsync(xi, 59, b => b.U16(2).U8(0).U8(0).U32(property).U32(0).U32(0).U32(1));
+        Assert.AreEqual(0x11223344u, read.U32(32));
+
+        // Append 的类型不一样:BadMatch。
+        await XiChangePropertyAsync(little, xi, 2, 8, property, integer, [1]);
+        XMessage mismatch = await little.NextAsync(m => m.IsError);
+        Assert.AreEqual(8, mismatch.Detail, "BadMatch");
+
+        // 声称的个数比带的数据多:BadLength(原先截断了事)。
+        XMessage length = await little.RequestAsync(xi, 57, b => b.U16(2).U8(0).U8(8).U32(property).U32(integer).U32(100).U32(0));
+        Assert.AreEqual(16, length.Detail, "BadLength");
+
+        await little.SendAsync(xi, 58, b => b.U16(2).U16(0).U32(property));   // XIDeleteProperty
+        XMessage deleted = await NextXiAsync(little, xi, 12);
+        Assert.AreEqual(0, deleted.Bytes[20], "PropertyDeleted");
+    }
 }

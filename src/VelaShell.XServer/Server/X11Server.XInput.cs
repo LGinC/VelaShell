@@ -364,24 +364,20 @@ public sealed partial class X11Server
                     ushort id = r.U16();
                     byte mode = r.U8(), format = r.U8();
                     uint property = r.U32(), type = r.U32(), count = r.U32();
-                    if (format is not (8 or 16 or 32) || mode > 2)
-                    {
-                        throw new XProtocolError(XErrorCode.Value, format);
-                    }
-                    byte[] data = r.Bytes((int)Math.Min(count * (format / 8L), r.Remaining));
-                    Dictionary<uint, XProperty> props = DeviceProperties(id);
-                    if (mode != 0 && props.TryGetValue(property, out XProperty? existing) && existing.Type == type && existing.Format == format)
-                    {
-                        data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
-                    }
-                    props[property] = new XProperty(type, format, data);
+                    XiChangeProperty(c, r, id, mode, format, property, type, count);
                     break;
                 }
             case 58:  // XIDeleteProperty
                 {
                     ushort id = r.U16();
                     r.Skip(2);
-                    DeviceProperties(id).Remove(r.U32());
+                    uint property = r.U32();
+                    CheckAtom(property);
+                    if (DeviceProperties(id).Remove(property, out XProperty? removed))
+                    {
+                        ReleaseProperty(removed);
+                        SendXiPropertyEvent(id, property, what: 0);
+                    }
                     break;
                 }
             case 59:  // XIGetProperty
@@ -505,6 +501,87 @@ public sealed partial class X11Server
             }
             w.Pad4();
         });
+    }
+
+    /// <summary>
+    /// XIChangeProperty(XI 2.2「XIChangeProperty」,语义同核心 ChangeProperty):原子、格式、模式、长度逐项校验;
+    /// Prepend / Append 的类型或格式与现值不同回 BadMatch;16 / 32 位值按本机序存;单个值不超过 <see cref="MaxPropertyBytes" />,
+    /// 记在写它的客户端名下(设备属性是全局的,客户端断开也不释放 —— 原先既不设上限,追加还每次整份复制)。
+    /// </summary>
+    private void XiChangeProperty(XClient c, XRequestReader r, ushort id, byte mode, byte format, uint property, uint type, uint count)
+    {
+        if (format is not (8 or 16 or 32))
+        {
+            throw new XProtocolError(XErrorCode.Value, format);
+        }
+        if (mode > 2)
+        {
+            throw new XProtocolError(XErrorCode.Value, mode);
+        }
+        CheckAtom(property);
+        CheckAtom(type);
+        long byteCount = count * (format / 8L);
+        if (byteCount > r.Remaining)
+        {
+            throw new XProtocolError(XErrorCode.Length);
+        }
+        Dictionary<uint, XProperty> props = DeviceProperties(id);
+        XProperty? existing = mode != 0 ? props.GetValueOrDefault(property) : null;
+        if (existing is not null && (existing.Type != type || existing.Format != format))
+        {
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        long total = byteCount + (existing?.Length ?? 0);
+        if (total > MaxPropertyBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
+        XProperty? replaced = props.GetValueOrDefault(property);
+        ReleaseProperty(replaced);
+        try
+        {
+            ChargeMemory(c, total);
+        }
+        catch (XProtocolError)
+        {
+            ChargeMemory(replaced?.ChargedTo, replaced?.Length ?? 0, force: true);
+            throw;
+        }
+        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
+        props[property] = existing is null ? new XProperty(type, format, data) { ChargedTo = c }
+            : mode == 2 ? existing.Append(data, c)
+            : new XProperty(type, format, [.. data, .. existing.Data]) { ChargedTo = c };
+        SendXiPropertyEvent(id, property, what: replaced is null ? (byte)1 : (byte)2);
+    }
+
+    /// <summary>XI_PropertyEvent(evtype 12):给在根窗口上选了它的客户端。what:0 删除、1 新建、2 修改。</summary>
+    private void SendXiPropertyEvent(ushort id, uint property, byte what)
+    {
+        const int xiPropertyEvent = 12;
+        if (!Root.AnyXi2Selects(xiPropertyEvent))
+        {
+            return;
+        }
+        uint time = Now;
+        foreach ((XClient client, (ulong master, ulong slave)) in Root.Xi2Selections)
+        {
+            if (!client.Closed && ((master | slave) & (1UL << xiPropertyEvent)) != 0)
+            {
+                client.GenericEvent(XInputMajor, xiPropertyEvent, w => w.U16(id).U32(time).U32(property).U8(what).Zero(11));
+            }
+        }
+    }
+
+    /// <summary>设备被删掉:它的属性一并丢掉,退还写它们的客户端的账。</summary>
+    private void DropDeviceProperties(ushort id)
+    {
+        if (_deviceProperties.Remove(id, out Dictionary<uint, XProperty>? props))
+        {
+            foreach (XProperty property in props.Values)
+            {
+                ReleaseProperty(property);
+            }
+        }
     }
 
     private Dictionary<uint, XProperty> DeviceProperties(ushort id)
