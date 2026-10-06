@@ -1418,6 +1418,29 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>
+    /// 传输层的 PING / PONG（ping@openssh.com，OpenSSH 9.5 起）：认证之后的 EXT_INFO 里宣告了它，量往返时间就用 PING；
+    /// 连量几次都有 PONG 回来（对得上序号）。
+    /// </summary>
+    [TestMethod]
+    public async Task 真sshd宣告ping_往返时间用PING量()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        while (!connection.PeerSupportsPing)
+        {
+            await Task.Delay(20, timeout.Token);
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            TimeSpan rtt = await connection.MeasureRoundTripAsync(timeout.Token);
+            Assert.IsGreaterThan(TimeSpan.Zero, rtt);
+        }
+        Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim(), "PING 之后连接照常");
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

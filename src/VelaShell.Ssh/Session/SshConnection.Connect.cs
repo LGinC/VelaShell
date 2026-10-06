@@ -177,6 +177,7 @@ public sealed partial class SshConnection
             };
 
             List<SshCredential> credentials = [.. options.Credentials];
+            SshAuthenticationResult? authenticated = null;
 
             // 经跳板时，这条连接的认证跑在外层连接的拨号计时之内 —— 而认证是在等人
             // （输口令、看手机上的动态码）。那段时间停外层的表，认证用它自己的这把计时器；
@@ -184,7 +185,7 @@ public sealed partial class SshConnection
             options.OuterDeadline?.Pause();
             try
             {
-                await authenticator.AuthenticateAsync(credentials, auth.Token).ConfigureAwait(false);
+                authenticated = await authenticator.AuthenticateAsync(credentials, auth.Token).ConfigureAwait(false);
             }
             finally
             {
@@ -225,6 +226,7 @@ public sealed partial class SshConnection
                 RekeyHardPacketLimit = options.RekeyHardPacketLimit,
                 RekeyTimeout = options.RekeyTimeout,
                 Description = $"{options.UserName}@{options.EndPoint}",
+                PeerSupportsPing = authenticated?.ServerExtensions.Contains(SshProtocolNames.ExtPing) == true,
                 MetricsHost = metricsHost,
                 HostKeyPersistFailure = runner.HostKeyPersistFailure,
             };

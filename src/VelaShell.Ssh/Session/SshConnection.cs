@@ -461,6 +461,12 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <remarks>服务端回成功还是失败都算（它多半不认这个请求类型），有应答就是到过一个来回。</remarks>
     public async ValueTask<TimeSpan> MeasureRoundTripAsync(CancellationToken cancellationToken = default)
     {
+        // 对端认 PING 就用它：传输层的回声，不经服务端的全局请求处理，量得更准。
+        if (PeerSupportsPing)
+        {
+            return await PingAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         long startedAt = Time.GetTimestamp();
         await SendGlobalRequestAsync(
             SshProtocolNames.KeepAliveOpenSsh, default, wantReply: true, cancellationToken).ConfigureAwait(false);
@@ -943,7 +949,20 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             case SshMessageNumber.Ignore:
             case SshMessageNumber.Debug:
             case SshMessageNumber.Unimplemented:
+                return;
+
+            // RFC 8308 §2.4 允许服务端在认证成功后再发一次（OpenSSH 在这一次里宣告 ping@openssh.com 之类）。
             case SshMessageNumber.ExtInfo:
+                OnExtensionInfo(packet.Payload);
+                return;
+
+            // 〔velashell-docs/zh/ssh/spec/05 §6.5〕对端的 PING 原样回 PONG；我们的 PING 的 PONG 交给等它的那一次测量。
+            case SshMessageNumber.Ping:
+                OnPing(packet.Payload);
+                return;
+
+            case SshMessageNumber.Pong:
+                OnPong(packet.Payload);
                 return;
 
             case SshMessageNumber.Disconnect:

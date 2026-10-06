@@ -25,11 +25,13 @@ namespace VelaShell.Ssh.Auth;
 /// <param name="Attempts">逐条尝试记录。</param>
 /// <param name="Banner">服务端发来的横幅文本（按出现顺序）。</param>
 /// <param name="ServerSignatureAlgorithms">服务端通过 <c>server-sig-algs</c> 宣告的签名算法。</param>
+/// <param name="ServerExtensions">服务端在 <c>EXT_INFO</c> 里宣告过的扩展名。</param>
 internal sealed record SshAuthenticationResult(
     string Method,
     IReadOnlyList<SshAuthAttempt> Attempts,
     IReadOnlyList<string> Banner,
-    IReadOnlyList<string> ServerSignatureAlgorithms);
+    IReadOnlyList<string> ServerSignatureAlgorithms,
+    IReadOnlyList<string> ServerExtensions);
 
 /// <summary>执行用户认证（客户端侧）。</summary>
 /// <remarks>
@@ -88,6 +90,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
     private string[] _serverOffered = [];
     private string[] _serverSignatureAlgorithms = [];
+    private readonly List<string> _serverExtensions = [];
     private bool _partialSuccessAchieved;
     private bool _passwordChangeRequested;
 
@@ -1002,6 +1005,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         {
             string name = reader.ReadUtf8String(1024);
             ReadOnlySequence<byte> value = reader.ReadString(MaxFieldBytes);
+            if (!_serverExtensions.Contains(name))
+            {
+                _serverExtensions.Add(name);
+            }
 
             if (name == SshProtocolNames.ExtServerSigAlgs)
             {
@@ -1103,7 +1110,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             credential.MethodName, credential.Label, outcome, _serverOffered, detail, signatureAlgorithm));
 
     private SshAuthenticationResult BuildResult(string method) =>
-        new(method, _attempts, _banner, _serverSignatureAlgorithms);
+        new(method, _attempts, _banner, _serverSignatureAlgorithms, _serverExtensions);
 
     private SshAuthenticationException BuildExhaustedException()
     {

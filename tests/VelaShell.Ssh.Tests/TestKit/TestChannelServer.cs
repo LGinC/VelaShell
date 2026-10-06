@@ -106,6 +106,12 @@ internal sealed record TestChannelScript
     /// <summary>把第一把钥的证明签名弄坏。</summary>
     public bool CorruptHostKeyProof { get; init; }
 
+    /// <summary>一开始先宣告 <c>ping@openssh.com</c>（认证之后的 EXT_INFO），再发一个 PING（数据是这几个字节）。</summary>
+    public byte[]? PingOnStart { get; init; }
+
+    /// <summary>回客户端的 PING（宣告了 <see cref="PingOnStart"/> 时）。</summary>
+    public bool AnswerPings { get; init; }
+
     /// <summary>接受 <c>tcpip-forward</c> 全局请求，并回这个端口（<c>0</c> = 拒绝）。</summary>
     public int GrantRemoteForwardPort { get; init; }
 
@@ -280,6 +286,12 @@ internal sealed class TestChannelObservation
     /// <summary>收到的全局请求类型。</summary>
     public List<string> GlobalRequests { get; } = [];
 
+    /// <summary>客户端回的 PONG 里的数据。</summary>
+    public List<byte[]> Pongs { get; } = [];
+
+    /// <summary>客户端发来的 PING 个数。</summary>
+    public int PingsReceived { get; set; }
+
     /// <summary><see cref="TestChannelScript.OpenForwardedTcpIpAfterGrant"/> 开出的那条回连；客户端拒了是 null。</summary>
     public Task<Stream?>? ForwardedOpenAfterGrant { get; set; }
 
@@ -397,6 +409,23 @@ internal sealed class TestChannelServer : IDisposable
         _running.TrySetResult();
         try
         {
+            if (_script.PingOnStart is { } pingData)
+            {
+                ArrayBufferWriter<byte> extInfo = new();
+                SshDataWriter extWriter = new(extInfo);
+                extWriter.WriteMessageNumber(SshMessageNumber.ExtInfo);
+                extWriter.WriteUInt32(1);
+                extWriter.WriteUtf8String(SshProtocolNames.ExtPing);
+                extWriter.WriteUtf8String("0");
+                await SendAsync(extInfo.WrittenMemory, cancellationToken);
+
+                ArrayBufferWriter<byte> ping = new();
+                SshDataWriter pingWriter = new(ping);
+                pingWriter.WriteMessageNumber(SshMessageNumber.Ping);
+                pingWriter.WriteString(pingData);
+                await SendAsync(ping.WrittenMemory, cancellationToken);
+            }
+
             if (_script.AnnouncedHostKeys is { } announced)
             {
                 ArrayBufferWriter<byte> buffer = new();
@@ -627,6 +656,20 @@ internal sealed class TestChannelServer : IDisposable
 
             case SshMessageNumber.GlobalRequest:
                 await OnGlobalRequestAsync(payload, cancellationToken);
+                return;
+
+            case SshMessageNumber.Pong:
+                Observation.Pongs.Add(payload[5..]);
+                return;
+
+            case SshMessageNumber.Ping:
+                Observation.PingsReceived++;
+                if (_script.AnswerPings)
+                {
+                    byte[] pong = [.. payload];
+                    pong[0] = (byte)SshMessageNumber.Pong;
+                    await SendAsync(pong, cancellationToken);
+                }
                 return;
 
             case SshMessageNumber.ChannelOpenConfirmation:

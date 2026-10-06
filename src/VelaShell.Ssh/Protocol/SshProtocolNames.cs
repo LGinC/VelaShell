@@ -63,6 +63,9 @@ internal static class SshProtocolNames
     /// <summary>RFC 8308 §3.1：服务端接受的公钥签名算法。</summary>
     public const string ExtServerSigAlgs = "server-sig-algs";
 
+    /// <summary><c>EXT_INFO</c> 里的 <c>ping@openssh.com</c>：对端认传输层的 PING / PONG（velashell-docs/zh/ssh/spec/05 §6.5）。</summary>
+    public const string ExtPing = "ping@openssh.com";
+
     // ------------------------------------------------------------------ 通道
 
     /// <summary>会话通道（exec / shell / subsystem）。</summary>
