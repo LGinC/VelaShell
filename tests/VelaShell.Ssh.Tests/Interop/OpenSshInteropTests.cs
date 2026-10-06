@@ -1087,6 +1087,20 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>往返时间：真 OpenSSH 回保活请求（REQUEST_FAILURE 也算），量出来的是个正的、合理的数，并记进 LastRoundTrip。</summary>
+    [TestMethod]
+    public async Task 量得到真实服务端的往返时间()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        TimeSpan rtt = await connection.MeasureRoundTripAsync();
+
+        Assert.IsGreaterThan(TimeSpan.Zero, rtt);
+        Assert.IsLessThan(TimeSpan.FromSeconds(5), rtt, "本机的 Docker，往返不该到秒级");
+        Assert.AreEqual(rtt, connection.LastRoundTrip);
+    }
+
     [TestMethod]
     public async Task 保活探测能被真实服务端应答()
     {

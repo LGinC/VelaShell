@@ -145,6 +145,9 @@ internal sealed record TestChannelScript
     /// <summary>回放退出状态之前，先发这么多条客户端不认识的通道请求（每条带 1 KiB 载荷）。</summary>
     public int UnknownRequestsBeforeExit { get; init; }
 
+    /// <summary>收到全局请求、应答之前先跑一下（参数是请求类型）—— 用例在这里拨手动时钟，量往返时间。</summary>
+    public Func<string, Task>? BeforeGlobalReply { get; init; }
+
     /// <summary>回放退出状态之前，按顺序发这些 <c>xon-xoff</c>（RFC 4254 §6.8，<c>client can do</c> 的值）。</summary>
     public IReadOnlyList<bool> XonXoffBeforeExit { get; init; } = [];
 
@@ -896,6 +899,10 @@ internal sealed class TestChannelServer : IDisposable
         string requestType = reader.ReadUtf8String(MaxField);
         Observation.GlobalRequests.Add(requestType);
         bool wantReply = reader.ReadBoolean();
+        if (_script.BeforeGlobalReply is { } beforeReply)
+        {
+            await beforeReply(requestType);
+        }
 
         if (requestType == "tcpip-forward" && _script.GrantRemoteForwardPort > 0)
         {

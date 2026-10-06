@@ -1725,6 +1725,57 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         Assert.IsTrue(harness.Connection.IsAlive);
     }
 
+    /// <summary>〔spec/05 §6.3〕往返时间：从保活请求入队到收到应答（时钟是手动拨的，量得出准数），记进 LastRoundTrip。</summary>
+    [TestMethod]
+    public async Task 量往返时间从入队到收到应答()
+    {
+        ManualTimeProvider clock = new();
+        await using Harness harness = await Harness.StartAsync(
+            new TestChannelScript
+            {
+                CloseAfterScript = false,
+                ExitCode = null,
+                BeforeGlobalReply = _ =>
+                {
+                    clock.Advance(TimeSpan.FromMilliseconds(37));
+                    return Task.CompletedTask;
+                },
+            },
+            time: clock);
+
+        Assert.IsNull(harness.Connection.LastRoundTrip, "还没量过");
+        TimeSpan rtt = await harness.Connection.MeasureRoundTripAsync(harness.Token);
+
+        Assert.AreEqual(TimeSpan.FromMilliseconds(37), rtt);
+        Assert.AreEqual(rtt, harness.Connection.LastRoundTrip);
+    }
+
+    /// <summary>链路闲下来时自动发的保活探测也顺带量往返时间。</summary>
+    [TestMethod]
+    public async Task 保活探测顺带记下往返时间()
+    {
+        ManualTimeProvider clock = new();
+        await using Harness harness = await Harness.StartAsync(
+            new TestChannelScript
+            {
+                CloseAfterScript = false,
+                ExitCode = null,
+                BeforeGlobalReply = _ =>
+                {
+                    clock.AdvanceWithoutRunningCallbacks(TimeSpan.FromMilliseconds(5));
+                    return Task.CompletedTask;
+                },
+            },
+            keepAlive: new SshKeepAlivePolicy(TimeSpan.FromSeconds(10)),
+            time: clock);
+
+        await clock.WaitUntilArmedAsync(TimeSpan.FromSeconds(10), harness.Token);
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await WaitUntilAsync(() => harness.Connection.LastRoundTrip is not null, harness.Token);
+
+        Assert.AreEqual(TimeSpan.FromMilliseconds(5), harness.Connection.LastRoundTrip);
+    }
+
     [TestMethod]
     public async Task 未知全局请求也会拿到应答而不是沉默()
     {

@@ -392,6 +392,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             SshProtocolNames.KeepAliveOpenSsh, default, wantReply: true);
 
         // 登记与入队是同一个动作：应答靠 FIFO 对齐（见 SendAsync 的重载说明）。
+        long startedAt = Time.GetTimestamp();
         Task<SshGlobalRequestReply>? reply = null;
         if (!PostRegistered(packet, () => reply = _globalRequests.Register()))
         {
@@ -401,12 +402,50 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         try
         {
             await reply!.WaitAsync(timeout, Time, cancellationToken).ConfigureAwait(false);
-            return Volatile.Read(ref _fault) is null;
+            if (Volatile.Read(ref _fault) is not null)
+            {
+                return false;
+            }
+            RecordRoundTrip(Time.GetElapsedTime(startedAt));
+            return true;
         }
         catch (TimeoutException)
         {
             return false;
         }
+    }
+
+    /// <summary>最近一次测到的往返时间（ticks）；0 表示还没测过。</summary>
+    private long _lastRoundTripTicks;
+
+    /// <summary>
+    /// 最近一次测到的往返时间：保活探测（链路闲下来时自动发）或 <see cref="MeasureRoundTripAsync"/> 从入队到收到应答；
+    /// 还没测过时为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §6.3〕量的是整条路径（经代理、跳板也一样），含服务端处理一个全局请求的时间 ——
+    /// 比 ICMP ping 更接近用户感到的「卡」，也不怕目标禁 ICMP。通道正在大量收发时，探测排在数据后面，量到的会偏大。
+    /// </remarks>
+    public TimeSpan? LastRoundTrip => Volatile.Read(ref _lastRoundTripTicks) is var ticks and > 0
+        ? TimeSpan.FromTicks(ticks)
+        : null;
+
+    private void RecordRoundTrip(TimeSpan elapsed) =>
+        Volatile.Write(ref _lastRoundTripTicks, Math.Max(1, elapsed.Ticks));
+
+    /// <summary>量一次到服务端的往返时间：发一个要应答的保活全局请求，从入队到收到应答。</summary>
+    /// <returns>往返时间（同时记进 <see cref="LastRoundTrip"/>）。</returns>
+    /// <exception cref="SshException">连接已经断了。</exception>
+    /// <exception cref="OperationCanceledException">取消。</exception>
+    /// <remarks>服务端回成功还是失败都算（它多半不认这个请求类型），有应答就是到过一个来回。</remarks>
+    public async ValueTask<TimeSpan> MeasureRoundTripAsync(CancellationToken cancellationToken = default)
+    {
+        long startedAt = Time.GetTimestamp();
+        await SendGlobalRequestAsync(
+            SshProtocolNames.KeepAliveOpenSsh, default, wantReply: true, cancellationToken).ConfigureAwait(false);
+        TimeSpan elapsed = Time.GetElapsedTime(startedAt);
+        RecordRoundTrip(elapsed);
+        return elapsed;
     }
 
     // ------------------------------------------------------------ 通道
