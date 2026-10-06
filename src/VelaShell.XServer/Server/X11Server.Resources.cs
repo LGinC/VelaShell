@@ -73,6 +73,7 @@ public sealed partial class X11Server
     {
         XPixmap { OwnsBuffer: true } pixmap => PixelBytes(pixmap.Width, pixmap.Height),
         XRegionResource region => RegionBytes(region.Region),
+        XPicture { Fill: GradientSource gradient } => gradient.StopCount * 24L,   // 每个色标一个 double 与一个浮点颜色
         _ => 0,
     };
 

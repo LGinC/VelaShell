@@ -324,7 +324,13 @@ public sealed partial class X11Server
         double[] stops = new double[count];
         for (int i = 0; i < count; i++)
         {
-            stops[i] = r.I32() / 65536.0;
+            int raw = r.I32();
+            stops[i] = raw / 65536.0;
+            // RENDER「CreateLinearGradient」等:色标要在 0–1 之间、按大小排好,否则 Value 错误。相等的色标照收(硬过渡,cairo 会这么发)。
+            if (stops[i] is < 0 or > 1 || (i > 0 && stops[i] < stops[i - 1]))
+            {
+                throw new XProtocolError(XErrorCode.Value, unchecked((uint)raw));
+            }
         }
         var colors = new Argb[count];
         for (int i = 0; i < count; i++)

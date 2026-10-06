@@ -352,6 +352,9 @@ internal sealed class ColorMaskSource(uint[] pixels, int x0, int y0, int width, 
 /// <summary>渐变:色标位置 0–1,颜色非预乘;取样时算出参数 t,按 repeat 折回后插值。</summary>
 internal abstract class GradientSource(double[] stops, Argb[] colors) : RenderSource
 {
+    /// <summary>色标个数(内存账按它算)。</summary>
+    public int StopCount => stops.Length;
+
     protected Argb ColorAt(double t)
     {
         if (stops.Length == 0 || double.IsNaN(t))
@@ -389,11 +392,21 @@ internal abstract class GradientSource(double[] stops, Argb[] colors) : RenderSo
         }
         else
         {
-            int i = 1;
-            while (stops[i] < t)
+            // 第一个不小于 t 的色标(二分;色标在创建时已核过不递减)。原先逐个往后找,色标可以有上百万个,每个像素都扫一遍。
+            int lo = 1, hi = stops.Length - 1;
+            while (lo < hi)
             {
-                i++;
+                int mid = (lo + hi) >>> 1;
+                if (stops[mid] < t)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
             }
+            int i = lo;
             double span = stops[i] - stops[i - 1];
             float f = span <= 0 ? 1 : (float)((t - stops[i - 1]) / span);
             Argb a = colors[i - 1], b = colors[i];

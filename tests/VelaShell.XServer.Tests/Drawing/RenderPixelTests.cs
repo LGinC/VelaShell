@@ -78,6 +78,42 @@ public sealed class RenderPixelTests
     }
 
     [TestMethod]
+    public void 多色标渐变按二分找色标_与逐个找的结果相同_相等的色标是硬过渡()
+    {
+        // 0, 0.1, 0.1, 0.2, ..., 0.9, 1:每一段一种颜色,0.1 处两个色标相等(硬过渡)。
+        List<double> stops = [0];
+        List<Argb> colors = [new Argb(1, 0, 0, 0)];
+        for (int i = 1; i <= 10; i++)
+        {
+            stops.Add(i / 10.0);
+            colors.Add(new Argb(1, i / 10f, 0, 0));
+            if (i == 1)
+            {
+                stops.Add(0.1);
+                colors.Add(new Argb(1, 0, 1, 0));
+            }
+        }
+        LinearGradientSource g = new(0, 0, 1000, 0, [.. stops], [.. colors]) { Repeat = RenderSource.RepeatPad };
+        var row = new Argb[1000];
+        g.FetchRow(0, 0, row);
+        for (int x = 0; x < row.Length; x++)
+        {
+            double t = (x + 0.5) / 1000;
+            int i = 1;
+            while (stops[i] < t)
+            {
+                i++;   // 参照:逐个往后找
+            }
+            double span = stops[i] - stops[i - 1];
+            float f = span <= 0 ? 1 : (float)((t - stops[i - 1]) / span);
+            float expectedRed = colors[i - 1].R + ((colors[i].R - colors[i - 1].R) * f);
+            Assert.AreEqual(expectedRed, row[x].R, 1e-5, $"x = {x}");
+        }
+        Assert.IsGreaterThan(0.4f, row[150].G, "0.1 处硬过渡到绿色,往后渐变到下一个色标");
+        Assert.AreEqual(0f, row[99].G, 1e-6, "硬过渡之前没有绿色");
+    }
+
+    [TestMethod]
     public void 梯形覆盖率在半像素边上是一半()
     {
         CoverageMask mask = new(new XRect(0, 0, 4, 2));

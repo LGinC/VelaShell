@@ -171,6 +171,30 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task 渐变的色标越界或没排好序回BadValue()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        static Action<XTestClient.Body> Linear(uint id, int first, int second) => b => b.U32(id).I32(0).I32(0).I32(40 << 16).I32(0).U32(2)
+            .I32(first).I32(second)
+            .U16(0).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF);
+        XMessage reversed = await c.RequestAsync(s.Major, 34, Linear(c.NewId(), 1 << 16, 0));
+        Assert.IsTrue(reversed.IsError);
+        Assert.AreEqual(2, reversed.Detail, "BadValue:没按大小排好");
+        XMessage outside = await c.RequestAsync(s.Major, 34, Linear(c.NewId(), 0, 2 << 16));
+        Assert.IsTrue(outside.IsError);
+        Assert.AreEqual(2, outside.Detail, "BadValue:色标超过 1");
+        // 相等的色标(硬过渡)照收。
+        uint equal = c.NewId();
+        await c.SendAsync(s.Major, 34, Linear(equal, 1 << 15, 1 << 15));
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(equal).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(0).I16(0).U16(40).U16(20));
+        await c.SyncAsync();
+        Assert.AreEqual(0x000000u, s.Pixel(5, 10) & 0xFF);
+        Assert.AreEqual(0xFFu, s.Pixel(35, 10) & 0xFF);
+    }
+
+    [TestMethod]
     public async Task 线性渐变从黑到白()
     {
         await using Setup s = await SetupAsync();
