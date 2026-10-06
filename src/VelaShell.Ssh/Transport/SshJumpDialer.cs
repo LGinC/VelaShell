@@ -50,7 +50,8 @@ internal sealed class SshJumpDialer : ISshTransportDialer, ISshDialKindSource
 
         // 跳板这一跳的整个建连都发生在外层的拨号阶段里 ——
         // 把外层的计时器交给它，它在等用户裁决主机密钥时外层也停表（velashell-docs/zh/ssh/spec/09 §2.4）。
-        _connect = (target, ct) => SshConnection.ConnectAsync(jumpHost with { OuterDeadline = target.Deadline }, ct);
+        _connect = (target, ct) => SshConnection.ConnectAsync(
+            jumpHost with { OuterDeadline = target.Deadline, MetricsHost = target.MetricsHost }, ct);
     }
 
     /// <summary>用回调构造：跳板连接由调用方建。</summary>
@@ -64,7 +65,7 @@ internal sealed class SshJumpDialer : ISshTransportDialer, ISshDialKindSource
         ArgumentNullException.ThrowIfNull(connect);
         _jump = jump;
         _jumpName = jump.ToString();
-        _connect = (target, ct) => connect(new SshJumpContext(jump, target.Deadline), ct);
+        _connect = (target, ct) => connect(new SshJumpContext(jump, target.Deadline, target.MetricsHost), ct);
     }
 
     /// <summary>跳板的连接参数；用回调构造时为 <see langword="null"/>。</summary>

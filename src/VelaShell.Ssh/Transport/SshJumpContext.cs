@@ -26,11 +26,13 @@ namespace VelaShell.Ssh.Transport;
 public sealed class SshJumpContext
 {
     private readonly SshConnectDeadline? _outerDeadline;
+    private readonly string? _metricsHost;
 
-    internal SshJumpContext(SshEndPoint jumpHost, SshConnectDeadline? outerDeadline)
+    internal SshJumpContext(SshEndPoint jumpHost, SshConnectDeadline? outerDeadline, string? metricsHost = null)
     {
         JumpHost = jumpHost;
         _outerDeadline = outerDeadline;
+        _metricsHost = metricsHost;
     }
 
     /// <summary>这一跳跳板的地址。</summary>
@@ -46,6 +48,7 @@ public sealed class SshJumpContext
     public ValueTask<SshConnection> ConnectAsync(SshConnectionOptions options, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(options);
-        return SshConnection.ConnectAsync(options with { OuterDeadline = _outerDeadline }, cancellationToken);
+        return SshConnection.ConnectAsync(
+            options with { OuterDeadline = _outerDeadline, MetricsHost = _metricsHost ?? options.MetricsHost }, cancellationToken);
     }
 }

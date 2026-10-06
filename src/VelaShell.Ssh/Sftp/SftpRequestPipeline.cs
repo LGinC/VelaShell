@@ -242,12 +242,20 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
 
         uint requestId;
         PendingRequest pending;
+        int inFlight;
         lock (_stateLock)
         {
             ThrowIfFaulted();
             requestId = AllocateRequestId();
             pending = new PendingRequest(onLateResponse);
             _pending[requestId] = pending;
+            inFlight = _pending.Count;
+        }
+
+        // 〔velashell-docs/zh/ssh/spec/08 §7〕管线深度的实际取值（velashell.ssh.sftp.inflight）。
+        if (_channel.MetricsHost is { } metricsHost && Diagnostics.SshMetrics.SftpInFlight.Enabled)
+        {
+            Diagnostics.SshMetrics.SftpInFlight.Record(inFlight, Diagnostics.SshMetrics.HostTag(metricsHost));
         }
 
         bool sent = false;

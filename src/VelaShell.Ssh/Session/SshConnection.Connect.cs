@@ -39,6 +39,33 @@ public sealed partial class SshConnection
     {
         ArgumentNullException.ThrowIfNull(options);
 
+        // 〔velashell-docs/zh/ssh/spec/08 §7〕建连耗时按结局与停在哪一步记（velashell.ssh.connect.duration）。
+        string metricsHost = options.MetricsHost ?? options.Host;
+        long started = options.TimeProvider.GetTimestamp();
+        ConnectProgress progress = new();
+        try
+        {
+            SshConnection connection = await ConnectCoreAsync(options, metricsHost, progress, cancellationToken).ConfigureAwait(false);
+            SshMetrics.RecordConnect(metricsHost, options.TimeProvider.GetElapsedTime(started), null, SshPhase.Open);
+            return connection;
+        }
+        catch (Exception ex)
+        {
+            SshMetrics.RecordConnect(metricsHost, options.TimeProvider.GetElapsedTime(started), ex, progress.Phase);
+            throw;
+        }
+    }
+
+    /// <summary>建连走到了哪一步：失败的异常不是 <see cref="SshException"/>（回调自己抛的、调用方取消）时，度量靠它说停在哪。</summary>
+    private sealed class ConnectProgress
+    {
+        public SshPhase Phase { get; set; } = SshPhase.Dialing;
+    }
+
+    /// <summary><see cref="ConnectAsync"/> 的本体。</summary>
+    private static async ValueTask<SshConnection> ConnectCoreAsync(
+        SshConnectionOptions options, string metricsHost, ConnectProgress progress, CancellationToken cancellationToken)
+    {
         Stream? stream = null;
         SshPacketTransport? transport = null;
 
@@ -65,15 +92,18 @@ public sealed partial class SshConnection
             connectTimer = connect;
 
             stream = await options.Dialer
-                .DialAsync(SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect }, connect.Token)
+                .DialAsync(
+                    SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect, MetricsHost = metricsHost },
+                    connect.Token)
                 .ConfigureAwait(false);
 
             transport = new SshPacketTransport(stream)
             {
                 PacketTap = options.PacketTap,
                 PacketTapIncludesPayload = options.PacketTapIncludesPayload,
+                MetricsHost = metricsHost,
             };
-            phase = SshPhase.VersionExchange;
+            progress.Phase = phase = SshPhase.VersionExchange;
 
             SshVersionExchangeResult versions = await SshVersionExchange
                 .ExchangeAsync(transport, cancellationToken: connect.Token)
@@ -85,7 +115,7 @@ public sealed partial class SshConnection
                     () => preAuthBanner(versions.PreAuthBanner, connect.Token)).ConfigureAwait(false);
             }
 
-            phase = SshPhase.KeyExchange;
+            progress.Phase = phase = SshPhase.KeyExchange;
 
             // 已经记着这台主机哪些类型的主机密钥，就把那些类型排到前面 —— 正常的服务端因此谈成
             // 已知的那一种（见 IHostKeyTypePreference）。重协商用的是同一份清单。
@@ -112,7 +142,7 @@ public sealed partial class SshConnection
                 .ConfigureAwait(false);
 
             // ③ 认证又是一把（默认两分钟）。
-            phase = SshPhase.Authenticating;
+            progress.Phase = phase = SshPhase.Authenticating;
             using var auth = CancellationTokenSource
                 .CreateLinkedTokenSource(cancellationToken);
             authTimer = auth;
@@ -195,6 +225,7 @@ public sealed partial class SshConnection
                 RekeyHardPacketLimit = options.RekeyHardPacketLimit,
                 RekeyTimeout = options.RekeyTimeout,
                 Description = $"{options.UserName}@{options.EndPoint}",
+                MetricsHost = metricsHost,
                 HostKeyPersistFailure = runner.HostKeyPersistFailure,
             };
 

@@ -82,6 +82,15 @@ public sealed partial class SshConnection
     /// <inheritdoc cref="PacketsSent" />
     public long PacketsReceived => _transport.PacketsReceived;
 
+    /// <summary>这条连接在线上一共发出/收到了多少字节（含版本标识串、报文头、填充与 MAC；压缩之后的）。</summary>
+    /// <remarks>
+    /// 状态栏、连接信息里的「这条连接用了多少流量」说的就是它。应用数据量要看各通道的 <c>SshChannel.BytesSent</c>。
+    /// </remarks>
+    public long BytesSent => _transport.BytesSent;
+
+    /// <inheritdoc cref="BytesSent" />
+    public long BytesReceived => _transport.BytesReceived;
+
     /// <summary>最近一次重协商是怎么来的；还没重协商过是 <see langword="null"/>。</summary>
     /// <remarks>
     /// <para>
@@ -454,6 +463,10 @@ public sealed partial class SshConnection
             }
 
             Interlocked.Increment(ref _rekeyCount);
+            if (MetricsHost is { } host)
+            {
+                SshMetrics.Rekeys.Add(1, SshMetrics.HostTag(host));
+            }
             SnapshotRekeyBaseline();
 
             // 〔velashell-docs/zh/ssh/spec/03 §8.2〕**只在交换成功时开闸。**暂存的帧随之按原顺序流出。

@@ -94,6 +94,19 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         _writer = PipeWriter.Create(_counting, new StreamPipeWriterOptions(leaveOpen: true));
     }
 
+    /// <summary>度量的 <c>host</c> 标签；<see langword="null"/>（单独用传输的测试）时不记度量。</summary>
+    internal string? MetricsHost
+    {
+        get => _counting.MetricsHost;
+        init
+        {
+            _counting.MetricsHost = value;
+            _metricsHostTag = value is null ? null : Diagnostics.SshMetrics.HostTag(value);
+        }
+    }
+
+    private readonly KeyValuePair<string, object?>? _metricsHostTag;
+
     /// <summary>线上收到的字节数（含协议头、填充与 MAC）。</summary>
     public long BytesReceived => _counting.BytesRead;
 
@@ -324,6 +337,10 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                         ReceiveSequenceNumber = unchecked(ReceiveSequenceNumber + 1);
                         Interlocked.Increment(ref _packetsReceived);
                         Interlocked.Increment(ref _receivePacketsUnderKey);
+                        if (_metricsHostTag is { } hostTag)
+                        {
+                            Diagnostics.SshMetrics.Packets.Add(1, hostTag, Diagnostics.SshMetrics.DirectionReceived);
+                        }
                     }
                 }
                 catch
@@ -411,6 +428,10 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         SendSequenceNumber = unchecked(SendSequenceNumber + 1);
         Interlocked.Increment(ref _packetsSent);
         Interlocked.Increment(ref _sendPacketsUnderKey);
+        if (_metricsHostTag is { } hostTag)
+        {
+            Diagnostics.SshMetrics.Packets.Add(1, hostTag, Diagnostics.SshMetrics.DirectionSent);
+        }
     }
 
     /// <summary>同一套密钥下的序号要用完了，重协商却没有完成：宁可断开，也不让序号回绕。</summary>
@@ -588,6 +609,17 @@ internal sealed class CountingStream(Stream inner) : Stream
 
     public long BytesWritten => Interlocked.Read(ref _bytesWritten);
 
+    /// <summary>度量的 <c>host</c> 标签；<see langword="null"/> 时不记度量（<c>velashell.ssh.bytes</c>）。</summary>
+    public string? MetricsHost { get; set; }
+
+    private void Meter(int bytes, KeyValuePair<string, object?> direction)
+    {
+        if (bytes > 0 && MetricsHost is { } host && Diagnostics.SshMetrics.Bytes.Enabled)
+        {
+            Diagnostics.SshMetrics.Bytes.Add(bytes, Diagnostics.SshMetrics.HostTag(host), direction);
+        }
+    }
+
     public override bool CanRead => inner.CanRead;
 
     public override bool CanWrite => inner.CanWrite;
@@ -607,6 +639,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         int read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
         Interlocked.Add(ref _bytesRead, read);
+        Meter(read, Diagnostics.SshMetrics.DirectionReceived);
         return read;
     }
 
@@ -615,6 +648,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
         Interlocked.Add(ref _bytesWritten, buffer.Length);
+        Meter(buffer.Length, Diagnostics.SshMetrics.DirectionSent);
     }
 
     public override Task<int> ReadAsync(
@@ -634,6 +668,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         int read = inner.Read(buffer, offset, count);
         Interlocked.Add(ref _bytesRead, read);
+        Meter(read, Diagnostics.SshMetrics.DirectionReceived);
         return read;
     }
 
@@ -641,6 +676,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         inner.Write(buffer, offset, count);
         Interlocked.Add(ref _bytesWritten, count);
+        Meter(count, Diagnostics.SshMetrics.DirectionSent);
     }
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

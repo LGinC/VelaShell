@@ -283,6 +283,22 @@ public sealed class SshChannel : IAsyncDisposable
     /// </remarks>
     public PipeWriter StandardInput { get; }
 
+    /// <summary>经这条通道发出的应用数据字节数（<c>CHANNEL_DATA</c> 的数据段，不含协议开销）。</summary>
+    /// <remarks>传输面板、隧道统计里每条通道的数字。线上的总流量看 <c>SshConnection.BytesSent</c>。</remarks>
+    public long BytesSent => Interlocked.Read(ref _bytesSent);
+
+    /// <summary>经这条通道收到的应用数据字节数（<c>CHANNEL_DATA</c> 与 <c>CHANNEL_EXTENDED_DATA</c> 的数据段，读没读走都算）。</summary>
+    public long BytesReceived => Interlocked.Read(ref _bytesReceived);
+
+    private long _bytesSent;
+    private long _bytesReceived;
+
+    /// <summary>开着的通道数记没记上 +1（收尾时据此 -1）；在 <see cref="_stateLock"/> 里读写。</summary>
+    private bool _activeMetered;
+
+    /// <summary>度量的 <c>host</c> 标签（来自会话）；<see langword="null"/> 时不记。</summary>
+    internal string? MetricsHost => _host.MetricsHost;
+
     /// <summary>当前的接收窗口剩余（诊断用）。</summary>
     public uint ReceiveWindowRemaining => _receiveWindow.Remaining;
 
@@ -684,12 +700,21 @@ public sealed class SshChannel : IAsyncDisposable
         RemoteMaxPacketBytes = (int)Math.Min(maxPacket, MaxSendDataBytes);
         _sendWindow.Add(initialWindow);
 
+        bool opened = false;
         lock (_stateLock)
         {
             if (_state == SshChannelState.Opening)
             {
                 _state = SshChannelState.Open;
+                opened = _activeMetered = MetricsHost is not null;
             }
+        }
+
+        if (opened && MetricsHost is { } host)
+        {
+            KeyValuePair<string, object?> type = Diagnostics.SshMetrics.ChannelTypeTag(ChannelType);
+            Diagnostics.SshMetrics.ChannelsActive.Add(1, Diagnostics.SshMetrics.HostTag(host), type);
+            Diagnostics.SshMetrics.ChannelWindow.Record(_receiveWindow.Size, Diagnostics.SshMetrics.HostTag(host), type);
         }
     }
 
@@ -722,6 +747,16 @@ public sealed class SshChannel : IAsyncDisposable
         ReleaseId(force: true);
     }
 
+    /// <summary>窗口额定大小变了：记进 <c>velashell.ssh.channel.window</c>。</summary>
+    private void RecordWindow(int size)
+    {
+        if (MetricsHost is { } host && Diagnostics.SshMetrics.ChannelWindow.Enabled)
+        {
+            Diagnostics.SshMetrics.ChannelWindow.Record(
+                size, Diagnostics.SshMetrics.HostTag(host), Diagnostics.SshMetrics.ChannelTypeTag(ChannelType));
+        }
+    }
+
     /// <summary>收到 <c>CHANNEL_DATA</c>。</summary>
     /// <returns>窗口够不够。<see langword="false"/> 是对端的协议违规。</returns>
     internal bool OnData(ReadOnlySequence<byte> data)
@@ -731,6 +766,7 @@ public sealed class SshChannel : IAsyncDisposable
         {
             return false;
         }
+        Interlocked.Add(ref _bytesReceived, length);
 
         NoteWindowPressure();
 
@@ -758,6 +794,7 @@ public sealed class SshChannel : IAsyncDisposable
         {
             return false;
         }
+        Interlocked.Add(ref _bytesReceived, length);
 
         NoteWindowPressure();
 
@@ -1240,6 +1277,7 @@ public sealed class SshChannel : IAsyncDisposable
             }
 
             _receiveWindow.Resize(grown);
+            RecordWindow(grown);
             return grown - current;
         }
 
@@ -1258,6 +1296,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         _receiveWindow.Resize(shrunk);
         RefundBudget(current - shrunk);
+        RecordWindow(shrunk);
 
         // 负数：这一轮少授这么多，窗口就此回落。
         return shrunk - current;
@@ -1446,6 +1485,10 @@ public sealed class SshChannel : IAsyncDisposable
             _dataAdmitted = false;
             await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _admitData, cancellationToken)
                 .ConfigureAwait(false);
+            if (_dataAdmitted)
+            {
+                Interlocked.Add(ref _bytesSent, length);
+            }
             return _dataAdmitted;
         }
         finally
@@ -1497,6 +1540,7 @@ public sealed class SshChannel : IAsyncDisposable
     private void FinishClose(SshChannelCloseReason reason, Exception? failure = null)
     {
         bool pumpStarted;
+        bool wasMetered;
         lock (_stateLock)
         {
             if (_state == SshChannelState.Closed)
@@ -1507,6 +1551,14 @@ public sealed class SshChannel : IAsyncDisposable
 
             // 与 StartPumps 在同一把锁里看：这之后泵不会再起来。
             pumpStarted = _stdinPump is not null;
+            wasMetered = _activeMetered;
+            _activeMetered = false;
+        }
+
+        if (wasMetered && MetricsHost is { } host)
+        {
+            Diagnostics.SshMetrics.ChannelsActive.Add(
+                -1, Diagnostics.SshMetrics.HostTag(host), Diagnostics.SshMetrics.ChannelTypeTag(ChannelType));
         }
 
         SshChannelEvent.Closed closed = new(reason);

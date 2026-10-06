@@ -185,6 +185,15 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>给人看的描述（<c>user@host:port</c>），进日志与异常。</summary>
     internal string Description { get; init; } = "";
 
+    /// <summary>度量的 <c>host</c> 标签（逻辑目标）；<see langword="null"/>（测试里直接建的连接）时不记度量。</summary>
+    internal string? MetricsHost { get; init; }
+
+    /// <inheritdoc />
+    string? ISshChannelHost.MetricsHost => MetricsHost;
+
+    /// <summary>活着的连接数记没记上：0 还没记，1 记了 +1，2 收尾了（之后不再记）。</summary>
+    private int _activeMetered;
+
     /// <summary>上一次收到任何入站报文的时刻（<see cref="Time"/> 的时间戳）。</summary>
     private long _lastInboundAt = TimeProvider.System.GetTimestamp();
     private int _rekeyCount;
@@ -272,9 +281,16 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     private readonly TaskCompletionSource<SshException> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>记下结束原因（第一个胜出）。故障不是 <see cref="SshException"/>（取消、释放）时换成一个说得清的。</summary>
-    private void Complete(Exception reason) =>
+    private void Complete(Exception reason)
+    {
         _completion.TrySetResult(reason as SshException ?? new SshConnectionClosedException(
             SshFailureReason.Aborted, SshPhase.Open, $"连接中止了：{reason.Message}", reason));
+
+        if (Interlocked.Exchange(ref _activeMetered, 2) == 1 && MetricsHost is { } host)
+        {
+            SshMetrics.ConnectionsActive.Add(-1, SshMetrics.HostTag(host));
+        }
+    }
 
     /// <summary>开始收包。</summary>
     /// <remarks>必须在打开任何通道之前调用一次。</remarks>
@@ -282,6 +298,11 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         _receiveLoop ??= Task.Run(() => ReceiveLoopAsync(_lifetime.Token));
+
+        if (MetricsHost is { } host && Interlocked.CompareExchange(ref _activeMetered, 1, 0) == 0)
+        {
+            SshMetrics.ConnectionsActive.Add(1, SshMetrics.HostTag(host));
+        }
 
         if (KeepAlive.IsEnabled)
         {
