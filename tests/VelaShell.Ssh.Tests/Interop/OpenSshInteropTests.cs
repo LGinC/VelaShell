@@ -775,6 +775,58 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual(linkTime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), lines[1], "链接自身的修改时间");
     }
 
+    /// <summary>
+    /// 〔T11〕链接、改名与落盘对真 sftp-server —— 不只对本库的测试桩（桩与实现按同一个理解写，对不出理解错了的地方）：
+    /// SYMLINK 的两个参数照 OpenSSH 的实际口径（链接建在该建的地方、远端 readlink 读回指向的那个）、
+    /// hardlink@openssh.com 的链接与目标共用一个 inode、posix-rename@openssh.com 原子覆盖已有的目标、
+    /// fsync@openssh.com 之后内容在。
+    /// </summary>
+    [TestMethod]
+    public async Task SFTP的链接改名与落盘对真sftp_server()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasHardLink, "OpenSSH 的 sftp-server 宣告 hardlink@openssh.com");
+        Assert.IsTrue(sftp.Capabilities.HasPosixRename, "OpenSSH 的 sftp-server 宣告 posix-rename@openssh.com");
+        Assert.IsTrue(sftp.Capabilities.HasFsync, "OpenSSH 的 sftp-server 宣告 fsync@openssh.com");
+
+        string dir = $"/tmp/vela-links-{Guid.NewGuid():N}";
+        await sftp.CreateDirectoryAsync(dir);
+        try
+        {
+            await sftp.WriteAllBytesAsync($"{dir}/a.txt", "alpha"u8.ToArray());
+            await sftp.WriteAllBytesAsync($"{dir}/b.txt", "bravo"u8.ToArray());
+            await sftp.WriteAllBytesAsync($"{dir}/c.txt", "charlie"u8.ToArray());
+
+            await sftp.CreateSymbolicLinkAsync($"{dir}/link", "a.txt");
+            Assert.AreEqual("a.txt", await sftp.ReadSymbolicLinkAsync($"{dir}/link"), "本库读回的指向");
+
+            await sftp.CreateHardLinkAsync($"{dir}/hard", $"{dir}/a.txt");
+            await sftp.RenameAsync($"{dir}/b.txt", $"{dir}/c.txt", overwrite: true);
+
+            await using (SftpFileStream file = await sftp.OpenWriteAsync($"{dir}/d.txt"))
+            {
+                await file.WriteAsync("durable"u8.ToArray());
+                await file.FsyncAsync();
+            }
+
+            string[] remote = (await connection.RunAsync(
+                $"readlink {dir}/link; stat -c %i {dir}/a.txt {dir}/hard; cat {dir}/c.txt; echo; test -e {dir}/b.txt && echo b-still-there; cat {dir}/d.txt"))
+                .StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+            Assert.AreEqual("a.txt", remote[0], "远端 readlink：链接建在 link、指向 a.txt（两个参数没有颠倒）");
+            Assert.AreEqual(remote[1], remote[2], "硬链接与目标是同一个 inode");
+            Assert.AreEqual("bravo", remote[3], "posix-rename 覆盖了已有的 c.txt");
+            Assert.AreEqual("durable", remote[4], "b.txt 已经不在，fsync 之后 d.txt 的内容在");
+        }
+        finally
+        {
+            await connection.RunAsync($"rm -rf {dir}");
+        }
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {
