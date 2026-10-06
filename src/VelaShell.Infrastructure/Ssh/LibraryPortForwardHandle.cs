@@ -1,6 +1,6 @@
 using System.Net;
-using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.Session;
 
@@ -30,7 +30,6 @@ namespace VelaShell.Infrastructure.Ssh;
 internal sealed class LibraryPortForwardHandle : IPortForwardHandle
 {
     private readonly PortForwarder _forwarder;
-    private readonly CancellationTokenRegistration _disconnected;
     private bool _stopped;
 
     private LibraryPortForwardHandle(SshConnection connection, PortForwarder forwarder)
@@ -39,16 +38,23 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
         _forwarder.Error += OnError;
 
         // 连接断了,转发也就没了 —— 但转发器自己不会为此发 Error(它只报单条连接的失败)。
-        // 上一版的计量句柄在这里会上报一条通道错误,隧道面板靠它把「运行中」换成带原因的状态;
-        // 不补上的话,远程转发在掉线之后会一直显示得好好的。
-        _disconnected = connection.Disconnected.Register(static state =>
-        {
-            var self = (LibraryPortForwardHandle)state!;
-            if (!self._stopped)
+        // 隧道面板靠这一条把「运行中」换成带原因的状态;不报的话,远程转发在掉线之后会一直显示得好好的。
+        // 报的是连接真实的结束原因(保活超时、服务端 DISCONNECT 带的原话……),按原因码本地化。
+        // 曾经挂 Disconnected 一律报「对端关闭」—— 连用户自己断开会话也是。本端释放(Aborted)不当成错误报。
+        _ = connection.Completion.ContinueWith(
+            static (ended, state) =>
             {
-                self.ChannelError?.Invoke(new VelaSshConnectionException(Strings.Get("SshErr_ClosedByPeer")));
-            }
-        }, this);
+                var self = (LibraryPortForwardHandle)state!;
+                SshException reason = ended.Result;
+                if (!self._stopped && reason.Reason != SshFailureReason.Aborted)
+                {
+                    self.ChannelError?.Invoke(SshInterop.Translate(reason) ?? new VelaSshConnectionException(reason.Message, reason));
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <inheritdoc />
@@ -144,7 +150,6 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
         }
         _stopped = true;
 
-        await _disconnected.DisposeAsync().ConfigureAwait(false);
         _forwarder.Error -= OnError;
 
         // 停止路径上的 catch 一律吞掉:要停的东西本来就在停,重复停止与已断连接抛的
