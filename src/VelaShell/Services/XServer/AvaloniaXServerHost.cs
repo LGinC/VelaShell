@@ -332,6 +332,11 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             case XActivateRequest:
                 native.Activate();
                 break;
+            case XRaiseRequest when !ReferenceEquals(native, _windows.Values.FirstOrDefault(w => w.IsActive))
+                                    && _windows.Values.Any(w => w.IsActive):
+                // 只是抬高次序:用户此刻正在用这个 X 程序(另一个 X 窗口是活动的)才照办,不从本机窗口那里抢走前台。
+                native.Activate();
+                break;
             case XMinimizeRequest:
                 native.WindowState = WindowState.Minimized;
                 break;

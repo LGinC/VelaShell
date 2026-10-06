@@ -508,6 +508,12 @@ public sealed partial class X11Server
             RequireBufferMemory(window, width, height);   // 缓冲要跟着变大:先核账(xs_plan X-2)
         }
         Configure(window, x, y, width, height, border, sibling, stackMode);
+        if (stackMode == 0 && sibling is null && window.IsTopLevel && window.Mapped && !window.OverrideRedirect
+            && _topLevelHandles.TryGetValue(window, out XTopLevelWindow? handle))
+        {
+            // 客户端把顶层抬到最上面(XRaiseWindow、XMapRaised、Java 的 toFront):原生窗口的次序归宿主管,请它照办。
+            _host.WindowManagerRequested(new XRaiseRequest(handle));
+        }
     }
 
     /// <summary>真正改几何与堆叠,发 ConfigureNotify、重画露出的部分、通知宿主。</summary>

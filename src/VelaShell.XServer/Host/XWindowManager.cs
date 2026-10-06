@@ -122,6 +122,12 @@ public sealed record XStateChangeRequest(XTopLevelWindow Window, XWindowStates A
 /// <summary>激活窗口(<c>_NET_ACTIVE_WINDOW</c>):拿到前台、得到焦点。</summary>
 public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 
+/// <summary>
+/// 把窗口抬到最上面(客户端对顶层发了 stack-mode 为 Above 的 ConfigureWindow:XRaiseWindow、XMapRaised、Java 的 toFront)。
+/// 只是次序,不要求得到焦点;宿主按自己的规则决定照不照办(别从用户正在用的本机窗口那里抢走前台)。
+/// </summary>
+public sealed record XRaiseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+
 /// <summary>关闭窗口(<c>_NET_CLOSE_WINDOW</c>,一般由任务栏 / 分页器发出)。</summary>
 public sealed record XCloseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 

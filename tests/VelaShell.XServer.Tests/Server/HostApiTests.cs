@@ -214,6 +214,64 @@ public sealed class HostApiTests
         Assert.AreSame(image, host.Cursor!.Image, "图像不变");
     }
 
+    /// <summary>建一个选了 ButtonPress 的顶层并映射。</summary>
+    private static async Task<uint> MapClickableAsync(XTestClient c, RecordingHost host, short x, short y)
+    {
+        uint id = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(id).U32(c.RootWindow).I16(x).I16(y).U16(100).U16(100).U16(0).U16(1).U32(0)
+            .U32(0x800).U32(0x4 | 0x8));   // CWEventMask:ButtonPress | ButtonRelease
+        await c.SendAsync(8, 0, b => b.U32(id));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+        return id;
+    }
+
+    [TestMethod]
+    public async Task 两个顶层重叠时_指针按宿主给的那个原生窗口命中_激活时X里也抬上来()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint a = await MapClickableAsync(c, host, 0, 0);
+        uint b = await MapClickableAsync(c, host, 50, 50);   // 后建的 B 在 X 的堆叠里压在 A 上面
+
+        // 用户在 A 的原生窗口里、两窗重叠的地方点了一下:原先按 X 的堆叠落到看不见的 B 上。
+        server.InjectPointerButton(host.Mapped[a], 60, 60, 1, pressed: true);
+        XMessage press = await c.NextEventAsync(4);
+        Assert.AreEqual(a, press.U32(12), "ButtonPress 的事件窗口是 A");
+        server.InjectPointerButton(host.Mapped[a], 60, 60, 1, pressed: false);
+        await c.NextEventAsync(5);
+
+        // 宿主激活 A:X 里 A 也抬到 B 上面。
+        server.FocusTopLevel(host.Mapped[a]);
+        await c.SyncAsync();
+        XMessage tree = await c.RequestAsync(15, 0, w => w.U32(c.RootWindow));
+        List<uint> children = [.. Enumerable.Range(0, tree.U16(16)).Select(i => tree.U32(32 + (4 * i)))];
+        Assert.IsGreaterThan(children.IndexOf(b), children.IndexOf(a), "A 在 B 之上");
+    }
+
+    [TestMethod]
+    public async Task 最小化的顶层不再接住指针_客户端抬高顶层时请宿主照办()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint a = await MapClickableAsync(c, host, 0, 0);
+        uint b = await MapClickableAsync(c, host, 50, 50);
+
+        // 指针在 A 的原生窗口里,但落在 A 之外、B 之内的地方(拖动时捕获着指针):全局找,B 最小化了就不算。
+        server.InjectPointerMotion(host.Mapped[a], 120, 120);
+        await c.SyncAsync();
+        Assert.AreEqual(b, (await c.RequestAsync(38, 0, w => w.U32(c.RootWindow))).U32(12), "QueryPointer 的 child 是 B");
+        server.SetTopLevelStates(host.Mapped[b], XWindowStates.Hidden);
+        server.InjectPointerMotion(host.Mapped[a], 121, 121);
+        await c.SyncAsync();
+        Assert.AreEqual(0u, (await c.RequestAsync(38, 0, w => w.U32(c.RootWindow))).U32(12), "最小化的 B 不再接住指针");
+
+        // XRaiseWindow(ConfigureWindow stack-mode = Above,没给 sibling)对顶层:宿主收到 XRaiseRequest。
+        await c.SendAsync(12, 0, w => w.U32(a).U16(0x40).U16(0).U32(0));
+        await host.WaitForAsync(() => host.Requests.Any(r => r is XRaiseRequest raise && raise.Window.Id == a));
+    }
+
     [TestMethod]
     public async Task 同一批里的窗口变化合并_映射了又取消的抵消()
     {

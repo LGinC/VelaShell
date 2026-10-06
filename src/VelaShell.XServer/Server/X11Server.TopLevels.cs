@@ -208,6 +208,7 @@ public sealed partial class X11Server
         {
             return;
         }
+        RaiseAboveNormalTopLevels(top);
         if (AcceptsInputHint(top) && (_focus is null || ReferenceEquals(_focus, Root) || !ReferenceEquals(_focus.TopLevel, top)))
         {
             // 与窗口管理器的做法一致:把焦点给顶层,revert-to PointerRoot。客户端之后可以自己把焦点挪到子窗口。
@@ -218,6 +219,24 @@ public sealed partial class X11Server
             // ICCCM §4.2.8:ClientMessage,类型 WM_PROTOCOLS,data[0] = WM_TAKE_FOCUS,data[1] 是一个有效的时间戳(不是 CurrentTime)。
             uint time = Math.Max(1u, Now);
             owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(time).Zero(12), sent: true);
+        }
+    }
+
+    /// <summary>
+    /// 宿主激活了这个顶层(用户把它的原生窗口提到了前面):X 这边也把它抬到普通顶层的最上面(override-redirect 的弹层仍在它之上),
+    /// 发 ConfigureNotify、更新 <c>_NET_CLIENT_LIST_STACKING</c> —— 原先 X 的堆叠只随创建先后变,与屏幕上看到的次序对不上。
+    /// </summary>
+    private void RaiseAboveNormalTopLevels(XWindow top)
+    {
+        List<XWindow> siblings = Root.Children;
+        int own = siblings.IndexOf(top);
+        for (int i = siblings.Count - 1; i > own; i--)
+        {
+            if (!siblings[i].OverrideRedirect)
+            {
+                Configure(top, top.X, top.Y, top.Width, top.Height, top.BorderWidth, siblings[i], stackMode: 0);   // Above
+                return;
+            }
         }
     }
 

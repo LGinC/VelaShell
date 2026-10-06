@@ -53,6 +53,7 @@ public sealed partial class X11Server
     private void ApplyPointerMotion(XWindow top, int x, int y)
     {
         NoteUserActivity();
+        _pointerTop = top;
         // 根坐标在注入的那一刻算好:指针冻着时事件排队,之后窗口可能挪了。
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
         ProcessPointerInput(() => MovePointer(rootX, rootY), motion: true);
@@ -61,6 +62,7 @@ public sealed partial class X11Server
     private void ApplyPointerButton(XWindow top, int x, int y, int button, bool pressed)
     {
         NoteUserActivity();
+        _pointerTop = top;
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
         ProcessPointerInput(() =>
         {
@@ -83,7 +85,11 @@ public sealed partial class X11Server
     }
 
     /// <summary>指针离开了所有顶层窗口。</summary>
-    private void ApplyPointerLeave() => ProcessPointerInput(() => MovePointer(-1, -1));
+    private void ApplyPointerLeave()
+    {
+        _pointerTop = null;
+        ProcessPointerInput(() => MovePointer(-1, -1));
+    }
 
     private void ApplyKey(byte keycode, bool pressed)
     {
@@ -166,25 +172,33 @@ public sealed partial class X11Server
 
     // ================================================================== 指针
 
+    /// <summary>
+    /// 宿主最近一次注入指针事件时指名的顶层(指针此刻在它的原生窗口里)。命中先在它里面找:顶层之间谁在上面由宿主的
+    /// 原生 z 序决定,X 这边的堆叠只随创建先后与客户端的请求变 —— 原先一律从根按 X 的堆叠找,两个窗口一重叠,
+    /// 点击就落到屏幕上被压在后面的那个(xs_plan WN-E1)。
+    /// </summary>
+    private XWindow? _pointerTop;
+
     private XWindow WindowAt(int rootX, int rootY)
     {
-        XWindow current = Root;
-        (int ix, int iy) = Root.AbsoluteInner();   // 往下走时逐层累加,不每层从头回溯到根
+        (int rx, int ry) = Root.AbsoluteInner();
+        if (_pointerTop is { IsTopLevel: true, Mapped: true } hinted && Hits(hinted, rx, ry, rootX, rootY))
+        {
+            return Descend(hinted, rx + hinted.X + hinted.BorderWidth, ry + hinted.Y + hinted.BorderWidth, rootX, rootY);
+        }
+        return Descend(Root, rx, ry, rootX, rootY);
+    }
+
+    /// <summary>从 <paramref name="current" />(内区原点在根坐标 (ix, iy))往下找指针所在的最深的窗口。</summary>
+    private XWindow Descend(XWindow current, int ix, int iy, int rootX, int rootY)
+    {
         while (true)
         {
             XWindow? hit = null;
             for (int i = current.Children.Count - 1; i >= 0; i--)
             {
                 XWindow child = current.Children[i];
-                if (!child.Mapped)
-                {
-                    continue;
-                }
-                int x = ix + child.X, y = iy + child.Y;
-                int w = child.Width + (2 * child.BorderWidth), h = child.Height + (2 * child.BorderWidth);
-                if (rootX >= x && rootY >= y && rootX < x + w && rootY < y + h
-                    && (child.InputShape ?? child.BoundingShape) is var shape
-                    && (shape is null || shape.Contains(rootX - x - child.BorderWidth, rootY - y - child.BorderWidth)))
+                if (child.Mapped && Hits(child, ix, iy, rootX, rootY) && !(current.IsRoot && IsMinimized(child)))
                 {
                     hit = child;
                     break;
@@ -199,6 +213,20 @@ public sealed partial class X11Server
             current = hit;
         }
     }
+
+    /// <summary>根坐标 (rootX, rootY) 落不落在 <paramref name="child" /> 的外框(含边框、按输入形状)里;(ix, iy) 是它父窗口内区原点的根坐标。</summary>
+    private static bool Hits(XWindow child, int ix, int iy, int rootX, int rootY)
+    {
+        int x = ix + child.X, y = iy + child.Y;
+        int w = child.Width + (2 * child.BorderWidth), h = child.Height + (2 * child.BorderWidth);
+        return rootX >= x && rootY >= y && rootX < x + w && rootY < y + h
+               && (child.InputShape ?? child.BoundingShape) is var shape
+               && (shape is null || shape.Contains(rootX - x - child.BorderWidth, rootY - y - child.BorderWidth));
+    }
+
+    /// <summary>宿主把这个顶层最小化了:原生窗口不在屏幕上,它在 X 里仍映射着(ICCCM 的 IconicState),但不该再接住指针。</summary>
+    private bool IsMinimized(XWindow top) =>
+        _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle) && (handle.Snapshot.States & XWindowStates.Hidden) != 0;
 
     private void MovePointer(int rootX, int rootY)
     {
