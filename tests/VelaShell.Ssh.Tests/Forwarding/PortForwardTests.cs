@@ -1243,4 +1243,134 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
         Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow(":22"));
         Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow("[::1]22"));
     }
+
+    // ------------------------------------------------------------ Unix 域套接字的本地转发
+
+    /// <summary>回显的隧道处理器：记下目标，收到什么回什么。</summary>
+    private static Func<string, PipeReader, PipeWriter, CancellationToken, Task> EchoTunnel(List<string> targets) =>
+        async (target, input, output, cancellationToken) =>
+        {
+            lock (targets)
+            {
+                targets.Add(target);
+            }
+            while (true)
+            {
+                ReadResult read = await input.ReadAsync(cancellationToken);
+                foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+                {
+                    await output.WriteAsync(segment, cancellationToken);
+                }
+                input.AdvanceTo(read.Buffer.End);
+                if (read.IsCompleted)
+                {
+                    await output.CompleteAsync();
+                    return;
+                }
+            }
+        };
+
+    private static async Task<string> EchoThroughAsync(Socket client, string text, CancellationToken cancellationToken)
+    {
+        await client.SendAsync(Encoding.ASCII.GetBytes(text), cancellationToken);
+        byte[] back = new byte[text.Length];
+        int got = 0;
+        while (got < back.Length)
+        {
+            got += await client.ReceiveAsync(back.AsMemory(got), cancellationToken);
+        }
+        return Encoding.ASCII.GetString(back);
+    }
+
+    /// <summary>短一点的套接字路径（Windows 与 Linux 上限都是 108 字节）。</summary>
+    private static string ShortSocketPath() => Path.Combine(Path.GetTempPath(), $"vs-{Guid.NewGuid():N}"[..11] + ".sock");
+
+    /// <summary>
+    /// <c>-L 端口:/var/run/docker.sock</c>：本机 TCP 监听，出站走 direct-streamlocal，服务端看到的目标是那个路径；双向搬运。
+    /// </summary>
+    [TestMethod]
+    public async Task 本地转发到远端的Unix套接字()
+    {
+        List<string> targets = [];
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
+        await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(harness.Connection, "/var/run/docker.sock");
+
+        using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
+        await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+        Assert.AreEqual("docker", await EchoThroughAsync(client, "docker", harness.Token));
+
+        lock (targets)
+        {
+            Assert.AreSequenceEqual(["/var/run/docker.sock"], targets.ToArray());
+        }
+    }
+
+    /// <summary>
+    /// <c>-L /路径/local.sock:host:port</c>：本机在 Unix 套接字上监听、双向搬运；非 Windows 上文件权限是 0600；
+    /// 释放之后套接字文件被删掉。
+    /// </summary>
+    [TestMethod]
+    public async Task 在本机的Unix套接字上监听_释放后删掉文件()
+    {
+        List<string> targets = [];
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
+        string path = ShortSocketPath();
+
+        LocalPortForwarder forwarder = LocalPortForwarder.Start(
+            harness.Connection, "db.internal", 5432, new LocalPortForwardOptions { ListenSocketPath = path });
+        try
+        {
+            Assert.IsTrue(File.Exists(path));
+            if (!OperatingSystem.IsWindows())
+            {
+                Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path), "只有自己能连");
+            }
+
+            using Socket client = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await client.ConnectAsync(new UnixDomainSocketEndPoint(path), harness.Token);
+            Assert.AreEqual("psql", await EchoThroughAsync(client, "psql", harness.Token));
+            lock (targets)
+            {
+                Assert.AreSequenceEqual(["db.internal:5432"], targets.ToArray());
+            }
+        }
+        finally
+        {
+            await forwarder.DisposeAsync();
+        }
+
+        Assert.IsFalse(File.Exists(path), "释放之后套接字文件要删掉");
+    }
+
+    /// <summary>
+    /// 那里已经有文件：默认报 ForwardBindFailed、文件原样留着（可能是别人的）；打开「替换已有的套接字」才删掉重建。
+    /// 路径太长当场报。
+    /// </summary>
+    [TestMethod]
+    public async Task 套接字路径已有文件时默认不动它_太长当场报()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript());
+        string path = ShortSocketPath();
+        await File.WriteAllTextAsync(path, "someone else's", harness.Token);
+        try
+        {
+            SshForwardException exists = Assert.ThrowsExactly<SshForwardException>(() => LocalPortForwarder.Start(
+                harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = path }));
+            Assert.AreEqual(Diagnostics.SshFailureReason.ForwardBindFailed, exists.Reason);
+            Assert.AreEqual("someone else's", await File.ReadAllTextAsync(path, harness.Token));
+
+            await using LocalPortForwarder replaced = LocalPortForwarder.Start(
+                harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = path, ReplaceExistingSocket = true });
+            Assert.IsTrue(replaced.IsActive);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+
+        string tooLong = Path.Combine(Path.GetTempPath(), new string('x', 120) + ".sock");
+        SshForwardException longPath = Assert.ThrowsExactly<SshForwardException>(() => LocalPortForwarder.Start(
+            harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = tooLong }));
+        StringAssert.Contains(longPath.Message, "太长");
+    }
 }

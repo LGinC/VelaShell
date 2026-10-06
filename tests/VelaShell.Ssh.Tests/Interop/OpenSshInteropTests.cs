@@ -1281,6 +1281,43 @@ public sealed class OpenSshInteropTests
         await serving;
     }
 
+    /// <summary>
+    /// Unix 域套接字的本地转发，两头都是套接字：本机在一个套接字文件上监听，经 direct-streamlocal 转到真服务端上
+    /// <c>ssh-agent</c> 的套接字；经它往 agent 里加一把钥，服务端 <c>ssh-add -l</c> 列得出来。
+    /// </summary>
+    [TestMethod]
+    public async Task 本地转发在两头的Unix套接字之间搬运()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        string remoteSocket = $"/tmp/vela-agent-{Guid.NewGuid():N}.sock";
+        SshCommandResult started = await connection.RunAsync($"ssh-agent -s -a {remoteSocket}");
+        Assert.AreEqual(0, started.ExitCode, started.StandardError);
+        string pid = started.StandardOutput.Split("SSH_AGENT_PID=")[1].Split(';')[0];
+
+        string localSocket = Path.Combine(Path.GetTempPath(), $"vs-{Guid.NewGuid():N}"[..11] + ".sock");
+        try
+        {
+            await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(
+                connection, remoteSocket, new LocalPortForwardOptions { ListenSocketPath = localSocket });
+
+            using Socket client = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await client.ConnectAsync(new UnixDomainSocketEndPoint(localSocket));
+            await using SshAgentClient agent = SshAgentClient.FromStream(new NetworkStream(client, ownsSocket: false), localSocket);
+            using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+            await agent.AddIdentityAsync(key, "via-unix-forward");
+
+            string listed = (await connection.RunAsync($"SSH_AUTH_SOCK={remoteSocket} ssh-add -l")).StandardOutput;
+            Assert.Contains(key.PublicKey.Sha256Fingerprint, listed);
+        }
+        finally
+        {
+            await connection.RunAsync($"kill {pid}; rm -f {remoteSocket}");
+        }
+        Assert.IsFalse(File.Exists(localSocket), "释放之后本机的套接字文件要删掉");
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

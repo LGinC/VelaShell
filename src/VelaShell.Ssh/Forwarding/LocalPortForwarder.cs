@@ -4,6 +4,7 @@
 // 规范依据(AGENTS.md §2 纪律 1):
 //   RFC 4254 §7.2  direct-tcpip
 //   RFC 1928       SOCKS5（动态转发）
+//   OpenSSH PROTOCOL §2.4  direct-streamlocal@openssh.com（转到远端的 Unix 套接字）
 //   行为规格:      velashell-docs/zh/ssh/spec/07-forwarding.md §二、§三、§五、§六、§八
 
 using System.Collections.Concurrent;
@@ -43,6 +44,27 @@ public sealed record LocalPortForwardOptions
         get;
         init => field = value is >= 0 and <= 65535 ? value : throw new ArgumentOutOfRangeException(nameof(BindPort), value, "监听端口要在 0–65535 之间（0 由系统分配）。");
     }
+
+    /// <summary>
+    /// 设了就<b>在本机的 Unix 域套接字上</b>监听（<c>-L /路径/local.sock:…</c>），<see cref="BindAddress"/> 与
+    /// <see cref="BindPort"/> 不再起作用。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔决策 velashell-docs/zh/ssh/spec/07 §2.5〕套接字文件按权限隔离：多用户机器上别的用户连不上（环回端口则对所有用户开放）。
+    /// 非 Windows 上起监听之后把文件权限设成 0600（同 OpenSSH 默认的 <c>StreamLocalBindMask 0177</c>）；
+    /// 从创建到改权限之间有一小段窗口，放在只有自己能进的目录里（如 <c>$XDG_RUNTIME_DIR</c>）就没有这个问题。
+    /// Windows 上套接字文件沿用所在目录的 ACL。
+    /// </para>
+    /// <para>路径太长（Linux 108 字节、macOS 104 字节，含结尾的 0）当场报。转发器释放时删掉它创建的套接字文件。</para>
+    /// </remarks>
+    public string? ListenSocketPath { get; init; }
+
+    /// <summary>
+    /// <see cref="ListenSocketPath"/> 那里已经有文件时先删掉它再监听（OpenSSH 的 <c>StreamLocalBindUnlink yes</c>）。
+    /// 默认 <see langword="false"/>：已经有文件就报错 —— 那多半是上一次没收拾干净，也可能是别人的套接字。
+    /// </summary>
+    public bool ReplaceExistingSocket { get; init; }
 
     /// <summary>并发连接数上限。</summary>
     /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
@@ -93,6 +115,12 @@ public sealed class LocalPortForwarder : PortForwarder
     private readonly string? _targetHost;
     private readonly int _targetPort;
 
+    /// <summary>转到远端的 Unix 套接字时那个路径（<c>direct-streamlocal@openssh.com</c>）；否则为 <see langword="null"/>。</summary>
+    private readonly string? _targetSocketPath;
+
+    /// <summary>我们在本机建出来的监听套接字文件；收工时删掉。</summary>
+    private readonly string? _createdSocketPath;
+
     /// <summary>还在处理中的连接。释放要等它们收完尾，之后才能放掉槽位信号量。</summary>
     private readonly ConcurrentDictionary<long, Task> _connections = new();
 
@@ -108,7 +136,8 @@ public sealed class LocalPortForwarder : PortForwarder
         ForwardKind kind,
         Socket listener,
         string? targetHost,
-        int targetPort)
+        int targetPort,
+        string? targetSocketPath)
         : base(kind)
     {
         _connection = connection;
@@ -116,6 +145,8 @@ public sealed class LocalPortForwarder : PortForwarder
         _listener = listener;
         _targetHost = targetHost;
         _targetPort = targetPort;
+        _targetSocketPath = targetSocketPath;
+        _createdSocketPath = options.ListenSocketPath;
         BoundEndPoint = listener.LocalEndPoint;
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
     }
@@ -150,6 +181,27 @@ public sealed class LocalPortForwarder : PortForwarder
         return StartListening(connection, effective, ForwardKind.Local, targetHost, targetPort);
     }
 
+    /// <summary>起一个转到<b>远端 Unix 套接字</b>的本地转发（<c>-L 8080:/var/run/docker.sock</c>）。</summary>
+    /// <param name="connection">会话。</param>
+    /// <param name="remoteSocketPath">服务端上的套接字路径。</param>
+    /// <param name="options">参数；要在本机也用套接字监听就设 <see cref="LocalPortForwardOptions.ListenSocketPath"/>。</param>
+    /// <exception cref="SshForwardException">本地监听起不来。</exception>
+    /// <remarks>
+    /// 本机的 Docker 客户端、数据库工具直接操作远端，远端不必开任何 TCP 端口。出站走 <c>direct-streamlocal@openssh.com</c>
+    /// （服务端要 <c>AllowStreamLocalForwarding</c>），开不开得成要等第一条连接来了才知道 —— 与 TCP 目标一样。
+    /// </remarks>
+    public static LocalPortForwarder StartToUnixSocket(
+        SshConnection connection,
+        string remoteSocketPath,
+        LocalPortForwardOptions? options = null)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentException.ThrowIfNullOrEmpty(remoteSocketPath);
+
+        LocalPortForwardOptions effective = options ?? LocalPortForwardOptions.Default;
+        return StartListening(connection, effective, ForwardKind.Local, targetHost: null, targetPort: 0, remoteSocketPath);
+    }
+
     /// <summary>起一个动态转发（<c>-D</c>，SOCKS5）。</summary>
     /// <param name="connection">会话。</param>
     /// <param name="options">参数。</param>
@@ -164,7 +216,8 @@ public sealed class LocalPortForwarder : PortForwarder
 
     /// <summary>起监听、建转发器；起监听之后出了任何错，监听当场关掉 —— 不留一个占着端口、没人管的套接字。</summary>
     private static LocalPortForwarder StartListening(
-        SshConnection connection, LocalPortForwardOptions options, ForwardKind kind, string? targetHost, int targetPort)
+        SshConnection connection, LocalPortForwardOptions options, ForwardKind kind, string? targetHost, int targetPort,
+        string? targetSocketPath = null)
     {
         // 〔FW-E17〕连接已经断了（或释放了）就照实失败，与远程转发一致。曾经照样起监听、「成功」返回一个
         // IsActive = false 的转发器 —— 调用方以为转发生效了，连上来的只会被立刻关掉。
@@ -173,19 +226,25 @@ public sealed class LocalPortForwarder : PortForwarder
         Socket listener = Bind(options);
         try
         {
-            LocalPortForwarder forwarder = new(connection, options, kind, listener, targetHost, targetPort);
+            LocalPortForwarder forwarder = new(connection, options, kind, listener, targetHost, targetPort, targetSocketPath);
             forwarder.Run();
             return forwarder;
         }
         catch
         {
             listener.Dispose();
+            DeleteSocketFile(options.ListenSocketPath);
             throw;
         }
     }
 
     private static Socket Bind(LocalPortForwardOptions options)
     {
+        if (options.ListenSocketPath is { } socketPath)
+        {
+            return BindUnixSocket(socketPath, options.ReplaceExistingSocket);
+        }
+
         Socket listener = new(
             options.BindAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
 
@@ -207,6 +266,76 @@ public sealed class LocalPortForwarder : PortForwarder
         }
     }
 
+    /// <summary>在本机的 Unix 域套接字上监听（velashell-docs/zh/ssh/spec/07 §2.5）。</summary>
+    private static Socket BindUnixSocket(string path, bool replaceExisting)
+    {
+        if (File.Exists(path))
+        {
+            if (!replaceExisting)
+            {
+                throw new SshForwardException(SshFailureReason.ForwardBindFailed,
+                    $"{path} 已经存在 —— 多半是上一次没收拾干净，也可能是别人的套接字。确认无用后删掉它，或者打开「替换已有的套接字」。");
+            }
+            File.Delete(path);
+        }
+
+        UnixDomainSocketEndPoint endPoint;
+        try
+        {
+            endPoint = new UnixDomainSocketEndPoint(path);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            throw new SshForwardException(SshFailureReason.ForwardBindFailed,
+                $"套接字路径太长（{System.Text.Encoding.UTF8.GetByteCount(path)} 字节；Linux 上限 107、macOS 103）：{path}", ex);
+        }
+
+        Socket listener = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        bool bound = false;
+        try
+        {
+            listener.Bind(endPoint);
+            bound = true;
+            listener.Listen(backlog: 128);
+
+            // 只有自己能连（OpenSSH 默认的 StreamLocalBindMask 0177）。Windows 上沿用目录的 ACL。
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+            return listener;
+        }
+        catch (Exception ex) when (ex is SocketException or IOException or UnauthorizedAccessException)
+        {
+            listener.Dispose();
+
+            // 只删自己绑出来的那个文件：绑定本身失败（被别人抢先建了）时那个文件不是我们的。
+            if (bound)
+            {
+                DeleteSocketFile(path);
+            }
+            throw new SshForwardException(SshFailureReason.ForwardBindFailed,
+                $"在 {path} 上起监听失败：{(ex is SocketException se ? se.SocketErrorCode.ToString() : ex.Message)}。", ex);
+        }
+    }
+
+    /// <summary>删掉我们建的套接字文件；删不掉不抛（收工路径）。</summary>
+    private static void DeleteSocketFile(string? path)
+    {
+        if (path is null)
+        {
+            return;
+        }
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 收工路径不抛：留下的文件下次起监听时会报「已经存在」。
+        }
+    }
+
     private void Run()
     {
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_lifetime.Token));
@@ -221,6 +350,7 @@ public sealed class LocalPortForwarder : PortForwarder
     {
         // 先关监听再标记不在跑：看到 IsActive 为假的人，可以确信端口已经放出来了。
         _listener.Dispose();
+        DeleteSocketFile(_createdSocketPath);
         Lifecycle.CancelInBackground(_lifetime);
     }
 
@@ -309,6 +439,24 @@ public sealed class LocalPortForwarder : PortForwarder
 
         try
         {
+            // 转到远端的 Unix 套接字：出站是 direct-streamlocal，没有主机与端口。
+            if (_targetSocketPath is { } socketPath)
+            {
+                target = socketPath;
+                try
+                {
+                    channel = await _connection.OpenUnixSocketTunnelAsync(socketPath, _options.Channel, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (SshChannelException ex)
+                {
+                    Report(ForwardErrorReason.ChannelOpen, $"到远端套接字 {target} 的隧道打不开：{ex.Message}", ex);
+                    return;
+                }
+                await RelayAsync(connectionId, source, target, local, channel, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
             string host;
             int port;
             byte socksAddressType = 0x01;
@@ -440,6 +588,7 @@ public sealed class LocalPortForwarder : PortForwarder
         }
 
         _listener.Dispose();
+        DeleteSocketFile(_createdSocketPath);
 
         if (_acceptLoop is not null)
         {
