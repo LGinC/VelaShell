@@ -1956,8 +1956,8 @@ public sealed class SftpTests
 
         // atime 与 mtime **共用一个标志位**。只给 mtime 的话 atime 会被当成 0。
         // 所以实现要先把当前的 atime 取回来再一并写回。
-        Assert.AreEqual(1_800_000_000, result.ModifyTime);
-        Assert.AreEqual(1_600_000_000, result.AccessTime, "访问时间不该被抹掉");
+        Assert.AreEqual(1_800_000_000u, result.ModifyTime);
+        Assert.AreEqual(1_600_000_000u, result.AccessTime, "访问时间不该被抹掉");
     }
 
     [TestMethod]

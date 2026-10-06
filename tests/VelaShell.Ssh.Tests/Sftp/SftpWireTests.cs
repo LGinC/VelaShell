@@ -229,16 +229,19 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
-    public void 时间超出32位秒时报错_不绕回1901年()
+    public void 时间装不下无符号32位秒时报错_2038年之后照常表示()
     {
         DateTimeOffset now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
-        DateTimeOffset after2038 = new(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(now, after2038));
-        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(after2038, now));
+        // 〔Q8〕无符号：2038 年之后照常表示（曾经按有符号算，一律报装不下）。
+        DateTimeOffset in2040 = new(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.AreEqual(2_208_988_800u, SftpFileAttributes.WithTimes(now, in2040).ModifyTime);
+        Assert.AreEqual(uint.MaxValue, SftpFileAttributes.WithTimes(now, DateTimeOffset.FromUnixTimeSeconds(uint.MaxValue)).ModifyTime, "边界上的那一秒照常表示");
 
-        DateTimeOffset last = DateTimeOffset.FromUnixTimeSeconds(int.MaxValue);
-        Assert.AreEqual(int.MaxValue, SftpFileAttributes.WithTimes(now, last).ModifyTime, "边界上的那一秒照常表示");
+        DateTimeOffset after2106 = new(2107, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset before1970 = new(1960, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(now, after2106));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(before1970, now));
     }
 
     [TestMethod]
@@ -332,15 +335,15 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
-    public void 时间按有符号读()
+    public void 时间按无符号读()
     {
-        // 2038 之后 OpenSSH 发的是负数（有符号溢出）。
-        // 按无符号读能撑到 2106 年，但那会与对端对不上账。
+        // 〔Q8〕OpenSSH 的 sftp-server 对 2038 年之后的时间发的是无符号的秒数（黑盒核对过），自带的 sftp 也按无符号显示。
+        // 曾经按有符号读：2040 年的文件读成 1903 年。
         SftpFileAttributes attributes = new()
         {
             Flags = SftpAttributeFields.Times,
-            AccessTime = -1,
-            ModifyTime = -2,
+            AccessTime = uint.MaxValue,
+            ModifyTime = 2_208_988_800,
             Extended = [],
         };
 
@@ -355,8 +358,10 @@ public sealed class SftpWireTests
         reader.ReadUtf8String(1024);
 
         SftpFileAttributes back = SftpWire.ReadAttrs(frame.Payload.Slice(reader.Consumed));
-        Assert.AreEqual(-1, back.AccessTime);
-        Assert.AreEqual(-2, back.ModifyTime);
+        Assert.AreEqual(uint.MaxValue, back.AccessTime);
+        Assert.AreEqual(2_208_988_800u, back.ModifyTime);
+        Assert.AreEqual(2040, back.LastWriteTime.Year);
+        Assert.AreEqual(2106, back.LastAccessTime.Year);
     }
 
     // ------------------------------------------------------------ 应答

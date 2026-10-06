@@ -827,6 +827,32 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>〔Q8〕2038 年之后的时间：真 sftp-server 发、收的都是无符号的秒数，读写照样是 2040 年。</summary>
+    [TestMethod]
+    public async Task SFTP的时间按无符号对真sftp_server()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+
+        string dir = $"/tmp/vela-time-{Guid.NewGuid():N}";
+        await connection.RunAsync($"mkdir {dir} && touch -d \"2040-01-01 00:00:00 UTC\" {dir}/old && touch {dir}/new");
+        try
+        {
+            Assert.AreEqual(new DateTimeOffset(2040, 1, 1, 0, 0, 0, TimeSpan.Zero), (await sftp.GetAttributesAsync($"{dir}/old")).LastWriteTime);
+
+            DateTimeOffset in2050 = new(2050, 6, 1, 12, 0, 0, TimeSpan.Zero);
+            await sftp.SetAttributesAsync($"{dir}/new", SftpFileAttributes.WithTimes(in2050, in2050));
+            string seconds = (await connection.RunAsync($"stat -c %Y {dir}/new")).StandardOutput.Trim();
+            Assert.AreEqual(in2050.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), seconds);
+        }
+        finally
+        {
+            await connection.RunAsync($"rm -rf {dir}");
+        }
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {

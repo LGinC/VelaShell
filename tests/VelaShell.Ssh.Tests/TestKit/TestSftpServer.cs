@@ -30,10 +30,10 @@ internal sealed class TestSftpNode
     public uint Permissions { get; set; } = 0b110_100_100;
 
     /// <summary>最后修改时间。</summary>
-    public int ModifyTime { get; set; } = 1_700_000_000;
+    public uint ModifyTime { get; set; } = 1_700_000_000;
 
     /// <summary>最后访问时间。</summary>
-    public int AccessTime { get; set; } = 1_700_000_000;
+    public uint AccessTime { get; set; } = 1_700_000_000;
 
     /// <summary>带上类型位之后的完整权限字段。</summary>
     public uint FullPermissions =>
@@ -648,7 +648,7 @@ internal sealed class TestSftpServer
         TestSftpNode node = _nodes[state.Path];
         if (_options.WriteTouchesModifyTime)
         {
-            node.ModifyTime = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            node.ModifyTime = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         }
         int end = (int)offset + data.Length;
 
@@ -1145,8 +1145,8 @@ internal sealed class TestSftpServer
 
         ulong size = 0;
         uint permissions = 0;
-        int accessTime = 0;
-        int modifyTime = 0;
+        uint accessTime = 0;
+        uint modifyTime = 0;
 
         if ((flags & SftpAttributeFields.Size) != 0)
         {
@@ -1163,8 +1163,8 @@ internal sealed class TestSftpServer
         }
         if ((flags & SftpAttributeFields.Times) != 0)
         {
-            accessTime = (int)reader.ReadUInt32();
-            modifyTime = (int)reader.ReadUInt32();
+            accessTime = reader.ReadUInt32();
+            modifyTime = reader.ReadUInt32();
         }
 
         return new SftpFileAttributes
@@ -1269,8 +1269,8 @@ internal sealed class TestSftpServer
         }
         if (attributes.HasTimes)
         {
-            writer.WriteUInt32((uint)attributes.AccessTime);
-            writer.WriteUInt32((uint)attributes.ModifyTime);
+            writer.WriteUInt32(attributes.AccessTime);
+            writer.WriteUInt32(attributes.ModifyTime);
         }
     }
 }

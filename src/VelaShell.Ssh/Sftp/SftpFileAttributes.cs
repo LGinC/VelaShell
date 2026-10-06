@@ -16,8 +16,8 @@ namespace VelaShell.Ssh.Sftp;
 ///   <item><c>uid</c> 与 <c>gid</c> 共用<b>一个</b>标志位，<c>atime</c> 与
 ///   <c>mtime</c> 也共用一个。只想改 mtime 时必须一并给 atime ——
 ///   <c>SftpFileSystem.SetLastWriteTimeAsync</c> 会先 stat 回来再写回。</item>
-///   <item>时间是 <b>32 位 Unix 秒</b>，2038 年溢出。v3 没有解法。
-///   按**有符号**读，与 OpenSSH 一致。</item>
+///   <item>时间是 <b>32 位 Unix 秒</b>，按<b>无符号</b>读写：1970 年到 2106 年。v3 没有更宽的字段。
+///   OpenSSH 也是这么做的（黑盒核对：靶机上一个 2040 年的文件，sftp-server 发的是 2208988800，OpenSSH 自带的 sftp 显示 2040 年）。</item>
 ///   <item><b>v3 没有单独的文件类型字段</b> —— 是文件还是目录，
 ///   只能从 <see cref="Permissions"/> 的高位（<c>S_IFMT</c>）取。</item>
 /// </list>
@@ -39,11 +39,11 @@ public readonly record struct SftpFileAttributes
     /// <summary>权限位，<b>高位还带着文件类型</b>。</summary>
     public uint Permissions { get; init; }
 
-    /// <summary>最后访问时间（Unix 秒，有符号）。</summary>
-    public int AccessTime { get; init; }
+    /// <summary>最后访问时间（Unix 秒，无符号 32 位）。</summary>
+    public uint AccessTime { get; init; }
 
-    /// <summary>最后修改时间（Unix 秒，有符号）。</summary>
-    public int ModifyTime { get; init; }
+    /// <summary>最后修改时间（Unix 秒，无符号 32 位）。</summary>
+    public uint ModifyTime { get; init; }
 
     /// <summary>扩展属性最多留多少对；多出来的读掉、丢弃。</summary>
     internal const int MaxExtendedFields = 1024;
@@ -82,7 +82,7 @@ public readonly record struct SftpFileAttributes
     /// 只给一个的话另一个会被服务端当成 0（1970 年）。
     /// </remarks>
     /// <exception cref="ArgumentOutOfRangeException">
-    /// 时间超出 v3 能表示的范围（有符号 32 位秒：1901-12-13 到 2038-01-19，见 velashell-docs/zh/ssh/spec/06 §4.2）。
+    /// 时间超出 v3 能表示的范围（无符号 32 位秒：1970-01-01 到 2106-02-07，见 velashell-docs/zh/ssh/spec/06 §4.2）。
     /// </exception>
     public static SftpFileAttributes WithTimes(DateTimeOffset accessTime, DateTimeOffset modifyTime) => new()
     {
@@ -91,17 +91,18 @@ public readonly record struct SftpFileAttributes
         ModifyTime = ToWireSeconds(modifyTime, nameof(modifyTime)),
     };
 
-    /// <summary>换成线上的有符号 32 位秒；装不下就抛，不悄悄绕回去。</summary>
+    /// <summary>换成线上的无符号 32 位秒；装不下就抛，不悄悄绕回去。</summary>
     /// <remarks>
     /// 曾经直接 <c>(int)</c> 截断：2038 年之后的时间被写成 1901 年 —— 宿主「保留时间戳」时会把它写到服务端。
+    /// 〔Q8〕曾经按有符号算，2038 年之后的时间一律报装不下；OpenSSH 按无符号，能用到 2106 年。
     /// </remarks>
-    private static int ToWireSeconds(DateTimeOffset time, string parameter)
+    private static uint ToWireSeconds(DateTimeOffset time, string parameter)
     {
         long seconds = time.ToUnixTimeSeconds();
-        return seconds is >= int.MinValue and <= int.MaxValue
-            ? (int)seconds
+        return seconds is >= 0 and <= uint.MaxValue
+            ? (uint)seconds
             : throw new ArgumentOutOfRangeException(
-                parameter, time, "SFTP v3 的时间是有符号 32 位秒，只能表示 1901-12-13 到 2038-01-19 之间的时刻。");
+                parameter, time, "SFTP v3 的时间是无符号 32 位秒，只能表示 1970-01-01 到 2106-02-07 之间的时刻。");
     }
 
     /// <summary>长度是否有效。</summary>
@@ -171,8 +172,8 @@ public readonly record struct SftpFileAttributes
 
         if (HasTimes)
         {
-            writer.WriteUInt32((uint)AccessTime);
-            writer.WriteUInt32((uint)ModifyTime);
+            writer.WriteUInt32(AccessTime);
+            writer.WriteUInt32(ModifyTime);
         }
 
         if ((Flags & SftpAttributeFields.Extended) != 0)
@@ -211,8 +212,8 @@ public readonly record struct SftpFileAttributes
         uint uid = 0;
         uint gid = 0;
         uint permissions = 0;
-        int accessTime = 0;
-        int modifyTime = 0;
+        uint accessTime = 0;
+        uint modifyTime = 0;
 
         // 列目录时每一项都要解一次 ATTRS，绝大多数不带扩展属性：没带就不分配。
         List<SftpExtendedField>? extended = null;
@@ -237,8 +238,8 @@ public readonly record struct SftpFileAttributes
         {
             // 按**有符号**读：服务端（OpenSSH）就是这么发的。
             // 按无符号读能撑到 2106 年，但那会与对端对不上账。
-            accessTime = (int)reader.ReadUInt32();
-            modifyTime = (int)reader.ReadUInt32();
+            accessTime = reader.ReadUInt32();
+            modifyTime = reader.ReadUInt32();
         }
 
         if ((flags & SftpAttributeFields.Extended) != 0)

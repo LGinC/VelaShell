@@ -24,8 +24,8 @@ public class SftpEntryMappingTests
             UserId = 1000,
             GroupId = 1000,
             Permissions = permissions | (uint)typeBits,
-            AccessTime = (int)modified.ToUnixTimeSeconds(),
-            ModifyTime = (int)modified.ToUnixTimeSeconds(),
+            AccessTime = (uint)modified.ToUnixTimeSeconds(),
+            ModifyTime = (uint)modified.ToUnixTimeSeconds(),
             Extended = [],
         };
 
