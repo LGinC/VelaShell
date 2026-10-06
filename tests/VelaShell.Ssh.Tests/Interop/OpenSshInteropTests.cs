@@ -46,7 +46,7 @@ namespace VelaShell.Ssh.Tests.Interop;
 // （默认 10 个未认证并发连接），多出来的会在**发出版本标识串之前**就被丢掉 ——
 // 症状是「对端在发出版本标识串之前关闭了连接」，看上去像我们的 bug。
 [DoNotParallelize]
-public sealed class OpenSshInteropTests
+public sealed partial class OpenSshInteropTests
 {
     private static string Host =>
         Environment.GetEnvironmentVariable("VELASHELL_SSH_INTEROP_HOST") ?? "127.0.0.1";

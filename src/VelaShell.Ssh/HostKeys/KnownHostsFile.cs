@@ -365,6 +365,10 @@ public static class KnownHostsFile
     private static string FormatHostPattern(string host, int port) =>
         port == 22 ? host.ToLowerInvariant() : $"[{host.ToLowerInvariant()}]:{port}";
 
+    /// <summary>这一行是不是这台主机的：与 <see cref="Lookup(IReadOnlyList{KnownHostEntry}, string, int, SshPublicKey)"/> 同一套规则（不看标记）。</summary>
+    internal static bool MatchesHost(KnownHostEntry entry, string host, int port) =>
+        MatchesHost(entry, host, port, FormatHostPattern(host, port));
+
     private static bool MatchesHost(KnownHostEntry entry, string host, int port, string plain)
     {
         if (entry.IsHashed)

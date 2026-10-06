@@ -58,6 +58,7 @@ public sealed class SshAgentClient : IAsyncDisposable
     // 已经声明过的会话。同一个会话只声明一次 —— 同一条 agent 连接上的几把钥共用一次声明。
     private byte[]? _declaredSessionId;
     private bool _declarationAccepted;
+    private SshAgentConnectionPurpose _declaredPurpose;
     private bool _disposed;
 
     private SshAgentClient(Stream stream, string endpoint, bool canReopen, bool ownsStream = true)
@@ -416,10 +417,11 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         if (type == SshAgentMessage.Failure)
         {
-            // agent 拒签的原因它不会告诉我们 —— 但最常见的两种值得点出来。
+            // agent 拒签的原因它不会告诉我们 —— 但最常见的几种值得点出来。
             throw new SshAgentException(SshFailureReason.AgentRefused,
                 "ssh-agent 拒绝签名。常见原因：这把密钥已经不在 agent 里了，" +
-                "或者 agent 配了确认（ssh-add -c）而使用者没有批准。");
+                "agent 配了确认（ssh-add -c）而使用者没有批准，" +
+                "或者这把钥带目的地约束（ssh-add -h），不许用在这台主机、这个用户或这条转发路径上。");
         }
 
         if (type != SshAgentMessage.SignResponse)
@@ -526,22 +528,15 @@ public sealed class SshAgentClient : IAsyncDisposable
             FixedBufferWriter output = new(buffer);
             SshDataWriter writer = new(output);
 
-            // 没有约束就发 17：有的 agent 认 17 却不认 25（决策 2）。
+            // 没有约束就发 17：有的 agent 认 17 却不认 25（决策 2）。反过来有约束一定发 25 ——
+            // agent 不读 17 末尾多出来的字节，约束接在 17 后面会被静默丢掉（spec/07 §7.3.2 的 ⚠️）。
             writer.WriteByte(constrained ? SshAgentMessage.AddIdentityConstrained : SshAgentMessage.AddIdentity);
             key.WriteAgentPrivateKey(output, certificate);
             writer.WriteUtf8String(comment);
 
             if (constrained)
             {
-                if (constraints!.Lifetime is { } lifetime)
-                {
-                    writer.WriteByte(SshAgentMessage.ConstrainLifetime);
-                    writer.WriteUInt32((uint)Math.Clamp(Math.Ceiling(lifetime.TotalSeconds), 1, uint.MaxValue));
-                }
-                if (constraints.IsConfirmationRequired)
-                {
-                    writer.WriteByte(SshAgentMessage.ConstrainConfirm);
-                }
+                SshAgentConstraintWriter.Write(writer, constraints!);
             }
 
             byte[] response = await ExchangeAsync(
@@ -552,12 +547,18 @@ public sealed class SshAgentClient : IAsyncDisposable
                 return;
             }
 
-            if (response[0] == SshAgentMessage.Failure)
+            // 〔spec/07 §7.3.2〕EXTENSION_FAILURE 也按拒绝处理：加钥本该只回 SUCCESS / FAILURE，别的 agent 若回扩展失败，那也是拒绝。
+            // 被拒就是被拒 —— 绝不去掉约束重试，那会把「失败也是安全的」这层保险拆掉。
+            if (response[0] is SshAgentMessage.Failure or SshAgentMessage.ExtensionFailure)
             {
-                // agent 不说原因 —— 点出最常见的三种。
+                // agent 不说原因 —— 点出最常见的几种。
                 throw new SshAgentException(SshFailureReason.AgentRefused,
                     "ssh-agent 拒绝加入这把密钥。常见原因：agent 不支持约束（有效期 / 逐次确认）、" +
-                    "agent 已被锁定（ssh-add -x），或者 agent 不支持这种密钥类型。");
+                    "agent 已被锁定（ssh-add -x），或者 agent 不支持这种密钥类型。" +
+                    (constraints?.AllowedHops is not null
+                        ? "这次还带着目的地约束：agent 可能不支持它（restrict-destination-v00@openssh.com，OpenSSH 8.9 起才有；" +
+                          "非 OpenSSH 的 agent 多半不支持）。"
+                        : ""));
             }
 
             throw new SshAgentException(SshFailureReason.ProtocolError, $"agent 回了 {response[0]} 而不是成功 / 失败。");
@@ -707,6 +708,17 @@ public sealed class SshAgentClient : IAsyncDisposable
             return _declarationAccepted;
         }
 
+        // 〔spec/07 §7.3.2〕一条 agent 连接只替一个会话做认证：agent 不接受在已经为认证声明过的连接上再声明另一个会话，
+        // 后一个会话的声明被拒、连接上记着的仍是前一个，受目的地约束的钥在后一个会话上拒签 —— 按 ssh_config 的 ProxyJump 连时，
+        // 跳板与目标用的正是同一份 agent 凭据。上一次被接受的认证声明属于别的会话时，先在同一个端点重开一条连接再声明。
+        // 上一次没被接受（agent 不认声明）时不重开：重开了也一样。FromStream 交来的流重开不了，照旧在原连接上声明。
+        if (purpose == SshAgentConnectionPurpose.Authentication && _canReopen
+            && _declaredSessionId is not null && _declarationAccepted
+            && _declaredPurpose == SshAgentConnectionPurpose.Authentication)
+        {
+            await ReopenAsync(cancellationToken).ConfigureAwait(false);
+        }
+
         ArrayBufferWriter<byte> request = new();
         SshDataWriter writer = new(request);
         writer.WriteByte(SshAgentMessage.Extension);
@@ -732,6 +744,7 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         _declaredSessionId = proof.SessionId;
         _declarationAccepted = accepted;
+        _declaredPurpose = purpose;
         return accepted;
     }
 
@@ -769,7 +782,10 @@ public sealed class SshAgentClient : IAsyncDisposable
             && request.Slice(5, expected.Length).SequenceEqual(expected);
     }
 
-    /// <summary>声明把连接弄断之后重开（只有 <see cref="ConnectAsync"/> 连上的才走到这里）。</summary>
+    /// <summary>
+    /// 在同一个端点重开一条 agent 连接、换下旧的（只有 <see cref="ConnectAsync"/> 连上的才走到这里）：
+    /// 声明把连接弄断之后；或者要为另一个会话做认证声明时（spec/07 §7.3.2）。
+    /// </summary>
     private async ValueTask ReopenAsync(CancellationToken cancellationToken)
     {
         Stream fresh = await OpenStreamAsync(Endpoint, cancellationToken).ConfigureAwait(false);
@@ -907,7 +923,7 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             if (buffer.Length - WrittenCount < Math.Max(sizeHint, 1))
             {
-                throw new SshAgentException(SshFailureReason.LimitExceeded, "要加入 agent 的密钥太大，超出了 agent 报文的长度上限。");
+                throw new SshAgentException(SshFailureReason.LimitExceeded, "要加入 agent 的密钥或目的地约束太大，超出了 agent 报文的长度上限（256 KiB）。");
             }
             return WrittenCount;
         }
