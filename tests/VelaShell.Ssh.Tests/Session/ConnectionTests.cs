@@ -396,6 +396,37 @@ public sealed class ConnectionTests
         Assert.AreSequenceEqual(["未经授权的访问将被记录。"], banners);
     }
 
+    /// <summary>连上之后交出对端的标识串、成功的认证方法、server-sig-algs 与各阶段耗时（可观测性缺口 2）。</summary>
+    [TestMethod]
+    public async Task 连接交出对端版本认证方法与各阶段耗时()
+    {
+        await using FakeServer server = new(
+            null,
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                ServerSignatureAlgorithms = ["ssh-ed25519", "rsa-sha2-512"],
+            });
+
+        SshConnectionOptions options = new("joe@test.invalid")
+        {
+            Dialer = server.CreateDialer(),
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+        };
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+
+        Assert.StartsWith("SSH-2.0-", connection.PeerVersion);
+        Assert.AreEqual("password", connection.AuthenticationMethod);
+        Assert.AreSequenceEqual(["ssh-ed25519", "rsa-sha2-512"], connection.ServerSignatureAlgorithms.ToArray());
+
+        SshConnectTimings timings = connection.ConnectTimings;
+        Assert.IsTrue(timings.Dialing >= TimeSpan.Zero && timings.VersionExchange >= TimeSpan.Zero
+                      && timings.KeyExchange > TimeSpan.Zero && timings.Authentication > TimeSpan.Zero, timings.ToString());
+        Assert.AreEqual(timings.Dialing + timings.VersionExchange + timings.KeyExchange + timings.Authentication, timings.Total);
+    }
+
     /// <summary>
     /// 〔spec 05 §八〕标着 always_display 的 SSH_MSG_DEBUG 交给回调（认证期间与连上之后都交），清洗过；
     /// 不带 always_display 的不交。曾经一律丢掉。

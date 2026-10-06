@@ -149,6 +149,20 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>服务端出示的主机公钥。</summary>
     public HostKeys.SshPublicKey HostKey { get; }
 
+    /// <summary>对端的标识串（<c>SSH-2.0-OpenSSH_10.3</c> 这样），已按对端文本清洗。</summary>
+    /// <remarks>曾经只出现在异常与主机密钥裁决的材料里；连接信息、排障要回答「对面是什么服务端、什么版本」。</remarks>
+    public string PeerVersion { get; internal init; } = "";
+
+    /// <summary>认证最终用哪种方法成功的（<c>publickey</c> / <c>password</c> / <c>keyboard-interactive</c> / <c>none</c>）。</summary>
+    public string AuthenticationMethod { get; internal init; } = "";
+
+    /// <summary>服务端在 <c>server-sig-algs</c> 里宣告的签名算法（RFC 8308 §3.1）；没宣告时为空。</summary>
+    /// <remarks>公钥认证挑签名算法看的就是它 —— 「为什么这把 RSA 钥用的是 SHA-1」要从这里回答。</remarks>
+    public IReadOnlyList<string> ServerSignatureAlgorithms { get; internal init; } = [];
+
+    /// <summary>这条连接建立时各阶段用了多久。</summary>
+    public SshConnectTimings ConnectTimings { get; internal init; }
+
     /// <summary>
     /// 主机密钥策略裁决「信任并记住」、记的时候却失败了的原因；记下了（或者没让记）时为 <see langword="null"/>。
     /// </summary>

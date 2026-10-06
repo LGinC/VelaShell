@@ -91,6 +91,10 @@ public sealed partial class SshConnection
                 options.ConnectTimeout, cancellationToken, options.OuterDeadline, options.TimeProvider);
             connectTimer = connect;
 
+            // 各阶段的耗时（ConnectTimings）：排障时回答「连得慢，慢在哪一步」。
+            TimeProvider clock = options.TimeProvider;
+            long dialStartedAt = clock.GetTimestamp();
+
             stream = await options.Dialer
                 .DialAsync(
                     SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect, MetricsHost = metricsHost },
@@ -104,10 +108,12 @@ public sealed partial class SshConnection
                 MetricsHost = metricsHost,
             };
             progress.Phase = phase = SshPhase.VersionExchange;
+            long dialedAt = clock.GetTimestamp();
 
             SshVersionExchangeResult versions = await SshVersionExchange
                 .ExchangeAsync(transport, cancellationToken: connect.Token)
                 .ConfigureAwait(false);
+            long versionsExchangedAt = clock.GetTimestamp();
 
             if (options.PreAuthBannerHandler is { } preAuthBanner && versions.PreAuthBanner.Count > 0)
             {
@@ -140,6 +146,7 @@ public sealed partial class SshConnection
             SshKeyExchangeResult kex = await runner
                 .RunAsync(versions, options.Host, options.Port, cancellationToken: connect.Token)
                 .ConfigureAwait(false);
+            long keysExchangedAt = clock.GetTimestamp();
 
             // ③ 认证又是一把（默认两分钟）。
             progress.Phase = phase = SshPhase.Authenticating;
@@ -192,6 +199,7 @@ public sealed partial class SshConnection
             {
                 options.OuterDeadline?.Resume();
             }
+            long authenticatedAt = clock.GetTimestamp();
 
             // ④ 压缩要在**认证成功之后**才挂上去（zlib@openssh.com 的语义）。
             //
@@ -231,6 +239,14 @@ public sealed partial class SshConnection
                 MetricsHost = metricsHost,
                 HostKeyPersistFailure = runner.HostKeyPersistFailure,
                 DebugMessageHandler = options.DebugMessageHandler,
+                PeerVersion = PeerText.Sanitize(versions.ServerVersion, 255),
+                AuthenticationMethod = authenticated?.Method ?? "",
+                ServerSignatureAlgorithms = authenticated?.ServerSignatureAlgorithms ?? [],
+                ConnectTimings = new SshConnectTimings(
+                    clock.GetElapsedTime(dialStartedAt, dialedAt),
+                    clock.GetElapsedTime(dialedAt, versionsExchangedAt),
+                    clock.GetElapsedTime(versionsExchangedAt, keysExchangedAt),
+                    clock.GetElapsedTime(keysExchangedAt, authenticatedAt)),
             };
 
             connection.Start();
