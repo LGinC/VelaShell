@@ -1667,6 +1667,35 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
         Assert.AreEqual(3, (await command.WaitAsync(harness.Token)).ExitCode, "再问一次");
     }
 
+    /// <summary>
+    /// WaitAsync 不读事件流：等完之后，调用方自己的读者照样能读到退出状态与关闭。
+    /// 曾经 WaitAsync 循环读事件直到关闭，与调用方抢同一条单读者流 —— 先等完再读，事件已经被它读光了。
+    /// </summary>
+    [TestMethod]
+    public async Task WaitAsync不读走事件流()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            StandardOutput = Text("bye"),
+            ExitCode = 3,
+        });
+
+        await using SshCommand command =
+            await harness.Connection.ExecuteAsync("echo bye", cancellationToken: harness.Token);
+        _ = await command.ReadToEndAsync(harness.Token);
+
+        List<SshChannelEvent> events = [];
+        SshChannelEvent next;
+        do
+        {
+            next = await command.Channel.ReadEventAsync(harness.Token);
+            events.Add(next);
+        }
+        while (next is not SshChannelEvent.Closed);
+
+        Assert.Contains(e => e is SshChannelEvent.ExitStatus { Code: 3 }, events, "退出状态被 WaitAsync 读走了");
+    }
+
     /// <summary>对端对一条已经开着的通道发 OPEN_FAILURE：违规，忽略 —— 不能当场还号（对端还以为它开着，号被复用就串话）。</summary>
     [TestMethod]
     public async Task 已开着的通道收到OPEN_FAILURE不受影响()

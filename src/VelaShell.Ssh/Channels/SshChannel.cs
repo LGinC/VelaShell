@@ -55,6 +55,9 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary>事件流的终结事件；关了之后 <see cref="ReadEventAsync"/> 一直交回它。</summary>
     private SshChannelEvent.Closed? _closedEvent;
 
+    /// <summary>通道关了时完成。<see cref="WaitForExitAsync"/> 等它，<b>不去读事件流</b>。</summary>
+    private readonly TaskCompletionSource _closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly Channel<SshChannelEvent> _events =
         Channel.CreateUnbounded<SshChannelEvent>(new UnboundedChannelOptions
         {
@@ -331,17 +334,19 @@ public sealed class SshChannel : IAsyncDisposable
     /// </remarks>
     public SshChannelStream AsStream(bool ownsChannel = true) => new(this, ownsChannel);
 
-    /// <summary>读事件直到通道关闭，交回退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
+    /// <summary>等通道关闭，交回退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
     /// <remarks>
     /// 〔velashell-docs/zh/ssh/spec/05 §5.4〕退出状态缓存在通道上（<see cref="_exitEvent"/>），不只活在事件流里 ——
     /// 事件流是单读者的，读过一次就没了：曾经 <c>ReadToEndAsync</c> 之后再 <c>WaitAsync</c>、或者调用方自己读过事件，
     /// 再问就是 null。现在调多少次、谁先读过事件，答案都一样。
+    /// <para>
+    /// 等的是关闭信号，<b>不读事件流</b>：事件流归调用方（<see cref="ReadEventAsync"/>）。曾经这里循环读事件直到 <c>Closed</c>，
+    /// 与调用方自己的读者抢同一条单读者流 —— 并发时谁拿到退出状态说不准，先等完再读的话事件已经被它读光了。
+    /// </para>
     /// </remarks>
     internal async ValueTask<SshExitStatus> WaitForExitAsync(CancellationToken cancellationToken)
     {
-        while (await ReadEventAsync(cancellationToken).ConfigureAwait(false) is not SshChannelEvent.Closed)
-        {
-        }
+        await _closedSignal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
         // 收到 CLOSE 时可能还没有退出状态 —— 对端实现不规范，或者连接断了。
         // 那时 ExitCode 是 null，那不是 bug 而是事实：进程到底怎么结束的，我们不知道。
@@ -1449,6 +1454,7 @@ public sealed class SshChannel : IAsyncDisposable
         Volatile.Write(ref _closedEvent, closed);
         _events.Writer.TryWrite(closed);
         _events.Writer.TryComplete();
+        _closedSignal.TrySetResult();
 
         // 还在等应答的请求不会再有应答了。让它们返回 false 而不是永远挂着 ——
         // 挂死没有堆栈也没有日志，只有一个再也不返回的 await。
