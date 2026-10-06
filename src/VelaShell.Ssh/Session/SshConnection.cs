@@ -1228,8 +1228,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     {
         SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
         reader.ReadMessageNumber(SshMessageNumber.GlobalRequest);
-        _ = reader.ReadUtf8String(MaxFieldBytes);
+        string requestType = reader.ReadUtf8String(MaxFieldBytes);
         bool wantReply = reader.ReadBoolean();
+
+        if (requestType == SshProtocolNames.RequestHostKeys)
+        {
+            OnHostKeysAnnounced(ref reader);
+        }
 
         if (!wantReply)
         {

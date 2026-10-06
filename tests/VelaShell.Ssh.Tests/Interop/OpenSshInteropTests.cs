@@ -1338,6 +1338,52 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual(SftpStatusCode.OperationUnsupported, unknown.StatusCode);
     }
 
+    /// <summary>
+    /// 主机密钥轮换（UpdateHostKeys）对真 sshd：头一次连接按 TOFU 记下谈成的那把钥；sshd 认证之后宣告它的全部主机密钥，
+    /// 我们请它证明没记过的那几把、验过签名、补记进 known_hosts。再连一次就没有新钥了。
+    /// 证明里签的是什么（字段顺序、RSA 用哪种摘要）只有真 sshd 裁决得了：错一处签名就验不过、一把都不记。
+    /// </summary>
+    [TestMethod]
+    public async Task 主机密钥轮换_真sshd宣告的新钥证实之后补记()
+    {
+        RequireServer();
+        string knownHosts = Path.Combine(Path.GetTempPath(), $"vela-kh-{Guid.NewGuid():N}");
+        try
+        {
+            KnownHostsPolicy policy = new(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, UpdateHostKeys = true };
+
+            SshHostKeyUpdate first = await ConnectAndAwaitRotationAsync(policy);
+            Assert.IsNull(first.Skipped, first.Skipped);
+            Assert.IsNotEmpty(first.Added, "sshd 有好几把主机密钥，头一次只记了谈成的那把");
+            string[] lines = await File.ReadAllLinesAsync(knownHosts);
+            Assert.HasCount(1 + first.Added.Count, lines);
+            foreach (SshPublicKey added in first.Added)
+            {
+                Assert.Contains(l => l.Contains(added.ToOpenSshFormat().Split(' ')[1], StringComparison.Ordinal), lines);
+            }
+
+            SshHostKeyUpdate second = await ConnectAndAwaitRotationAsync(policy);
+            Assert.IsEmpty(second.Added, "再连就都认得了");
+            Assert.HasCount(lines.Length, await File.ReadAllLinesAsync(knownHosts));
+        }
+        finally
+        {
+            File.Delete(knownHosts);
+        }
+
+        static async Task<SshHostKeyUpdate> ConnectAndAwaitRotationAsync(KnownHostsPolicy policy)
+        {
+            await using SshConnection connection = await SshConnection.ConnectAsync(Options() with { HostKeyPolicy = policy });
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+            while (connection.LastHostKeyUpdate is null)
+            {
+                await Task.Delay(20, timeout.Token);
+            }
+            await connection.HostKeyRotation;
+            return connection.LastHostKeyUpdate;
+        }
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

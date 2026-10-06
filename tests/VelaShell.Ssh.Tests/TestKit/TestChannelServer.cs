@@ -94,6 +94,18 @@ internal sealed record TestChannelScript
     /// <summary>接受 <c>streamlocal-forward@openssh.com</c> 全局请求。</summary>
     public bool GrantStreamLocalForward { get; init; }
 
+    /// <summary>
+    /// 一开始就宣告这些主机密钥（<c>hostkeys-00@openssh.com</c>，want_reply = false），并按它们回 <c>hostkeys-prove-00@openssh.com</c>；
+    /// 证明要用 <see cref="HostKeySessionId"/>。
+    /// </summary>
+    public IReadOnlyList<TestHostKey>? AnnouncedHostKeys { get; init; }
+
+    /// <summary>主机密钥证明里签的会话标识（首次交换的 H）。</summary>
+    public byte[]? HostKeySessionId { get; init; }
+
+    /// <summary>把第一把钥的证明签名弄坏。</summary>
+    public bool CorruptHostKeyProof { get; init; }
+
     /// <summary>接受 <c>tcpip-forward</c> 全局请求，并回这个端口（<c>0</c> = 拒绝）。</summary>
     public int GrantRemoteForwardPort { get; init; }
 
@@ -385,6 +397,20 @@ internal sealed class TestChannelServer : IDisposable
         _running.TrySetResult();
         try
         {
+            if (_script.AnnouncedHostKeys is { } announced)
+            {
+                ArrayBufferWriter<byte> buffer = new();
+                SshDataWriter writer = new(buffer);
+                writer.WriteMessageNumber(SshMessageNumber.GlobalRequest);
+                writer.WriteUtf8String(SshProtocolNames.RequestHostKeys);
+                writer.WriteBoolean(false);
+                foreach (TestHostKey key in announced)
+                {
+                    writer.WriteString(key.PublicKeyBlob);
+                }
+                await SendAsync(buffer.WrittenMemory, cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 SshInboundPacket packet;
@@ -962,6 +988,33 @@ internal sealed class TestChannelServer : IDisposable
                 byte[] success = [(byte)SshMessageNumber.RequestSuccess];
                 await SendAsync(success, cancellationToken);
             }
+            return;
+        }
+
+        if (requestType == SshProtocolNames.RequestHostKeysProve && _script.AnnouncedHostKeys is { } keys && _script.HostKeySessionId is { } sessionId)
+        {
+            ArrayBufferWriter<byte> proof = new();
+            SshDataWriter proofWriter = new(proof);
+            proofWriter.WriteMessageNumber(SshMessageNumber.RequestSuccess);
+            bool first = true;
+            while (!reader.IsEmpty)
+            {
+                byte[] blob = reader.ReadStringAsArray(MaxField);
+                TestHostKey key = keys.First(k => k.PublicKeyBlob.AsSpan().SequenceEqual(blob));
+                ArrayBufferWriter<byte> signed = new();
+                SshDataWriter signedWriter = new(signed);
+                signedWriter.WriteUtf8String(SshProtocolNames.RequestHostKeysProve);
+                signedWriter.WriteString(sessionId);
+                signedWriter.WriteString(blob);
+                byte[] signature = key.Sign(signed.WrittenSpan, key.SignatureAlgorithms[0]);
+                if (first && _script.CorruptHostKeyProof)
+                {
+                    signature[^1] ^= 0xFF;
+                }
+                first = false;
+                proofWriter.WriteString(signature);
+            }
+            await SendAsync(proof.WrittenMemory, cancellationToken);
             return;
         }
 

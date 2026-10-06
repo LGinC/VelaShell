@@ -287,7 +287,40 @@ public static class KnownHostsFile
     /// 对上这台主机的 <c>@cert-authority</c> 行报出全部证书类型 —— CA 能为任何类型的主机密钥签证书，
     /// 这样证书算法会被排到前面，服务端才会出示证书（velashell-docs/zh/ssh/spec/03 §5.5）。
     /// </remarks>
-    public static IReadOnlyList<string> KnownKeyTypes(IReadOnlyList<KnownHostEntry> entries, string host, int port)
+    public static IReadOnlyList<string> KnownKeyTypes(IReadOnlyList<KnownHostEntry> entries, string host, int port) =>
+        KnownKeyTypesCore(entries, host, port);
+
+    /// <summary>这台主机记着的普通主机密钥（不含 <c>@cert-authority</c> 与 <c>@revoked</c>；解析不了的跳过）。</summary>
+    public static IReadOnlyList<SshPublicKey> KnownHostKeys(IReadOnlyList<KnownHostEntry> entries, string host, int port)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        ArgumentNullException.ThrowIfNull(host);
+
+        string plain = FormatHostPattern(host, port);
+        List<SshPublicKey> keys = [];
+        foreach (KnownHostEntry entry in entries)
+        {
+            if (entry.IsRevoked || entry.IsCertificateAuthority || !MatchesHost(entry, host, port, plain))
+            {
+                continue;
+            }
+            try
+            {
+                SshPublicKey key = SshPublicKey.Decode(entry.KeyBlob);
+                if (!keys.Any(k => k.Blob.Span.SequenceEqual(key.Blob.Span)))
+                {
+                    keys.Add(key);
+                }
+            }
+            catch (SshPublicKeyException)
+            {
+                // 这一行的钥本库认不得：不算进去。
+            }
+        }
+        return keys;
+    }
+
+    private static List<string> KnownKeyTypesCore(IReadOnlyList<KnownHostEntry> entries, string host, int port)
     {
         ArgumentNullException.ThrowIfNull(entries);
         ArgumentNullException.ThrowIfNull(host);

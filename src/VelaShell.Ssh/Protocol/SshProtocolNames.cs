@@ -86,6 +86,12 @@ internal static class SshProtocolNames
     /// <summary>取消远程 Unix 套接字转发。</summary>
     public const string RequestCancelStreamLocalForward = "cancel-streamlocal-forward@openssh.com";
 
+    /// <summary>服务端宣告它的全部主机密钥（OpenSSH PROTOCOL 的 UpdateHostKeys 一节；velashell-docs/zh/ssh/spec/05 §6.4）。</summary>
+    public const string RequestHostKeys = "hostkeys-00@openssh.com";
+
+    /// <summary>请服务端证明持有给定的主机密钥（同上）。</summary>
+    public const string RequestHostKeysProve = "hostkeys-prove-00@openssh.com";
+
     /// <summary>服务端为 X11 转发发起的通道（RFC 4254 §6.3.2）。</summary>
     public const string ChannelX11 = "x11";
 

@@ -20,7 +20,7 @@ namespace VelaShell.Ssh.HostKeys;
 /// 停下来想一想的地方。异常消息里会指出是文件的第几行。
 /// </para>
 /// </remarks>
-public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
+public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, IHostKeyRotationPolicy
 {
     private readonly string _path;
     private readonly Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? _askUnknownHost;
@@ -87,6 +87,40 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
 
     /// <summary>写入时是否把主机名散列掉（对应 <c>HashKnownHosts yes</c>）。</summary>
     public bool HashHostNames { get; init; }
+
+    /// <summary>
+    /// 主机密钥轮换（<c>UpdateHostKeys yes</c>，见 <see cref="IHostKeyRotationPolicy"/>）：服务端证明持有的新主机密钥补记进 <c>known_hosts</c>。
+    /// 默认 <see langword="false"/>。不用文件（<see cref="WithoutFile"/>）时打开了也不记。
+    /// </summary>
+    public bool UpdateHostKeys { get; init; }
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyList<SshPublicKey>> GetKnownHostKeysAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        IReadOnlyList<KnownHostEntry> entries =
+            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+        return KnownHostsFile.KnownHostKeys(entries, host, port);
+    }
+
+    /// <inheritdoc />
+    public async ValueTask RecordHostKeysAsync(
+        string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(keys);
+        if (_withoutFile || !UpdateHostKeys || !KnownHostsFile.IsRecordableHost(host))
+        {
+            return;
+        }
+
+        foreach (SshPublicKey key in keys)
+        {
+            await KnownHostsFile.AppendAsync(host, port, key, _path, HashHostNames, cancellationToken).ConfigureAwait(false);
+        }
+        _cache = null;
+    }
 
     /// <inheritdoc />
     public async ValueTask<SshHostKeyVerdict> EvaluateAsync(
