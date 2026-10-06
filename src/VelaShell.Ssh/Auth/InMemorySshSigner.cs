@@ -342,10 +342,18 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
     /// <remarks>
     /// 写进 <paramref name="output"/> 的是明文私钥 —— 用完由调用方清零。
     /// </remarks>
-    internal void WriteAgentPrivateKey(IBufferWriter<byte> output)
+    internal void WriteAgentPrivateKey(IBufferWriter<byte> output, SshPublicKey? certificate = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         SshDataWriter writer = new(output);
+
+        // 带证书时（draft-miller-ssh-agent「私钥格式」的证书那几行）：类型串换成证书的，紧跟整张证书；
+        // 之后只放证书里没有的私钥部分 —— 公钥那几项已经在证书里了（ed25519 除外，它的两项照旧）。
+        if (certificate is not null)
+        {
+            writer.WriteUtf8String(certificate.KeyType);
+            writer.WriteString(certificate.Blob.Span);
+        }
 
         if (_ed25519Seed is not null)
         {
@@ -356,7 +364,10 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
                 _ed25519Seed.CopyTo(secret, 0);
                 _ed25519Public.CopyTo(secret, _ed25519Seed.Length);
 
-                writer.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                if (certificate is null)
+                {
+                    writer.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                }
                 writer.WriteString(_ed25519Public);
                 writer.WriteString(secret);
             }
@@ -372,10 +383,13 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             RSAParameters p = _rsa.ExportParameters(true);
             try
             {
-                // ⚠️ n 在前、e 在后 —— 与公钥 blob 的顺序相反。
-                writer.WriteUtf8String(SshAlgorithmNames.SshRsa);
-                writer.WriteMpint(p.Modulus!);
-                writer.WriteMpint(p.Exponent!);
+                // ⚠️ n 在前、e 在后 —— 与公钥 blob 的顺序相反。带证书时 n、e 在证书里，不再写。
+                if (certificate is null)
+                {
+                    writer.WriteUtf8String(SshAlgorithmNames.SshRsa);
+                    writer.WriteMpint(p.Modulus!);
+                    writer.WriteMpint(p.Exponent!);
+                }
                 writer.WriteMpint(p.D!);
                 writer.WriteMpint(p.InverseQ!);   // q⁻¹ mod p
                 writer.WriteMpint(p.P!);
@@ -392,14 +406,18 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         try
         {
             // 类型串、曲线名、公钥点三样与公钥 blob 完全相同，直接照搬。
-            SshDataReader blob = new(new ReadOnlySequence<byte>(PublicKey.Blob));
-            string keyType = blob.ReadUtf8String(64);
-            string curveName = blob.ReadUtf8String(64);
-            byte[] point = blob.ReadStringAsArray(1 + (_coordinateBytes * 2));
+            // 带证书时曲线名与公钥点都在证书里，只剩私钥标量。
+            if (certificate is null)
+            {
+                SshDataReader blob = new(new ReadOnlySequence<byte>(PublicKey.Blob));
+                string keyType = blob.ReadUtf8String(64);
+                string curveName = blob.ReadUtf8String(64);
+                byte[] point = blob.ReadStringAsArray(1 + (_coordinateBytes * 2));
 
-            writer.WriteUtf8String(keyType);
-            writer.WriteUtf8String(curveName);
-            writer.WriteString(point);
+                writer.WriteUtf8String(keyType);
+                writer.WriteUtf8String(curveName);
+                writer.WriteString(point);
+            }
             writer.WriteMpint(e.D!);
         }
         finally

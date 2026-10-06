@@ -18,6 +18,10 @@ internal static class SshAgentMessage
     public const byte SignRequest = 13;
     public const byte SignResponse = 14;
     public const byte AddIdentity = 17;
+    public const byte RemoveIdentity = 18;
+    public const byte RemoveAllIdentities = 19;
+    public const byte Lock = 22;
+    public const byte Unlock = 23;
     public const byte AddIdentityConstrained = 25;
     public const byte Extension = 27;
     public const byte ExtensionFailure = 28;

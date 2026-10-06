@@ -90,17 +90,61 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// Unix 套接字，那是另一套 agent，.NET 连不上，所以不是管道就不认。曾经在 Windows 上一律无视它，
     /// 宿主只好自己再判断一遍。
     /// </para>
+    /// <para>
+    /// OpenSSH agent 服务没在跑（它的管道不在）而当前用户开着 Pageant（PuTTY 0.75 起在 <c>\\.\pipe\pageant.用户名.…</c>
+    /// 上说同一套 agent 协议）时用 Pageant —— PuTTY 用户的钥都在那里，不必为了 VelaShell 换 agent。
+    /// 两个都在时仍用 OpenSSH 的（与以前一致）。Pageant 的管道名后半截随机器而变，所以按前缀在管道列表里找。
+    /// </para>
     /// </remarks>
     public static string? DefaultEndpoint => DefaultEndpointFor(
-        OperatingSystem.IsWindows(), Environment.GetEnvironmentVariable("SSH_AUTH_SOCK"));
+        OperatingSystem.IsWindows(), Environment.GetEnvironmentVariable("SSH_AUTH_SOCK"), ListPipes, Environment.UserName);
 
-    /// <summary><see cref="DefaultEndpoint"/> 的判断本身（平台与环境变量作参数，测试两个平台都能覆盖）。</summary>
-    internal static string? DefaultEndpointFor(bool windows, string? authSock) =>
-        !windows
-            ? authSock
-            : authSock is not null && authSock.StartsWith(@"\\.\pipe\", StringComparison.OrdinalIgnoreCase)
-                ? authSock
-                : @"\\.\pipe\openssh-ssh-agent";
+    /// <summary>OpenSSH agent 服务的命名管道。</summary>
+    private const string OpenSshAgentPipe = @"\\.\pipe\openssh-ssh-agent";
+
+    /// <summary><see cref="DefaultEndpoint"/> 的判断本身（平台、环境变量与管道列表作参数，测试两个平台都能覆盖）。</summary>
+    /// <param name="windows">是不是 Windows。</param>
+    /// <param name="authSock"><c>SSH_AUTH_SOCK</c>。</param>
+    /// <param name="listPipes">列出本机的命名管道（<c>\\.\pipe\名字</c>）；<see langword="null"/> 时不找 Pageant。</param>
+    /// <param name="userName">当前用户名（Pageant 的管道名里有它）。</param>
+    internal static string? DefaultEndpointFor(
+        bool windows, string? authSock, Func<IEnumerable<string>>? listPipes = null, string? userName = null)
+    {
+        if (!windows)
+        {
+            return authSock;
+        }
+        if (authSock is not null && authSock.StartsWith(@"\\.\pipe\", StringComparison.OrdinalIgnoreCase))
+        {
+            return authSock;
+        }
+        if (listPipes is not null && !string.IsNullOrEmpty(userName))
+        {
+            string[] pipes = [.. listPipes()];
+            if (!pipes.Contains(OpenSshAgentPipe, StringComparer.OrdinalIgnoreCase))
+            {
+                string prefix = $@"\\.\pipe\pageant.{userName}.";
+                if (pipes.FirstOrDefault(p => p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) is { } pageant)
+                {
+                    return pageant;
+                }
+            }
+        }
+        return OpenSshAgentPipe;
+    }
+
+    /// <summary>本机的命名管道；列不出来时为空（找不到 Pageant 不该让连 agent 这件事本身失败）。</summary>
+    private static IEnumerable<string> ListPipes()
+    {
+        try
+        {
+            return Directory.GetFiles(@"\\.\pipe\");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            return [];
+        }
+    }
 
     /// <summary>连本机 agent。</summary>
     /// <param name="endpoint">端点；<see langword="null"/> 表示用 <see cref="DefaultEndpoint"/>。</param>
@@ -177,7 +221,7 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             throw new SshAgentException(SshFailureReason.AgentNotRunning,
                 $"ssh-agent 的命名管道（{endpoint}）在 {PipeConnectTimeout.TotalSeconds:0} 秒内没有出现 —— agent 服务多半没在跑。" +
-                "用「Get-Service ssh-agent」看状态，「Start-Service ssh-agent」起它。", ex);
+                "用「Get-Service ssh-agent」看状态，「Start-Service ssh-agent」起它；用 PuTTY 的话开着 Pageant 也行。", ex);
         }
         catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressNotAvailable or SocketError.ConnectionRefused)
         {
@@ -397,11 +441,52 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// 加进去的钥活多久由 agent 决定 —— Windows 的 OpenSSH agent 会把它存进注册表，重启后仍在。
     /// </para>
     /// </remarks>
-    public async ValueTask AddIdentityAsync(
+    public ValueTask AddIdentityAsync(
         InMemorySshSigner key,
         string comment,
         SshAgentKeyConstraints? constraints = null,
+        CancellationToken cancellationToken = default) =>
+        AddIdentityCoreAsync(key, certificate: null, comment, constraints, cancellationToken);
+
+    /// <summary>把「证书 + 它的私钥」一起加进 agent（<c>ssh-add</c> 遇到同名 <c>-cert.pub</c> 时做的事）。</summary>
+    /// <param name="key">私钥。</param>
+    /// <param name="certificate">这把私钥的证书（<c>*-cert-v01@openssh.com</c>）。</param>
+    /// <param name="comment">注释。</param>
+    /// <param name="constraints">约束；<see langword="null"/> 或全空表示不带约束。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="ArgumentException"><paramref name="certificate"/> 不是证书，或者证的不是这把私钥。</exception>
+    /// <exception cref="SshAgentException">agent 拒绝了，或者通信失败。</exception>
+    /// <remarks>
+    /// 加进去之后 agent 的身份列表里出现的是证书（<see cref="ListIdentitiesAsync"/> 列出 <c>*-cert-v01</c> 类型），
+    /// 用它认证时出示整张证书、由 agent 签名 —— 证书登录不必再带着私钥文件。
+    /// </remarks>
+    public ValueTask AddIdentityAsync(
+        InMemorySshSigner key,
+        SshPublicKey certificate,
+        string comment,
+        SshAgentKeyConstraints? constraints = null,
         CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(certificate);
+        if (certificate.Certificate is not { } cert)
+        {
+            throw new ArgumentException($"{certificate.KeyType} 不是证书。", nameof(certificate));
+        }
+        if (!cert.Key.Blob.Span.SequenceEqual(key.PublicKey.Blob.Span))
+        {
+            throw new ArgumentException(
+                $"证书证的是 {cert.Key.Sha256Fingerprint}，而私钥是 {key.PublicKey.Sha256Fingerprint} —— 不是同一把。", nameof(certificate));
+        }
+        return AddIdentityCoreAsync(key, certificate, comment, constraints, cancellationToken);
+    }
+
+    private async ValueTask AddIdentityCoreAsync(
+        InMemorySshSigner key,
+        SshPublicKey? certificate,
+        string comment,
+        SshAgentKeyConstraints? constraints,
+        CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentNullException.ThrowIfNull(key);
@@ -419,7 +504,7 @@ public sealed class SshAgentClient : IAsyncDisposable
 
             // 没有约束就发 17：有的 agent 认 17 却不认 25（决策 2）。
             writer.WriteByte(constrained ? SshAgentMessage.AddIdentityConstrained : SshAgentMessage.AddIdentity);
-            key.WriteAgentPrivateKey(output);
+            key.WriteAgentPrivateKey(output, certificate);
             writer.WriteUtf8String(comment);
 
             if (constrained)
@@ -457,6 +542,85 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             CryptographicOperations.ZeroMemory(buffer);
         }
+    }
+
+    /// <summary>从 agent 里删掉一把钥（<c>ssh-add -d</c>）。</summary>
+    /// <param name="key">要删的钥（证书就删那张证书的身份）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>删掉了为 <see langword="true"/>；agent 回 FAILURE（没有这把钥、agent 已锁）为 <see langword="false"/>。</returns>
+    /// <exception cref="SshAgentException">通信失败，或者应答不是成功 / 失败。</exception>
+    public async ValueTask<bool> RemoveIdentityAsync(SshPublicKey key, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(key);
+
+        ArrayBufferWriter<byte> request = new();
+        SshDataWriter writer = new(request);
+        writer.WriteByte(SshAgentMessage.RemoveIdentity);
+        writer.WriteString(key.Blob.Span);
+        return await SucceededAsync(request.WrittenMemory, "删钥", cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>清空 agent（<c>ssh-add -D</c>）。</summary>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="SshAgentException">agent 拒绝了（多半是锁着），或者通信失败。</exception>
+    public async ValueTask RemoveAllIdentitiesAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!await SucceededAsync(new[] { SshAgentMessage.RemoveAllIdentities }, "清空", cancellationToken).ConfigureAwait(false))
+        {
+            throw new SshAgentException(SshFailureReason.AgentRefused, "ssh-agent 拒绝清空。常见原因：agent 已被锁定（ssh-add -x）。");
+        }
+    }
+
+    /// <summary>用口令锁住 agent（<c>ssh-add -x</c>）：锁着时 agent 不列钥、不签名、不加钥，直到用同一个口令解锁。</summary>
+    /// <param name="passphrase">口令。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>锁上了为 <see langword="true"/>；agent 回 FAILURE（已经锁着）为 <see langword="false"/>。</returns>
+    /// <exception cref="SshAgentException">通信失败，或者应答不是成功 / 失败。</exception>
+    /// <remarks>离开座位时用：转发出去的 agent 在锁着期间也签不了名。</remarks>
+    public ValueTask<bool> LockAsync(string passphrase, CancellationToken cancellationToken = default) =>
+        LockOrUnlockAsync(SshAgentMessage.Lock, passphrase, "加锁", cancellationToken);
+
+    /// <summary>用加锁时的口令解锁 agent（<c>ssh-add -X</c>）。</summary>
+    /// <param name="passphrase">口令。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>解开了为 <see langword="true"/>；口令不对或者本来没锁为 <see langword="false"/>（agent 不区分这两种）。</returns>
+    /// <exception cref="SshAgentException">通信失败，或者应答不是成功 / 失败。</exception>
+    public ValueTask<bool> UnlockAsync(string passphrase, CancellationToken cancellationToken = default) =>
+        LockOrUnlockAsync(SshAgentMessage.Unlock, passphrase, "解锁", cancellationToken);
+
+    private async ValueTask<bool> LockOrUnlockAsync(byte message, string passphrase, string what, CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(passphrase);
+
+        // 报文里是明文口令：用完清零。
+        byte[] buffer = new byte[1 + 4 + System.Text.Encoding.UTF8.GetMaxByteCount(passphrase.Length)];
+        try
+        {
+            FixedBufferWriter output = new(buffer);
+            SshDataWriter writer = new(output);
+            writer.WriteByte(message);
+            writer.WriteUtf8String(passphrase);
+            return await SucceededAsync(buffer.AsMemory(0, output.WrittenCount), what, cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    /// <summary>发一条只回 SUCCESS / FAILURE 的请求。</summary>
+    private async ValueTask<bool> SucceededAsync(ReadOnlyMemory<byte> request, string what, CancellationToken cancellationToken)
+    {
+        byte[] response = await ExchangeAsync(request, cancellationToken).ConfigureAwait(false);
+        return response[0] switch
+        {
+            SshAgentMessage.Success => true,
+            SshAgentMessage.Failure => false,
+            _ => throw new SshAgentException(SshFailureReason.ProtocolError, $"{what}：agent 回了 {response[0]} 而不是成功 / 失败。"),
+        };
     }
 
     /// <summary>把 agent 里的一把密钥包成签名器。</summary>

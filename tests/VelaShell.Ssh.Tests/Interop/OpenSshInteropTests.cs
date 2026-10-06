@@ -1015,6 +1015,72 @@ public sealed class OpenSshInteropTests
     }
 
     /// <summary>
+    /// 真实的 OpenSSH agent 上的管理操作：「证书 + 私钥」一起加（三种钥，ssh-keygen 签的证书）、删一把、锁、解锁、清空。
+    /// </summary>
+    /// <remarks>
+    /// 证书那条的报文形状（证书之后只放证书里没有的私钥部分）只有真 agent 裁决得了：错了 agent 回 FAILURE，
+    /// 或者回 SUCCESS 却签不出能用原公钥验过的签名。远端 <c>ssh-add -l</c> 再从 agent 自己的角度看一遍。
+    /// </remarks>
+    [TestMethod]
+    public async Task 真实的OpenSSH_agent上加证书_删钥_锁与清空()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        string socket = $"/tmp/vela-agent-{Guid.NewGuid():N}.sock";
+        SshCommandResult started = await connection.RunAsync($"ssh-agent -s -a {socket}");
+        Assert.AreEqual(0, started.ExitCode, started.StandardError);
+        string pid = started.StandardOutput.Split("SSH_AGENT_PID=")[1].Split(';')[0];
+
+        try
+        {
+            SshChannel tunnel = await connection.OpenUnixSocketTunnelAsync(socket);
+            await using var agent = SshAgentClient.FromStream(tunnel.AsStream(), socket);
+
+            byte[] data = Encoding.UTF8.GetBytes("证书身份签的数据");
+            List<SshPublicKey> certificates = [];
+            foreach (string name in new[] { "cert-ed25519", "cert-rsa", "cert-ecdsa" })
+            {
+                string fixture = Path.Combine(AppContext.BaseDirectory, "Keys", "Fixtures", name);
+                using InMemorySshSigner key = await SshPrivateKeyFile.LoadAsync(fixture);
+                SshPublicKey certificate = SshPublicKey.Parse(await File.ReadAllTextAsync(fixture + "-cert.pub"));
+                await agent.AddIdentityAsync(key, certificate, "vela-" + name);
+
+                string algorithm = certificate.SignatureAlgorithms[0];
+                byte[] signature = await agent.SignAsync(certificate.Blob, data, algorithm);
+                Assert.IsTrue(
+                    key.PublicKey.VerifySignature(signature, data, SshPublicKey.StripCertificateSuffix(algorithm)),
+                    $"{name}：agent 手里的私钥与证书证的不是同一把");
+                certificates.Add(certificate);
+            }
+
+            string listed = (await connection.RunAsync($"SSH_AUTH_SOCK={socket} ssh-add -l")).StandardOutput;
+            Assert.Contains("ED25519-CERT", listed);
+            Assert.Contains("RSA-CERT", listed);
+            Assert.Contains("ECDSA-CERT", listed);
+
+            Assert.IsTrue(await agent.RemoveIdentityAsync(certificates[0]));
+            Assert.IsFalse(await agent.RemoveIdentityAsync(certificates[0]), "删过一次就不在了");
+            Assert.HasCount(2, await agent.ListIdentitiesAsync());
+
+            Assert.IsTrue(await agent.LockAsync("离开座位"));
+            Assert.IsEmpty(await agent.ListIdentitiesAsync(), "锁着的 agent 不列钥");
+            await Assert.ThrowsAsync<SshAgentException>(async () => await agent.RemoveAllIdentitiesAsync());
+            Assert.IsFalse(await agent.UnlockAsync("猜一个"));
+            Assert.IsTrue(await agent.UnlockAsync("离开座位"));
+            Assert.HasCount(2, await agent.ListIdentitiesAsync());
+
+            await agent.RemoveAllIdentitiesAsync();
+            Assert.IsEmpty(await agent.ListIdentitiesAsync());
+        }
+        finally
+        {
+            await connection.RunAsync($"kill {pid}; rm -f {socket}");
+        }
+    }
+
+    /// <summary>
     /// 会话声明（<c>session-bind@openssh.com</c>）交给<b>真实的 OpenSSH agent</b>，并让 <c>ssh-add -h</c> 的约束真的起作用
     /// （velashell-docs/zh/ssh/spec/07 §7.4）。
     /// </summary>

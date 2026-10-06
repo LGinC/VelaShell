@@ -221,11 +221,61 @@ internal sealed class TestAgent
         };
     }
 
+    /// <summary>锁着时的口令；<see langword="null"/> 是没锁。</summary>
+    public string? LockPassphrase { get; private set; }
+
     private async Task<byte[]> HandleAsync(byte[] request, CancellationToken cancellationToken)
     {
         if (request.Length == 0)
         {
             return [5];   // FAILURE
+        }
+
+        if (request[0] is 22 or 23)   // LOCK / UNLOCK
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(request));
+            reader.ReadByte();
+            string passphrase = reader.ReadUtf8String(MaxMessage);
+            if (request[0] == 22)
+            {
+                if (LockPassphrase is not null)
+                {
+                    return [5];
+                }
+                LockPassphrase = passphrase;
+                return [6];
+            }
+            if (LockPassphrase is null || LockPassphrase != passphrase)
+            {
+                return [5];
+            }
+            LockPassphrase = null;
+            return [6];
+        }
+
+        // 锁着的时候别的一律拒绝。
+        if (LockPassphrase is not null)
+        {
+            return [5];
+        }
+
+        if (request[0] == 18)   // REMOVE_IDENTITY
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(request));
+            reader.ReadByte();
+            byte[] blob = reader.ReadStringAsArray(MaxMessage);
+            int removed = _keys.RemoveAll(k => k.Signer.PublicKey.Blob.Span.SequenceEqual(blob))
+                + _certificates.RemoveAll(c => c.Blob.AsSpan().SequenceEqual(blob))
+                + _opaque.RemoveAll(o => o.Blob.AsSpan().SequenceEqual(blob));
+            return removed > 0 ? [6] : [5];
+        }
+
+        if (request[0] == 19)   // REMOVE_ALL_IDENTITIES
+        {
+            _keys.Clear();
+            _certificates.Clear();
+            _opaque.Clear();
+            return [6];
         }
 
         if (request[0] == 11)   // REQUEST_IDENTITIES
@@ -336,7 +386,7 @@ internal sealed class TestAgent
             return [6];   // SUCCESS
         }
 
-        // 删钥、锁定之类的一律拒绝。
+        // 别的一律拒绝。
         return [5];
     }
 
