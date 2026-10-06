@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 VelaShell Labs
 //
-// 被测规格: velashell-docs/zh/ssh/spec/04-authentication.md §4.5;OpenSSH PROTOCOL.u2f
+// 被测规格: velashell-docs/zh/ssh/spec/04-authentication.md §4.7;OpenSSH PROTOCOL.u2f
 
 using System.Buffers;
 using System.Security.Cryptography;

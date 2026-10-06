@@ -121,7 +121,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     /// FIDO / U2F 安全密钥（<c>sk-*@openssh.com</c>）的 application 字段（通常是 <c>ssh:</c>）；别的钥为 <see langword="null"/>。
     /// </summary>
     /// <remarks>
-    /// 〔velashell-docs/zh/ssh/spec/04 §4.5〕这类钥的私钥永远在硬件里，本库经 agent 用它们（列身份、认证、转发）：
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.7〕这类钥的私钥永远在硬件里，本库经 agent 用它们（列身份、认证、转发）：
     /// 认得、出示、转交 agent 签的名。<b>不验它们的签名</b> —— 客户端用不上（签名由服务端验），而手头没有能对照的硬件实现。
     /// </remarks>
     public string? SecurityKeyApplication { get; private init; }
