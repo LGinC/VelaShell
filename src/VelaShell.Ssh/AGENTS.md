@@ -76,7 +76,7 @@ TFM、`LangVersion`、`Nullable` 由仓库根 `Directory.Build.props` 统一给�
 
 - 新增依赖前先确认许可与 MIT 兼容。**不接受 GPL / LGPL / AGPL。**
 - 新增依赖要同步更新 `NOTICE.md` 的第三方组件表与 `src/Directory.Packages.props`
-  （中央包管理与宿主共用；`BouncyCastle.Cryptography` 那一条宿主的 `SshKeyService` 也在用）。
+  （中央包管理与宿主共用；`BouncyCastle.Cryptography` 那一条只有本库在用，宿主不直接引用）。
 - **不自己写密码学原语**（architecture.md 原则 6）。**一个例外，写明在案。**
   BCL 有的走 BCL（AES / SHA-2 / ECDH / ECDSA / RSA / ML-KEM —— 还能吃到硬件加速）；
   BCL 缺的走 BouncyCastle（raw ChaCha20、独立 Poly1305、Ed25519、X25519、DH 标准群、

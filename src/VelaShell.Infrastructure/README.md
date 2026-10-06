@@ -20,11 +20,10 @@
 | `Ssh/SshConnectionAssembler.cs` | 由 `ConnectionInfo` 装出 `SshConnectionOptions`：凭据（口令/私钥/证书/agent/键盘交互）、跳板链、心跳与各段超时。 |
 | `Ssh/VelaHostKeyPolicy.cs` | `IHostKeyPolicy` 实现：`known_hosts` 比对 → 首见/变更时弹窗 → 用户裁决写回，附带安全告警。 |
 | `Ssh/HostTrustOnceCache.cs` | 主机指纹「仅本次信任」的进程内缓存（不落盘）。 |
-| `Ssh/SshKeyService.cs` | `~/.ssh` 密钥枚举（类型 + SHA256 指纹，`.pub` 的解析与指纹都用库的 `SshPublicKey`）、RSA 密钥对生成、公钥导入。 |
+| `Ssh/SshKeyService.cs` | `~/.ssh` 密钥枚举（类型 + SHA256 指纹，`.pub` 的解析与指纹都用库的 `SshPublicKey`）、密钥对生成（Ed25519 / ECDSA / RSA，生成与写出都交给库的 `InMemorySshSigner.Generate*` 与 `SshPrivateKeyFile.Format`）、公钥导入。 |
 | `Ssh/SessionMetricsService.cs` | 采集会话 CPU / 内存 / 网速指标。 |
 | `Ssh/SshInterop.cs` `LibraryPortForwardHandle.cs` | VelaShell.Ssh 异常 → Core 中立异常（`VelaSsh*Exception`）的翻译，以及端口转发句柄。翻译**按异常类型分派，没有一处字符串解析**。 |
 | `Ssh/ProxyTransportDialer.cs` `SyncCompatibleStream.cs` | 传输层接入：按代理设置选 SSH 库的拨号器（`DialerChain.Tcp` / `HttpConnect` / `Socks5`，握手全在库里），跳板走 `DialerChain.Jump`；`SyncCompatibleStream` 给库的通道流（`SshChannel.AsStream()`）补上同步读写，交给只认 `Stream` 的下游。 |
-| `Ssh/OpenSshPrivateKey.cs` | 私钥的 OpenSSH 格式写出（自生成密钥用）。读取侧不再需要转换 —— VelaShell.Ssh 原生认 OpenSSH / PKCS#1 / PKCS#8。 |
 | `Ssh/SshBackend.cs` | 关于页要展示的后端标识：名称、版本（程序集元数据）、许可与项目地址。 |
 | `Ssh/RemoteProcessService.cs` | `IRemoteProcessService` 实现：远端进程快照采集（相邻两次采样算瞬时 CPU）与信号发送。 |
 | `Pty/ConPtyShellStream.cs` | Windows ConPTY 本地终端流（本地 Shell 会话）。 |

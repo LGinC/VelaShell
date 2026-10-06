@@ -52,7 +52,7 @@ Console.WriteLine(result.StandardOutput);
 **一个运行时依赖：`BouncyCastle.Cryptography`**（MIT），只用来做 BCL 缺失的密码学原语 ——
 raw ChaCha20 块函数、独立 Poly1305、Ed25519、X25519、DH 标准群、ML-KEM-768、sntrup761、
 Argon2id（`.ppk` v3）。**没有第二种用途。** BCL 有的一律走 BCL。版本登记在
-`src/Directory.Packages.props`，与宿主的 `SshKeyService` 共用一条。
+`src/Directory.Packages.props`（中央包管理与宿主共用；宿主不直接引用 BouncyCastle）。
 
 **我们不自己写密码学原语**，唯一的例外是 `Keys/BcryptPbkdf.cs`（加密的 OpenSSH 私钥的 KDF），
 范围钉死，理由见 [`AGENTS.md`](AGENTS.md) §3.3。

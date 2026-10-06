@@ -54,7 +54,7 @@
   <ItemGroup>
     <!--
       唯一的运行时依赖。**只用来做 BCL 缺失的密码学原语**,不用它的任何协议层。
-      版本登记在 src/Directory.Packages.props,与宿主 SshKeyService 用的是同一条。
+      版本登记在 src/Directory.Packages.props(中央包管理与宿主共用;宿主不直接引用它)。
 
       为什么不自己写(架构原则 6):手写的密码学原语对一个要被审计、要被别人信任的库
       是实打实的负债。「我们自己实现了 ChaCha20」在安全审计里是个红旗,

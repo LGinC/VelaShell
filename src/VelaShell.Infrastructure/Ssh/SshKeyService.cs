@@ -1,7 +1,6 @@
-using System.Security.Cryptography;
-using Org.BouncyCastle.Crypto.Parameters;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
+using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
 
@@ -207,6 +206,11 @@ public sealed class SshKeyService(
     /// 根本没有 PEM 导出,而这也正是今天 <c>ssh-keygen</c> 的产物,拷到别处照样能用。
     /// </para>
     /// <para>
+    /// <b>生成与写出都交给 SSH 库</b>(<see cref="InMemorySshSigner" /> 的 <c>Generate*</c> 与
+    /// <see cref="SshPrivateKeyFile.Format" />)。曾经宿主手写了一份 OpenSSH 私钥容器、拿 BouncyCastle 现造 Ed25519,
+    /// 中间导出的 <c>RSAParameters</c> / <c>ECParameters</c> 也不清零;库的写出侧用完即清。
+    /// </para>
+    /// <para>
     /// <b>默认给 Ed25519,而不是 RSA。</b>OpenSSH 自 6.5(2014)起支持,`ssh-keygen` 自 9.5(2023)
     /// 起也已默认给它:私钥 32 字节、生成几乎不耗时(RSA 4096 要秒级),强度还不比 RSA 4096 差。
     /// 留着 <see cref="SshKeyAlgorithm.Rsa" /> 只是为了对付把 <c>ssh-rsa</c> 写死进白名单的老堡垒机。
@@ -232,85 +236,23 @@ public sealed class SshKeyService(
                 throw new IOException(Strings.Format("KeySvc_AlreadyExists", name));
             }
             string comment = $"velashell@{Environment.MachineName}";
-            (string privatePem, byte[] blob, _, string type) = algorithm switch
+            // ECDSA 只有 256 / 384 / 521 三条曲线,别的位数由库抛 ArgumentOutOfRangeException ——
+            // SSH 给别的曲线连个能写进公钥行的名字都没有。RSA 宿主默认 4096,比 ssh-keygen 的 3072 保守一档。
+            using InMemorySshSigner key = algorithm switch
             {
-                SshKeyAlgorithm.Ed25519 => CreateEd25519(comment),
-                SshKeyAlgorithm.Ecdsa => CreateEcdsa(bits > 0 ? bits : 256, comment),
-                SshKeyAlgorithm.Rsa => CreateRsa(bits > 0 ? bits : 4096, comment),
+                SshKeyAlgorithm.Ed25519 => InMemorySshSigner.GenerateEd25519(),
+                SshKeyAlgorithm.Ecdsa => InMemorySshSigner.GenerateEcdsa(bits > 0 ? bits : 256),
+                SshKeyAlgorithm.Rsa => InMemorySshSigner.GenerateRsa(bits > 0 ? bits : 4096),
                 _ => throw new ArgumentOutOfRangeException(nameof(algorithm), algorithm, null)
             };
 
-            File.WriteAllText(privatePath, privatePem);
+            File.WriteAllText(privatePath, SshPrivateKeyFile.Format(key, comment: comment));
             ApplyPrivateKeyPermissions(privatePath);
-            var publicKey = SshPublicKey.Decode(blob);
+            SshPublicKey publicKey = key.PublicKey;
             string publicLine = publicKey.ToOpenSshFormat(comment);
             File.WriteAllText(publicPath, publicLine + Environment.NewLine);
-            return new SshKeyInfo(name, type, publicKey.Sha256Fingerprint, privatePath, publicLine);
+            return new SshKeyInfo(name, DescribeType(publicKey), publicKey.Sha256Fingerprint, privatePath, publicLine);
         }, cancellationToken);
-    }
-
-    /// <summary>
-    /// 现造一把 Ed25519:32 字节随机种子 → 由种子导出公钥。
-    /// </summary>
-    /// <remarks>
-    /// 种子用 BCL 的 <see cref="RandomNumberGenerator" /> 取,标量乘法交给 BouncyCastle ——
-    /// .NET 11 的 BCL 至今没有独立的 Ed25519(只有 <c>CompositeMLDsaAlgorithm</c> 里那个复合标识符),
-    /// 而 BouncyCastle 本就是 VelaShell.Ssh 的依赖、早已在输出目录里,这里只是把它抬成显式引用。
-    /// 自己手写曲线运算不在考虑之列:那是能把私钥悄悄写废的地方。
-    /// </remarks>
-    private static (string Pem, byte[] Blob, string AlgorithmName, string Type) CreateEd25519(string comment)
-    {
-        byte[] seed = RandomNumberGenerator.GetBytes(Ed25519PrivateKeyParameters.KeySize);
-        try
-        {
-            byte[] publicKey = new Ed25519PrivateKeyParameters(seed).GeneratePublicKey().GetEncoded();
-            return (OpenSshPrivateKey.SerializeEd25519(seed, publicKey, comment),
-                    OpenSshPrivateKey.BuildEd25519PublicBlob(publicKey),
-                    "ssh-ed25519",
-                    "ED25519");
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(seed); // 种子已经进了 PEM 文本,这份副本没必要再留在堆上
-        }
-    }
-
-    /// <summary>现造一把 ECDSA。<paramref name="bits" /> 取 256 / 384 / 521,其余值抛。</summary>
-    /// <remarks>
-    /// 曲线名与坐标定长走 <see cref="OpenSshPrivateKey.DescribeCurve" /> —— 与导入转换共用一张表。
-    /// 这里不像 RSA 那样接受任意位数:SSH 只定义了这三条 NIST 曲线的算法名,
-    /// 给别的曲线连个能写进公钥行的名字都没有。
-    /// </remarks>
-    private static (string Pem, byte[] Blob, string AlgorithmName, string Type) CreateEcdsa(int bits, string comment)
-    {
-        (string? sshName, string? curveName, int fieldLength) = OpenSshPrivateKey.DescribeCurve(bits);
-        if (sshName is null)
-        {
-            throw new ArgumentOutOfRangeException(nameof(bits), bits, null);
-        }
-        ECCurve curve = bits switch
-        {
-            256 => ECCurve.NamedCurves.nistP256,
-            384 => ECCurve.NamedCurves.nistP384,
-            _ => ECCurve.NamedCurves.nistP521
-        };
-        using var ecdsa = ECDsa.Create(curve);
-        ECParameters parameters = ecdsa.ExportParameters(includePrivateParameters: true);
-        return (OpenSshPrivateKey.SerializeEcdsa(parameters, sshName, curveName!, fieldLength, comment),
-                OpenSshPrivateKey.BuildEcdsaPublicBlob(parameters.Q, sshName, curveName!, fieldLength),
-                sshName,
-                $"ECDSA {bits}");
-    }
-
-    /// <summary>现造一把 RSA。留给不认 Ed25519 的老服务端。</summary>
-    private static (string Pem, byte[] Blob, string AlgorithmName, string Type) CreateRsa(int bits, string comment)
-    {
-        using var rsa = RSA.Create(bits);
-        RSAParameters parameters = rsa.ExportParameters(true);
-        return (OpenSshPrivateKey.SerializeRsa(parameters, comment),
-                OpenSshPrivateKey.BuildRsaPublicBlob(parameters),
-                "ssh-rsa",
-                $"RSA {bits}");
     }
 
     /// <summary>删除指定名称密钥对的私钥与公钥文件(存在则删除)。</summary>
