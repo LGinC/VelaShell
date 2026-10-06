@@ -498,7 +498,7 @@ public sealed class OpenSshInteropTests
                 Assert.AreEqual(0, (await connection.RunAsync("true")).ExitCode, "证书主机重协商之后照常可用");
             }
 
-            // 换成一把不相干的 CA：这台主机由 CA 管，出示的证书却没人担保 —— 拒绝，不去问、不去记。
+            // 换成一把不相干的 CA：这台主机由 CA 管，出示的证书却没人担保 —— 拒绝（按「变了」），不去问、不去记。
             using var stranger = InMemorySshSigner.GenerateEd25519();
             await File.WriteAllTextAsync(
                 knownHosts,
@@ -508,7 +508,8 @@ public sealed class OpenSshInteropTests
             {
                 await using SshConnection connection = await SshConnection.ConnectAsync(WithKnownHosts());
             });
-            Assert.AreEqual(SshFailureReason.HostKeyRejected, ex.Reason, ex.Message);
+            // 没有 CA 担保：证书里那把钥按普通钥判，这台主机只记着 CA —— 与「变了」同样处理（velashell-docs/zh/ssh/spec/03 §5.5 第 4 条）。
+            Assert.AreEqual(SshFailureReason.HostKeyChanged, ex.Reason, ex.Message);
         }
         finally
         {
