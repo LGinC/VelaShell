@@ -26,4 +26,10 @@ public interface ISessionMetricsService
     /// <param name="cancellationToken">取消标记。</param>
     /// <returns>静态信息;不可用时为 null。</returns>
     Task<SessionStaticInfo?> GetStaticInfoAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 量一次到会话服务端的往返时间(SSH 层,经代理、跳板也量得到,不怕目标禁 ICMP);
+    /// 不是 SSH 会话、没连上或量不到时为 null。
+    /// </summary>
+    Task<TimeSpan?> MeasureRoundTripAsync(Guid sessionId, CancellationToken cancellationToken = default);
 }

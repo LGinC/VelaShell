@@ -109,6 +109,11 @@ public class SftpSymlinkIntegrationTests
                 async ct => await SftpFileSystem.ConnectAsync(inner, cancellationToken: ct));
             await sftp.ConnectAsync(CancellationToken.None);
 
+            // 状态栏的延迟:经宿主的包装量 SSH 层的往返时间。
+            TimeSpan? rtt = await ssh.MeasureRoundTripAsync();
+            Assert.IsNotNull(rtt);
+            Assert.IsGreaterThan(TimeSpan.Zero, rtt.Value);
+
             RemoteSpaceInfo? space = await sftp.GetSpaceAsync("/tmp");
 
             Assert.IsNotNull(space, "OpenSSH 的 sftp-server 支持 statvfs@openssh.com");

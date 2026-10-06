@@ -194,6 +194,21 @@ public sealed class StatusMetricsPollerTests
         await metrics.Received(2).GetMetricsAsync(tab.SessionId);
     }
 
+    /// <summary>SSH 会话的延迟用 SSH 层的往返时间(经代理、跳板也准),不再对主机发 ICMP。</summary>
+    [TestMethod]
+    public async Task Latency_UsesTheSshRoundTrip_WhenAvailable()
+    {
+        TerminalTabViewModel tab = ConnectedTab();
+        ISessionMetricsService metrics = Substitute.For<ISessionMetricsService>();
+        metrics.MeasureRoundTripAsync(tab.SessionId, Arg.Any<CancellationToken>())
+               .Returns(Task.FromResult<TimeSpan?>(TimeSpan.FromMilliseconds(12)));
+        StatusMetricsPoller poller = new(new StatusBarViewModel(), () => tab, metrics);
+
+        await poller.PollLatencyAsync();
+
+        Assert.AreEqual(TimeSpan.FromMilliseconds(12), tab.Latency);
+    }
+
     [TestMethod]
     public async Task LatencyIsProbedOnlyEveryThirdTick()
     {

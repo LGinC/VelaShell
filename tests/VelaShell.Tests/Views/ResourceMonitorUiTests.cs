@@ -1218,6 +1218,9 @@ public sealed partial class ResourceMonitorUiTests
         int nics = 2)
         : ISessionMetricsService
     {
+        public Task<TimeSpan?> MeasureRoundTripAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+            Task.FromResult<TimeSpan?>(null);
+
         private int _tick;
 
         public Task<SessionMetrics?> GetMetricsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
