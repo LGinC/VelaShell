@@ -127,23 +127,6 @@ internal static class OpenSshPrivateKey
             _ => (null, null, 0)
         };
 
-    private static void ImportPem(AsymmetricAlgorithm key, string pem, string? passphrase)
-    {
-        if (!string.IsNullOrEmpty(passphrase))
-        {
-            try
-            {
-                key.ImportFromEncryptedPem(pem, passphrase);
-                return;
-            }
-            catch
-            {
-                // 用户填了口令但密钥其实未加密:退回明文导入。
-            }
-        }
-        key.ImportFromPem(pem);
-    }
-
     // ---- OpenSSH 线格式助手 -------------------------------------------------
 
     /// <summary>套上外层容器与 PEM 封装:magic ‖ none ‖ none ‖ "" ‖ 密钥数=1 ‖ 公钥 blob ‖ 私钥段。</summary>
