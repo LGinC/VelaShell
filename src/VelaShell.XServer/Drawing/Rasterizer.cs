@@ -676,8 +676,10 @@ internal sealed class Rasterizer
         }
         for (int row = firstRow; row <= lastRow; row++)
         {
-            // 按像素中心采样:第 row 行的中心在 row + 0.5。
-            double sampleY = row + 0.5;
+            // 核心协议:整数坐标就是像素中心(「coordinates … coincide with pixel centers」),所以第 row 行在 y = row 处采样;
+            // 边按「上闭下开」进出活动表,正好落在水平边上的像素中心只算下方是内部的那一侧。
+            // (RENDER 的 CoverageMask 按 RENDER 规范以 +0.5 为中心,不走这里。)
+            double sampleY = row;
             spans.Clear();
             for (int pi = 0; pi < polygons.Count; pi++)
             {
@@ -706,9 +708,9 @@ internal sealed class Rasterizer
                     {
                         continue;
                     }
-                    // 像素中心 px + 0.5 落在 [xa, xb) 内的像素。
-                    int start = (int)Math.Ceiling(crossings[i].X - 0.5);
-                    int end = (int)Math.Ceiling(crossings[i + 1].X - 0.5);
+                    // 像素中心 px 落在 [xa, xb) 内的像素:左闭右开,恰在边上的只算右侧是内部的那一侧。
+                    int start = (int)Math.Ceiling(crossings[i].X);
+                    int end = (int)Math.Ceiling(crossings[i + 1].X);
                     if (end > start)
                     {
                         spans.Add((start, end));

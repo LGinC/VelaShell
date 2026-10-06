@@ -58,6 +58,51 @@ public sealed class UnitTests
         Assert.AreEqual(0u, buffer.Get(12, 12));
     }
 
+    private static PixelBuffer Draw(Action<Rasterizer> draw, Action<XGc>? setup = null)
+    {
+        PixelBuffer buffer = new(24, 24, 24);
+        XGc gc = new(1, null, 24) { Foreground = 7 };
+        setup?.Invoke(gc);
+        draw(new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc));
+        return buffer;
+    }
+
+    private static int[] LitRows(PixelBuffer b) =>
+        [.. Enumerable.Range(0, b.Height).Where(y => Enumerable.Range(0, b.Width).Any(x => b.Get(x, y) == 7))];
+
+    [TestMethod]
+    public void 宽线与多边形在整数坐标采样_整数坐标就是像素中心()
+    {
+        // lw = 1 的水平线 y = 10 画在第 10 行(原先在 row + 0.5 采样,画到了第 9 行)。
+        PixelBuffer one = Draw(r => r.PolyLine([(2, 10), (12, 10)]), gc => gc.LineWidth = 1);
+        CollectionAssert.AreEqual(new[] { 10 }, LitRows(one));
+        Assert.AreEqual(10, one.Pixels.Count(p => p == 7), "CapButt:左闭右开,x = 2..11");
+
+        PixelBuffer three = Draw(r => r.PolyLine([(2, 10), (12, 10)]), gc => gc.LineWidth = 3);
+        CollectionAssert.AreEqual(new[] { 9, 10, 11 }, LitRows(three));
+
+        // 同一个矩形边框,lw = 0 与 lw = 1 画在同一批像素上(原先错开一像素)。
+        (int, int)[] outline = [(5, 5), (10, 5), (10, 10), (5, 10), (5, 5)];
+        PixelBuffer thin = Draw(r => r.PolyLine(outline, closed: true));
+        PixelBuffer wide = Draw(r => r.PolyLine(outline, closed: true), gc => gc.LineWidth = 1);
+        CollectionAssert.AreEqual(thin.Pixels.ToArray(), wide.Pixels.ToArray());
+
+        // 三角形 (0,0)(10,0)(0,10):第 y 行是 x ∈ [0, 10 − y),共 10 + 9 + … + 1 = 55 个像素(原先 45)。
+        PixelBuffer triangle = Draw(r => r.FillPolygons([[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]], winding: false));
+        Assert.AreEqual(55, triangle.Pixels.Count(p => p == 7));
+
+        // FillArc (0,0,20,20) 的圆心在像素中心 (10,10):填出来的像素关于 x = 10、y = 10 对称(原先关于 9.5 对称)。
+        PixelBuffer disc = Draw(r => r.FillArc(0, 0, 20, 20, 0, 360 * 64));
+        for (int y = 1; y < 20; y++)
+        {
+            for (int x = 1; x < 20; x++)
+            {
+                Assert.AreEqual(disc.Get(x, y), disc.Get(20 - x, y), $"({x},{y}) 与左右镜像");
+                Assert.AreEqual(disc.Get(x, y), disc.Get(x, 20 - y), $"({x},{y}) 与上下镜像");
+            }
+        }
+    }
+
     [TestMethod]
     public void 裁剪区域之外不画()
     {
