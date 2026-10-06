@@ -861,6 +861,119 @@ public sealed class SftpTests
         Assert.AreSequenceEqual(payload, [.. harness.SftpServer.Nodes["/home/joe/up.bin"].Content]);
     }
 
+    /// <summary>
+    /// 写槽占满时被取消的那一次写：这一段没发出去、位置不前进；调用方重试同一段之后，文件里恰好一份。
+    /// </summary>
+    [TestMethod]
+    public async Task 等写槽时被取消_这一段没发出去_重试之后文件恰好一份()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { DelayWriteReplies = TimeSpan.FromMilliseconds(300) },
+            clientOptions: new SftpOptions { MaxInFlight = 1, AdaptivePipelineDepth = false });
+
+        int block = harness.Sftp.BlockSize;
+        byte[] first = new byte[block];
+        byte[] second = new byte[block];
+        Random.Shared.NextBytes(first);
+        Random.Shared.NextBytes(second);
+
+        await using (SftpFileStream stream = await harness.Sftp.OpenWriteAsync("/home/joe/slot.bin", cancellationToken: harness.Token))
+        {
+            await stream.WriteAsync(first, harness.Token);   // 占住唯一的写槽：应答要 300 ms 才回
+
+            using (CancellationTokenSource impatient = new(TimeSpan.FromMilliseconds(50)))
+            {
+                await Assert.ThrowsAsync<OperationCanceledException>(async () => await stream.WriteAsync(second, impatient.Token));
+            }
+            Assert.AreEqual(block, stream.Position, "没发出去的那一段不算写过");
+
+            await stream.WriteAsync(second, harness.Token);
+            await stream.FlushAsync(harness.Token);
+            Assert.AreEqual(2L * block, stream.DurableLength);
+        }
+
+        Assert.AreSequenceEqual([.. first, .. second], [.. harness.SftpServer.Nodes["/home/joe/slot.bin"].Content]);
+        Assert.AreEqual(0, harness.SftpServer.OpenHandleCount, "句柄照常关掉");
+    }
+
+    /// <summary>
+    /// 读与写都还在途时连接断了：调用方拿到的异常是它自己 await 的那些，库内部的任务（在途的写、预读、流水线）
+    /// 不留下没人观察的异常 —— 断线时几十个请求一起失败，宿主的崩溃日志里不该全是它们。
+    /// </summary>
+    [TestMethod]
+    public async Task 读写在途时断线不留下没人观察的异常()
+    {
+        List<Exception> unobserved = await CollectUnobservedAsync(DisconnectWithIoInFlightAsync);
+
+        Assert.IsEmpty(unobserved, string.Join(Environment.NewLine, unobserved.Select(e => e.InnerException?.ToString() ?? e.ToString())));
+
+        static async Task DisconnectWithIoInFlightAsync()
+        {
+            byte[] content = new byte[4 * 1024 * 1024];
+            await using Harness harness = await Harness.StartAsync(
+                server => server.AddFile("/home/joe/big.bin", content),
+                sftpOptions: new TestSftpOptions
+                {
+                    DelayWriteReplies = TimeSpan.FromSeconds(5),
+                    HoldReadReplyAtOffset = 1024 * 1024,
+                });
+
+            SftpFileStream writer = await harness.Sftp.OpenWriteAsync("/home/joe/up.bin", cancellationToken: harness.Token);
+            SftpFileStream reader = await harness.Sftp.OpenReadAsync("/home/joe/big.bin", harness.Token);
+
+            byte[] chunk = new byte[harness.Sftp.BlockSize];
+            for (int i = 0; i < 16; i++)
+            {
+                await writer.WriteAsync(chunk, harness.Token);   // 应答 5 秒后才回：这些写都在途
+            }
+            Task<int> reading = Task.Run(async () =>
+            {
+                byte[] buffer = new byte[64 * 1024];
+                int total = 0;
+                while (true)
+                {
+                    int read = await reader.ReadAsync(buffer, harness.Token);
+                    if (read == 0)
+                    {
+                        return total;
+                    }
+                    total += read;
+                }
+            });
+            await Task.Delay(200);   // 读到 1 MiB 处卡住，预读的请求在途
+
+            await harness.Connection.DisposeAsync();   // 断线
+
+            // 调用方自己 await 的那些照常拿到异常（这是被观察了的）。
+            try
+            {
+                await reading;
+            }
+            catch (Exception ex) when (ex is SshException or IOException or ObjectDisposedException or OperationCanceledException)
+            {
+            }
+            try
+            {
+                await writer.FlushAsync(harness.Token);
+            }
+            catch (Exception ex) when (ex is SshException or IOException or ObjectDisposedException or OperationCanceledException)
+            {
+            }
+
+            // 关流也一样：写入流关闭时报「传输中断、从 N 续传」，那是给调用方的。
+            foreach (SftpFileStream stream in new[] { writer, reader })
+            {
+                try
+                {
+                    await stream.DisposeAsync();
+                }
+                catch (Exception ex) when (ex is SshException or IOException or ObjectDisposedException or OperationCanceledException)
+                {
+                }
+            }
+        }
+    }
+
     [TestMethod]
     public async Task FlushAsync被取消只是不再等_之后照常冲完()
     {

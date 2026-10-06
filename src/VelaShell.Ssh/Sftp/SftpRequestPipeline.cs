@@ -290,6 +290,10 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
             // 留在账本里的话，它占着的在途额度只有应答才还得回来 —— 也就是永远还不回来。
             // 曾经就是这样：取消一次上传漏掉几十个额度，漏满之后所有 SFTP 操作一起挂住。
             Withdraw(requestId);
+
+            // 排在发送锁上时流水线收工了：Fault 已经把它从账本里摘走、把故障设在了 Completion 上，而那个任务没人会再看 ——
+            // 断线时几个排队的写一起变成未观察的任务异常（velashell-docs/zh/ssh/spec/06 §5.4）。放弃它：故障在那里看一眼。
+            pending.Abandon();
             throw;
         }
     }
