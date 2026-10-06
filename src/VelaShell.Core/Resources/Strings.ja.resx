@@ -178,6 +178,15 @@
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>画面をクリア</value>
   </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>Break を送信</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>Break を送信し、サーバーが実行しました。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>サーバーは Break を実行しませんでした(未対応か、このセッションに端末がない可能性があります)。</value>
+  </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>行番号/時刻の余白を切り替え</value>
   </data>

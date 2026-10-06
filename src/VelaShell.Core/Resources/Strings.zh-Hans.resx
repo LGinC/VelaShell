@@ -1116,6 +1116,15 @@
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>清屏</value>
   </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>发送 Break</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>已发送 Break,服务器已执行。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>服务器没有执行 Break(可能不支持,或者这个会话没有终端)。</value>
+  </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>切换行号/时间侧栏</value>
   </data>

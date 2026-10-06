@@ -1116,6 +1116,15 @@
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>清除畫面</value>
   </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>傳送 Break</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>已傳送 Break,伺服器已執行。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>伺服器沒有執行 Break(可能不支援,或這個工作階段沒有終端)。</value>
+  </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>切換行號/時間側欄</value>
   </data>

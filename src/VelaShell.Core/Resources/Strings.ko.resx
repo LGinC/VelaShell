@@ -178,6 +178,15 @@
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>화면 지우기</value>
   </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>Break 보내기</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>Break를 보냈고 서버가 실행했습니다.</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>서버가 Break를 실행하지 않았습니다(지원하지 않거나 이 세션에 터미널이 없을 수 있습니다).</value>
+  </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>행 번호/시간 여백 전환</value>
   </data>

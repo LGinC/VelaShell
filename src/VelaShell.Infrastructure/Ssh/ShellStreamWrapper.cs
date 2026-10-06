@@ -211,6 +211,28 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
         }
     }
 
+    /// <inheritdoc />
+    public bool SupportsBreak => !_disposed && !_channelClosed;
+
+    /// <inheritdoc />
+    /// <remarks>服务端没执行(回 FAILURE)、通道已经没了都是 <see langword="false" />:按了「发送 Break」不该弹异常。</remarks>
+    public async Task<bool> SendBreakAsync(CancellationToken cancellationToken)
+    {
+        if (!SupportsBreak)
+        {
+            return false;
+        }
+
+        try
+        {
+            return await _shell.SendBreakAsync(length: null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SshException or ObjectDisposedException or InvalidOperationException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>释放底层 shell 通道。</summary>
     public async ValueTask DisposeAsync()
     {

@@ -1055,6 +1055,15 @@ If this keeps happening, close any other VelaShell windows and try again.</value
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>Clear Screen</value>
   </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>Send Break</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>Break sent; the server performed it.</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>The server did not perform the Break (it may not support it, or the session has no terminal).</value>
+  </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>Toggle line number &amp; time gutter</value>
   </data>
