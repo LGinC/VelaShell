@@ -289,7 +289,13 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     });
 
     /// <inheritdoc />
-    public void BellRequested(int volume) => Dispatcher.UIThread.Post(SystemSound.Alert);   // 系统提示音没有音量可调
+    public void BellRequested(int volume)
+    {
+        if (volume > 0)   // 系统提示音没有音量可调;音量 0(xset b 0、Bell -100)就是不响
+        {
+            Dispatcher.UIThread.Post(SystemSound.Alert);
+        }
+    }
 
     /// <inheritdoc />
     public void ClipboardChanged(string text) => Dispatcher.UIThread.Post(() => FireAndForget.Run(async () =>

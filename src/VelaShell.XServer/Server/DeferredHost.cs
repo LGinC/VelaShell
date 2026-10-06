@@ -34,7 +34,37 @@ internal sealed class DeferredHost(IX11ServerHost inner, Action<string> log) : I
 
     public void CursorChanged(XTopLevelWindow? window, XCursor cursor) => _pending.Add(() => inner.CursorChanged(window, cursor));
 
-    public void BellRequested(int volume) => _pending.Add(() => inner.BellRequested(volume));
+    /// <summary>
+    /// 响铃合并、节流:一批里最多交一次(取最大音量),两次之间至少隔 <see cref="MinBellInterval" />。
+    /// 一个循环发 4 字节 Bell 的客户端原先每批都往宿主的 UI 线程排成千上万次提示音,整个界面跟着卡死。
+    /// </summary>
+    public void BellRequested(int volume)
+    {
+        if (_pendingBellVolume >= 0)
+        {
+            _pendingBellVolume = Math.Max(_pendingBellVolume, volume);
+            return;
+        }
+        long now = System.Diagnostics.Stopwatch.GetTimestamp();
+        if (_lastBell != 0 && System.Diagnostics.Stopwatch.GetElapsedTime(_lastBell, now) < MinBellInterval)
+        {
+            return;
+        }
+        _lastBell = now;
+        _pendingBellVolume = volume;
+        _pending.Add(() =>
+        {
+            int loudest = _pendingBellVolume;
+            _pendingBellVolume = -1;
+            inner.BellRequested(loudest);
+        });
+    }
+
+    /// <summary>两次响铃之间至少隔这么久。</summary>
+    internal static readonly TimeSpan MinBellInterval = TimeSpan.FromMilliseconds(100);
+
+    private int _pendingBellVolume = -1;
+    private long _lastBell;
 
     public void ClipboardChanged(string text) => _pending.Add(() => inner.ClipboardChanged(text));
 

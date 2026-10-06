@@ -215,15 +215,32 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 成批的响铃合并成一次_之后按时间节流()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await c.SendManyAsync(Enumerable.Range(0, 5000).Select<int, (byte, byte, Action<XTestClient.Body>?)>(_ => (104, 0, null)));
+        await c.SyncAsync();
+        await Task.Delay(50);
+        int delivered = host.Log.Count(e => e.StartsWith("bell", StringComparison.Ordinal));
+        Assert.IsTrue(delivered is >= 1 and <= 3, $"5000 次响铃交给宿主 {delivered} 次");
+    }
+
+    [TestMethod]
     public async Task 响铃按协议从基准音量换算()
     {
         using RecordingHost host = new();
         await using X11Server server = new(host: host);
         await using XTestClient c = await XTestClient.ConnectAsync(server);
-        await c.SendAsync(104, 0);                                  // 0 → 基准 50
-        await c.SendAsync(104, 100);                                // 100 → 100
-        await c.SendAsync(104, unchecked((byte)(sbyte)-50));        // −50 → 50 − 25
-        await host.WaitForAsync(() => host.Log.Count(e => e.StartsWith("bell", StringComparison.Ordinal)) == 3);
+        int bells = 0;
+        foreach (byte percent in (byte[])[0, 100, unchecked((byte)(sbyte)-50)])   // 0 → 基准 50;100 → 100;−50 → 50 − 25
+        {
+            await c.SendAsync(104, percent);
+            await host.WaitForAsync(() => host.Log.Count(e => e.StartsWith("bell", StringComparison.Ordinal)) == bells + 1);
+            bells++;
+            await Task.Delay(150);   // 两次响铃之间至少隔 100 毫秒(节流)
+        }
         Assert.AreSequenceEqual(["bell 50", "bell 100", "bell 25"], host.Log.Where(e => e.StartsWith("bell", StringComparison.Ordinal)).ToArray());
 
         XMessage error = await c.RequestAsync(104, 101);
