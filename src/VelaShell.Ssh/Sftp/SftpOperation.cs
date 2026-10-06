@@ -76,4 +76,19 @@ public enum SftpOperation
 
     /// <summary>查询服务端的限额（<c>limits@openssh.com</c>）。</summary>
     QueryLimits,
+
+    /// <summary>查文件系统用量（<c>statvfs@openssh.com</c>）。</summary>
+    GetFileSystemInfo,
+
+    /// <summary>展开 <c>~</c>（<c>expand-path@openssh.com</c> / <c>home-directory</c>）。</summary>
+    ExpandPath,
+
+    /// <summary>服务端内复制（<c>copy-data</c>）。</summary>
+    CopyData,
+
+    /// <summary>把 uid / gid 翻成名字（<c>users-groups-by-id@openssh.com</c>）。</summary>
+    LookupNames,
+
+    /// <summary>使用者自己发的厂商扩展（<see cref="SftpFileSystem.SendExtendedAsync"/>）。</summary>
+    Extension,
 }

@@ -28,13 +28,17 @@ public readonly record struct SshExitStatus(
     bool CoreDumped = false,
     string? ErrorMessage = null)
 {
+    /// <summary>进 <see cref="ToString"/> 的信号名最多留多少个字符：真实的信号名（<c>KILL</c>、<c>SEGV</c>…）都很短。</summary>
+    private const int MaxSignalNameInText = 32;
+
     /// <summary>是否以退出码 0 正常结束。</summary>
     public bool IsSuccess => ExitCode == 0 && ExitSignalName is null;
 
     /// <summary>一行人话，用于日志。</summary>
+    /// <remarks>信号名是对端给的（<b>不可信文本</b>），进这一行之前先清一遍、截短。</remarks>
     public override string ToString() =>
         ExitSignalName is not null
-            ? $"被信号 {ExitSignalName} 杀死{(CoreDumped ? "（已转储核心）" : "")}"
+            ? $"被信号 {Diagnostics.PeerText.Sanitize(ExitSignalName, MaxSignalNameInText)} 杀死{(CoreDumped ? "（已转储核心）" : "")}"
             : ExitCode is { } code
                 ? $"退出码 {code}"
                 : "没有退出状态（连接中断，或对端实现不规范）";

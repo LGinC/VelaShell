@@ -43,7 +43,81 @@ public class SftpServiceTests
         // 于是 GetClient 交回一个凭空出现的 SSH 客户端,目录删除会拐进 rm -rf 快路径(#474)。
         _connectionService.GetClient(_sessionId).Returns((ISshClientWrapper?)null);
         _sftpClient.IsConnected.Returns(true);
-        _sftpService = new SftpService(_connectionService, _ => _sftpClient);
+
+        // 这一组多数用例验的是续传起点、字节与取消,上传走不带时间戳的两个重载;
+        // 保留时间戳(关闭之前按同一个句柄设修改时间)另有专门的用例,自己建服务。
+        ISettingsService settings = Substitute.For<ISettingsService>();
+        settings.GetSettingsAsync().Returns(new AppSettings { Transfer = { PreserveTimestamps = false } });
+        _sftpService = new SftpService(_connectionService, _ => _sftpClient, settings);
+    }
+
+    /// <summary>
+    /// SFTP 通道死了(sftp-server 退出、服务端关掉闲置通道)而 SSH 连接还在:下一次操作换一个新客户端,
+    /// 旧的那个释放掉 —— 而不是让文件面板一直坏到整条 SSH 连接重连。
+    /// </summary>
+    [TestMethod]
+    public async Task DeadSftpChannel_IsReplacedAndDisposed()
+    {
+        ISftpClientWrapper first = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper second = Substitute.For<ISftpClientWrapper>();
+        first.IsConnected.Returns(true);
+        second.IsConnected.Returns(true);
+        Queue<ISftpClientWrapper> made = new([first, second]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await service.ListDirectoryAsync(_sessionId, "/");
+        first.IsConnected.Returns(false);   // 通道死了
+        await service.ListDirectoryAsync(_sessionId, "/");
+
+        await second.Received(1).ListDirectoryAsync("/", Arg.Any<CancellationToken>());
+        await first.Received(1).DisposeAsync();
+        Assert.IsEmpty(made, "死了才换,换一次");
+    }
+
+    /// <summary>
+    /// 传输与浏览各用一条 SFTP 通道:上传大文件时几十个 WRITE 在途,浏览的 STAT / READDIR 不该排在它们后面。
+    /// </summary>
+    [TestMethod]
+    public async Task Transfers_UseTheirOwnSftpChannel()
+    {
+        ISftpClientWrapper browsing = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper transfer = Substitute.For<ISftpClientWrapper>();
+        browsing.IsConnected.Returns(true);
+        transfer.IsConnected.Returns(true);
+        Queue<ISftpClientWrapper> made = new([browsing, transfer]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await service.ListDirectoryAsync(_sessionId, "/");
+        await using (await service.OpenReadAsync(_sessionId, "/big.iso")) { }
+        await service.ListDirectoryAsync(_sessionId, "/");
+
+        await transfer.Received(1).OpenAsync("/big.iso", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await browsing.DidNotReceive().OpenAsync(Arg.Any<string>(), Arg.Any<FileMode>(), Arg.Any<FileAccess>(), Arg.Any<CancellationToken>());
+        await browsing.Received(2).ListDirectoryAsync("/", Arg.Any<CancellationToken>());
+
+        await service.CloseSessionAsync(_sessionId);
+        await browsing.Received(1).DisposeAsync();
+        await transfer.Received(1).DisposeAsync();
+    }
+
+    /// <summary>开不出第二条通道(服务端 MaxSessions 太小):传输退回浏览那一条,之后不再试。</summary>
+    [TestMethod]
+    public async Task Transfers_FallBackToTheBrowsingChannel_WhenASecondCannotOpen()
+    {
+        ISftpClientWrapper browsing = Substitute.For<ISftpClientWrapper>();
+        ISftpClientWrapper refused = Substitute.For<ISftpClientWrapper>();
+        browsing.IsConnected.Returns(true);
+        refused.ConnectAsync(Arg.Any<CancellationToken>()).Returns(Task.FromException(new VelaSshClientException("administratively prohibited")));
+        Queue<ISftpClientWrapper> made = new([browsing, refused]);
+        var service = new SftpService(_connectionService, _ => made.Dequeue());
+
+        await using (await service.OpenReadAsync(_sessionId, "/a")) { }
+        await using (await service.OpenReadAsync(_sessionId, "/b")) { }
+
+        await browsing.Received(1).OpenAsync("/a", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await browsing.Received(1).OpenAsync("/b", FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>());
+        await refused.Received(1).DisposeAsync();
+        Assert.IsEmpty(made, "第二条开不出来就记住,不再每次都试");
     }
 
     /// <summary>SSH 一断,挂在它上面的 SFTP 通道跟着收掉。</summary>
@@ -80,15 +154,18 @@ public class SftpServiceTests
         File.SetLastWriteTimeUtc(localPath, knownUtc);
         try
         {
-            _sftpClient.UploadAsync(Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<Action<ulong>>(), Arg.Any<CancellationToken>())
-                       .Returns(Task.CompletedTask);
+            var service = new SftpService(_connectionService, _ => _sftpClient);
 
-            await _sftpService.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
+            await service.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
 
-            await _sftpClient.Received(1).SetLastWriteTimeAsync(
+            // 关闭之前按同一个句柄设(一次往返),不再上传完之后 STAT + SETSTAT 两次往返。
+            await _sftpClient.Received(1).UploadAsync(
+                Arg.Any<Stream>(),
                 "/home/user/up.txt",
-                Arg.Is<DateTimeOffset>(d => d.UtcDateTime == knownUtc),
+                Arg.Is<RemoteUploadOptions>(o => o.ResumeOffset == 0 && o.LastWriteTime!.Value.UtcDateTime == knownUtc && !o.Fsync),
+                Arg.Any<Action<ulong>?>(),
                 Arg.Any<CancellationToken>());
+            await _sftpClient.DidNotReceiveWithAnyArgs().SetLastWriteTimeAsync(default!, default, default);
         }
         finally
         {
@@ -113,6 +190,42 @@ public class SftpServiceTests
 
             await _sftpClient.DidNotReceive().SetLastWriteTimeAsync(
                 Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>());
+            await _sftpClient.DidNotReceive().UploadAsync(
+                Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<RemoteUploadOptions>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(localPath);
+        }
+    }
+
+    /// <summary>「上传后落盘」打开:带着落盘要求上传(关闭之前做);默认关时不带。</summary>
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task UploadFileAsync_FsyncAfterUpload_IsPassedToTheClient(bool fsync)
+    {
+        ISettingsService settings = Substitute.For<ISettingsService>();
+        settings.GetSettingsAsync().Returns(new AppSettings { Transfer = { PreserveTimestamps = false, FsyncAfterUpload = fsync } });
+        var service = new SftpService(_connectionService, _ => _sftpClient, settings);
+        string localPath = Path.Combine(Path.GetTempPath(), $"vela-fsync-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(localPath, "durable");
+        try
+        {
+            await service.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
+
+            if (fsync)
+            {
+                await _sftpClient.Received(1).UploadAsync(
+                    Arg.Any<Stream>(), "/home/user/up.txt",
+                    Arg.Is<RemoteUploadOptions>(o => o.Fsync && o.LastWriteTime == null),
+                    Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await _sftpClient.DidNotReceive().UploadAsync(
+                    Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<RemoteUploadOptions>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+            }
         }
         finally
         {
@@ -507,6 +620,7 @@ public class SftpServiceTests
         SftpEntry childSub = CreateMockSftpFile("sub", "/home/user/proj/sub", 0, true, "rwxr-xr-x");
         SftpEntry grandchild = CreateMockSftpFile("b.txt", "/home/user/proj/sub/b.txt", 20, false, "rw-r--r--");
         _sftpClient.GetEntryAsync(dir, Arg.Any<CancellationToken>()).Returns(mockDir); // stat → proj 是目录
+        _sftpClient.GetEntryAsync(childSub.FullName, Arg.Any<CancellationToken>()).Returns(childSub); // 进子目录之前不跟随链接地再确认一次
         _sftpClient.ListDirectoryAsync(dir, Arg.Any<CancellationToken>())
                    .Returns(Task.FromResult<IEnumerable<SftpEntry>>([childFile, childSub]));
         _sftpClient.ListDirectoryAsync("/home/user/proj/sub", Arg.Any<CancellationToken>())
@@ -755,6 +869,45 @@ public class SftpServiceTests
         Assert.AreEqual("33", result[0].Group);
     }
 
+    /// <summary>
+    /// 只开了 SFTP 的账号(没有 exec,查不了 passwd):表里没有的 id 经 SFTP 扩展(users-groups-by-id)补上 ——
+    /// 属主一栏原来只能显示数字。每个 id 每个会话只问一次,服务端也不认识的同样不再问。
+    /// </summary>
+    [TestMethod]
+    public async Task ListDirectoryAsync_SftpOnlyAccount_ResolvesNamesThroughTheSftpExtension()
+    {
+        ISshClientWrapper sshClient = Substitute.For<ISshClientWrapper>();
+        sshClient.RunCommandAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                 .ThrowsAsync(new InvalidOperationException("no exec channel"));
+        _connectionService.GetClient(_sessionId).Returns(sshClient);
+        _sftpClient.SupportsIdLookup.Returns(true);
+        _sftpClient.LookupNamesAsync(Arg.Any<IReadOnlyList<int>>(), Arg.Any<IReadOnlyList<int>>(), Arg.Any<CancellationToken>())
+                   .Returns(call =>
+                   {
+                       IReadOnlyList<int> uids = call.ArgAt<IReadOnlyList<int>>(0);
+                       IReadOnlyList<int> gids = call.ArgAt<IReadOnlyList<int>>(1);
+                       return Task.FromResult<(IReadOnlyList<string?>, IReadOnlyList<string?>)>((
+                           [.. uids.Select(u => u == 1000 ? "deploy" : null)],
+                           [.. gids.Select(g => g == 33 ? "www-data" : null)]));
+                   });
+        _sftpClient.ListDirectoryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult<IEnumerable<SftpEntry>>(
+                   [
+                       CreateMockSftpFile("app.log", "/srv/app.log", 10, false, "rw-r--r--") with { UserId = 1000, GroupId = 33 },
+                       CreateMockSftpFile("orphan", "/srv/orphan", 10, false, "rw-r--r--") with { UserId = 4242, GroupId = 33 },
+                   ]));
+
+        List<RemoteFileInfo> first = await _sftpService.ListDirectoryAsync(_sessionId, "/srv");
+        List<RemoteFileInfo> second = await _sftpService.ListDirectoryAsync(_sessionId, "/srv");
+
+        Assert.AreEqual("deploy", first[0].Owner);
+        Assert.AreEqual("www-data", first[0].Group);
+        Assert.AreEqual("4242", first[1].Owner, "服务端也不认识的回退数字");
+        Assert.AreEqual("deploy", second[0].Owner);
+        await _sftpClient.Received(1).LookupNamesAsync(
+            Arg.Any<IReadOnlyList<int>>(), Arg.Any<IReadOnlyList<int>>(), Arg.Any<CancellationToken>());
+    }
+
     /// <summary>整表只查一次:切目录不该每次都往返一条 getent。</summary>
     [TestMethod]
     public async Task ListDirectoryAsync_QueriesIdentityDatabaseOncePerSession()
@@ -973,6 +1126,34 @@ public class SftpServiceTests
         Assert.AreEqual(2, reports[^1].TotalCount, "链接计 1 条、目录自身计 1 条,链接目标里的条目不能算进来。");
     }
 
+    /// <summary>
+    /// 列表说是真目录、不跟随链接的 stat 却说是链接:不进去,只删链接本身。
+    /// </summary>
+    /// <remarks>
+    /// READDIR 的属性按 lstat 还是 stat 给,SFTP 草案没有规定。服务端给的是跟随之后的属性时,
+    /// 指向目录的链接在列表里就是一个「真目录」—— 照着列表进去删,删掉的是链接目标里的东西。
+    /// </remarks>
+    [TestMethod]
+    public async Task DeleteAsync_Recursive_ConfirmsWithLstatBeforeDescending()
+    {
+        const string dir = "/home/user/proj";
+        SftpEntry mockDir = CreateMockSftpFile("proj", dir, 0, true, "rwxr-xr-x");
+        // 列表里看起来是真目录(服务端给的是跟随之后的属性)……
+        SftpEntry listedAsDirectory = CreateMockSftpFile("data", "/home/user/proj/data", 0, true, "rwxr-xr-x");
+        // ……不跟随链接地 stat 一下,其实是指向别处的链接。
+        SftpEntry actuallyLink = listedAsDirectory with { IsSymbolicLink = true, LinkTarget = "/var/important" };
+        _sftpClient.GetEntryAsync(dir, Arg.Any<CancellationToken>()).Returns(mockDir);
+        _sftpClient.GetEntryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>()).Returns(actuallyLink);
+        _sftpClient.ListDirectoryAsync(dir, Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult<IEnumerable<SftpEntry>>([listedAsDirectory]));
+
+        await _sftpService.DeleteAsync(_sessionId, dir);
+
+        await _sftpClient.DidNotReceive().ListDirectoryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
+        await _sftpClient.Received(1).DeleteFileAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().DeleteDirectoryAsync(listedAsDirectory.FullName, Arg.Any<CancellationToken>());
+    }
+
     /// <summary>复制链接得到链接(cp -P 口径),不去下载目标内容。</summary>
     [TestMethod]
     public async Task CopyAsync_OnSymlink_RecreatesTheLinkInsteadOfCopyingTarget()
@@ -989,6 +1170,24 @@ public class SftpServiceTests
         await _sftpClient.Received(1).CreateSymbolicLinkAsync("/srv/app/current-copy", "releases/42", Arg.Any<CancellationToken>());
         await _sftpClient.DidNotReceive().ListDirectoryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>());
         await _sftpClient.DidNotReceive().DownloadAsync(Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>服务端支持 copy-data:在服务端内复制,不下载也不上传;保留时间戳时目标的修改时间设成源的。</summary>
+    [TestMethod]
+    public async Task CopyAsync_UsesTheServerSideCopy_WhenSupported()
+    {
+        var mtime = new DateTime(2025, 1, 2, 3, 4, 5, DateTimeKind.Local);
+        SftpEntry file = CreateMockSftpFile("big.iso", "/data/big.iso", 4_000_000_000, false, "rw-r--r--") with { LastWriteTime = mtime };
+        _sftpClient.GetEntryAsync(file.FullName, Arg.Any<CancellationToken>()).Returns(file);
+        _sftpClient.SupportsServerCopy.Returns(true);
+        var service = new SftpService(_connectionService, _ => _sftpClient);   // 无设置服务 = 默认保留时间戳
+
+        await service.CopyAsync(_sessionId, file.FullName, "/data/big-copy.iso");
+
+        await _sftpClient.Received(1).CopyOnServerAsync("/data/big.iso", "/data/big-copy.iso", Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().DownloadAsync(Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().UploadAsync(Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.Received(1).SetLastWriteTimeAsync("/data/big-copy.iso", new DateTimeOffset(mtime), Arg.Any<CancellationToken>());
     }
 
     [TestMethod]
@@ -1070,6 +1269,38 @@ public class SftpServiceTests
         await _sftpService.UploadFileAsync(_sessionId, localPath, remotePath, null, 50_000);
 
         await _sftpClient.Received(1).UploadAsync(Arg.Any<Stream>(), remotePath, remoteLength,
+            Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        File.Delete(localPath);
+    }
+
+    /// <summary>
+    /// 上一次被打断时库交出了精确的续传点(DurableLength):续传从那里接着传,不按远端长度盲退一个在途窗口。
+    /// </summary>
+    [TestMethod]
+    public async Task UploadFileAsync_ResumeAfterInterruption_UsesTheExactDurableLength()
+    {
+        string localPath = Path.GetTempFileName();
+        byte[] content = CreatePattern(500_000);
+        await File.WriteAllBytesAsync(localPath, content);
+        const long remoteLength = 300_000;   // 已确认的最高偏移
+        const long durable = 280_000;        // 从开头起连续确认落盘的字节数
+        const string remotePath = "/home/user/exact.bin";
+
+        _sftpClient.ResumeSafetyMargin.Returns(64 * 1024);
+        _sftpClient.GetFileSizeAsync(remotePath, Arg.Any<CancellationToken>()).Returns(remoteLength);
+        _sftpClient.OpenAsync(remotePath, FileMode.Open, FileAccess.Read, Arg.Any<CancellationToken>())
+                   .Returns(_ => Task.FromResult<Stream>(new MemoryStream(content[..(int)remoteLength], false)));
+
+        // 第一次上传中途断了:库报出精确的续传点。
+        _sftpClient.UploadAsync(Arg.Any<Stream>(), remotePath, Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromException(new VelaSftpTransferInterruptedException("中断", durable)));
+        await Assert.ThrowsExactlyAsync<VelaSftpTransferInterruptedException>(
+            () => _sftpService.UploadFileAsync(_sessionId, localPath, remotePath));
+
+        // 续传:从 280_000 接着传,而不是 300_000 - 64 KiB。
+        await _sftpService.UploadFileAsync(_sessionId, localPath, remotePath, null, resumeOffset: 1);
+
+        await _sftpClient.Received(1).UploadAsync(Arg.Any<Stream>(), remotePath, durable,
             Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
         File.Delete(localPath);
     }

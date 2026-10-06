@@ -10,11 +10,15 @@
 //   行为规格:             velashell-docs/zh/ssh/design/architecture.md §8 第 5 项
 
 using System.Buffers;
+using System.Diagnostics.CodeAnalysis;
+using System.Formats.Asn1;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Keys;
@@ -36,6 +40,27 @@ public static class SshPrivateKeyFile
     /// </para>
     /// </remarks>
     internal const uint MaxKdfRounds = 4096;
+
+    /// <summary>加密 PKCS#8 的 PBKDF2（以及 PBES1 / PKCS#12 PBE）迭代数上限。</summary>
+    /// <remarks>
+    /// <para>
+    /// 迭代数同样来自文件。<b>.NET 导入加密 PKCS#8 时不设上限</b>（实测 300 万次照常导入）：
+    /// 一个被改成 <c>int.MaxValue</c> 的文件按每秒约七百万次算要跑五分钟，同步、停不下来，
+    /// 而且下面「先按 RSA 试、再按 ECDSA 试」可能算两遍。
+    /// </para>
+    /// <para>
+    /// 常见的取值是 OpenSSL 的 2048、OWASP 建议的 60 万；一千万是后者的十几倍，最坏也就一两秒。
+    /// </para>
+    /// </remarks>
+    internal const int MaxPkcs8Iterations = 10_000_000;
+
+    /// <summary>加密数据不超过这么多字节的 PKCS#8 先按 ECDSA 试。</summary>
+    /// <remarks>
+    /// 加密 PKCS#8 里看不出钥的类型（算法标识在密文里），只能逐个试，而每试一次都要把 KDF 整个跑一遍。
+    /// 椭圆曲线钥连 P-521 带公钥也不到 260 字节，RSA 最小的 512 位钥也有三百四十多字节 ——
+    /// 按大小排个先后，口令对的时候就只算一遍。
+    /// </remarks>
+    private const int EcFirstEncryptedBytes = 320;
 
     /// <summary>认一下这段 PEM 是什么格式。</summary>
     public static SshPrivateKeyFormat DetectFormat(string pem)
@@ -70,6 +95,181 @@ public static class SshPrivateKeyFile
         return SshPrivateKeyFormat.Unknown;
     }
 
+    /// <summary>不用口令读出私钥文件里的公钥。</summary>
+    /// <param name="pem">私钥文件的文本。</param>
+    /// <param name="publicKey">读出的公钥。</param>
+    /// <returns>
+    /// 读得出为 <see langword="true"/>。加密的 PKCS#8 与传统加密 PEM 不带明文公钥，读不出；
+    /// 认不出的格式、内容不完整的文件同样返回 <see langword="false"/>，不抛。
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// OpenSSH 容器的公钥段与 <c>.ppk</c> 的 <c>Public-Lines</c> 本来就是明文，私钥加了密也读得出；
+    /// 未加密的 PKCS#1 / SEC1 / PKCS#8 由私钥导出。用处是导入只有私钥、没有 <c>.pub</c> 的文件 ——
+    /// PuTTY 用户手里通常只有一个 <c>.ppk</c>。
+    /// </para>
+    /// <para>
+    /// 明文的那一份<b>没有</b>与私钥核对过（核对要先解密）：拿它显示指纹、写 <c>.pub</c> 可以；
+    /// 认证用的是 <see cref="Parse(string, ReadOnlySpan{char}, string?, CancellationToken)"/> 解出的那一把，那里会核对。
+    /// </para>
+    /// </remarks>
+    public static bool TryReadPublicKey(string pem, [NotNullWhen(true)] out SshPublicKey? publicKey)
+    {
+        ArgumentNullException.ThrowIfNull(pem);
+        publicKey = null;
+
+        try
+        {
+            byte[]? blob = DetectFormat(pem) switch
+            {
+                SshPrivateKeyFormat.OpenSsh => ReadOpenSshPublicSection(pem),
+                SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.ReadPublicBlob(pem),
+                SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec => DerivePublicBlob(pem),
+                _ => null,   // 加密的 PKCS#8：公钥也在密文里
+            };
+            if (blob is null)
+            {
+                return false;
+            }
+
+            publicKey = SshPublicKey.Decode(blob);
+            return true;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // 文件是外来输入：读不出就是读不出，不分原因（与 Parse 把它们归成 KeyFormatInvalid 同理）。
+            return false;
+        }
+    }
+
+    /// <summary>OpenSSH 容器的公钥段（明文）。不加密的容器里私钥区也是明文，读过就清零。</summary>
+    private static byte[] ReadOpenSshPublicSection(string pem)
+    {
+        OpenSshContainer container = ReadOpenSshContainer(pem, where: "");
+        CryptographicOperations.ZeroMemory(container.PrivateSection);
+        return container.PublicSection;
+    }
+
+    /// <summary>写私钥文件时口令派生的默认轮数（与 <c>ssh-keygen</c> 一致）。</summary>
+    public const int DefaultKdfRounds = 16;
+
+    /// <summary>写私钥文件时用的加密算法（<c>ssh-keygen</c> 的默认）。</summary>
+    private const string WriteCipher = "aes256-ctr";
+
+    /// <summary>把一把私钥写成 OpenSSH 私钥文件（<c>-----BEGIN OPENSSH PRIVATE KEY-----</c>），可以带口令。</summary>
+    /// <param name="key">私钥。</param>
+    /// <param name="passphrase">口令；空就不加密。调用方可以把它放在自己的 <c>char[]</c> 里，用完自己清零。</param>
+    /// <param name="comment">注释（写在私钥区里，<c>ssh-keygen -l</c> 显示的那一列）。</param>
+    /// <param name="kdfRounds"><c>bcrypt_pbkdf</c> 的轮数（只在有口令时用），1–<see cref="MaxKdfRounds"/>。</param>
+    /// <returns>可以直接写进文件的文本（<c>\n</c> 换行）。文件要只给属主读写（Unix 上 0600），那是调用方的事。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">轮数不在范围内。</exception>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.6〕<c>openssh-key-v1</c> 容器，与读取一侧同一份规格：有口令时
+    /// <c>bcrypt</c> KDF（16 字节随机盐）+ <c>aes256-ctr</c>，没有时 <c>none</c> / <c>none</c>；私钥区以两个相同的随机校验字开头，
+    /// 末尾按分组（加密时 16、否则 8）填充 1、2、3……。正文按 70 列折行。
+    /// </para>
+    /// <para>
+    /// 写出侧只装配现成的 KDF 与加密：对不对，用例拿真 <c>ssh-keygen</c> 读本库写的文件来验，而不是本库自己读自己。
+    /// 曾经库只能读、不能写，宿主手写了一份只能写<b>未加密</b>私钥的容器。中间的明文私钥区、派生出的密钥都清零。
+    /// </para>
+    /// </remarks>
+    public static string Format(
+        InMemorySshSigner key, ReadOnlySpan<char> passphrase = default, string comment = "", int kdfRounds = DefaultKdfRounds)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentOutOfRangeException.ThrowIfLessThan(kdfRounds, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(kdfRounds, (int)MaxKdfRounds);
+
+        bool encrypt = !passphrase.IsEmpty;
+        int blockBytes = encrypt ? 16 : 8;
+
+        // 私钥区：校验字 ×2 ‖ 钥 ‖ 注释 ‖ 填充。
+        ArrayBufferWriter<byte> section = new(16 * 1024);   // 一次给够（16384 位 RSA 的私钥区也只有七八 KiB）：扩容会把明文留在旧缓冲里
+        byte[]? plain = null;
+        byte[]? material = null;
+        try
+        {
+            SshDataWriter fields = new(section);
+            uint check = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4));
+            fields.WriteUInt32(check);
+            fields.WriteUInt32(check);
+            key.WriteOpenSshPrivateFields(ref fields);
+            fields.WriteUtf8String(comment);
+            for (byte pad = 1; section.WrittenCount % blockBytes != 0; pad++)
+            {
+                fields.WriteByte(pad);
+            }
+            plain = section.WrittenSpan.ToArray();
+
+            byte[] kdfOptions = [];
+            byte[] privateSection = plain;
+            if (encrypt)
+            {
+                byte[] salt = RandomNumberGenerator.GetBytes(16);
+                ArrayBufferWriter<byte> options = new();
+                SshDataWriter optionsWriter = new(options);
+                optionsWriter.WriteString(salt);
+                optionsWriter.WriteUInt32((uint)kdfRounds);
+                kdfOptions = options.WrittenSpan.ToArray();
+
+                OpenSshKeyCipher.CipherShape shape = OpenSshKeyCipher.Describe(WriteCipher)!.Value;
+                material = new byte[shape.KeyBytes + shape.IvBytes];
+                byte[] passphraseBytes = Utf8(passphrase);
+                try
+                {
+                    BcryptPbkdf.DeriveKey(passphraseBytes, salt, kdfRounds, material);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(passphraseBytes);
+                }
+                privateSection = OpenSshKeyCipher.EncryptCounterMode(WriteCipher, plain, material);
+            }
+
+            // 容器：魔数 ‖ cipher ‖ kdf ‖ kdfoptions ‖ 钥数 1 ‖ 公钥 ‖ 私钥区。
+            ArrayBufferWriter<byte> container = new();
+            SshDataWriter writer = new(container);
+            writer.WriteRaw(Encoding.ASCII.GetBytes(OpenSshMagic));
+            writer.WriteUtf8String(encrypt ? WriteCipher : "none");
+            writer.WriteUtf8String(encrypt ? "bcrypt" : "none");
+            writer.WriteString(kdfOptions);
+            writer.WriteUInt32(1);
+            writer.WriteString(key.PublicKey.Blob.Span);
+            writer.WriteString(privateSection);
+
+            string body = Convert.ToBase64String(container.WrittenSpan);
+            StringBuilder pem = new(body.Length + 128);
+            pem.Append("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+            for (int offset = 0; offset < body.Length; offset += 70)
+            {
+                pem.Append(body.AsSpan(offset, Math.Min(70, body.Length - offset))).Append('\n');
+            }
+            pem.Append("-----END OPENSSH PRIVATE KEY-----\n");
+            return pem.ToString();
+        }
+        finally
+        {
+            section.Clear();   // ArrayBufferWriter.Clear 把写过的部分清零
+            if (plain is not null)
+            {
+                CryptographicOperations.ZeroMemory(plain);
+            }
+            if (material is not null)
+            {
+                CryptographicOperations.ZeroMemory(material);
+            }
+        }
+    }
+
+    /// <summary>未加密的 PKCS#1 / SEC1 / PKCS#8：解出私钥、取它的公钥。传统加密 PEM 在这里被拒。</summary>
+    private static byte[] DerivePublicBlob(string pem)
+    {
+        using InMemorySshSigner signer = Parse(pem, ReadOnlySpan<char>.Empty);
+        return signer.PublicKey.Blob.ToArray();
+    }
+
     /// <summary>从文件读一把私钥。</summary>
     /// <param name="path">文件路径。</param>
     /// <param name="passphrase">口令；不需要就给 <see langword="null"/>。</param>
@@ -86,8 +286,22 @@ public static class SshPrivateKeyFile
     /// 由调用方决定是否 <c>await Task.Run(() =&gt; SshPrivateKeyFile.LoadAsync(...))</c>。
     /// </para>
     /// </remarks>
+    [OverloadResolutionPriority(1)]
+    public static ValueTask<InMemorySshSigner> LoadAsync(
+        string path, string? passphrase = null, CancellationToken cancellationToken = default) =>
+        LoadAsync(path, passphrase.AsMemory(), cancellationToken);
+
+    /// <summary>从文件读一把私钥；口令以字符缓冲给。</summary>
+    /// <param name="path">文件路径。</param>
+    /// <param name="passphrase">口令；不需要就给空。</param>
+    /// <param name="cancellationToken">取消令牌 —— 也交给口令派生（<c>bcrypt_pbkdf</c> 逐轮检查）。</param>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §5.2〕口令可以放在调用方自己的 <c>char[]</c> 里，用完自己清零 ——
+    /// <see cref="string"/> 版本的口令是不可变的，清不掉。库里由口令派生出的中间副本（UTF-8 字节、派生出的密钥）都会清零。
+    /// 其余说明见 <see cref="LoadAsync(string, string?, CancellationToken)"/>。
+    /// </remarks>
     public static async ValueTask<InMemorySshSigner> LoadAsync(
-        string path, string? passphrase = null, CancellationToken cancellationToken = default)
+        string path, ReadOnlyMemory<char> passphrase, CancellationToken cancellationToken = default)
     {
         ArgumentException.ThrowIfNullOrEmpty(path);
 
@@ -106,32 +320,56 @@ public static class SshPrivateKeyFile
                 $"没有权限读私钥文件 {path}。（Unix 上私钥应当是 0600。）", ex);
         }
 
-        return Parse(pem, passphrase, path);
+        return Parse(pem, passphrase.Span, path, cancellationToken);
     }
 
     /// <summary>从一段 PEM 文本解出私钥。</summary>
     /// <param name="pem">PEM 文本。</param>
     /// <param name="passphrase">口令；不需要就给 <see langword="null"/>。</param>
     /// <param name="origin">出错消息里用来标明来源（通常是文件路径）。</param>
-    public static InMemorySshSigner Parse(string pem, string? passphrase = null, string? origin = null)
+    [OverloadResolutionPriority(1)]
+    public static InMemorySshSigner Parse(string pem, string? passphrase = null, string? origin = null) =>
+        Parse(pem, passphrase.AsSpan(), origin);
+
+    /// <summary>从一段 PEM 文本解出私钥；口令以字符缓冲给，可以中途取消。</summary>
+    /// <param name="pem">PEM 文本。</param>
+    /// <param name="passphrase">口令；不需要就给空。调用方可以把它放在自己的 <c>char[]</c> 里，用完自己清零。</param>
+    /// <param name="origin">出错消息里用来标明来源（通常是文件路径）。</param>
+    /// <param name="cancellationToken">取消令牌：口令派生是同步的纯计算，<c>bcrypt_pbkdf</c> 逐轮检查它，Argon2 与 PBKDF2 开算之前检查。</param>
+    /// <exception cref="OperationCanceledException">被取消。</exception>
+    public static InMemorySshSigner Parse(
+        string pem, ReadOnlySpan<char> passphrase, string? origin = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(pem);
+        cancellationToken.ThrowIfCancellationRequested();
 
         SshPrivateKeyFormat format = DetectFormat(pem);
         string where = origin is null ? "" : $"（{origin}）";
 
-        return format switch
+        try
         {
-            SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.Parse(pem, passphrase, origin),
-            SshPrivateKeyFormat.OpenSsh => ParseOpenSsh(pem, passphrase, where),
-            SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs8Encrypted
-                or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec =>
-                ParseWithBcl(pem, passphrase, format, where),
-            _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported,
-                $"认不出这个私钥格式{where}。支持的有：OpenSSH（BEGIN OPENSSH PRIVATE KEY）、" +
-                "PKCS#8、PKCS#1（BEGIN RSA PRIVATE KEY）、SEC1（BEGIN EC PRIVATE KEY）、" +
-                "以及 PuTTY 的 .ppk（v2 / v3）。"),
-        };
+            return format switch
+            {
+                SshPrivateKeyFormat.Putty => PuttyPrivateKeyFile.Parse(pem, passphrase, origin, cancellationToken),
+                SshPrivateKeyFormat.OpenSsh => ParseOpenSsh(pem, passphrase, where, cancellationToken),
+                SshPrivateKeyFormat.Pkcs8 or SshPrivateKeyFormat.Pkcs8Encrypted
+                    or SshPrivateKeyFormat.Pkcs1Rsa or SshPrivateKeyFormat.Sec1Ec =>
+                    ParseWithBcl(pem, passphrase, format, where, cancellationToken),
+                _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"认不出这个私钥格式{where}。支持的有：OpenSSH（BEGIN OPENSSH PRIVATE KEY）、" +
+                    "PKCS#8、PKCS#1（BEGIN RSA PRIVATE KEY）、SEC1（BEGIN EC PRIVATE KEY）、" +
+                    "以及 PuTTY 的 .ppk（v2 / v3）。"),
+            };
+        }
+        catch (Exception ex) when (ex is not (SshPrivateKeyException or OperationCanceledException))
+        {
+            // 〔velashell-docs/zh/ssh/spec/04 §4.6〕私钥文件是外来输入：截断（复制粘贴丢了尾行、base64 恰好在 4 字符边界断开）、
+            // 字段畸形（`Public-Lines: abc`、RSA 的 p 或 q 为 1）都只该是「格式不对」。曾经让解析层的 internal 异常
+            // 或 BCL 的 FormatException / DivideByZeroException 原样漏出去 —— 调用方只接 SshPrivateKeyException，
+            // 那就一路漏到了界面上。
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid, $"私钥文件的内容不完整或格式不对{where}：{ex.Message}", ex);
+        }
     }
 
     // ------------------------------------------------------------ OpenSSH 格式
@@ -148,7 +386,49 @@ public static class SshPrivateKeyFile
     /// string   加密并填充过的私钥区
     /// </code>
     /// </remarks>
-    private static InMemorySshSigner ParseOpenSsh(string pem, string? passphrase, string where)
+    private static InMemorySshSigner ParseOpenSsh(
+        string pem, ReadOnlySpan<char> passphrase, string where, CancellationToken cancellationToken)
+    {
+        (string cipherName, string kdfName, byte[] kdfOptions, byte[] publicSection, byte[] privateSection, byte[] tag) =
+            ReadOpenSshContainer(pem, where);
+
+        InMemorySshSigner signer;
+        if (cipherName == "none" && kdfName == "none")
+        {
+            signer = ParseOpenSshPrivateSection(privateSection, encrypted: false, where);
+        }
+        else
+        {
+            byte[] decrypted = DecryptOpenSshSection(
+                privateSection, tag, cipherName, kdfName, kdfOptions, passphrase, where, cancellationToken);
+            try
+            {
+                signer = ParseOpenSshPrivateSection(decrypted, encrypted: true, where);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(decrypted);
+            }
+        }
+
+        // 〔velashell-docs/zh/ssh/spec/04 §4.6〕公钥段（文件里明文的那一份）必须与私钥导出的是同一把。
+        // 曾经直接丢掉不看：公钥段被改过、或者两个文件拼错了，拿到的是「不是你以为的那把」钥 ——
+        // 症状只是服务端一句「不接受这把公钥」，而 ssh-keygen -y、agent 列出来的都是公钥段那一把。
+        if (!signer.PublicKey.Blob.Span.SequenceEqual(publicSection))
+        {
+            signer.Dispose();
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                $"OpenSSH 私钥文件里的公钥与私钥不是一对{where} —— 文件被改过，或者拼错了。");
+        }
+        return signer;
+    }
+
+    /// <summary><c>openssh-key-v1</c> 容器拆开后的各段；私钥区还没解密。</summary>
+    private readonly record struct OpenSshContainer(
+        string CipherName, string KdfName, byte[] KdfOptions, byte[] PublicSection, byte[] PrivateSection, byte[] Tag);
+
+    /// <summary>拆开 <c>openssh-key-v1</c> 容器（布局见 <see cref="ParseOpenSsh"/>）。</summary>
+    private static OpenSshContainer ReadOpenSshContainer(string pem, string where)
     {
         byte[] blob = DecodePemBody(pem, "OPENSSH PRIVATE KEY", where);
 
@@ -170,7 +450,7 @@ public static class SshPrivateKeyFile
                 $"这个文件里有 {keyCount} 把密钥{where}，本库只处理一把。");
         }
 
-        _ = reader.ReadString(64 * 1024);        // 公钥（下面从私钥里重新导出，不用它）
+        byte[] publicSection = reader.ReadStringAsArray(64 * 1024);   // 公钥：解出私钥之后拿来核对
         byte[] privateSection = reader.ReadStringAsArray(1024 * 1024);
 
         // AEAD 的认证标签在那个 string 的**外面** —— 容器末尾的裸字节，不带长度前缀。
@@ -178,21 +458,7 @@ public static class SshPrivateKeyFile
         // 标签永远验不过」的结果（流密码解前缀照样是对的），查起来极其费劲。
         byte[] tag = reader.ReadRemaining().ToArray();
 
-        if (cipherName == "none" && kdfName == "none")
-        {
-            return ParseOpenSshPrivateSection(privateSection, encrypted: false, where);
-        }
-
-        byte[] decrypted = DecryptOpenSshSection(
-            privateSection, tag, cipherName, kdfName, kdfOptions, passphrase, where);
-        try
-        {
-            return ParseOpenSshPrivateSection(decrypted, encrypted: true, where);
-        }
-        finally
-        {
-            CryptographicOperations.ZeroMemory(decrypted);
-        }
+        return new(cipherName, kdfName, kdfOptions, publicSection, privateSection, tag);
     }
 
     /// <summary>用 <c>bcrypt_pbkdf</c> 派生密钥，再解开私钥区。</summary>
@@ -209,7 +475,7 @@ public static class SshPrivateKeyFile
     /// </remarks>
     private static byte[] DecryptOpenSshSection(
         byte[] section, byte[] tag, string cipherName, string kdfName, byte[] kdfOptions,
-        string? passphrase, string where)
+        ReadOnlySpan<char> passphrase, string where, CancellationToken cancellationToken)
     {
         if (kdfName != "bcrypt")
         {
@@ -225,7 +491,7 @@ public static class SshPrivateKeyFile
                 "换一种即可：ssh-keygen -p -Z aes256-ctr -f <私钥文件>");
         }
 
-        if (string.IsNullOrEmpty(passphrase))
+        if (passphrase.IsEmpty)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseRequired, $"这是一把加密的 OpenSSH 私钥{where}，需要口令。");
         }
@@ -265,9 +531,10 @@ public static class SshPrivateKeyFile
         }
 
         byte[] material = new byte[shape.KeyBytes + shape.IvBytes];
+        byte[] passphraseBytes = Utf8(passphrase);
         try
         {
-            BcryptPbkdf.DeriveKey(Encoding.UTF8.GetBytes(passphrase), salt, (int)rounds, material);
+            BcryptPbkdf.DeriveKey(passphraseBytes, salt, (int)rounds, material, cancellationToken);
             return OpenSshKeyCipher.Decrypt(cipherName, section, tag, material);
         }
         catch (CryptographicException ex)
@@ -280,6 +547,31 @@ public static class SshPrivateKeyFile
         finally
         {
             CryptographicOperations.ZeroMemory(material);
+            CryptographicOperations.ZeroMemory(passphraseBytes);
+        }
+    }
+
+    /// <summary>口令的 UTF-8 字节（用完要清零）。</summary>
+    internal static byte[] Utf8(ReadOnlySpan<char> passphrase)
+    {
+        byte[] bytes = new byte[Encoding.UTF8.GetByteCount(passphrase)];
+        Encoding.UTF8.GetBytes(passphrase, bytes);
+        return bytes;
+    }
+
+    /// <summary>把私钥的中间副本清零（velashell-docs/zh/ssh/spec/04 §5.2）。</summary>
+    /// <remarks>
+    /// 只清得了数组：<see cref="BigInteger"/> 是不可变的，清不掉；口令以 <see cref="string"/> 给的也一样 ——
+    /// 要清零口令，用收 <c>ReadOnlySpan&lt;char&gt;</c> / <c>ReadOnlyMemory&lt;char&gt;</c> 的重载，把它放在自己的 <c>char[]</c> 里。
+    /// </remarks>
+    private static void Clear(params ReadOnlySpan<byte[]?> secrets)
+    {
+        foreach (byte[]? secret in secrets)
+        {
+            if (secret is not null)
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
         }
     }
 
@@ -330,16 +622,38 @@ public static class SshPrivateKeyFile
 
     private static InMemorySshSigner ReadEd25519(scoped ref SshDataReader reader, string where)
     {
-        _ = reader.ReadString(64);                                  // 公钥
+        byte[] publicKey = reader.ReadStringAsArray(64);            // 公钥
         byte[] secret = reader.ReadStringAsArray(128);              // 种子 ‖ 公钥
 
-        if (secret.Length != 64)
+        try
         {
-            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
-                $"Ed25519 私钥应当是 64 字节（种子 32 + 公钥 32），实际 {secret.Length} 字节{where}。");
-        }
+            if (secret.Length != 64)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥应当是 64 字节（种子 32 + 公钥 32），实际 {secret.Length} 字节{where}。");
+            }
 
-        return InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            // 私钥区里公钥出现两次（单独一份、种子后面一份），种子还能导出第三份 —— 三份必须是同一把。
+            if (!secret.AsSpan(32).SequenceEqual(publicKey))
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥区里的两份公钥对不上{where}，文件多半损坏了。");
+            }
+
+            // 签名器复制一份归自己所有；这一份由这里清。
+            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            if (!signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
+            {
+                signer.Dispose();
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 的种子导出的公钥与文件里写的不一致{where}，文件多半损坏了。");
+            }
+            return signer;
+        }
+        finally
+        {
+            Clear(secret);
+        }
     }
 
     private static InMemorySshSigner ReadRsa(scoped ref SshDataReader reader, string where)
@@ -351,6 +665,7 @@ public static class SshPrivateKeyFile
         byte[] p = reader.ReadMpint(4096).ToArray();
         byte[] q = reader.ReadMpint(4096).ToArray();
 
+        RSAParameters parameters = default;
         try
         {
             // OpenSSH 存的是 n/e/d/iqmp/p/q，而 RSAParameters 还要 DP 与 DQ。
@@ -360,10 +675,17 @@ public static class SshPrivateKeyFile
             BigInteger bigP = ToPositive(p);
             BigInteger bigQ = ToPositive(q);
 
+            // n 必须正好是 p·q（p、q 都大于 1）：不核对的话，坏文件的症状是签名验不过 ——「服务端不接受这把公钥」。
+            if (bigP <= BigInteger.One || bigQ <= BigInteger.One || bigP * bigQ != ToPositive(n))
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"RSA 私钥的 p·q 与 n 对不上{where}，文件多半损坏了。");
+            }
+
             byte[] dp = ToFixedLength(bigD % (bigP - BigInteger.One), p.Length);
             byte[] dq = ToFixedLength(bigD % (bigQ - BigInteger.One), q.Length);
 
-            RSAParameters parameters = new()
+            parameters = new()
             {
                 Modulus = TrimLeadingZero(n),
                 Exponent = TrimLeadingZero(e),
@@ -383,13 +705,17 @@ public static class SshPrivateKeyFile
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"RSA 私钥的参数不成立{where}：{ex.Message}", ex);
         }
+        finally
+        {
+            // RSA 对象已经导入了自己的一份；这里读出来、算出来的中间值都是明文私钥。
+            Clear(d, iqmp, p, q, parameters.D, parameters.P, parameters.Q, parameters.DP, parameters.DQ, parameters.InverseQ);
+        }
     }
 
     private static InMemorySshSigner ReadEcdsa(scoped ref SshDataReader reader, string keyType, string where)
     {
         string curveName = reader.ReadUtf8String(64);
         byte[] point = reader.ReadStringAsArray(512);
-        byte[] d = reader.ReadMpint(512).ToArray();
 
         (ECCurve curve, int coordinateBytes) = curveName switch
         {
@@ -401,6 +727,12 @@ public static class SshPrivateKeyFile
             _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported, $"不支持的曲线 {curveName}{where}。"),
         };
 
+        if (keyType != $"ecdsa-sha2-{curveName}")
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                $"密钥类型是 {keyType}，曲线却写的是 {curveName}{where} —— 两者对不上，文件多半损坏了。");
+        }
+
         if (point.Length != 1 + (coordinateBytes * 2) || point[0] != 0x04)
         {
             throw new SshPrivateKeyException(SshFailureReason.Unsupported,
@@ -408,8 +740,12 @@ public static class SshPrivateKeyFile
                 $"期望 {1 + (coordinateBytes * 2)} 字节，实际 {point.Length} 字节{where}。");
         }
 
+        // 曲线与公开点先验过、再读私钥标量：验不过时手上还没有要清的明文。
+        byte[] d = reader.ReadMpint(512).ToArray();
+        byte[]? fixedD = null;
         try
         {
+            fixedD = ToFixedLength(ToPositive(d), coordinateBytes);
             ECParameters parameters = new()
             {
                 Curve = curve,
@@ -418,7 +754,7 @@ public static class SshPrivateKeyFile
                     X = point.AsSpan(1, coordinateBytes).ToArray(),
                     Y = point.AsSpan(1 + coordinateBytes, coordinateBytes).ToArray(),
                 },
-                D = ToFixedLength(ToPositive(d), coordinateBytes),
+                D = fixedD,
             };
 
             var ecdsa = ECDsa.Create();
@@ -429,12 +765,16 @@ public static class SshPrivateKeyFile
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"ECDSA 私钥的参数不成立{where}：{ex.Message}", ex);
         }
+        finally
+        {
+            Clear(d, fixedD);
+        }
     }
 
     // ------------------------------------------------------------ BCL 能直接读的格式
 
     private static InMemorySshSigner ParseWithBcl(
-        string pem, string? passphrase, SshPrivateKeyFormat format, string where)
+        string pem, ReadOnlySpan<char> passphrase, SshPrivateKeyFormat format, string where, CancellationToken cancellationToken)
     {
         // 传统加密 PEM（Proc-Type: 4,ENCRYPTED —— OpenSSH 7.8 之前 ssh-keygen 加口令时的默认）：
         // 口令只过一遍 MD5 就成了密钥，常配 3DES。这种过时格式本库不读，而是**在要口令之前**就说清楚、
@@ -444,28 +784,74 @@ public static class SshPrivateKeyFile
         {
             throw new SshPrivateKeyException(SshFailureReason.Unsupported,
                 $"这把私钥是过时的传统加密 PEM 格式（Proc-Type: 4,ENCRYPTED，口令只经一次 MD5 派生）{where}，本库不读。" +
-                "用 `ssh-keygen -p -f <私钥文件>` 改一次口令（新旧口令可以相同），它会转成 OpenSSH 格式。");
+                "用「ssh-keygen -p -f <私钥文件>」改一次口令（新旧口令可以相同），它会转成 OpenSSH 格式。");
         }
 
         bool needsPassphrase = format == SshPrivateKeyFormat.Pkcs8Encrypted
             || pem.Contains("DEK-Info", StringComparison.Ordinal);
 
-        if (needsPassphrase && string.IsNullOrEmpty(passphrase))
+        if (needsPassphrase && passphrase.IsEmpty)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseRequired, $"这把私钥需要口令{where}。");
         }
 
-        // 先按 RSA 试，再按 ECDSA 试 —— PEM 头部不总能区分
-        // （PKCS#8 的 BEGIN PRIVATE KEY 对两者是一样的）。
-        foreach (Func<InMemorySshSigner> attempt in new Func<InMemorySshSigner>[]
+        // 加密 PKCS#8：先看一眼 KDF 的迭代数（来自文件），过大就不交给 BCL 去算（见 MaxPkcs8Iterations）。
+        bool ecdsaFirst = false;
+        if (format == SshPrivateKeyFormat.Pkcs8Encrypted)
         {
-            () => LoadRsaFromPem(pem, passphrase, needsPassphrase),
-            () => LoadEcdsaFromPem(pem, passphrase, needsPassphrase),
-        })
+            byte[] encrypted = DecodePemBody(pem, "ENCRYPTED PRIVATE KEY", where);
+            if (ReadPkcs8Encryption(encrypted) is { } encryption)
+            {
+                if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+                {
+                    throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                        $"加密 PKCS#8 私钥的 KDF 迭代数不合理{where}（{encryption.Iterations} 次，上限 {MaxPkcs8Iterations} 次）。" +
+                        "文件可能被改过；确实设过这么多次的话，请用更少的迭代数重新加密这把钥。");
+                }
+                ecdsaFirst = encryption.EncryptedBytes <= EcFirstEncryptedBytes;
+            }
+
+            // 〔AU-E8〕只解密一次：口令错就报口令错；解开之后看里面装的是什么钥，按算法分派。
+            // 曾经逐个按 RSA、ECDSA 交给 BCL 去试（每试一次 KDF 整个跑一遍），都失败就报「口令多半不对」——
+            // 装的是 Ed25519 / DSA 时口令明明是对的，界面一遍遍弹口令框。
+            // 解密方案 BouncyCastle 不认的（null），照旧交给下面 BCL 那一路去试。
+            cancellationToken.ThrowIfCancellationRequested();
+            if (DecryptPkcs8(encrypted, passphrase, where) is { } plain)
+            {
+                try
+                {
+                    return LoadPkcs8(plain, where);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(plain);
+                }
+            }
+        }
+        else if (format == SshPrivateKeyFormat.Pkcs8)
         {
+            // 明文 PKCS#8 同样按里面的算法分派：Ed25519、DSA 报「不支持」，而不是「格式不对或已损坏」。
+            byte[] plain = DecodePemBody(pem, "PRIVATE KEY", where);
             try
             {
-                return attempt();
+                return LoadPkcs8(plain, where);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(plain);
+            }
+        }
+
+        // 先按 RSA 试，再按 ECDSA 试 —— PEM 头部不总能区分
+        // （PKCS#8 的 BEGIN PRIVATE KEY 对两者是一样的）。加密 PKCS#8 按密文大小排先后（见 EcFirstEncryptedBytes）。
+        foreach (bool asEcdsa in ecdsaFirst ? (ReadOnlySpan<bool>)[true, false] : [false, true])
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                return asEcdsa
+                    ? LoadEcdsaFromPem(pem, passphrase, needsPassphrase)
+                    : LoadRsaFromPem(pem, passphrase, needsPassphrase);
             }
             catch (CryptographicException)
             {
@@ -481,11 +867,261 @@ public static class SshPrivateKeyFile
             needsPassphrase ? SshFailureReason.KeyPassphraseIncorrect : SshFailureReason.KeyFormatInvalid,
             needsPassphrase
                 ? $"私钥解不开{where} —— 口令多半不对。"
-                : $"私钥读不出来{where}。它可能是 Ed25519 的 PKCS#8 " +
-                  "（.NET 尚未支持导入这种），也可能文件已损坏。");
+                : $"私钥读不出来{where}，文件可能已损坏。");
     }
 
-    private static InMemorySshSigner LoadRsaFromPem(string pem, string? passphrase, bool encrypted)
+    /// <summary>读加密 PKCS#8 的 KDF 迭代数与密文长度（RFC 5958 §3、RFC 8018 §6.1 / §6.2 / A.2）。</summary>
+    /// <returns>认不出结构（或不是 PBKDF2 / PBES1 那一类）时为 <see langword="null"/>：交给 BCL 去报错。</returns>
+    /// <remarks>
+    /// <code>
+    /// EncryptedPrivateKeyInfo ::= SEQUENCE { encryptionAlgorithm AlgorithmIdentifier, encryptedData OCTET STRING }
+    /// PBES2:  parameters = SEQUENCE { keyDerivationFunc AlgorithmIdentifier(PBKDF2, SEQUENCE { salt, iterationCount, ... }),
+    ///                                 encryptionScheme AlgorithmIdentifier }
+    /// PBES1 / PKCS#12 PBE:  parameters = SEQUENCE { salt OCTET STRING, iterationCount INTEGER }
+    /// </code>
+    /// </remarks>
+    internal static (BigInteger Iterations, int EncryptedBytes)? ReadPkcs8Encryption(byte[] der)
+    {
+        const string pbes2 = "1.2.840.113549.1.5.13";
+        const string pbkdf2 = "1.2.840.113549.1.5.12";
+
+        try
+        {
+            AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+            AsnReader algorithm = info.ReadSequence();
+            string scheme = algorithm.ReadObjectIdentifier();
+            AsnReader parameters = algorithm.ReadSequence();
+
+            BigInteger iterations;
+            if (scheme == pbes2)
+            {
+                AsnReader kdf = parameters.ReadSequence();
+                if (kdf.ReadObjectIdentifier() != pbkdf2)
+                {
+                    return null;   // scrypt 之类：BCL 本来就不认，交给它去报
+                }
+
+                AsnReader kdfParameters = kdf.ReadSequence();
+                if (kdfParameters.PeekTag().HasSameClassAndValue(Asn1Tag.PrimitiveOctetString))
+                {
+                    kdfParameters.ReadOctetString();
+                }
+                else
+                {
+                    kdfParameters.ReadSequence();   // salt 的另一种写法：otherSource AlgorithmIdentifier
+                }
+                iterations = kdfParameters.ReadInteger();
+            }
+            else
+            {
+                parameters.ReadOctetString();
+                iterations = parameters.ReadInteger();
+            }
+
+            return (iterations, info.ReadOctetString().Length);
+        }
+        catch (AsnContentException)
+        {
+            return null;
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>用口令解开加密 PKCS#8，交回里面的明文 PrivateKeyInfo（DER）。</summary>
+    /// <returns>
+    /// BouncyCastle 不认这种加密方案、或者解出来的不像 PrivateKeyInfo（口令不对而填充恰好对上，约 1/256）时为
+    /// <see langword="null"/>：交给 BCL 那一路去试、去报。
+    /// </returns>
+    /// <exception cref="SshPrivateKeyException">填充校验失败 —— 口令不对（<see cref="SshFailureReason.KeyPassphraseIncorrect"/>）。</exception>
+    private static byte[]? DecryptPkcs8(byte[] encrypted, ReadOnlySpan<char> passphrase, string where)
+    {
+        Org.BouncyCastle.Asn1.Pkcs.EncryptedPrivateKeyInfo info;
+        try
+        {
+            info = Org.BouncyCastle.Asn1.Pkcs.EncryptedPrivateKeyInfo.GetInstance(encrypted);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+
+        char[] password = passphrase.ToArray();
+        try
+        {
+            return Org.BouncyCastle.Pkcs.PrivateKeyInfoFactory.CreatePrivateKeyInfo(password, info).GetDerEncoded();
+        }
+        catch (Org.BouncyCastle.Crypto.InvalidCipherTextException ex)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseIncorrect, $"私钥解不开{where} —— 口令多半不对。", ex);
+        }
+        catch (Exception)
+        {
+            return null;
+        }
+        finally
+        {
+            Array.Clear(password);
+        }
+    }
+
+    /// <summary>按 PrivateKeyInfo 里的算法标识分派（RFC 5958 §2）。</summary>
+    /// <remarks>
+    /// SSH 用得上的是 RSA、三条 NIST 曲线上的 ECDSA（RFC 5656 §10.1）与 Ed25519（RFC 8410）；
+    /// Ed448 / DSA 与别的曲线报「不支持」，并说出是什么 —— 不让人去怀疑口令或文件。
+    /// </remarks>
+    private static InMemorySshSigner LoadPkcs8(byte[] der, string where)
+    {
+        const string rsaEncryption = "1.2.840.113549.1.1.1";
+        const string ecPublicKey = "1.2.840.10045.2.1";
+        const string ed25519 = "1.3.101.112";
+        const string ed448 = "1.3.101.113";
+        const string dsa = "1.2.840.10040.4.1";
+
+        (string algorithm, string? curve) = ReadPkcs8Algorithm(der, where);
+        switch (algorithm)
+        {
+            case rsaEncryption:
+                {
+                    var rsa = RSA.Create();
+                    rsa.ImportPkcs8PrivateKey(der, out _);
+                    return InMemorySshSigner.FromRsa(rsa);
+                }
+
+            case ecPublicKey:
+                {
+                    // 先按曲线的 OID 判：BCL 不认的曲线（各平台不一）连导入都过不去，报出来的会是「格式不对」。
+                    if (curve is not ("1.2.840.10045.3.1.7" or "1.3.132.0.34" or "1.3.132.0.35"))
+                    {
+                        throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                            $"这把 ECDSA 私钥用的曲线是 {DescribeCurveOid(curve)}{where}，SSH 只支持 NIST P-256 / P-384 / P-521。");
+                    }
+                    var ecdsa = ECDsa.Create();
+                    ecdsa.ImportPkcs8PrivateKey(der, out _);
+                    return InMemorySshSigner.FromEcdsa(ecdsa);
+                }
+
+            case ed25519:
+                return LoadPkcs8Ed25519(der, where);
+
+            case ed448:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported, $"这是一把 Ed448 私钥{where}，SSH 不用 Ed448。");
+
+            case dsa:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"这是一把 DSA 私钥{where}。DSA（ssh-dss）已被 OpenSSH 废弃，本库不支持。");
+
+            default:
+                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                    $"这把 PKCS#8 私钥的算法是 {algorithm}{where}，SSH 用不上（支持 RSA、NIST 曲线上的 ECDSA 与 Ed25519）。");
+        }
+    }
+
+    /// <summary>PKCS#8 里的 Ed25519（RFC 8410 §7）：取出 32 字节种子；带着公钥（v2）时核对它是不是种子导出的那一把。</summary>
+    /// <remarks>
+    /// <code>
+    /// OneAsymmetricKey ::= SEQUENCE { version, privateKeyAlgorithm, privateKey OCTET STRING,
+    ///                                 attributes [0] IMPLICIT OPTIONAL, ..., [[2: publicKey [1] IMPLICIT BIT STRING OPTIONAL ]], ... }
+    /// privateKey 里装的是 CurvePrivateKey ::= OCTET STRING（32 字节，RFC 8032 的私钥）
+    /// </code>
+    /// 按 BER 读（RFC 5958 要求），属性与以后扩展的字段跳过。公钥对不上与 <c>openssh-key-v1</c>、<c>.ppk</c> 同一口径，
+    /// 报 <see cref="SshFailureReason.KeyFormatInvalid"/>。BCL 导入不了这种钥（.NET 11 仍没有独立的 Ed25519），曾经一律报「不支持」。
+    /// </remarks>
+    private static InMemorySshSigner LoadPkcs8Ed25519(byte[] der, string where)
+    {
+        Asn1Tag publicKeyTag = new(TagClass.ContextSpecific, 1);
+        byte[]? privateKey = null;
+        byte[]? seed = null;
+        byte[]? publicKey = null;
+        try
+        {
+            try
+            {
+                AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+                _ = info.ReadInteger();   // version：v1（0）或 v2（1）
+                _ = info.ReadSequence();  // AlgorithmIdentifier：id-Ed25519，参数缺省（RFC 8410 §3）
+                privateKey = info.ReadOctetString();
+                AsnReader curvePrivateKey = new(privateKey, AsnEncodingRules.BER);
+                seed = curvePrivateKey.ReadOctetString();
+                curvePrivateKey.ThrowIfNotEmpty();
+
+                while (info.HasData)
+                {
+                    if (!info.PeekTag().HasSameClassAndValue(publicKeyTag))
+                    {
+                        _ = info.ReadEncodedValue();   // attributes [0] 与以后扩展的字段
+                        continue;
+                    }
+
+                    publicKey = info.ReadBitString(out int unusedBits, publicKeyTag);
+                    if (unusedBits != 0)
+                    {
+                        throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                            $"PKCS#8 里 Ed25519 的公钥不是整字节{where}，文件多半损坏了。");
+                    }
+                }
+            }
+            catch (AsnContentException ex)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"PKCS#8 里 Ed25519 私钥的结构不对{where}。", ex);
+            }
+
+            if (seed.Length != 32)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥应当是 32 字节，实际 {seed.Length} 字节{where}。");
+            }
+
+            // 签名器复制一份归自己所有；这一份由这里清。
+            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(seed);
+            if (publicKey is not null && !signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
+            {
+                signer.Dispose();
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"PKCS#8 里 Ed25519 的公钥与私钥导出的不一致{where}，文件多半损坏了。");
+            }
+            return signer;
+        }
+        finally
+        {
+            Clear(privateKey, seed);
+        }
+    }
+
+    /// <summary>PrivateKeyInfo 的算法 OID；是 EC 时连同曲线的 OID（namedCurve 参数，没有就是 null）。</summary>
+    private static (string Algorithm, string? Curve) ReadPkcs8Algorithm(byte[] der, string where)
+    {
+        try
+        {
+            AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+            _ = info.ReadInteger();   // version
+            AsnReader algorithm = info.ReadSequence();
+            string oid = algorithm.ReadObjectIdentifier();
+            string? curve = algorithm.HasData && algorithm.PeekTag().HasSameClassAndValue(Asn1Tag.ObjectIdentifier)
+                ? algorithm.ReadObjectIdentifier()
+                : null;
+            return (oid, curve);
+        }
+        catch (AsnContentException ex)
+        {
+            throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"PKCS#8 私钥的结构不对{where}。", ex);
+        }
+    }
+
+    /// <summary>给人看的曲线名：认识的写名字，不认识的写 OID。</summary>
+    private static string DescribeCurveOid(string? oid) => oid switch
+    {
+        null => "（显式参数，没有曲线名）",
+        "1.3.132.0.10" => "secp256k1",
+        "1.3.36.3.3.2.8.1.1.7" => "brainpoolP256r1",
+        "1.3.36.3.3.2.8.1.1.11" => "brainpoolP384r1",
+        "1.3.36.3.3.2.8.1.1.13" => "brainpoolP512r1",
+        _ => oid,
+    };
+
+    private static InMemorySshSigner LoadRsaFromPem(string pem, ReadOnlySpan<char> passphrase, bool encrypted)
     {
         var rsa = RSA.Create();
         if (encrypted)
@@ -499,7 +1135,7 @@ public static class SshPrivateKeyFile
         return InMemorySshSigner.FromRsa(rsa);
     }
 
-    private static InMemorySshSigner LoadEcdsaFromPem(string pem, string? passphrase, bool encrypted)
+    private static InMemorySshSigner LoadEcdsaFromPem(string pem, ReadOnlySpan<char> passphrase, bool encrypted)
     {
         var ecdsa = ECDsa.Create();
         if (encrypted)
@@ -509,6 +1145,16 @@ public static class SshPrivateKeyFile
         else
         {
             ecdsa.ImportFromPem(pem);
+        }
+
+        // PKCS#8 / SEC1 能装任意曲线：SSH 只定义了三条 NIST 曲线（RFC 5656 §10.1），别的报「不支持」而不是「格式不对」。
+        ECCurve curve = ecdsa.ExportParameters(false).Curve;
+        if (InMemorySshSigner.NistCurveOf(curve) is null)
+        {
+            string name = InMemorySshSigner.DescribeCurve(curve);
+            ecdsa.Dispose();
+            throw new SshPrivateKeyException(SshFailureReason.Unsupported,
+                $"这把 ECDSA 私钥用的曲线是 {name}，SSH 只支持 NIST P-256 / P-384 / P-521。");
         }
         return InMemorySshSigner.FromEcdsa(ecdsa);
     }

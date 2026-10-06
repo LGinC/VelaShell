@@ -195,4 +195,13 @@ internal enum SshMessageNumber : byte
 
     /// <summary>通道请求失败（仅当请求方要求回复时发送）。RFC 4254 §5.4。</summary>
     ChannelFailure = 100,
+
+    /// <summary>
+    /// 传输层的回声请求（<c>string</c> 数据），对端原样回 <see cref="Pong"/>。OpenSSH 的扩展（<c>ping@openssh.com</c>），
+    /// 落在 RFC 4250 §4.1.2 留给本地扩展的 192–255 段；对端在 <c>EXT_INFO</c> 里宣告过才发（velashell-docs/zh/ssh/spec/05 §6.5）。
+    /// </summary>
+    Ping = 192,
+
+    /// <summary><see cref="Ping"/> 的应答，原样带回数据。</summary>
+    Pong = 193,
 }

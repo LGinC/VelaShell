@@ -1,5 +1,17 @@
 namespace VelaShell.Core.Ssh;
 
+/// <summary>一次上传在关闭句柄之前要做的事。</summary>
+/// <param name="ResumeOffset">大于 0 时从这里续传。</param>
+/// <param name="LastWriteTime">
+/// 设了就在关闭之前用同一个句柄把远端的修改时间设成它 —— 一次往返;上传完再
+/// <see cref="ISftpClientWrapper.SetLastWriteTimeAsync" /> 要多两次(先取回访问时间再设)。尽力而为:设不上不影响上传。
+/// </param>
+/// <param name="Fsync">
+/// 关闭之前要求服务端落盘(SFTP 的 <c>fsync@openssh.com</c>,服务端不支持时跳过)。落盘失败算上传失败 ——
+/// 要了「断电也不能丢」却没做到,不能报成功。
+/// </param>
+public sealed record RemoteUploadOptions(long ResumeOffset = 0, DateTimeOffset? LastWriteTime = null, bool Fsync = false);
+
 /// <summary>
 /// SFTP 客户端的库中立抽象(参见 <see cref="ISshClientWrapper" /> 的隔离说明):
 /// 目录条目以 <see cref="SftpEntry" /> 返回,失败以 SshClientException 层级抛出,
@@ -78,6 +90,12 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// </summary>
     Task<bool> ExistsAsync(string path, CancellationToken cancellationToken = default);
 
+    /// <summary>路径所在文件系统的用量;服务端不支持或查不到时为 <see langword="null" />(不抛)。</summary>
+    Task<Sftp.RemoteSpaceInfo?> GetSpaceAsync(string path, CancellationToken cancellationToken = default);
+
+    /// <summary>请服务端展开 <c>~</c> / <c>~用户名</c>;展开不了时为 <see langword="null" />(不抛)。</summary>
+    Task<string?> ExpandPathAsync(string path, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// 修改远端条目的权限。<paramref name="mode" /> 采用将三个八进制数字写作十进制数的约定
     /// (例如 755、644)。
@@ -132,6 +150,33 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// <paramref name="targetPath" /> 原样写入链接(相对路径按链接所在目录解析,与 <c>ln -s</c> 一致)。
     /// </summary>
     Task CreateSymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken = default);
+
+    /// <summary>服务端能不能把数字 uid / gid 翻成名字(SFTP 的 <c>users-groups-by-id@openssh.com</c>)。</summary>
+    bool SupportsIdLookup { get; }
+
+    /// <summary>
+    /// 请服务端把数字 uid / gid 翻成名字,与传入的一一对应;服务端不认识的、查不了的为 <see langword="null" />(不抛)。
+    /// </summary>
+    /// <remarks>只开了 SFTP、没有 exec 的账号查不了 passwd 库,属主一栏靠它才显示得出名字。</remarks>
+    Task<(IReadOnlyList<string?> Users, IReadOnlyList<string?> Groups)> LookupNamesAsync(
+        IReadOnlyList<int> userIds, IReadOnlyList<int> groupIds, CancellationToken cancellationToken = default);
+
+    /// <summary>服务端能不能在自己那边复制文件(SFTP 的 <c>copy-data</c>):能的话复制不必下载再上传。</summary>
+    bool SupportsServerCopy { get; }
+
+    /// <summary>
+    /// 在服务端内把 <paramref name="sourcePath" /> 复制到 <paramref name="destPath" />(目标已存在就覆盖),数据不出服务器。
+    /// </summary>
+    /// <param name="sourcePath">源文件。</param>
+    /// <param name="destPath">目标文件。</param>
+    /// <param name="copyCallback">已复制的累计字节数(按段报)。</param>
+    /// <param name="cancellationToken">在两段之间生效。</param>
+    /// <exception cref="NotSupportedException">服务端不支持(先看 <see cref="SupportsServerCopy" />)。</exception>
+    Task CopyOnServerAsync(string sourcePath, string destPath, Action<ulong>? copyCallback = null, CancellationToken cancellationToken = default);
+
+    /// <summary>上传,带着关闭句柄之前要做的事(见 <see cref="RemoteUploadOptions" />)。</summary>
+    Task UploadAsync(Stream input, string path, RemoteUploadOptions options,
+        Action<ulong>? uploadCallback = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 将流上传到远端路径,写入前先定位到 <paramref name="resumeOffset"/> 字节处。

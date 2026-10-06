@@ -10,7 +10,10 @@
 
 using System.Buffers;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
 using System.Text;
+using VelaShell.Ssh.Diagnostics;
 
 namespace VelaShell.Ssh.Transport;
 
@@ -24,10 +27,10 @@ namespace VelaShell.Ssh.Transport;
 /// </para>
 /// <para>
 /// 到达代理本身走 <see cref="Inner"/>，默认直连 TCP。连 HTTPS 代理时把 <see cref="Inner"/>
-/// 换成一个在 TCP 上套 TLS 的拨号器即可。
+/// 换成 <see cref="DialerChain.Tls"/> 即可。
 /// </para>
 /// </remarks>
-internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDialer
+internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDialer, ISshDialKindSource
 {
     /// <summary>响应头的上限 —— 防一个坏代理（或根本不是代理的东西）把内存吃光。</summary>
     internal const int MaxResponseHeaderBytes = 16 * 1024;
@@ -47,17 +50,20 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
     public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(target);
+
+        // 先拼好请求：主机名放不进请求时，连代理都不必去连。
+        byte[] request = BuildRequest(target.EndPoint, Credentials);
         return ProxyDialing.DialAsync(
             SshDialKind.HttpConnect, "HTTP 代理", Inner, Proxy, target,
-            (stream, ct) => HandshakeAsync(stream, target.EndPoint, ct),
+            (stream, ct) => HandshakeAsync(stream, request, target.EndPoint, ct),
             cancellationToken);
     }
 
     /// <summary>拼 CONNECT 请求。</summary>
+    /// <exception cref="SshConnectException">主机名放不进 HTTP 请求（<see cref="SshFailureReason.InvalidConfiguration"/>）。</exception>
     internal static byte[] BuildRequest(SshEndPoint target, SshProxyCredentials? credentials)
     {
-        // SshEndPoint.ToString 已经给 IPv6 字面量加了方括号 —— 请求目标要的正是这个形式。
-        string authority = target.ToString();
+        string authority = Authority(target);
 
         StringBuilder request = new();
         request.Append(CultureInfo.InvariantCulture, $"CONNECT {authority} HTTP/1.1\r\n");
@@ -75,9 +81,62 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         return Encoding.ASCII.GetBytes(request.ToString());
     }
 
-    private async ValueTask<Stream> HandshakeAsync(Stream stream, SshEndPoint target, CancellationToken cancellationToken)
+    /// <summary>请求目标与 <c>Host</c> 头里的 <c>主机:端口</c>：国际化域名转 Punycode，IPv6 字面量加方括号。</summary>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>主机名原样拼进请求行与 <c>Host</c> 头的话，带 <c>\r\n</c> 就能往发给代理的请求里注入头部</b>
+    /// （甚至在同一条连接上再塞一个请求）。主机名常常不是写配置的人给的 —— <c>ssh://</c> 链接、导入的会话、
+    /// 快速连接框里粘进来的一串。SOCKS5 有域名映射兜着、ProxyCommand 有字符白名单，这里同样只放行合法主机名的字符。
+    /// </para>
+    /// <para>
+    /// 非 ASCII 的名字先按 IDNA 转成 Punycode（与 SOCKS5 一致）：请求按 ASCII 编码，直接编码会把它们变成 <c>?</c>，
+    /// 代理拿到的就是另一个（不存在的）名字。
+    /// </para>
+    /// </remarks>
+    internal static string Authority(SshEndPoint target)
     {
-        await stream.WriteAsync(BuildRequest(target, Credentials), cancellationToken).ConfigureAwait(false);
+        string host = target.Host;
+
+        // 带冒号的只能是 IPv6 字面量：按地址解析过、再由它自己格式化，就不会夹带别的字符。
+        if (host.Contains(':', StringComparison.Ordinal))
+        {
+            if (!IPAddress.TryParse(host, out IPAddress? address) || address.AddressFamily != AddressFamily.InterNetworkV6)
+            {
+                throw InvalidHost(host, "带冒号却不是 IPv6 地址");
+            }
+            return $"[{address}]:{target.Port}";
+        }
+
+        string ascii;
+        try
+        {
+            ascii = new IdnMapping().GetAscii(host);
+        }
+        catch (ArgumentException ex)
+        {
+            throw InvalidHost(host, ex.Message);
+        }
+
+        foreach (char c in ascii)
+        {
+            if (!char.IsAsciiLetterOrDigit(c) && c is not ('.' or '-' or '_'))
+            {
+                throw InvalidHost(host, $"含有字符 U+{(int)c:X4}，合法的主机名只由字母、数字与 . - _ 组成");
+            }
+        }
+
+        return $"{ascii}:{target.Port}";
+    }
+
+    /// <remarks>不是「代理拒绝」—— 那一类会被当成可重试的；这里重试多少次都一样，得改输入。</remarks>
+    private static SshConnectException InvalidHost(string host, string why) =>
+        new(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+            $"主机名 {PeerText.Sanitize(host)} 不能放进 HTTP 代理的 CONNECT 请求：{why}。");
+
+    private async ValueTask<Stream> HandshakeAsync(
+        Stream stream, byte[] request, SshEndPoint target, CancellationToken cancellationToken)
+    {
+        await stream.WriteAsync(request, cancellationToken).ConfigureAwait(false);
         await stream.FlushAsync(cancellationToken).ConfigureAwait(false);
 
         // 响应头的长度事先不知道，只能读到空行为止 —— 那就难免多读。
@@ -86,41 +145,64 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         try
         {
             int filled = 0;
-            int headerEnd;
+
+            // 当前这个响应头在 buffer 里的起点：前面的是已经跳过的 1xx 中间响应。它们合起来也受 MaxResponseHeaderBytes 约束。
+            int start = 0;
             while (true)
             {
-                int read = await stream.ReadAsync(buffer.AsMemory(filled, MaxResponseHeaderBytes - filled), cancellationToken)
-                    .ConfigureAwait(false);
-                if (read == 0)
+                int headerEnd = buffer.AsSpan(start, filled - start).IndexOf(HeaderTerminator);
+                if (headerEnd < 0)
                 {
-                    throw new EndOfStreamException("响应头还没读完连接就关了。");
-                }
-                filled += read;
+                    if (filled == MaxResponseHeaderBytes)
+                    {
+                        throw ProxyDialing.Refused(
+                            $"HTTP 代理 {Proxy} 的响应头超过了 {MaxResponseHeaderBytes / 1024} KiB —— 它可能不是一个 HTTP 代理。");
+                    }
 
-                headerEnd = buffer.AsSpan(0, filled).IndexOf(HeaderTerminator);
-                if (headerEnd >= 0)
-                {
-                    break;
+                    int read = await stream.ReadAsync(buffer.AsMemory(filled, MaxResponseHeaderBytes - filled), cancellationToken)
+                        .ConfigureAwait(false);
+                    if (read == 0)
+                    {
+                        throw new EndOfStreamException("响应头还没读完连接就关了。");
+                    }
+                    filled += read;
+                    continue;
                 }
 
-                if (filled == MaxResponseHeaderBytes)
+                headerEnd += start;
+                string head = Encoding.Latin1.GetString(buffer, start, headerEnd - start);
+                int bodyStart = headerEnd + HeaderTerminator.Length;
+
+                // 〔FW-E11〕1xx 是中间响应（RFC 9110 §15.2：客户端必须能在最终响应之前读过一个或多个 1xx），跳过它接着读。
+                // 曾经当成拒绝。101（切换协议）对 CONNECT 没有意义，照最终响应处理。
+                if (StatusOf(head) is >= 100 and < 200 and not 101)
                 {
-                    throw ProxyDialing.Refused(
-                        $"HTTP 代理 {Proxy} 的响应头超过了 {MaxResponseHeaderBytes / 1024} KiB —— 它可能不是一个 HTTP 代理。");
+                    start = bodyStart;
+                    continue;
                 }
+
+                ThrowIfNotSuccess(head, target);
+
+                byte[] leftover = buffer.AsSpan(bodyStart, filled - bodyStart).ToArray();
+                return leftover.Length == 0 ? stream : new PrefixedStream(leftover, stream);
             }
-
-            string head = Encoding.Latin1.GetString(buffer, 0, headerEnd);
-            ThrowIfNotSuccess(head, target);
-
-            int bodyStart = headerEnd + HeaderTerminator.Length;
-            byte[] leftover = buffer.AsSpan(bodyStart, filled - bodyStart).ToArray();
-            return leftover.Length == 0 ? stream : new PrefixedStream(leftover, stream);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    /// <summary>响应头里的状态码；状态行不是 <c>HTTP/x 三位数</c> 的样子时为 <see langword="null"/>。</summary>
+    private static int? StatusOf(string head)
+    {
+        string statusLine = head.Split("\r\n", 2)[0];
+        string[] parts = statusLine.Split(' ', 3);
+        return parts.Length >= 2
+            && parts[0].StartsWith("HTTP/", StringComparison.Ordinal)
+            && int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int status)
+                ? status
+                : null;
     }
 
     private void ThrowIfNotSuccess(string head, SshEndPoint target)
@@ -129,10 +211,7 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
         string statusLine = lines[0];
 
         // 状态行：HTTP/1.x 空格 三位状态码 空格 原因短语。
-        string[] parts = statusLine.Split(' ', 3);
-        if (parts.Length < 2
-            || !parts[0].StartsWith("HTTP/", StringComparison.Ordinal)
-            || !int.TryParse(parts[1], NumberStyles.None, CultureInfo.InvariantCulture, out int status))
+        if (StatusOf(head) is not { } status)
         {
             throw ProxyDialing.Refused($"{Proxy} 回的不是 HTTP 响应（「{Truncate(statusLine)}」）—— 它可能是 SOCKS 代理，或者根本不是代理。");
         }
@@ -151,9 +230,9 @@ internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDiale
                 ? ""
                 : $"（代理要求：{Truncate(challenge["Proxy-Authenticate:".Length..].Trim())}）";
 
-            throw ProxyDialing.AuthRequired(Credentials is null
-                ? $"HTTP 代理 {Proxy} 要求认证，但没有配置代理凭据{scheme}。"
-                : $"HTTP 代理 {Proxy} 拒绝了用户名 {Credentials.UserName} 的凭据{scheme}。");
+            throw Credentials is null
+                ? ProxyDialing.AuthRequired($"HTTP 代理 {Proxy} 要求认证，但没有配置代理凭据{scheme}。")
+                : ProxyDialing.AuthFailed($"HTTP 代理 {Proxy} 拒绝了用户名 {Credentials.UserName} 的凭据{scheme}。");
         }
 
         // 〔velashell-docs/zh/ssh/spec/09 §4.2〕高频而且用户完全猜不到的一种失败：代理只放行 80/443。

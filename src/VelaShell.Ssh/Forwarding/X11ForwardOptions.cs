@@ -29,9 +29,9 @@ public sealed record X11ForwardOptions
     /// Windows 上通常两者都没有，那里只能用受信模式。
     /// </para>
     /// </remarks>
-    public bool Trusted { get; init; }
+    public bool IsTrusted { get; init; }
 
-    /// <summary>转发的有效期。默认 20 分钟；<see cref="TimeSpan.Zero"/> 表示不过期。</summary>
+    /// <summary>转发的有效期。默认 20 分钟；<see cref="System.Threading.Timeout.InfiniteTimeSpan"/> 表示不过期。</summary>
     /// <remarks>
     /// <para>
     /// 过期之后新的 <c>x11</c> 通道一律拒绝（已经建好的不受影响）。
@@ -43,12 +43,23 @@ public sealed record X11ForwardOptions
     /// 却反而没有期限，说不通。
     /// </para>
     /// <para>
-    /// 长会话要一直用的话，显式设成 <see cref="TimeSpan.Zero"/>（对应 <c>ForwardX11Timeout 0</c>：整条连接期间都有效）。
-    /// 非受信模式下它还决定 <c>xauth generate ... timeout</c>：有效期再加 60 秒，Zero 时传 0（永不过期）——
+    /// 长会话要一直用的话，显式设成 <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>（对应 <c>ForwardX11Timeout 0</c>：整条连接期间都有效）。
+    /// 非受信模式下它还决定 <c>xauth generate ... timeout</c>：有效期再加 60 秒，不过期时传 0（永不过期）——
     /// 见 <see cref="X11Forwarder.XAuthTimeoutSeconds"/>。
     /// </para>
+    /// <para>
+    /// 〔AGENTS 4.2〕「不限时」全库只有一种写法：<see cref="System.Threading.Timeout.InfiniteTimeSpan"/>。
+    /// 曾经这里用 <see cref="TimeSpan.Zero"/> 表示不过期，而连接、认证与主机密钥裁决的时限都用 <c>InfiniteTimeSpan</c>。
+    /// </para>
     /// </remarks>
-    public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(20);
+    /// <exception cref="ArgumentOutOfRangeException">不为正，也不是 <see cref="System.Threading.Timeout.InfiniteTimeSpan"/>。</exception>
+    public TimeSpan Timeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero || value == System.Threading.Timeout.InfiniteTimeSpan
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(Timeout), value, "有效期必须为正；不过期写 Timeout.InfiniteTimeSpan。");
+    } = TimeSpan.FromMinutes(20);
 
     /// <summary><c>.Xauthority</c> 的路径；<see langword="null"/> 走默认。</summary>
     /// <remarks>
@@ -67,7 +78,7 @@ public sealed record X11ForwardOptions
     /// 这一条同时发给服务端（<c>x11-req</c> 的 single connection 字段）
     /// <b>并在本端强制</b> —— 不把安全约束寄托在对端身上。
     /// </remarks>
-    public bool SingleConnection { get; init; }
+    public bool IsSingleConnection { get; init; }
 
     /// <summary>同时允许的 X11 通道数上限。</summary>
     public int MaxConnections { get; init; } = 16;
@@ -122,4 +133,22 @@ public sealed record X11ForwardOptions
 
     /// <summary>默认选项。</summary>
     public static X11ForwardOptions Default { get; } = new();
+
+    /// <summary>跨字段的核对：给了 <see cref="LocalConnector"/> 就必须是受信模式。</summary>
+    /// <exception cref="ArgumentException">给了连接器却不是受信模式。</exception>
+    /// <remarks>
+    /// 由几条 <c>init</c> 拼成，赋值的先后不定，做不到设值时校验 —— 由开会话的入口在<b>开通道之前</b>代为调用。
+    /// 曾经要到发 <c>x11-req</c> 的时候才报，而且报成「转发没开成」（<see cref="SshForwardException"/>）：
+    /// 在 <see cref="ForwardFailureMode.Continue"/> 下，一处写错的配置变成了一条每次都出现的「X11 没开成」。
+    /// </remarks>
+    internal void Validate()
+    {
+        if (LocalConnector is not null && !IsTrusted)
+        {
+            throw new ArgumentException(
+                "本机显示经连接器接入时只支持受信模式（IsTrusted = true）：非受信模式要 xauth 连上本机显示签受限 cookie，" +
+                "连接器后面没有可供它去连的显示。",
+                nameof(LocalConnector));
+        }
+    }
 }

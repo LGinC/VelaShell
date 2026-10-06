@@ -26,7 +26,12 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     private bool _disposed;
 
     /// <inheritdoc />
-    public bool IsConnected => !_disposed && _fs is not null;
+    /// <remarks>
+    /// 看的是库那条 SFTP 会话自己还活着没有(<see cref="SftpFileSystem.IsConnected" />),不只是「对象还在」:
+    /// sftp-server 退出、服务端按 ChannelTimeout 关掉闲置通道之后,上层据此丢掉这个客户端重建一个,
+    /// 而不是让文件面板一直坏到整条 SSH 连接重连。
+    /// </remarks>
+    public bool IsConnected => !_disposed && _fs is { IsConnected: true };
 
     /// <inheritdoc />
     /// <remarks>SFTP 复用主连接的通道,这里没有自己的建链超时;保留只为满足契约。</remarks>
@@ -55,18 +60,19 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     /// 一整个在途写入窗口,使起点之前的数据可信。
     /// </para>
     /// <para>
-    /// 窗口大小**按当前会话实测**(在途请求数 × 协商出的块大小),不再写死 2 MB ——
-    /// 写死的那个值只对某一个底层库的某一组默认参数成立,换了库或换了服务端就是错的,
-    /// 而错的方向是「回退得不够」,也就是续传出一个坏文件。
+    /// 窗口大小由库给出(<c>SftpFileSystem.MaxUnconfirmedWriteBytes</c>:单个写入流最多能有多少字节在途),
+    /// 不在这里自己推算 —— 曾经按「起始在途数 × 块大小」算,而库的流水线深度会自己长大
+    /// (最多到 <c>MaxPipelineDepth</c>),那时回退就不够了,错的方向是续传出一个坏文件。
     /// </para>
     /// <para>
-    /// 更好的做法是用库的 <c>SftpFileStream.DurableLength</c>(已**连续**确认的偏移),
-    /// 那能精确到字节、完全不用回退。但那要改 <see cref="ISftpClientWrapper" /> 的契约
-    /// 与 <c>SftpService</c> 的续传流程,不在这次换库的范围里 —— 记在 feature-plan。
+    /// 这只是兜底:上传被打断时库交出精确的续传点(<c>SftpTransferInterruptedException.DurableLength</c>,
+    /// 经 <see cref="SshInterop" /> 翻成 <see cref="VelaSftpTransferInterruptedException" />),<c>SftpService</c> 记下它,
+    /// 下一次续传同一个路径时直接从那里接着传、一个字节都不回退。只有没有记下的时候(进程重启过、续的是别的会话留下的半截)
+    /// 才按这个窗口回退。
     /// </para>
     /// </remarks>
     public long ResumeSafetyMargin =>
-        _fs is { } fs ? (long)SftpOptions.Default.MaxInFlight * fs.BlockSize : 64L * 32 * 1024;
+        _fs is { } fs ? fs.MaxUnconfirmedWriteBytes : (long)SftpOptions.Default.MaxPipelineDepth * 256 * 1024;
 
     /// <inheritdoc />
     public async Task ConnectAsync(CancellationToken cancellationToken)
@@ -114,9 +120,16 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
     /// <inheritdoc />
     public Task UploadAsync(Stream input, string path, long resumeOffset,
+        Action<ulong>? uploadCallback = null, CancellationToken ct = default) =>
+        UploadAsync(input, path, new RemoteUploadOptions(resumeOffset), uploadCallback, ct);
+
+    /// <inheritdoc />
+    public Task UploadAsync(Stream input, string path, RemoteUploadOptions options,
         Action<ulong>? uploadCallback = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(options);
+        long resumeOffset = options.ResumeOffset;
 
         return GuardedAsync(async () =>
         {
@@ -137,14 +150,35 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
                 // **必须显式冲一次再关。** 流水线写入在 Flush 之前还有在途请求,
                 // 不等它们落地就关,表现是「上传显示完成,远端文件尾部却缺字节」。
                 await remote.FlushAsync(ct).ConfigureAwait(false);
+
+                // 关闭之前用同一个句柄设修改时间(FSETSTAT,一次往返)。访问时间取「现在」:
+                // 新写的文件本来就是这个值,事后 STAT 取回来的也是它。尽力而为 —— 个别服务端禁 setstat。
+                if (options.LastWriteTime is { } mtime)
+                {
+                    try
+                    {
+                        await remote.SetTimesAsync(DateTimeOffset.UtcNow, mtime, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is SftpException or ArgumentOutOfRangeException)
+                    {
+                        // 时间戳只是尽力而为(ArgumentOutOfRange:时间装不进 v3 的 32 位秒)。
+                    }
+                }
+
+                // 落盘放在设时间之后:数据与刚设的时间一起落。服务端没有 fsync@openssh.com 就跳过;
+                // 落盘失败不吞 —— 要了「断电也不能丢」却没做到,不能报成功。
+                if (options.Fsync && fs.Capabilities.HasFsync)
+                {
+                    await remote.FsyncAsync(ct).ConfigureAwait(false);
+                }
             }
             catch (Exception) when (ct.IsCancellationRequested)
             {
                 // 调用方取消了:如实报取消。
-                // 在途的 WRITE 带着同一个令牌,取消后它们被记成写入失败,于是关流(或此前的 Flush)
-                // 会抛「传输中断,已确认 N 字节,从这里续传」。若照 await using 的写法让关流的异常往外冒,
-                // 它会顶掉真正的原因 —— 用户按的是取消,看到的却是一条中断、还说能续传(续不续由上层的设置决定,
-                // 双栏远程之间的中转就根本不续)。关流照做(要发 CLOSE 还句柄),它的异常不再往外报。
+                // 已经入队的 WRITE 不带这个令牌(库让它们跟着流走,见 spec/06 §6.4),关流会等它们落地再发 CLOSE。
+                // 关流若恰好也报了错(比如通道同时断了),照 await using 的写法让它往外冒会顶掉真正的原因 ——
+                // 用户按的是取消,看到的却是一条中断、还说能续传(续不续由上层的设置决定,双栏远程之间的中转
+                // 就根本不续)。关流照做(要发 CLOSE 还句柄),它的异常不再往外报。
                 await CloseQuietlyAsync(remote).ConfigureAwait(false);
                 throw new OperationCanceledException(ct);
             }
@@ -156,6 +190,65 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
             }
             await remote.DisposeAsync().ConfigureAwait(false);
         }, ct);
+    }
+
+    /// <inheritdoc />
+    public bool SupportsIdLookup => _fs is { } fs && fs.Capabilities.HasUsersGroupsById;
+
+    /// <inheritdoc />
+    public async Task<(IReadOnlyList<string?> Users, IReadOnlyList<string?> Groups)> LookupNamesAsync(
+        IReadOnlyList<int> userIds, IReadOnlyList<int> groupIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(userIds);
+        ArgumentNullException.ThrowIfNull(groupIds);
+        string?[] users = new string?[userIds.Count];
+        string?[] groups = new string?[groupIds.Count];
+        if (_fs is not { } fs || !fs.Capabilities.HasUsersGroupsById)
+        {
+            return (users, groups);
+        }
+
+        // 一次最多问 MaxIdsPerLookup 个:多了分批。id 在宿主里是 int(与 SftpEntry 一致),线上是 uint32。
+        int batch = SftpFileSystem.MaxIdsPerLookup;
+        try
+        {
+            for (int start = 0; start < Math.Max(userIds.Count, groupIds.Count); start += batch)
+            {
+                uint[] u = [.. userIds.Skip(start).Take(batch).Select(static id => unchecked((uint)id))];
+                uint[] g = [.. groupIds.Skip(start).Take(batch).Select(static id => unchecked((uint)id))];
+                SftpIdNames names = await fs.LookupUserAndGroupNamesAsync(u, g, cancellationToken).ConfigureAwait(false);
+                names.UserNames.ToArray().CopyTo(users, start);
+                names.GroupNames.ToArray().CopyTo(groups, start);
+            }
+        }
+        catch (Exception ex) when (ex is SftpException or VelaShell.Ssh.Diagnostics.SshException)
+        {
+            // 查不到就显示数字,不该让列目录失败。
+        }
+        return (users, groups);
+    }
+
+    /// <inheritdoc />
+    public bool SupportsServerCopy => _fs is { } fs && fs.Capabilities.HasCopyData;
+
+    /// <inheritdoc />
+    public Task CopyOnServerAsync(string sourcePath, string destPath, Action<ulong>? copyCallback = null,
+        CancellationToken cancellationToken = default) =>
+        GuardedAsync(async () =>
+        {
+            SftpFileSystem fs = EnsureConnected();
+            if (!fs.Capabilities.HasCopyData)
+            {
+                throw new NotSupportedException("The server does not support copy-data.");
+            }
+            IProgress<long>? progress = copyCallback is null ? null : new CopyProgress(copyCallback);
+            await fs.CopyFileAsync(sourcePath, destPath, overwrite: true, progress, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>把库按段报的累计字节数原样转给回调(同步,不经同步上下文)。</summary>
+    private sealed class CopyProgress(Action<ulong> callback) : IProgress<long>
+    {
+        public void Report(long value) => callback((ulong)value);
     }
 
     /// <summary>关一个写到一半、已经不打算要了的远端流:CLOSE 照发,关流报的错不再往外抛。</summary>
@@ -256,6 +349,41 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         GuardedAsync(async () => await EnsureConnected().ExistsAsync(path, ct).ConfigureAwait(false), ct);
 
     /// <inheritdoc />
+    /// <remarks>服务端没有 <c>expand-path@openssh.com</c> 与 <c>home-directory</c>、用户或路径不存在时都只是展开不了。</remarks>
+    public async Task<string?> ExpandPathAsync(string path, CancellationToken ct = default)
+    {
+        try
+        {
+            return await EnsureConnected().ExpandPathAsync(path, ct).ConfigureAwait(false);
+        }
+        catch (SftpException)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>服务端没有 <c>statvfs@openssh.com</c> 时不发请求;请求失败(路径不在了之类)也只是查不到。</remarks>
+    public async Task<Core.Sftp.RemoteSpaceInfo?> GetSpaceAsync(string path, CancellationToken ct = default)
+    {
+        SftpFileSystem fs = EnsureConnected();
+        if (!fs.Capabilities.HasStatVfs)
+        {
+            return null;
+        }
+
+        try
+        {
+            SftpFileSystemInfo info = await fs.GetFileSystemInfoAsync(path, ct).ConfigureAwait(false);
+            return new Core.Sftp.RemoteSpaceInfo(info.TotalBytes, info.AvailableBytes, info.IsReadOnly);
+        }
+        catch (SftpException)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// <paramref name="mode" /> 按契约是「把三个八进制数字写成十进制」(755、644),
     /// 所以要按 8 进制解回去,不能直接当数值用。
@@ -339,16 +467,29 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
             open |= mode switch
             {
                 FileMode.CreateNew => SftpOpenModes.Create | SftpOpenModes.Exclusive,
-                // Create / Truncate 都要求截断旧内容,否则新内容比旧文件短时会残留旧尾部。
+                // Create 要求截断旧内容,否则新内容比旧文件短时会残留旧尾部。
                 FileMode.Create => SftpOpenModes.Create | SftpOpenModes.Truncate,
-                FileMode.Truncate => SftpOpenModes.Truncate,
                 FileMode.OpenOrCreate => SftpOpenModes.Create,
                 _ => SftpOpenModes.None,
             };
 
-            return await fs.OpenAsync(
-                path, open, cancellationToken: ct)
-                .ConfigureAwait(false);
+            SftpFileStream stream = await fs.OpenAsync(path, open, cancellationToken: ct).ConfigureAwait(false);
+
+            // FileMode.Truncate 是「已有的文件截成 0、不存在就失败」。v3 的 TRUNC 必须配 CREAT(不存在就会建出来),
+            // 所以照字面翻不出来:不带 CREAT 地打开(不存在照样失败),再截成 0。
+            if (mode == FileMode.Truncate)
+            {
+                try
+                {
+                    await stream.SetLengthAsync(0, ct).ConfigureAwait(false);
+                }
+                catch (Exception)
+                {
+                    await stream.DisposeAsync().ConfigureAwait(false);
+                    throw;
+                }
+            }
+            return stream;
         }, ct);
 
     /// <inheritdoc />
@@ -378,44 +519,10 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     public Task<SftpEntry?> GetEntryAsync(string path, CancellationToken ct = default) =>
         GuardedAsync(async () =>
         {
-            SftpFileSystem fs = EnsureConnected();
-
-            SftpFileAttributes link;
-            try
-            {
-                link = await fs.GetLinkAttributesAsync(path, ct).ConfigureAwait(false);
-            }
-            catch (SftpException ex) when (ex.IsNotFound)
-            {
-                return null;
-            }
-
-            if (!link.IsSymbolicLink)
-            {
-                return MapEntry(path, link, isSymbolicLink: false, linkTarget: null);
-            }
-
-            string? target = null;
-            try
-            {
-                target = await fs.ReadSymbolicLinkAsync(path, ct).ConfigureAwait(false);
-            }
-            catch (SftpException)
-            {
-                // 读不到目标文本(权限、服务端不支持 readlink)不影响条目本身。
-            }
-
-            try
-            {
-                SftpFileAttributes resolved = await fs.GetAttributesAsync(path, ct).ConfigureAwait(false);
-                return MapEntry(path, resolved, isSymbolicLink: true, target);
-            }
-            catch (SftpException)
-            {
-                // 断链:保留链接自身的属性,IsDirectory 为 false。
-                // **不能返回 null** —— 链接本身是存在的,删除它不能先报"找不到"。
-                return MapEntry(path, link, isSymbolicLink: true, target);
-            }
+            // 库给的完整条目:链接保留「是链接」这个事实、并发补上目标与跟随后的属性,断链保留链接自身的属性,
+            // 名字按 SFTP 的「/」取(不用本机的 Path.GetFileName —— Windows 上它把远端名字里合法的「\」当分隔符)。
+            SftpDirectoryEntry? entry = await EnsureConnected().GetEntryAsync(path, ct).ConfigureAwait(false);
+            return entry is { } found ? MapEntry(found) : null;
         }, ct);
 
     /// <inheritdoc />
@@ -450,7 +557,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         MapEntry(entry.FullPath, entry.Attributes, entry.IsSymbolicLink, entry.LinkTarget, entry.Name);
 
     internal static SftpEntry MapEntry(
-        string fullPath, SftpFileAttributes attributes, bool isSymbolicLink, string? linkTarget, string? name = null)
+        string fullPath, SftpFileAttributes attributes, bool isSymbolicLink, string? linkTarget, string name)
     {
         // PermissionBits 已经去掉了高位的文件类型（0xF000）——
         // 直接用 Permissions 在这九位上结果一样，但读起来像是在碰类型位。
@@ -458,7 +565,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
         return new SftpEntry
         {
-            Name = name ?? Path.GetFileName(fullPath),
+            Name = name,
             FullName = fullPath,
             Length = (long)attributes.Size,
             IsDirectory = attributes.IsDirectory,
@@ -493,18 +600,18 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     }
 
     /// <summary>
-    /// 统一异常翻译:释放竞态导致的 NRE 归一为 <see cref="ObjectDisposedException" />,
-    /// 其余库异常经 <see cref="SshInterop.Translate" /> 翻译为 Core 中立异常。
+    /// 统一异常翻译:库异常经 <see cref="SshInterop.Translate" /> 翻译为 Core 中立异常。
     /// </summary>
-    private async Task<T> GuardedAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
+    /// <remarks>
+    /// 曾经还把「释放竞态下的 NRE」归一成 <see cref="ObjectDisposedException" /> —— 那是换库前留下的。
+    /// 现在的库在操作在途时被释放只以「已释放」或 SFTP / 通道的错误结束(库的 SftpTests 里有用例盯着),
+    /// 真冒出一个 NRE 就是 bug,该原样露出来,而不是被说成「已释放」。
+    /// </remarks>
+    private static async Task<T> GuardedAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
     {
         try
         {
             return await operation().ConfigureAwait(false);
-        }
-        catch (NullReferenceException) when (IsTornDown())
-        {
-            throw new ObjectDisposedException(nameof(VelaSftpClientWrapper));
         }
         catch (Exception ex) when (SshInterop.Translate(ex, ct) is { } translated)
         {
@@ -512,21 +619,13 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         }
     }
 
-    private async Task GuardedAsync(Func<Task> operation, CancellationToken ct = default) =>
+    private static async Task GuardedAsync(Func<Task> operation, CancellationToken ct = default) =>
         await GuardedAsync(async () =>
         {
             await operation().ConfigureAwait(false);
             return true;
         }, ct).ConfigureAwait(false);
 
-    private bool IsTornDown()
-    {
-        if (_disposed)
-        {
-            return true;
-        }
-        try { return _fs is null; } catch { return true; }
-    }
 
     private static async ValueTask DisposeQuietlyAsync(SftpFileSystem fs)
     {

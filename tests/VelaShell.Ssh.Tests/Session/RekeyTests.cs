@@ -40,6 +40,11 @@ public sealed class RekeyTests
         SshNegotiatedAlgorithms? firstRound = host.Connection.Algorithms;
         Assert.IsNotNull(firstRound);
 
+        List<SshRekeyEventArgs> rekeyed = [];
+        host.Connection.Rekeyed += (_, e) => rekeyed.Add(e);
+        host.Connection.Rekeyed += (_, _) => throw new InvalidOperationException("订阅者的异常不该影响连接");
+        Assert.IsNull(host.Connection.LastRekeyDuration);
+
         // 服务端发起重协商 —— 这就是 OpenSSH 到了 RekeyLimit 时做的事。
         await host.Channels.RequestRekeyAsync().WaitAsync(host.Token);
 
@@ -50,7 +55,16 @@ public sealed class RekeyTests
         Assert.AreEqual(0, after.ExitCode);
 
         Assert.AreEqual(1, host.Connection.RekeyCount, "应当记下发生过一次重协商");
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Peer), host.Connection.LastRekey, "对端发起的也要记 —— 曾经只记我们按阈值发起的");
+        Assert.AreEqual(1, host.Connection.SendGateOpensPosted, "交换成功才开闸，开一次");
         Assert.IsTrue(host.Connection.IsAlive, "重协商不该把连接弄坏");
+
+        // 〔可观测性缺口 4〕重协商有事件、有耗时。
+        SshRekeyEventArgs done = rekeyed.Single();
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Peer), done.Cause);
+        Assert.AreEqual(1, done.Count);
+        Assert.AreEqual(host.Connection.Algorithms, done.Algorithms);
+        Assert.AreEqual(done.Duration, host.Connection.LastRekeyDuration);
     }
 
     /// <summary>
@@ -144,6 +158,37 @@ public sealed class RekeyTests
     }
 
     /// <summary>
+    /// 收到 <see cref="SshConnection.Rekeyed"/> 就再发起一次：第二次不能被当成「还在谈」的空操作悄悄吞掉 ——
+    /// 事件在可以再发起之后才报。曾经在那之前报，「每次完了就再来一次」的订阅者第二次就停了。
+    /// </summary>
+    [TestMethod]
+    public async Task 收到重协商完成的事件就再发起一次不会被吞掉()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(new TestChannelScript
+        {
+            StandardOutput = Encoding.UTF8.GetBytes("ok\n"),
+            ExitCode = 0,
+        });
+
+        TaskCompletionSource second = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        host.Connection.Rekeyed += (_, e) =>
+        {
+            if (e.Count == 1)
+            {
+                _ = host.Connection.StartRekeyAsync(host.Token).AsTask();
+            }
+            else
+            {
+                second.TrySetResult();
+            }
+        };
+
+        await host.Connection.StartRekeyAsync(host.Token);
+        await second.Task.WaitAsync(TimeSpan.FromSeconds(10), host.Token);
+        Assert.AreEqual(2, host.Connection.RekeyCount);
+        Assert.AreEqual("ok\n", (await host.Connection.RunAsync("ok", cancellationToken: host.Token)).StandardOutput);
+    }
+    /// <summary>
     /// 重协商期间闸门关着、发送一律暂存 —— 对端永远不完成的话，连接不能无声地停在那里。
     /// </summary>
     [TestMethod]
@@ -177,6 +222,97 @@ public sealed class RekeyTests
             async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
         Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
         Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "交换没完成就不开闸：暂存的通道数据不能在 NEWKEYS 之前发出去");
+    }
+
+    /// <summary>
+    /// 对端发起重协商，而本端的发送卡住了（对端不读、链路半断）：照样按时限断开。
+    /// 曾经「等这一帧发出去」不响应取消，交换永远等下去、闸门永远关着 —— 只有本端发起的那一种有兜底。
+    /// </summary>
+    [TestMethod]
+    public async Task 对端发起重协商而本端发送卡住时照样按时限断开()
+    {
+        GatedWriteStream? gate = null;
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            rekeyTimeout: TimeSpan.FromMilliseconds(300),
+            wrapClient: inner => gate = new GatedWriteStream(inner));
+        host.ServerLoopMayFail = true;
+
+        gate!.Block();
+        _ = host.Channels.RequestRekeyAsync();
+
+        try
+        {
+            while (host.Connection.IsAlive)
+            {
+                await Task.Delay(20, host.Token);
+            }
+
+            SshConnectionClosedException error = await Assert.ThrowsExactlyAsync<SshConnectionClosedException>(
+                async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
+            Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+            Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        }
+        finally
+        {
+            gate.Unblock();
+        }
+    }
+
+    /// <summary>
+    /// 本端发起重协商时，发出去的 KEXINIT 用的就是本地协商用的那份收窄过的清单（主机密钥算法只剩钉住的那一类）。
+    /// 曾经发的是没收窄的、本地协商用的却是收窄后的。
+    /// </summary>
+    [TestMethod]
+    public async Task 本端发起重协商时发出去的KEXINIT已收窄到钉住的主机密钥类型()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 });
+
+        await host.Connection.StartRekeyAsync(host.Token);
+        while (host.Connection.RekeyCount == 0)
+        {
+            await Task.Delay(20, host.Token);
+        }
+
+        byte[] sent = host.Channels.Observation.LastClientInitiatedKexInit
+            ?? throw new AssertFailedException("服务端没记到客户端发起的 KEXINIT。");
+        Assert.AreSequenceEqual([SshAlgorithmNames.SshEd25519], SshKexInitMessage.Decode(sent).ServerHostKeyAlgorithms.ToArray());
+    }
+
+    /// <summary>
+    /// 时间阈值按连接的时钟算：差一点不发起，到点后的那次巡检发起。
+    /// 时钟是手动拨的 —— 曾经直接按 Environment.TickCount64 算，验这个阈值只能真的等上一分钟。
+    /// </summary>
+    [TestMethod]
+    public async Task 时间阈值到点才发起重协商()
+    {
+        ManualTimeProvider clock = new();
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            rekey: new SshRekeyPolicy(maxInterval: TimeSpan.FromMinutes(1)),
+            rekeyCheckInterval: TimeSpan.FromSeconds(5),
+            timeProvider: clock);
+
+        // 一拍一拍地拨到 55 秒：每拍等巡检循环睡下（5 秒后醒）再拨，它每一拍都看一次阈值。
+        TimeSpan tick = TimeSpan.FromSeconds(5);
+        for (int second = 5; second <= 55; second += 5)
+        {
+            await clock.WaitUntilArmedAsync(tick, host.Token);
+            clock.Advance(tick);
+        }
+        await clock.WaitUntilArmedAsync(tick, host.Token);   // 55 秒那一拍看完了
+        await Task.Delay(100, host.Token);                    // 真发起了的话，给那次交换走完的时间
+        Assert.AreEqual(0, host.Connection.RekeyCount, "还差 5 秒就发起了重协商");
+
+        clock.Advance(TimeSpan.FromSeconds(5));
+        while (host.Connection.RekeyCount == 0)
+        {
+            await Task.Delay(20, host.Token);
+        }
+        Assert.AreEqual(1, host.Connection.RekeyCount);
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Interval, 60_000, 60_000), host.Connection.LastRekey);
     }
 
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
@@ -218,6 +354,35 @@ public sealed class RekeyTests
             async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
         Assert.AreEqual(SshFailureReason.HostKeyChanged, error.Reason);
         Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+
+        // 刚判定「主机密钥变了」，暂存的通道数据就不该再被放出去（RFC 4253 §7.1：KEXINIT 之后、NEWKEYS 之前只许发 KEX 报文）。
+        Assert.AreEqual(0, host.Connection.SendGateOpensPosted, "失败的交换不开闸");
+    }
+
+    /// <summary>
+    /// 重协商时验签失败：连接早就建好了，报的是「连接断了」（原因码照旧、阶段是 Rekeying），
+    /// 不是 SshConnectException —— 按类型分流的调用方会把那当成「没连上」。
+    /// </summary>
+    [TestMethod]
+    public async Task 重协商时验签失败报连接断开而不是没连上()
+    {
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = Encoding.UTF8.GetBytes("ok\n"), ExitCode = 0 },
+            corruptRekeySignature: true);
+        host.ServerLoopMayFail = true;
+
+        _ = host.Channels.RequestRekeyAsync();
+
+        while (host.Connection.IsAlive)
+        {
+            await Task.Delay(20, host.Token);
+        }
+
+        SshConnectionClosedException error = await Assert.ThrowsExactlyAsync<SshConnectionClosedException>(
+            async () => await host.Connection.RunAsync("ok", cancellationToken: host.Token));
+        Assert.AreEqual(SshFailureReason.HostKeyRejected, error.Reason);
+        Assert.AreEqual(SshPhase.Rekeying, error.Phase);
+        Assert.IsInstanceOfType<SshConnectException>(error.InnerException);
     }
 
     private sealed class CountingPolicy : Ssh.HostKeys.IHostKeyPolicy
@@ -402,9 +567,12 @@ public sealed class RekeyTests
             ExitCode = 0,
         });
 
+        Assert.IsNull(host.Connection.LastRekey, "还没重协商过");
+
         // StartRekeyAsync 只负责把我们的 KEXINIT 发出去就返回 ——
         // 剩下的由接收循环在对端的 KEXINIT 到达时接着做。
         await host.Connection.StartRekeyAsync(host.Token);
+        Assert.AreEqual(SshRekeyTrigger.Requested, host.Connection.LastRekey?.Trigger);
 
         // 所以这里要等它真的谈完，而不是假设一返回就完事了。
         await WaitForRekeyAsync(host, expected: 1);
@@ -496,14 +664,44 @@ public sealed class RekeyTests
 
         await WaitForRekeyAsync(host, expected: 1);
 
-        Assert.IsNotNull(host.Connection.LastRekeyReason, "主动发起时要说清是哪条阈值触发的");
-        Assert.Contains(
-"报文数", host.Connection.LastRekeyReason!,
-            $"应当是报文数那条触发的，实际：{host.Connection.LastRekeyReason}");
+        SshRekeyCause? cause = host.Connection.LastRekey;
+        Assert.IsNotNull(cause, "主动发起时要说清是哪条阈值触发的");
+        Assert.AreEqual(SshRekeyTrigger.Packets, cause.Trigger, $"应当是报文数那条触发的，实际：{cause}");
+        Assert.AreEqual(SshRekeyPolicy.MinimumPackets, cause.Threshold);
+        Assert.IsGreaterThanOrEqualTo(cause.Threshold, cause.Observed);
 
         // 换完密钥连接还要能用。
         SshCommandResult after = await host.Connection.RunAsync("再来", cancellationToken: host.Token);
         Assert.AreEqual(0, after.ExitCode, "重协商之后连接还要能用");
+    }
+
+    /// <summary>
+    /// 报文数的硬线与策略无关：策略关掉了，同一套密钥下的报文数到了照样主动重协商。
+    /// 曾经它只是策略的一项，<see cref="SshRekeyPolicy.Disabled"/> 会把它一并关掉 —— 序号一路走到回绕。
+    /// </summary>
+    [TestMethod]
+    public async Task 策略关掉时报文数的硬线照样触发重协商()
+    {
+        const int maxPacket = 256;
+        byte[] bulk = new byte[300 * 1024];
+        Random.Shared.NextBytes(bulk);
+
+        await using TestSshServerHost host = await TestSshServerHost.StartAsync(
+            new TestChannelScript { StandardOutput = bulk, ExitCode = 0 },
+            rekey: SshRekeyPolicy.Disabled,
+            rekeyCheckInterval: TimeSpan.FromMilliseconds(30),
+            rekeyHardPacketLimit: SshRekeyPolicy.MinimumPackets);
+
+        SshCommandOptions options = new()
+        {
+            Channel = SshChannelOptions.Default with { ReceiveMaxPacketBytes = maxPacket },
+        };
+
+        SshCommandResult output = await host.Connection.RunAsync("灌", options, host.Token);
+        Assert.AreEqual(0, output.ExitCode);
+
+        await WaitForRekeyAsync(host, expected: 1);
+        Assert.AreEqual(SshRekeyTrigger.PacketHardLimit, host.Connection.LastRekey?.Trigger, $"实际：{host.Connection.LastRekey}");
     }
 
     [TestMethod]
@@ -520,9 +718,19 @@ public sealed class RekeyTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(
             () => new SshRekeyPolicy(maxPackets: 8));
 
+        // 上限同样是硬的：序号是 32 位的，阈值设到 2³² 以上就等于允许回绕。
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new SshRekeyPolicy(maxPackets: SshRekeyPolicy.MaximumPackets + 1));
+        _ = new SshRekeyPolicy(maxPackets: SshRekeyPolicy.MaximumPackets);
+
         // 默认值与「关掉」都必须合法（能构造出来本身就说明过了校验）。
         Assert.IsFalse(SshRekeyPolicy.Disabled.IsEnabled, "关掉之后不该有任何阈值是开的");
         Assert.IsTrue(SshRekeyPolicy.Default.IsEnabled, "默认必须是开着的 —— 它防的是 nonce 回绕");
+
+        // 〔Q1〕默认只按数据量（与 OpenSSH 的默认一致），不按时长：处理不好客户端发起重协商的老设备曾经每小时断一次。
+        Assert.AreEqual(1L << 30, SshRekeyPolicy.Default.MaxBytes);
+        Assert.AreEqual(1L << 31, SshRekeyPolicy.Default.MaxPackets);
+        Assert.AreEqual(TimeSpan.Zero, SshRekeyPolicy.Default.MaxInterval);
 
         // 全零的结构体就该是「什么都不做」。第一版不是这样：MaxInterval 的
         // default 被翻译成 1 小时，于是 Disabled 里的时长那一条根本关不掉。

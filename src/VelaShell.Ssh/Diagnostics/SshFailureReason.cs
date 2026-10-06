@@ -38,11 +38,30 @@ public enum SshFailureReason
     /// <summary>网络不可达。</summary>
     TcpUnreachable,
 
+    /// <summary>
+    /// 连不上代理本身（代理的地址解析不了、端口没人听、超时、网络不可达）。具体是哪一种在 <see cref="Exception.InnerException"/> 与 <c>Hops</c> 里。
+    /// </summary>
+    /// <remarks>
+    /// 与直连的 <see cref="TcpRefused"/> 等分开：曾经沿用同一组码，调用方分不出没开的是目标还是代理 ——
+    /// 宿主于是把代理的失败一律改写成 <see cref="ProxyRefused"/>，又丢了「连不上」与「拒绝转发」的区别。
+    /// </remarks>
+    ProxyUnreachable,
+
     /// <summary>代理拒绝转发。消息里会带上代理类型、地址与目标。</summary>
     ProxyRefused,
 
     /// <summary>代理要求认证，但未配置代理凭据。</summary>
     ProxyAuthRequired,
+
+    /// <summary>代理拒绝了配置的凭据（用户名或口令不对）。</summary>
+    /// <remarks>
+    /// 与 <see cref="ProxyAuthRequired"/> 分开：一个是「去配」，一个是「改对」。曾经两者共用一个码，
+    /// 宿主只好自己靠「有没有配凭据」来分。
+    /// </remarks>
+    ProxyAuthFailed,
+
+    /// <summary>TLS 握手失败（<c>DialerChain.Tls</c>）：服务端证书不可信或名字对不上，或者对端说的不是 TLS。</summary>
+    TlsFailed,
 
     // ---- 版本交换 ----
 
@@ -69,10 +88,18 @@ public enum SshFailureReason
     /// <summary>主机密钥与已记录的不符。</summary>
     HostKeyChanged,
 
-    // ---- 认证 ----
+    /// <summary>
+    /// 主机密钥的记录读不出来或写不进去：<c>known_hosts</c> 没有权限、被别的进程占着、磁盘满。
+    /// </summary>
+    /// <remarks>
+    /// 读不出来时没法判断这台主机认不认识，连接不放行；「信任并记住」时写不进去不影响这次连接，
+    /// 失败记在 <c>SshConnection.HostKeyPersistFailure</c> 上（velashell-docs/zh/ssh/spec/03 §5.4）。
+    /// </remarks>
+    HostKeyStoreFailed,
 
-    /// <summary>一次认证尝试失败。</summary>
-    AuthenticationFailed,
+    // ---- 认证 ----
+    // 曾经还有一个 AuthenticationFailed（「一次认证尝试失败」）：全库没有产生者，却列在 IsRetryable 里。
+    // 认证失败报的是 AuthenticationMethodExhausted（带逐条尝试记录），那不该重试。
 
     /// <summary>
     /// 所有可用的认证方法都试完了。
@@ -172,12 +199,15 @@ public enum SshFailureReason
     /// <summary>本机一侧准备转发失败：拿不到 X 显示、<c>xauth</c> 跑不起来或失败。</summary>
     ForwardSetupFailed,
 
-    /// <summary>本端的某个并发上限到了（转发连接数、agent / X11 通道数）。</summary>
+    /// <summary>本端的某个上限到了（并发通道数、会话接收窗口总预算、转发连接数、agent / X11 通道数）。</summary>
     LimitExceeded,
 
     // ---- 远端命令 ----
 
-    /// <summary>远端命令没有以退出码 0 结束（<c>SshCommandResult.EnsureSuccess</c>）。</summary>
+    /// <summary>
+    /// 远端命令没有以退出码 0 结束（<c>SshCommandResult.EnsureSuccess</c>）；
+    /// 或者 sftp-server 没等 SFTP 建立就退出了（<c>SftpUnavailableException</c>，带退出码与 stderr 的末尾）。
+    /// </summary>
     CommandFailed,
 
     // ---- 配置 ----

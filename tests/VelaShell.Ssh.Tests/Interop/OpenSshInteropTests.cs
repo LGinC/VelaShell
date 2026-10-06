@@ -36,6 +36,7 @@ using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Session;
 using VelaShell.Ssh.Sftp;
+using VelaShell.Ssh.Tests.TestKit;
 
 namespace VelaShell.Ssh.Tests.Interop;
 
@@ -45,7 +46,7 @@ namespace VelaShell.Ssh.Tests.Interop;
 // （默认 10 个未认证并发连接），多出来的会在**发出版本标识串之前**就被丢掉 ——
 // 症状是「对端在发出版本标识串之前关闭了连接」，看上去像我们的 bug。
 [DoNotParallelize]
-public sealed class OpenSshInteropTests
+public sealed partial class OpenSshInteropTests
 {
     private static string Host =>
         Environment.GetEnvironmentVariable("VELASHELL_SSH_INTEROP_HOST") ?? "127.0.0.1";
@@ -77,13 +78,27 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>
+    /// <c>VELASHELL_SSH_INTEROP_KEY_ONLY=1</c> 时默认凭据改用 <see cref="KeyPath"/> 的私钥，而不是口令 ——
+    /// 本机没有 Docker、在 WSL 里起一台非 root 的 sshd 时用：非 root 的 sshd 只能让它自己那个用户登录，而且验不了口令。
+    /// </summary>
+    private static readonly Lazy<InMemorySshSigner?> KeyOnlySigner = new(() =>
+        Environment.GetEnvironmentVariable("VELASHELL_SSH_INTEROP_KEY_ONLY") == "1" && KeyPath is { } path
+            ? SshPrivateKeyFile.Parse(File.ReadAllText(path), passphrase: null, path)
+            : null);
+
+    private static IReadOnlyList<SshCredential> DefaultCredentials() =>
+        KeyOnlySigner.Value is { } signer
+            ? [new PublicKeyCredential(signer, KeyPath!)]
+            : [new PasswordCredential(Password)];
+
     private static SshConnectionOptions Options(
         SshAlgorithmSet? algorithms = null, IReadOnlyList<SshCredential>? credentials = null) =>
         new(User, Host, Port)
         {
             // 互操作测试里服务端每次重建，主机密钥每次都变 —— 这里不是在测 TOFU。
             HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
-            Credentials = credentials ?? [new PasswordCredential(Password)],
+            Credentials = credentials ?? DefaultCredentials(),
             Algorithms = algorithms ?? SshAlgorithmSet.Default,
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
@@ -108,7 +123,8 @@ public sealed class OpenSshInteropTests
     {
         RequireServer();
 
-        List<string> failed = [];
+        List<string> unsupported = [];
+        List<string> broken = [];
 
         foreach (string kex in SshAlgorithmSet.Default.KeyExchange)
         {
@@ -124,23 +140,38 @@ public sealed class OpenSshInteropTests
                 await using SshConnection connection = await SshConnection.ConnectAsync(Options(only));
                 SshCommandResult r = await connection.RunAsync("true");
                 Assert.AreEqual(0, r.ExitCode, kex);
+                Assert.AreEqual(kex, connection.Algorithms.KeyExchange, "谈成的不是要求的那一个");
+            }
+            catch (SshNegotiationException ex)
+            {
+                // 对端不支持某个算法是**正常的**（比如老 OpenSSH 没有后量子混合）—— 只有协商不成才算这一类。
+                unsupported.Add($"{kex}：{ex.Message}");
             }
             catch (SshException ex)
             {
-                // 对端不支持某个算法是**正常的**（比如老 OpenSSH 没有后量子混合）。
-                // 记下来一起报，别一个失败就中断整张矩阵。
-                failed.Add($"{kex}：{ex.Message}");
+                // 谈成了却失败（验签失败、MAC 错、共享密钥算错）是我们坏了，不是对端不支持。
+                // 曾经这里一概 catch (SshException)，再只要求「至少一个能通」—— sntrup761、ecdh-nistp384/521、
+                // DH 坏了照样绿。
+                broken.Add($"{kex}：{ex.Reason} {ex.Message}");
             }
         }
 
-        // 至少要有一个能通 —— 一个都不通说明不是「对端不支持」，是我们坏了。
-        Assert.IsLessThan(
-            SshAlgorithmSet.Default.KeyExchange.Count, failed.Count,
-            "没有任何一种密钥交换能与对端握手：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+        Assert.IsEmpty(broken,
+            "这些密钥交换谈成了却握不了手：" + Environment.NewLine + string.Join(Environment.NewLine, broken));
 
-        Console.WriteLine(failed.Count == 0
+        // curve25519 与 ECDH 是 OpenSSH 各版本默认都开着的，必须能通：它们「不支持」只能是我们的清单或协商出了错。
+        // 有限域 DH 不在其列 —— OpenSSH 10.0 的 sshd 默认已经不开它了。
+        string[] required =
+        [
+            SshAlgorithmNames.Curve25519Sha256, SshAlgorithmNames.EcdhSha2Nistp256, SshAlgorithmNames.EcdhSha2Nistp384,
+            SshAlgorithmNames.EcdhSha2Nistp521,
+        ];
+        Assert.IsFalse(unsupported.Any(u => required.Any(r => u.StartsWith(r + "：", StringComparison.Ordinal))),
+            "OpenSSH 默认就支持的密钥交换谈不成：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
+
+        Console.WriteLine(unsupported.Count == 0
             ? "全部密钥交换算法都通过了。"
-            : "对端不支持这些（可能是正常的）：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+            : "对端不支持这些（可能是正常的）：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
     }
 
     [TestMethod]
@@ -148,7 +179,7 @@ public sealed class OpenSshInteropTests
     {
         RequireServer();
 
-        List<string> failed = [];
+        List<string> unsupported = [];
 
         foreach (string cipher in SshAlgorithmSet.Default.EncryptionClientToServer)
         {
@@ -164,15 +195,62 @@ public sealed class OpenSshInteropTests
                 SshCommandResult r = await connection.RunAsync("echo ok");
                 Assert.AreEqual("ok\n", r.StandardOutput, cipher);
             }
-            catch (SshException ex)
+            catch (SshNegotiationException ex)
             {
-                failed.Add($"{cipher}：{ex.Message}");
+                unsupported.Add($"{cipher}：{ex.Message}");
             }
         }
 
-        Assert.IsLessThan(
-            SshAlgorithmSet.Default.EncryptionClientToServer.Count, failed.Count,
-            "没有任何一种加密算法能与对端收发：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+        // 谈成了却收发失败的直接让用例失败（异常不接）；协商不成的只报出来。
+        // 默认清单里的加密算法 OpenSSH 6.5 起全都支持，一个都不该谈不成。
+        Assert.IsEmpty(unsupported,
+            "这些加密算法与对端谈不成：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
+    }
+
+    /// <summary>
+    /// 每一种 MAC 都与真实的 OpenSSH 对一遍（固定用 aes256-ctr，这样 MAC 才真的被协商出来）。
+    /// 曾经加密矩阵只变密码，CTR 下总是谈成 hmac-sha2-256-etm：sha2-512-etm、整条 MtE 路径（hmac-sha2-256/512）、
+    /// hmac-sha1(-etm) 都只与本库自己的另一半对过 —— 两边错得一样时往返测试测不出来。
+    /// </summary>
+    [TestMethod]
+    public async Task 每一种MAC都能与OpenSSH收发()
+    {
+        RequireServer();
+
+        List<string> failed = [];
+        foreach (string mac in SshAlgorithmSet.Default.WithLegacyInterop().MacClientToServer)
+        {
+            SshAlgorithmSet only = SshAlgorithmSet.Default with
+            {
+                EncryptionClientToServer = [SshAlgorithmNames.Aes256Ctr],
+                EncryptionServerToClient = [SshAlgorithmNames.Aes256Ctr],
+                MacClientToServer = [mac],
+                MacServerToClient = [mac],
+            };
+
+            try
+            {
+                await using SshConnection connection = await SshConnection.ConnectAsync(Options(only));
+                Assert.AreEqual(mac, connection.Algorithms.MacClientToServer, "谈成的不是要求的那个 MAC");
+
+                // 两个方向各走一大段（几百个报文），不止一两个报文。
+                SshCommandResult bulk = await connection.RunAsync("head -c 262144 /dev/zero | tr '\\0' 'm'");
+                Assert.AreEqual(256 * 1024, bulk.StandardOutput.Length, mac);
+
+                await using SshCommand echo = await connection.ExecuteAsync("wc -c");
+                await echo.StandardInput.WriteAsync(new byte[200 * 1024]);
+                await echo.CompleteStandardInputAsync();
+                (_, string counted, _) = await echo.ReadToEndAsync();
+                Assert.AreEqual("204800", counted.Trim(), mac);
+            }
+            catch (SshException ex)
+            {
+                failed.Add($"{mac}：{ex.Reason} {ex.Message}");
+            }
+        }
+
+        Assert.IsEmpty(failed,
+            "这些 MAC 与 OpenSSH 收发失败：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
     }
 
     [TestMethod]
@@ -228,6 +306,46 @@ public sealed class OpenSshInteropTests
 
         Assert.IsEmpty(failed,
             "这些加密算法在重协商之后收发失败：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+    }
+
+    /// <summary>
+    /// 开着压缩跑大块传输，让服务端按它自己的 <c>RekeyLimit</c> 发起重协商：换钥前后的压缩流与新钥都要对得上。
+    /// 曾经「重协商 + zlib@openssh.com」与服务端发起的重协商只与本库自己的测试桩对过。
+    /// </summary>
+    /// <remarks>
+    /// 要服务端配了 <c>RekeyLimit</c>（自家镜像与 <c>Start-TestServer.ps1 -X11</c> 配的是 1M）；没配、一次重协商都没发生时
+    /// 报 Inconclusive，而不是当成通过 —— 数据对上了也说明不了换钥这一段。
+    /// </remarks>
+    [TestMethod]
+    public async Task 开着压缩时服务端发起的重协商照常收发()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options(SshAlgorithmSet.Default.WithCompression()));
+        Assert.AreEqual(SshAlgorithmNames.ZlibOpenSsh, connection.Algorithms.CompressionServerToClient, "前提：压缩谈成了");
+
+        // 随机数据压不小：base64 之后 8 MiB，越过服务端的 RekeyLimit 好几次。
+        SshCommandResult bulk = await connection.RunAsync("head -c 6291456 /dev/urandom | base64 -w0");
+        Assert.AreEqual(0, bulk.ExitCode, bulk.StandardError);
+        Assert.AreEqual(8 * 1024 * 1024, bulk.StandardOutput.Length);
+        Assert.IsTrue(bulk.StandardOutput.All(c => char.IsAsciiLetterOrDigit(c) || c is '+' or '/'), "换钥前后的数据要一字节不差");
+
+        // 反方向也走一大段：换钥之后我们发的压缩流对端要解得开。
+        byte[] upload = new byte[3 * 1024 * 1024];
+        Random.Shared.NextBytes(upload);
+        await using (SshCommand count = await connection.ExecuteAsync("wc -c"))
+        {
+            await count.StandardInput.WriteAsync(upload);
+            await count.CompleteStandardInputAsync();
+            (_, string counted, _) = await count.ReadToEndAsync();
+            Assert.AreEqual(upload.Length.ToString(CultureInfo.InvariantCulture), counted.Trim());
+        }
+
+        if (connection.RekeyCount == 0)
+        {
+            Assert.Inconclusive("服务端一次重协商都没发起 —— 它没配 RekeyLimit，换钥这一段没跑到。");
+        }
+        Assert.IsTrue(connection.IsAlive);
     }
 
     [TestMethod]
@@ -380,7 +498,7 @@ public sealed class OpenSshInteropTests
                 Assert.AreEqual(0, (await connection.RunAsync("true")).ExitCode, "证书主机重协商之后照常可用");
             }
 
-            // 换成一把不相干的 CA：这台主机由 CA 管，出示的证书却没人担保 —— 拒绝，不去问、不去记。
+            // 换成一把不相干的 CA：这台主机由 CA 管，出示的证书却没人担保 —— 拒绝（按「变了」），不去问、不去记。
             using var stranger = InMemorySshSigner.GenerateEd25519();
             await File.WriteAllTextAsync(
                 knownHosts,
@@ -390,7 +508,8 @@ public sealed class OpenSshInteropTests
             {
                 await using SshConnection connection = await SshConnection.ConnectAsync(WithKnownHosts());
             });
-            Assert.AreEqual(SshFailureReason.HostKeyRejected, ex.Reason, ex.Message);
+            // 没有 CA 担保：证书里那把钥按普通钥判，这台主机只记着 CA —— 与「变了」同样处理（velashell-docs/zh/ssh/spec/03 §5.5 第 4 条）。
+            Assert.AreEqual(SshFailureReason.HostKeyChanged, ex.Reason, ex.Message);
         }
         finally
         {
@@ -483,6 +602,256 @@ public sealed class OpenSshInteropTests
 
         // 有 pty 的话 tty 会报 /dev/pts/N；没有的话它报 "not a tty"。
         Assert.Contains("/dev/pts", output.ToString());
+    }
+
+    /// <summary>
+    /// 输出读够了就告诉服务端（<c>eow@openssh.com</c>）：真 OpenSSH 关掉远端进程的输出端，<c>yes</c> 收到 SIGPIPE 结束 ——
+    /// 不告诉的话它永远跑下去（本端丢弃、窗口照常回补），这条用例会超时。
+    /// </summary>
+    [TestMethod]
+    public async Task 输出读够了告诉服务端远端进程就提前结束()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshCommand command = await connection.ExecuteAsync("yes");
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+        System.IO.Pipelines.ReadResult read = await command.StandardOutput.ReadAtLeastAsync(4096, timeout.Token);
+        Assert.StartsWith("y\ny\n", Encoding.UTF8.GetString(read.Buffer.ToArray()));
+        command.StandardOutput.AdvanceTo(read.Buffer.End);
+
+        Assert.IsTrue(await command.StopStandardOutputAsync(timeout.Token), "对端是 OpenSSH，请求要发出去");
+        SshExitStatus exit = await command.WaitAsync(timeout.Token);
+        Assert.IsTrue(exit.ExitSignalName == "PIPE" || exit.ExitCode == 141, $"yes 应当被 SIGPIPE 结束，实际：{exit}");
+    }
+
+    /// <summary>BREAK（RFC 4335）：真 OpenSSH 在伪终端上执行，回 SUCCESS。</summary>
+    [TestMethod]
+    public async Task 伪终端上的Break真OpenSSH会执行()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshShell shell = await connection.OpenShellAsync();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+        Assert.IsTrue(await shell.SendBreakAsync(cancellationToken: timeout.Token), "OpenSSH 对有伪终端的会话执行 BREAK");
+    }
+
+    /// <summary>在伪终端里跑一条命令（<c>ssh -t host tty</c>）：命令看得到终端，跑完通道就关、退出码照常取。</summary>
+    [TestMethod]
+    public async Task 在伪终端里跑命令()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshShell shell = await connection.OpenShellAsync(new SshShellOptions { Command = "tty; exit 7" });
+
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        StringBuilder output = new();
+        while (true)
+        {
+            System.IO.Pipelines.ReadResult read = await shell.StandardOutput.ReadAsync(timeout.Token);
+            output.Append(Encoding.UTF8.GetString(read.Buffer.ToArray()));
+            shell.StandardOutput.AdvanceTo(read.Buffer.End);
+            if (read.IsCompleted)
+            {
+                break;
+            }
+        }
+
+        Assert.StartsWith("/dev/pts/", output.ToString(), "exec 前发了 pty-req，命令就有终端");
+        Assert.AreEqual(7, (await shell.WaitAsync(timeout.Token)).ExitCode);
+    }
+
+    /// <summary>statvfs@openssh.com 与远端 <c>stat -f</c> 对得上（块大小、总块数、文件名上限；空闲块数会变，不比）。</summary>
+    [TestMethod]
+    public async Task SFTP的文件系统用量与远端stat_f一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasStatVfs, "OpenSSH 的 sftp-server 宣告 statvfs@openssh.com");
+
+        SftpFileSystemInfo info = await sftp.GetFileSystemInfoAsync("/");
+        SshCommandResult stat = await connection.RunAsync("stat -f -c '%S %b %l' /");
+        string[] fields = stat.StandardOutput.Trim().Split(' ');
+
+        Assert.AreEqual(ulong.Parse(fields[0], CultureInfo.InvariantCulture), info.FragmentSize, $"stat -f：{stat.StandardOutput}");
+        Assert.AreEqual(ulong.Parse(fields[1], CultureInfo.InvariantCulture), info.TotalBlocks);
+        Assert.AreEqual(ulong.Parse(fields[2], CultureInfo.InvariantCulture), info.MaxNameLength);
+        Assert.IsLessThanOrEqualTo(info.FreeBlocks, info.AvailableBlocks);
+    }
+
+    /// <summary>users-groups-by-id：真 OpenSSH 翻出来的名字与远端 id 命令一致，不认识的 id 为 null。</summary>
+    [TestMethod]
+    public async Task SFTP把uid与gid翻成名字与远端id一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasUsersGroupsById, "OpenSSH 的 sftp-server 宣告 users-groups-by-id@openssh.com");
+
+        string[] me = (await connection.RunAsync("id -u; id -g; id -un; id -gn")).StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        uint uid = uint.Parse(me[0], CultureInfo.InvariantCulture);
+        uint gid = uint.Parse(me[1], CultureInfo.InvariantCulture);
+
+        SftpIdNames names = await sftp.LookupUserAndGroupNamesAsync([0, uid, 4_242_424], [0, gid, 4_242_424]);
+
+        Assert.AreSequenceEqual(new string?[] { "root", me[2], null }, names.UserNames.ToArray());
+        Assert.AreSequenceEqual(new string?[] { "root", me[3], null }, names.GroupNames.ToArray());
+    }
+
+    /// <summary>服务端内复制（copy-data）：真 OpenSSH 上复制出来的文件与源的 sha256 一致。</summary>
+    [TestMethod]
+    public async Task SFTP服务端内复制与源一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasCopyData, "OpenSSH 的 sftp-server 宣告 copy-data");
+
+        string dir = $"/tmp/vela-copy-{Guid.NewGuid():N}";
+        await connection.RunAsync($"mkdir {dir} && head -c 3000000 /dev/urandom > {dir}/src.bin");
+        sftp.CopySegmentBytes = 1024 * 1024;   // 三段
+
+        long last = 0;
+        await sftp.CopyFileAsync($"{dir}/src.bin", $"{dir}/dst.bin", progress: new SyncProgress<long>(v => last = v));
+
+        string sums = (await connection.RunAsync($"sha256sum {dir}/src.bin {dir}/dst.bin | cut -c1-64; rm -rf {dir}")).StandardOutput;
+        string[] lines = sums.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.HasCount(2, lines);
+        Assert.AreEqual(lines[0], lines[1]);
+        Assert.AreEqual(3_000_000, last);
+    }
+
+    /// <summary>展开 ~：真 OpenSSH 宣告 expand-path@openssh.com，~ 是登录用户的 $HOME，~root 是 /root。</summary>
+    [TestMethod]
+    public async Task SFTP展开波浪号与远端的HOME一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasExpandPath, "OpenSSH 的 sftp-server 宣告 expand-path@openssh.com");
+
+        string home = (await connection.RunAsync("printf %s \"$HOME\"")).StandardOutput;
+        Assert.AreEqual(home, await sftp.ExpandPathAsync("~"));
+        Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
+    }
+
+    /// <summary>
+    /// 按句柄设时间（FSETSTAT，关闭之前）与不跟随链接设时间（lsetstat@openssh.com）：远端 stat 看到的
+    /// 是设下去的时间，链接的目标不被改到。
+    /// </summary>
+    [TestMethod]
+    public async Task SFTP按句柄与不跟随链接设时间与远端stat一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasLSetStat, "OpenSSH 的 sftp-server 宣告 lsetstat@openssh.com");
+
+        string dir = $"/tmp/vela-times-{Guid.NewGuid():N}";
+        await sftp.CreateDirectoryAsync(dir);
+        DateTimeOffset fileTime = new(2023, 5, 6, 7, 8, 9, TimeSpan.Zero);
+        DateTimeOffset linkTime = new(2021, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+        await using (SftpFileStream file = await sftp.OpenWriteAsync($"{dir}/f.txt"))
+        {
+            await file.WriteAsync("payload"u8.ToArray());
+            await file.SetTimesAsync(fileTime, fileTime);
+        }
+        await sftp.CreateSymbolicLinkAsync($"{dir}/link", "f.txt");
+        await sftp.SetLinkAttributesAsync($"{dir}/link", SftpFileAttributes.WithTimes(linkTime, linkTime));
+
+        string stat = (await connection.RunAsync($"stat -c %Y {dir}/f.txt {dir}/link; rm -rf {dir}")).StandardOutput;
+        string[] lines = stat.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.AreEqual(fileTime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), lines[0], "目标的修改时间是按句柄设的那个，不被链接改到");
+        Assert.AreEqual(linkTime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), lines[1], "链接自身的修改时间");
+    }
+
+    /// <summary>
+    /// 〔T11〕链接、改名与落盘对真 sftp-server —— 不只对本库的测试桩（桩与实现按同一个理解写，对不出理解错了的地方）：
+    /// SYMLINK 的两个参数照 OpenSSH 的实际口径（链接建在该建的地方、远端 readlink 读回指向的那个）、
+    /// hardlink@openssh.com 的链接与目标共用一个 inode、posix-rename@openssh.com 原子覆盖已有的目标、
+    /// fsync@openssh.com 之后内容在。
+    /// </summary>
+    [TestMethod]
+    public async Task SFTP的链接改名与落盘对真sftp_server()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasHardLink, "OpenSSH 的 sftp-server 宣告 hardlink@openssh.com");
+        Assert.IsTrue(sftp.Capabilities.HasPosixRename, "OpenSSH 的 sftp-server 宣告 posix-rename@openssh.com");
+        Assert.IsTrue(sftp.Capabilities.HasFsync, "OpenSSH 的 sftp-server 宣告 fsync@openssh.com");
+
+        string dir = $"/tmp/vela-links-{Guid.NewGuid():N}";
+        await sftp.CreateDirectoryAsync(dir);
+        try
+        {
+            await sftp.WriteAllBytesAsync($"{dir}/a.txt", "alpha"u8.ToArray());
+            await sftp.WriteAllBytesAsync($"{dir}/b.txt", "bravo"u8.ToArray());
+            await sftp.WriteAllBytesAsync($"{dir}/c.txt", "charlie"u8.ToArray());
+
+            await sftp.CreateSymbolicLinkAsync($"{dir}/link", "a.txt");
+            Assert.AreEqual("a.txt", await sftp.ReadSymbolicLinkAsync($"{dir}/link"), "本库读回的指向");
+
+            await sftp.CreateHardLinkAsync($"{dir}/hard", $"{dir}/a.txt");
+            await sftp.RenameAsync($"{dir}/b.txt", $"{dir}/c.txt", overwrite: true);
+
+            await using (SftpFileStream file = await sftp.OpenWriteAsync($"{dir}/d.txt"))
+            {
+                await file.WriteAsync("durable"u8.ToArray());
+                await file.FsyncAsync();
+            }
+
+            string[] remote = (await connection.RunAsync(
+                $"readlink {dir}/link; stat -c %i {dir}/a.txt {dir}/hard; cat {dir}/c.txt; echo; test -e {dir}/b.txt && echo b-still-there; cat {dir}/d.txt"))
+                .StandardOutput.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+
+            Assert.AreEqual("a.txt", remote[0], "远端 readlink：链接建在 link、指向 a.txt（两个参数没有颠倒）");
+            Assert.AreEqual(remote[1], remote[2], "硬链接与目标是同一个 inode");
+            Assert.AreEqual("bravo", remote[3], "posix-rename 覆盖了已有的 c.txt");
+            Assert.AreEqual("durable", remote[4], "b.txt 已经不在，fsync 之后 d.txt 的内容在");
+        }
+        finally
+        {
+            await connection.RunAsync($"rm -rf {dir}");
+        }
+    }
+
+    /// <summary>〔Q8〕2038 年之后的时间：真 sftp-server 发、收的都是无符号的秒数，读写照样是 2040 年。</summary>
+    [TestMethod]
+    public async Task SFTP的时间按无符号对真sftp_server()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+
+        string dir = $"/tmp/vela-time-{Guid.NewGuid():N}";
+        await connection.RunAsync($"mkdir {dir} && touch -d \"2040-01-01 00:00:00 UTC\" {dir}/old && touch {dir}/new");
+        try
+        {
+            Assert.AreEqual(new DateTimeOffset(2040, 1, 1, 0, 0, 0, TimeSpan.Zero), (await sftp.GetAttributesAsync($"{dir}/old")).LastWriteTime);
+
+            DateTimeOffset in2050 = new(2050, 6, 1, 12, 0, 0, TimeSpan.Zero);
+            await sftp.SetAttributesAsync($"{dir}/new", SftpFileAttributes.WithTimes(in2050, in2050));
+            string seconds = (await connection.RunAsync($"stat -c %Y {dir}/new")).StandardOutput.Trim();
+            Assert.AreEqual(in2050.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), seconds);
+        }
+        finally
+        {
+            await connection.RunAsync($"rm -rf {dir}");
+        }
     }
 
     [TestMethod]
@@ -637,7 +1006,7 @@ public sealed class OpenSshInteropTests
         SshConnectionOptions target = new(User, "127.0.0.1", 2222)
         {
             HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
-            Credentials = [new PasswordCredential(Password)],
+            Credentials = DefaultCredentials(),
             Dialer = Ssh.Transport.DialerChain.Jump(Options()),
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
@@ -717,6 +1086,72 @@ public sealed class OpenSshInteropTests
                 Assert.Contains(key.PublicKey.Sha256Fingerprint, listed.StandardOutput);
                 key.Dispose();
             }
+        }
+        finally
+        {
+            await connection.RunAsync($"kill {pid}; rm -f {socket}");
+        }
+    }
+
+    /// <summary>
+    /// 真实的 OpenSSH agent 上的管理操作：「证书 + 私钥」一起加（三种钥，ssh-keygen 签的证书）、删一把、锁、解锁、清空。
+    /// </summary>
+    /// <remarks>
+    /// 证书那条的报文形状（证书之后只放证书里没有的私钥部分）只有真 agent 裁决得了：错了 agent 回 FAILURE，
+    /// 或者回 SUCCESS 却签不出能用原公钥验过的签名。远端 <c>ssh-add -l</c> 再从 agent 自己的角度看一遍。
+    /// </remarks>
+    [TestMethod]
+    public async Task 真实的OpenSSH_agent上加证书_删钥_锁与清空()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        string socket = $"/tmp/vela-agent-{Guid.NewGuid():N}.sock";
+        SshCommandResult started = await connection.RunAsync($"ssh-agent -s -a {socket}");
+        Assert.AreEqual(0, started.ExitCode, started.StandardError);
+        string pid = started.StandardOutput.Split("SSH_AGENT_PID=")[1].Split(';')[0];
+
+        try
+        {
+            SshChannel tunnel = await connection.OpenUnixSocketTunnelAsync(socket);
+            await using var agent = SshAgentClient.FromStream(tunnel.AsStream(), socket);
+
+            byte[] data = Encoding.UTF8.GetBytes("证书身份签的数据");
+            List<SshPublicKey> certificates = [];
+            foreach (string name in new[] { "cert-ed25519", "cert-rsa", "cert-ecdsa" })
+            {
+                string fixture = Path.Combine(AppContext.BaseDirectory, "Keys", "Fixtures", name);
+                using InMemorySshSigner key = await SshPrivateKeyFile.LoadAsync(fixture);
+                SshPublicKey certificate = SshPublicKey.Parse(await File.ReadAllTextAsync(fixture + "-cert.pub"));
+                await agent.AddIdentityAsync(key, certificate, "vela-" + name);
+
+                string algorithm = certificate.SignatureAlgorithms[0];
+                byte[] signature = await agent.SignAsync(certificate.Blob, data, algorithm);
+                Assert.IsTrue(
+                    key.PublicKey.VerifySignature(signature, data, SshPublicKey.StripCertificateSuffix(algorithm)),
+                    $"{name}：agent 手里的私钥与证书证的不是同一把");
+                certificates.Add(certificate);
+            }
+
+            string listed = (await connection.RunAsync($"SSH_AUTH_SOCK={socket} ssh-add -l")).StandardOutput;
+            Assert.Contains("ED25519-CERT", listed);
+            Assert.Contains("RSA-CERT", listed);
+            Assert.Contains("ECDSA-CERT", listed);
+
+            Assert.IsTrue(await agent.RemoveIdentityAsync(certificates[0]));
+            Assert.IsFalse(await agent.RemoveIdentityAsync(certificates[0]), "删过一次就不在了");
+            Assert.HasCount(2, await agent.ListIdentitiesAsync());
+
+            Assert.IsTrue(await agent.LockAsync("离开座位"));
+            Assert.IsEmpty(await agent.ListIdentitiesAsync(), "锁着的 agent 不列钥");
+            await Assert.ThrowsAsync<SshAgentException>(async () => await agent.RemoveAllIdentitiesAsync());
+            Assert.IsFalse(await agent.UnlockAsync("猜一个"));
+            Assert.IsTrue(await agent.UnlockAsync("离开座位"));
+            Assert.HasCount(2, await agent.ListIdentitiesAsync());
+
+            await agent.RemoveAllIdentitiesAsync();
+            Assert.IsEmpty(await agent.ListIdentitiesAsync());
         }
         finally
         {
@@ -842,6 +1277,334 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>往返时间：真 OpenSSH 回保活请求（REQUEST_FAILURE 也算），量出来的是个正的、合理的数，并记进 LastRoundTrip。</summary>
+    [TestMethod]
+    public async Task 量得到真实服务端的往返时间()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        TimeSpan rtt = await connection.MeasureRoundTripAsync();
+
+        Assert.IsGreaterThan(TimeSpan.Zero, rtt);
+        Assert.IsLessThan(TimeSpan.FromSeconds(5), rtt, "本机的 Docker，往返不该到秒级");
+        Assert.AreEqual(rtt, connection.LastRoundTrip);
+    }
+
+    /// <summary>FIPS 认可的清单与真 OpenSSH 谈得成，谈成的全是认可的算法。</summary>
+    [TestMethod]
+    public async Task FIPS清单与真OpenSSH谈得成()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options() with { Algorithms = SshAlgorithmSet.FipsApprovedOnly });
+        SshNegotiatedAlgorithms negotiated = connection.Algorithms;
+
+        Assert.Contains(negotiated.KeyExchange, SshAlgorithmSet.FipsApprovedOnly.KeyExchange);
+        Assert.Contains(negotiated.HostKey, SshAlgorithmSet.FipsApprovedOnly.HostKey);
+        Assert.Contains(negotiated.EncryptionClientToServer, SshAlgorithmSet.FipsApprovedOnly.EncryptionClientToServer);
+        Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim());
+    }
+
+    /// <summary>
+    /// 群交换（RFC 4419）：只开它时与真 OpenSSH 谈得成 —— 线上的 34 / 31 / 32 / 33 与交换哈希多出的五项都对，
+    /// 否则签名验不过。再连一次（服务端多半换一个群）、重协商一次，都照常。
+    /// </summary>
+    /// <summary>
+    /// 远程动态转发：真 sshd 上的程序（OpenBSD nc 的 SOCKS5 客户端）经它连回本机 —— 名单里的目标双向搬运，
+    /// 名单外的被拒（nc 退出码非 0）。目标写 127.0.0.1：在远端看是它自己，经这条转发就成了本机的环回。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程动态转发_远端程序经SOCKS连回本机()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        using Socket echo = new(SocketType.Stream, ProtocolType.Tcp);
+        echo.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        echo.Listen(4);
+        int echoPort = ((IPEndPoint)echo.LocalEndPoint!).Port;
+        Task serving = Task.Run(async () =>
+        {
+            using Socket accepted = await echo.AcceptAsync();
+            byte[] buffer = new byte[64];
+            int read;
+            while ((read = await accepted.ReceiveAsync(buffer)) > 0)
+            {
+                await accepted.SendAsync(buffer.AsMemory(0, read));
+            }
+        });
+
+        RemotePortForwarder forwarder;
+        try
+        {
+            forwarder = await RemotePortForwarder.StartDynamicAsync(
+                connection, RemoteOpenPolicy.Allow($"127.0.0.1:{echoPort}"), new RemotePortForwardOptions { BindPort = 0 });
+        }
+        catch (SshForwardException ex) when (ex.Reason == SshFailureReason.ForwardRejected)
+        {
+            Assert.Inconclusive("服务端不许远程转发（AllowTcpForwarding no）。");
+            return;
+        }
+
+        await using (forwarder)
+        {
+            SshCommandResult allowed = await connection.RunAsync(
+                $"printf 'via-socks\\n' | nc -N -X 5 -x 127.0.0.1:{forwarder.BoundPort} -w 5 127.0.0.1 {echoPort}");
+            Assert.AreEqual("via-socks", allowed.StandardOutput.Trim(), allowed.StandardError);
+
+            SshCommandResult denied = await connection.RunAsync(
+                $"nc -X 5 -x 127.0.0.1:{forwarder.BoundPort} -w 5 10.0.0.1 22 </dev/null; echo rc=$?");
+            Assert.DoesNotContain("rc=0", denied.StandardOutput, "名单外的目标必须被拒");
+        }
+        await serving;
+    }
+
+    /// <summary>
+    /// Unix 域套接字的本地转发，两头都是套接字：本机在一个套接字文件上监听，经 direct-streamlocal 转到真服务端上
+    /// <c>ssh-agent</c> 的套接字；经它往 agent 里加一把钥，服务端 <c>ssh-add -l</c> 列得出来。
+    /// </summary>
+    [TestMethod]
+    public async Task 本地转发在两头的Unix套接字之间搬运()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        string remoteSocket = $"/tmp/vela-agent-{Guid.NewGuid():N}.sock";
+        SshCommandResult started = await connection.RunAsync($"ssh-agent -s -a {remoteSocket}");
+        Assert.AreEqual(0, started.ExitCode, started.StandardError);
+        string pid = started.StandardOutput.Split("SSH_AGENT_PID=")[1].Split(';')[0];
+
+        string localSocket = Path.Combine(Path.GetTempPath(), $"vs-{Guid.NewGuid():N}"[..11] + ".sock");
+        try
+        {
+            await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(
+                connection, remoteSocket, new LocalPortForwardOptions { ListenSocketPath = localSocket });
+
+            using Socket client = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+            await client.ConnectAsync(new UnixDomainSocketEndPoint(localSocket));
+            await using SshAgentClient agent = SshAgentClient.FromStream(new NetworkStream(client, ownsSocket: false), localSocket);
+            using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+            await agent.AddIdentityAsync(key, "via-unix-forward");
+
+            string listed = (await connection.RunAsync($"SSH_AUTH_SOCK={remoteSocket} ssh-add -l")).StandardOutput;
+            Assert.Contains(key.PublicKey.Sha256Fingerprint, listed);
+        }
+        finally
+        {
+            await connection.RunAsync($"kill {pid}; rm -f {remoteSocket}");
+        }
+        Assert.IsFalse(File.Exists(localSocket), "释放之后本机的套接字文件要删掉");
+    }
+
+    /// <summary>
+    /// 通用的扩展请求对真 sftp-server：limits@openssh.com 经它发、应答原样交回（四个 uint64，与库内置的解读一致）；
+    /// 不认识的扩展名是 OperationUnsupported。
+    /// </summary>
+    [TestMethod]
+    public async Task 通用扩展请求对真sftp_server()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+
+        byte[] reply = await sftp.SendExtendedAsync(SftpExtensionNames.Limits, ReadOnlyMemory<byte>.Empty);
+        Assert.HasCount(32, reply);
+        Assert.AreEqual(sftp.Capabilities.Limits.MaxReadLength, BinaryPrimitives.ReadUInt64BigEndian(reply.AsSpan(8)));
+
+        SftpException unknown = await Assert.ThrowsAsync<SftpException>(
+            async () => await sftp.SendExtendedAsync("nope@vendor.example", ReadOnlyMemory<byte>.Empty));
+        Assert.AreEqual(SftpStatusCode.OperationUnsupported, unknown.StatusCode);
+    }
+
+    /// <summary>
+    /// 主机密钥轮换（UpdateHostKeys）对真 sshd：头一次连接按 TOFU 记下谈成的那把钥；sshd 认证之后宣告它的全部主机密钥，
+    /// 我们请它证明没记过的那几把、验过签名、补记进 known_hosts。再连一次就没有新钥了。
+    /// 证明里签的是什么（字段顺序、RSA 用哪种摘要）只有真 sshd 裁决得了：错一处签名就验不过、一把都不记。
+    /// 〔Q4〕记着、sshd 却不再有的旧钥，连上之后删掉。
+    /// </summary>
+    [TestMethod]
+    public async Task 主机密钥轮换_真sshd宣告的新钥证实之后补记()
+    {
+        RequireServer();
+        string knownHosts = Path.Combine(Path.GetTempPath(), $"vela-kh-{Guid.NewGuid():N}");
+        try
+        {
+            KnownHostsPolicy policy = new(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
+
+            SshHostKeyUpdate first = await ConnectAndAwaitRotationAsync(policy);
+            Assert.IsNull(first.Skipped, first.Skipped);
+            Assert.IsNotEmpty(first.Added, "sshd 有好几把主机密钥，头一次只记了谈成的那把");
+            string[] lines = await File.ReadAllLinesAsync(knownHosts);
+            Assert.HasCount(1 + first.Added.Count, lines);
+            foreach (SshPublicKey added in first.Added)
+            {
+                Assert.Contains(l => l.Contains(added.ToOpenSshFormat().Split(' ')[1], StringComparison.Ordinal), lines);
+            }
+
+            SshHostKeyUpdate second = await ConnectAndAwaitRotationAsync(policy);
+            Assert.IsEmpty(second.Added, "再连就都认得了");
+            Assert.HasCount(lines.Length, await File.ReadAllLinesAsync(knownHosts));
+
+            // 〔Q4〕记着一把 sshd 没有的钥（换下来的旧钥）：真 sshd 的宣告里没有它，连上之后从 known_hosts 删掉，别的行不动。
+            using TestHostKey retired = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+            SshPublicKey retiredKey = SshPublicKey.Decode(retired.PublicKeyBlob);
+            await File.AppendAllTextAsync(knownHosts, $"{lines[0].Split(' ')[0]} {retiredKey.KeyType} {Convert.ToBase64String(retiredKey.Blob.Span)}\n");
+            // 新的策略实例：上面那个缓存着文件改动之前的内容。
+            SshHostKeyUpdate third = await ConnectAndAwaitRotationAsync(
+                new KnownHostsPolicy(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true });
+            Assert.IsNull(third.Skipped, third.Skipped);
+            Assert.AreSequenceEqual([retiredKey.Sha256Fingerprint], third.RemovedFingerprints.ToArray());
+            Assert.AreSequenceEqual(lines, await File.ReadAllLinesAsync(knownHosts));
+        }
+        finally
+        {
+            File.Delete(knownHosts);
+        }
+
+        static async Task<SshHostKeyUpdate> ConnectAndAwaitRotationAsync(KnownHostsPolicy policy)
+        {
+            await using SshConnection connection = await SshConnection.ConnectAsync(Options() with { HostKeyPolicy = policy });
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(15));
+            while (connection.LastHostKeyUpdate is null)
+            {
+                await Task.Delay(20, timeout.Token);
+            }
+            await connection.HostKeyRotation;
+            return connection.LastHostKeyUpdate;
+        }
+    }
+
+    /// <summary>
+    /// Windows CNG 密钥库里<b>不可导出</b>的钥登录真 sshd：公钥临时加进 authorized_keys，只给这一个凭据去连，签名由密钥库做。
+    /// </summary>
+    [TestMethod]
+    public async Task 用CNG密钥库里不可导出的钥登录真sshd()
+    {
+        RequireServer();
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("CNG 只在 Windows 上。");
+            return;
+        }
+
+        string name = Auth.CngSignerTests.CreateKey(System.Security.Cryptography.CngAlgorithm.Rsa, 3072);
+        await using SshConnection admin = await SshConnection.ConnectAsync(Options());
+        string marker = $"vela-cng-{Guid.NewGuid():N}";
+        try
+        {
+            using CngSshSigner signer = CngSshSigner.Open(name);
+            SshCommandResult added = await admin.RunAsync(
+                $"mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{signer.PublicKey.ToOpenSshFormat()} {marker}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys");
+            Assert.AreEqual(0, added.ExitCode, added.StandardError);
+
+            await using SshConnection connection = await SshConnection.ConnectAsync(
+                Options(credentials: [new PublicKeyCredential(signer)]));
+            Assert.AreEqual("cng", (await connection.RunAsync("echo cng")).StandardOutput.Trim());
+        }
+        finally
+        {
+            await admin.RunAsync($"sed -i '/{marker}/d' ~/.ssh/authorized_keys");
+            Auth.CngSignerTests.DeleteKey(name);
+        }
+    }
+
+    /// <summary>
+    /// 传输层的 PING / PONG（ping@openssh.com，OpenSSH 9.5 起）：认证之后的 EXT_INFO 里宣告了它，量往返时间就用 PING；
+    /// 连量几次都有 PONG 回来（对得上序号）。
+    /// </summary>
+    [TestMethod]
+    public async Task 真sshd宣告ping_往返时间用PING量()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+        while (!connection.PeerSupportsPing)
+        {
+            await Task.Delay(20, timeout.Token);
+        }
+
+        for (int i = 0; i < 3; i++)
+        {
+            TimeSpan rtt = await connection.MeasureRoundTripAsync(timeout.Token);
+            Assert.IsGreaterThan(TimeSpan.Zero, rtt);
+        }
+        Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim(), "PING 之后连接照常");
+    }
+
+    /// <summary>
+    /// 按键时序混淆对真 sshd：一个字一个字敲进 shell，命令照常跑、输出照常回；打字期间发了掩护 PING（sshd 认 ping@openssh.com），
+    /// 连接一直好好的。
+    /// </summary>
+    [TestMethod]
+    public async Task 按键时序混淆对真sshd照常工作()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        while (!connection.PeerSupportsPing)
+        {
+            await Task.Delay(20, timeout.Token);
+        }
+
+        await using SshShell shell = await connection.OpenShellAsync(
+            new SshShellOptions { ObscureKeystrokeTiming = TimeSpan.FromMilliseconds(20) }, timeout.Token);
+        foreach (char c in "echo obscured-$((6*7))\n")
+        {
+            await shell.StandardInput.WriteAsync(new[] { (byte)c }, timeout.Token);
+            await Task.Delay(25, timeout.Token);
+        }
+
+        StringBuilder output = new();
+        while (!output.ToString().Contains("obscured-42", StringComparison.Ordinal))
+        {
+            System.IO.Pipelines.ReadResult read = await shell.StandardOutput.ReadAsync(timeout.Token);
+            foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+            {
+                output.Append(Encoding.UTF8.GetString(segment.Span));
+            }
+            shell.StandardOutput.AdvanceTo(read.Buffer.End);
+        }
+        Assert.IsGreaterThan(0, shell.KeystrokeChaffSent, "打字期间要有掩护");
+        Assert.IsTrue(connection.IsAlive);
+    }
+
+    [TestMethod]
+    public async Task 群交换与真OpenSSH谈得成()
+    {
+        RequireServer();
+        SshAlgorithmSet gexOnly = SshAlgorithmSet.Default with { KeyExchange = [SshAlgorithmNames.DiffieHellmanGroupExchangeSha256] };
+
+        for (int round = 0; round < 2; round++)
+        {
+            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+            SshConnection connection;
+            try
+            {
+                connection = await SshConnection.ConnectAsync(Options() with { Algorithms = gexOnly });
+            }
+            catch (SshNegotiationException ex) when (!ex.OfferedByPeer.Contains(SshAlgorithmNames.DiffieHellmanGroupExchangeSha256))
+            {
+                // OpenSSH 10 起服务端默认不开 DH 那几种；Start-TestServer.ps1 会用 kex-gex.sh 打开。
+                Assert.Inconclusive($"服务端没开群交换（它给的是 {string.Join(", ", ex.OfferedByPeer)}）。用 Start-TestServer.ps1 起服务端。");
+                return;
+            }
+            await using SshConnection _ = connection;
+            Console.WriteLine($"第 {round + 1} 次连接（含素性检验）：{elapsed.ElapsedMilliseconds} ms");
+
+            Assert.AreEqual(SshAlgorithmNames.DiffieHellmanGroupExchangeSha256, connection.Algorithms.KeyExchange);
+            Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim());
+
+            await connection.StartRekeyAsync();
+            using CancellationTokenSource rekeyTimeout = new(TimeSpan.FromSeconds(30));
+            while (connection.RekeyCount == 0)
+            {
+                await Task.Delay(20, rekeyTimeout.Token);
+            }
+            Assert.AreEqual("again", (await connection.RunAsync("echo again")).StandardOutput.Trim());
+        }
+    }
+
     [TestMethod]
     public async Task 保活探测能被真实服务端应答()
     {
@@ -889,7 +1652,7 @@ public sealed class OpenSshInteropTests
 
         SshCommandOptions options = new()
         {
-            X11Forwarding = new X11ForwardOptions { Trusted = true, Display = X11Display.Parse(":0") },
+            X11Forwarding = new X11ForwardOptions { IsTrusted = true, Display = X11Display.Parse(":0") },
         };
 
         await using SshCommand command = await connection.ExecuteAsync(
@@ -926,7 +1689,7 @@ public sealed class OpenSshInteropTests
             {
                 X11Forwarding = new X11ForwardOptions
                 {
-                    Trusted = true,
+                    IsTrusted = true,
                     Display = xserver.Display,
                     XAuthorityPath = xauthority,
                 },
@@ -1040,7 +1803,7 @@ public sealed class OpenSshInteropTests
                 {
                     socket.Bind(new IPEndPoint(IPAddress.Loopback, X11Display.TcpPortBase + number));
                     socket.Listen(4);
-                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}")!);
+                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}"));
                 }
                 catch (SocketException)
                 {

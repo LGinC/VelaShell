@@ -79,6 +79,19 @@ public class SshConfigImportTests
         Assert.AreEqual(22, scan.Items[0].Port);
     }
 
+    /// <summary>HostName 里的 <c>%h</c> 换成别名 —— 由 SSH 库展开,宿主不另写一份。</summary>
+    [TestMethod]
+    public async Task Scan_ExpandsPercentHInHostName()
+    {
+        SessionImportScan scan = await ScanAsync(WriteConfig(
+            """
+            Host db1
+                HostName %h.example.com
+            """));
+
+        Assert.HasCount(1, scan.Items);
+        Assert.AreEqual("db1.example.com", scan.Items[0].Host);
+    }
     /// <summary>
     /// 取值规则:具名块里的值胜过后面的 <c>Host *</c> 兜底块,兜底块只补具名块没写的那些键;
     /// 通配块自身不产出会话。
@@ -228,6 +241,26 @@ public class SshConfigImportTests
         Assert.AreEqual(expected, profile.PrivateKeyPath);
         Assert.IsFalse(profile.RememberPassword);
         Assert.IsNull(profile.Password);
+    }
+
+    /// <summary>
+    /// IdentityFile 里的 %h / %r 照这台主机与用户展开(由 SSH 库展开,与连接时读私钥同一套)。
+    /// 曾经宿主自己展开,只认 ~ 与 %d,%h 原样留在路径里。
+    /// </summary>
+    [TestMethod]
+    public async Task Import_IdentityFileTokensAreExpanded()
+    {
+        SessionImportScan scan = await ScanAsync(WriteConfig(
+            """
+            Host prod
+                HostName 10.0.0.5
+                User deploy
+                IdentityFile ~/.ssh/%h_%r
+            """));
+
+        string expected = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "10.0.0.5_deploy");
+        Assert.AreEqual(expected, scan.Items[0].PrivateKeyPath);
     }
 
     /// <summary>没有 IdentityFile 的会话仍以密码认证落盘(密码留空,连接时再问)。</summary>

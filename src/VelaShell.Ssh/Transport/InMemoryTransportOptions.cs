@@ -5,8 +5,8 @@
 
 namespace VelaShell.Ssh.Transport;
 
-/// <summary>内存传输的参数。</summary>
-public sealed record InMemoryTransportOptions
+/// <summary>内存传输的参数（测试制造背压用）。</summary>
+internal sealed record InMemoryTransportOptions
 {
     /// <summary>
     /// 单向缓冲写入方被暂停的水位（字节）。默认 64 KiB。

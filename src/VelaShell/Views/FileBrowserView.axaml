@@ -199,6 +199,14 @@
                        IsVisible="{Binding IsDirectoryLoading}" />
 
           <StackPanel Grid.Column="2" Orientation="Horizontal" Spacing="4" VerticalAlignment="Center">
+            <!-- 当前目录所在分区的剩余空间(SFTP 的 statvfs@openssh.com);查不到时不显示。 -->
+            <TextBlock Text="{Binding FreeSpaceText}"
+                       IsVisible="{Binding FreeSpaceText, Converter={x:Static StringConverters.IsNotNullOrEmpty}}"
+                       Foreground="{DynamicResource VelaTextMuted}"
+                       FontFamily="{DynamicResource VelaUiMonoFont}"
+                       FontSize="{DynamicResource VelaFontSize10}"
+                       VerticalAlignment="Center"
+                       Margin="0,0,8,0" />
             <Button Classes="upload-pill" Height="24" Cursor="Hand"
                     FocusAdorner="{x:Null}"
                     Theme="{DynamicResource VelaAccentPillButtonTheme}"

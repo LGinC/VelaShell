@@ -63,8 +63,17 @@ internal sealed class TestAgent
     /// <summary>收到的加钥请求次数（17 与 25 合计）。</summary>
     public int AddRequests { get; private set; }
 
-    /// <summary>为 <see langword="true"/> 时加钥一律回 FAILURE（模拟被锁定或不支持的 agent）。</summary>
+    /// <summary>为 <see langword="true"/> 时加钥一律回 <see cref="RejectionCode"/>（模拟被锁定或不支持的 agent）。</summary>
     public bool RejectAdditions { get; set; }
+
+    /// <summary>拒绝加钥时回的报文号：默认 <c>5</c> FAILURE，也可以设成 <c>28</c> EXTENSION_FAILURE。</summary>
+    public byte RejectionCode { get; set; } = 5;
+
+    /// <summary>最近一次成功加钥带的扩展约束（扩展名、扩展自己的内容），按报文里的顺序。</summary>
+    public IReadOnlyList<(string Name, byte[] Payload)> LastConstraintExtensions { get; private set; } = [];
+
+    /// <summary>最近一次成功加钥时注释之后的全部字节（整段约束）。</summary>
+    public byte[] LastConstraintBytes { get; private set; } = [];
 
     /// <summary>最近一次成功加钥用的报文号。</summary>
     public byte? LastAddMessageType { get; private set; }
@@ -77,6 +86,9 @@ internal sealed class TestAgent
 
     /// <summary>收到会话声明时怎么回。</summary>
     public TestDeclarationReply DeclarationReply { get; set; } = TestDeclarationReply.Accept;
+
+    /// <summary>设了就把每一条应答扣到它完成再发 —— 模拟「应答迟到」。</summary>
+    public Task? HoldRepliesUntil { get; set; }
 
     /// <summary>收到的会话声明，按到达顺序。</summary>
     public IReadOnlyList<TestSessionDeclaration> Declarations
@@ -146,6 +158,11 @@ internal sealed class TestAgent
                     return;
                 }
 
+                if (HoldRepliesUntil is { } hold)
+                {
+                    await hold.WaitAsync(cancellationToken);
+                }
+
                 BinaryPrimitives.WriteUInt32BigEndian(header, (uint)response.Length);
                 await stream.WriteAsync(header, cancellationToken);
                 await stream.WriteAsync(response, cancellationToken);
@@ -213,11 +230,61 @@ internal sealed class TestAgent
         };
     }
 
+    /// <summary>锁着时的口令；<see langword="null"/> 是没锁。</summary>
+    public string? LockPassphrase { get; private set; }
+
     private async Task<byte[]> HandleAsync(byte[] request, CancellationToken cancellationToken)
     {
         if (request.Length == 0)
         {
             return [5];   // FAILURE
+        }
+
+        if (request[0] is 22 or 23)   // LOCK / UNLOCK
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(request));
+            reader.ReadByte();
+            string passphrase = reader.ReadUtf8String(MaxMessage);
+            if (request[0] == 22)
+            {
+                if (LockPassphrase is not null)
+                {
+                    return [5];
+                }
+                LockPassphrase = passphrase;
+                return [6];
+            }
+            if (LockPassphrase is null || LockPassphrase != passphrase)
+            {
+                return [5];
+            }
+            LockPassphrase = null;
+            return [6];
+        }
+
+        // 锁着的时候别的一律拒绝。
+        if (LockPassphrase is not null)
+        {
+            return [5];
+        }
+
+        if (request[0] == 18)   // REMOVE_IDENTITY
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(request));
+            reader.ReadByte();
+            byte[] blob = reader.ReadStringAsArray(MaxMessage);
+            int removed = _keys.RemoveAll(k => k.Signer.PublicKey.Blob.Span.SequenceEqual(blob))
+                + _certificates.RemoveAll(c => c.Blob.AsSpan().SequenceEqual(blob))
+                + _opaque.RemoveAll(o => o.Blob.AsSpan().SequenceEqual(blob));
+            return removed > 0 ? [6] : [5];
+        }
+
+        if (request[0] == 19)   // REMOVE_ALL_IDENTITIES
+        {
+            _keys.Clear();
+            _certificates.Clear();
+            _opaque.Clear();
+            return [6];
         }
 
         if (request[0] == 11)   // REQUEST_IDENTITIES
@@ -296,15 +363,17 @@ internal sealed class TestAgent
             AddRequests++;
             if (RejectAdditions)
             {
-                return [5];
+                return [RejectionCode];
             }
 
             SshDataReader reader = new(new ReadOnlySequence<byte>(request));
             reader.ReadByte();
             InMemorySshSigner added = ReadPrivateKey(ref reader);
             string comment = reader.ReadUtf8String(MaxMessage);
+            byte[] constraintBytes = request[(int)reader.Consumed..];
 
             List<byte> constraints = [];
+            List<(string, byte[])> extensions = [];
             while (!reader.IsEmpty)
             {
                 byte constraint = reader.ReadByte();
@@ -312,6 +381,15 @@ internal sealed class TestAgent
                 if (constraint == 1)
                 {
                     LastLifetimeSeconds = reader.ReadUInt32();
+                }
+                else if (constraint == 255)   // 扩展约束：string 扩展名 + string 内容
+                {
+                    string name = reader.ReadUtf8String(MaxMessage);
+                    if (name != "restrict-destination-v00@openssh.com")
+                    {
+                        return [5];   // 不认识的扩展：整条拒绝
+                    }
+                    extensions.Add((name, reader.ReadStringAsArray(MaxMessage)));
                 }
                 else if (constraint != 2)
                 {
@@ -321,6 +399,8 @@ internal sealed class TestAgent
 
             LastAddMessageType = request[0];
             LastConstraints = constraints;
+            LastConstraintExtensions = extensions;
+            LastConstraintBytes = constraintBytes;
 
             // 同一把钥再加一次：更新注释，不重复登记。
             _keys.RemoveAll(k => k.Signer.PublicKey.Blob.Span.SequenceEqual(added.PublicKey.Blob.Span));
@@ -328,7 +408,7 @@ internal sealed class TestAgent
             return [6];   // SUCCESS
         }
 
-        // 删钥、锁定之类的一律拒绝。
+        // 别的一律拒绝。
         return [5];
     }
 

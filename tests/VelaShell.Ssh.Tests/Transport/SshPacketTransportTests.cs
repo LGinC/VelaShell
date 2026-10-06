@@ -127,6 +127,54 @@ public sealed class SshPacketTransportTests
         }
     }
 
+    // ------------------------------------------------------------ 序号回绕的最后一道保险
+
+    /// <summary>
+    /// 同一套密钥下报文数用完（重协商没能完成）：宁可断开，也不让序号回绕 ——
+    /// chacha20-poly1305 的 nonce 就是序号，回绕就是 nonce 重用。换了密钥就重新计数。
+    /// </summary>
+    [TestMethod]
+    public async Task 同一套密钥下报文数用完时拒绝再收发_换钥之后重新计数()
+    {
+        (InMemoryDuplexStream rawA, InMemoryDuplexStream rawB) = InMemoryTransport.CreatePair();
+        await using SshPacketTransport a = new(rawA) { MaxPacketsPerKey = 2 };
+        await using SshPacketTransport b = new(rawB) { MaxPacketsPerKey = 2 };
+        InstallChaCha(a, b);
+
+        byte[] payload = [(byte)SshMessageNumber.Ignore, 1, 2, 3];
+        a.WritePacket(payload);
+        a.WritePacket(payload);
+        Assert.ThrowsExactly<SshFrameFormatException>(() => a.WritePacket(payload), "发送方向没拦住第三个");
+        await a.FlushAsync();
+
+        await b.ReadPacketAsync();
+        await b.ReadPacketAsync();
+
+        // 换钥（NEWKEYS 之后）：计数归零，又能发了。
+        InstallChaCha(a, b);
+        a.WritePacket(payload);
+        await a.FlushAsync();
+        Assert.IsFalse((await b.ReadPacketAsync()).IsEndOfStream);
+        Assert.AreEqual(1, b.ReceivePacketsUnderKey);
+    }
+
+    [TestMethod]
+    public async Task 接收方向同一套密钥下报文数用完时拒绝再收()
+    {
+        (InMemoryDuplexStream rawA, InMemoryDuplexStream rawB) = InMemoryTransport.CreatePair();
+        await using SshPacketTransport a = new(rawA);
+        await using SshPacketTransport b = new(rawB) { MaxPacketsPerKey = 1 };
+        InstallChaCha(a, b);
+
+        byte[] payload = [(byte)SshMessageNumber.Ignore, 9];
+        a.WritePacket(payload);
+        a.WritePacket(payload);
+        await a.FlushAsync();
+
+        await b.ReadPacketAsync();
+        await Assert.ThrowsExactlyAsync<SshFrameFormatException>(async () => await b.ReadPacketAsync());
+    }
+
     // ------------------------------------------------------------ 帧式 IO
 
     [TestMethod]
@@ -438,9 +486,10 @@ public sealed class SshPacketTransportTests
     }
 
     [TestMethod]
-    public async Task 空载荷报文的消息编号访问会抛出()
+    public async Task 空载荷报文在帧层就被拒收()
     {
-        // 载荷为空的报文在协议里不存在。沉默地返回一个假的编号会让错误跑得更远。
+        // 载荷为空的报文在协议里不存在（spec/01 §5）。沉默地返回一个假的编号会让错误跑得更远；
+        // 曾经是交出去、等上层取消息编号时才抛 —— 握手期那一下没人接，漏出了 ConnectAsync。
         (SshPacketTransport a, SshPacketTransport b) = CreatePair();
         await using (a)
         await using (b)
@@ -448,9 +497,7 @@ public sealed class SshPacketTransportTests
             a.WritePacket([]);
             await a.FlushAsync();
 
-            SshInboundPacket packet = await b.ReadPacketAsync();
-            Assert.HasCount(0, packet.Payload);
-            Assert.ThrowsExactly<SshFrameFormatException>(() => _ = packet.MessageNumber);
+            await Assert.ThrowsExactlyAsync<SshFrameFormatException>(async () => await b.ReadPacketAsync());
         }
     }
 }

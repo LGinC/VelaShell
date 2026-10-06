@@ -1,4 +1,3 @@
-using System.Text.RegularExpressions;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
@@ -32,33 +31,27 @@ public enum SshAlgorithmKind
 /// <c>^a,b</c> 提到最前,不带前缀则整个替换。
 /// </para>
 /// <para>
-/// 「能写哪些名字」以库实际实现了的为准:默认清单 + <see cref="SshAlgorithmSet.WithLegacyInterop" /> 放开的那几个。
+/// 「能写哪些名字」以库的算法目录为准(<see cref="SshAlgorithmCatalog" />):实现了的照常收,
+/// 常见却没实现的说「没实现」(写了也谈不成),都不是的说「不认识」。
 /// 不在其中的一律当场报出来 —— 库在拨号前也会拒掉没实现的名字,但那时的错误指向一次连接,而不是这条配置。
+/// 曾经宿主用 <c>Default.WithLegacyInterop()</c> 推算实现了哪些,再手工维护一份「认得但没实现」的名单。
 /// </para>
 /// </remarks>
-public static partial class SshAlgorithmPreferences
+public static class SshAlgorithmPreferences
 {
     private static readonly SshAlgorithmSet Legacy = SshAlgorithmSet.Default.WithLegacyInterop();
 
-    /// <summary>
-    /// OpenSSH 认得、本版却没实现的常见算法:写了它们要说「没实现」而不是「不认识」——
-    /// 抄过来的配置里最常见的就是这几个,用户要知道的是「放开也没用」。
-    /// </summary>
-    private static readonly HashSet<string> KnownButUnimplemented =
-    [
-        with(StringComparer.Ordinal),
-        "aes128-cbc", "aes192-cbc", "aes256-cbc", "3des-cbc", "blowfish-cbc", "cast128-cbc",
-        "arcfour", "arcfour128", "arcfour256", "rijndael-cbc@lysator.liu.se",
-        "diffie-hellman-group1-sha1", "diffie-hellman-group-exchange-sha1", "diffie-hellman-group-exchange-sha256",
-        "diffie-hellman-group18-sha512", "ssh-dss", "ssh-dss-cert-v01@openssh.com",
-        "hmac-md5", "hmac-md5-96", "hmac-md5-etm@openssh.com", "hmac-md5-96-etm@openssh.com",
-        "hmac-sha1-96", "hmac-sha1-96-etm@openssh.com", "hmac-ripemd160", "hmac-ripemd160@openssh.com",
-        "umac-64@openssh.com", "umac-128@openssh.com", "umac-64-etm@openssh.com", "umac-128-etm@openssh.com",
-        "ssh-rsa-cert-v01@openssh.com", "sk-ssh-ed25519@openssh.com", "sk-ecdsa-sha2-nistp256@openssh.com",
-    ];
-
     /// <summary>本版实现了、可以写进这一类清单的算法。</summary>
-    public static IReadOnlyList<string> Available(SshAlgorithmKind kind) => Select(Legacy, kind);
+    public static IReadOnlyList<string> Available(SshAlgorithmKind kind) => SshAlgorithmCatalog.Implemented(CategoryOf(kind));
+
+    /// <summary>宿主的类别对到库的目录类别。</summary>
+    private static SshAlgorithmCategory CategoryOf(SshAlgorithmKind kind) => kind switch
+    {
+        SshAlgorithmKind.KeyExchange => SshAlgorithmCategory.KeyExchange,
+        SshAlgorithmKind.HostKey => SshAlgorithmCategory.HostKey,
+        SshAlgorithmKind.Cipher => SshAlgorithmCategory.Encryption,
+        _ => SshAlgorithmCategory.Mac,
+    };
 
     /// <summary>不写自定义清单时这一类用的清单。</summary>
     /// <param name="kind">类别。</param>
@@ -79,56 +72,26 @@ public static partial class SshAlgorithmPreferences
     public static bool TryApply(SshAlgorithmKind kind, string? spec, bool legacy,
         out IReadOnlyList<string> result, out string? error)
     {
+        // 写法的解析在 SSH 库里(SshAlgorithmSpec,ssh_config 的导入用的是同一份);这里只把原因翻成界面语言。
         IReadOnlyList<string> defaults = Defaults(kind, legacy);
-        result = defaults;
-        error = null;
-        if (string.IsNullOrWhiteSpace(spec))
+        try
         {
+            result = SshAlgorithmSpec.Apply(CategoryOf(kind), spec, defaults);
+            error = null;
             return true;
         }
-
-        string text = spec.Trim();
-        char op = text[0] is '+' or '-' or '^' ? text[0] : '\0';
-        string[] names = (op == '\0' ? text : text[1..])
-            .Split([',', ' ', '\t', '\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (names.Length == 0)
+        catch (SshAlgorithmSpecException ex)
         {
-            error = Strings.Get("Ssh_AlgoSpecEmpty");
+            result = defaults;
+            error = ex.Problem switch
+            {
+                SshAlgorithmSpecProblem.Empty => Strings.Get("Ssh_AlgoSpecEmpty"),
+                SshAlgorithmSpecProblem.Unimplemented => Strings.Format("Ssh_AlgoSpecUnimplemented", ex.Name ?? ""),
+                SshAlgorithmSpecProblem.NothingLeft => Strings.Get("Ssh_AlgoSpecNothingLeft"),
+                _ => Strings.Format("Ssh_AlgoSpecUnknown", ex.Name ?? ""),
+            };
             return false;
         }
-
-        IReadOnlyList<string> available = Available(kind);
-        foreach (string name in names)
-        {
-            // 删除项可以带通配;不带通配的删除项也要是认得的名字 —— 拼错了的「-chacha20-poly1305」
-            // 什么都删不掉,用户却以为已经关了。
-            if (op == '-' && IsPattern(name))
-            {
-                continue;
-            }
-            if (!available.Contains(name, StringComparer.Ordinal))
-            {
-                error = KnownButUnimplemented.Contains(name)
-                    ? Strings.Format("Ssh_AlgoSpecUnimplemented", name)
-                    : Strings.Format("Ssh_AlgoSpecUnknown", name);
-                return false;
-            }
-        }
-
-        string[] distinct = [.. names.Distinct(StringComparer.Ordinal)];
-        result = op switch
-        {
-            '+' => [.. defaults, .. distinct.Where(n => !defaults.Contains(n, StringComparer.Ordinal))],
-            '^' => [.. distinct, .. defaults.Where(a => !distinct.Contains(a, StringComparer.Ordinal))],
-            '-' => [.. defaults.Where(a => !distinct.Any(p => Matches(p, a)))],
-            _ => distinct,
-        };
-        if (result.Count == 0)
-        {
-            error = Strings.Get("Ssh_AlgoSpecNothingLeft");
-            return false;
-        }
-        return true;
     }
 
     /// <summary>按配置装出库的算法清单。</summary>
@@ -178,11 +141,4 @@ public static partial class SshAlgorithmPreferences
         _ => set.MacClientToServer,
     };
 
-    private static bool IsPattern(string name) => name.AsSpan().IndexOfAny('*', '?') >= 0;
-
-    private static bool Matches(string pattern, string algorithm) =>
-        IsPattern(pattern)
-            ? Regex.IsMatch(algorithm, "^" + Regex.Escape(pattern).Replace(@"\*", ".*").Replace(@"\?", ".") + "$",
-                RegexOptions.CultureInvariant)
-            : string.Equals(pattern, algorithm, StringComparison.Ordinal);
 }

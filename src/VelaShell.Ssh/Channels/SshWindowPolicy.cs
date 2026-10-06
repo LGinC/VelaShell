@@ -21,8 +21,14 @@ namespace VelaShell.Ssh.Channels;
 /// 需要确定性内存占用的场景（嵌入式、成百上千条并发通道）用
 /// <see cref="Fixed(int)"/>。
 /// </para>
+/// <para>
+/// 〔AGENTS 4.2 / 4.3〕规则型策略是 <c>readonly record struct</c>：相等比较按值，
+/// 所在的 <see cref="SshChannelOptions"/> 比较起来才有意义。曾经是 class，两个同样的策略比较结果是「不等」。
+/// 只能经 <see cref="Fixed(int)"/> / <see cref="Adaptive(int, int)"/> 构造；<c>default</c> 不是合法的策略，
+/// 设到 <see cref="SshChannelOptions.WindowPolicy"/> 上会当场抛。
+/// </para>
 /// </remarks>
-public sealed class SshWindowPolicy
+public readonly record struct SshWindowPolicy
 {
     /// <summary>默认的初始窗口。</summary>
     public const int DefaultInitialBytes = 256 * 1024;
@@ -74,7 +80,10 @@ public sealed class SshWindowPolicy
     }
 
     /// <summary>默认策略：256 KiB 起步，最大 64 MiB。</summary>
-    public static SshWindowPolicy Default { get; } = Adaptive();
+    public static SshWindowPolicy Default => Adaptive();
+
+    /// <summary>是不是经 <see cref="Fixed(int)"/> / <see cref="Adaptive(int, int)"/> 构造的（<c>default</c> 不是）。</summary>
+    internal bool IsValid => InitialBytes >= AbsoluteMinimumBytes;
 }
 
 /// <summary>一个方向上的窗口账。</summary>
@@ -144,35 +153,4 @@ internal sealed class SshWindow(int initialSize)
 
     /// <summary>把窗口的额定大小改掉（自适应用）。</summary>
     public void Resize(int newSize) => Size = newSize;
-
-    /// <summary>
-    /// 该不该现在发一个 <c>WINDOW_ADJUST</c>。
-    /// </summary>
-    /// <remarks>
-    /// 〔决策 velashell-docs/zh/ssh/spec/05 §3.2〕剩余不足一半时补满。
-    /// 太频繁是在浪费报文，太稀疏会让发送方空等。
-    /// </remarks>
-    public bool ShouldAdjust()
-    {
-        lock (_lock)
-        {
-            return _remaining <= (uint)(Size / 2);
-        }
-    }
-
-    /// <summary>算出「补满」需要补多少，并直接记账。</summary>
-    public uint TakeRefill()
-    {
-        lock (_lock)
-        {
-            uint target = (uint)Size;
-            if (_remaining >= target)
-            {
-                return 0;
-            }
-            uint delta = target - _remaining;
-            _remaining = target;
-            return delta;
-        }
-    }
 }

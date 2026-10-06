@@ -37,11 +37,15 @@ internal static class SshConnectionAssembler
     /// </summary>
     /// <remarks>
     /// 跳板链上的跳板连接不在这里:它们归各自拨出来的流所有,外层连接释放时逐层一起断开
-    /// (见 <see cref="DialerChain.Jump(SshEndPoint, Func{CancellationToken, ValueTask{SshConnection}})" />)。
+    /// (见 <see cref="DialerChain.Jump(SshEndPoint, Func{SshJumpContext, CancellationToken, ValueTask{SshConnection}})" />)。
     /// </remarks>
+    /// <param name="Connect">连接工厂。</param>
+    /// <param name="ConnectTimeout">建链超时。</param>
+    /// <param name="Banners">认证时服务端发来的横幅(链上每一跳都收),开 shell 时作为提示写进终端。</param>
     internal readonly record struct Assembled(
         Func<CancellationToken, ValueTask<SshConnection>> Connect,
-        TimeSpan ConnectTimeout);
+        TimeSpan ConnectTimeout,
+        SshServerBanners Banners);
 
     /// <summary>按连接信息装配。</summary>
     /// <param name="info">连接信息(含跳板链)。</param>
@@ -71,6 +75,7 @@ internal static class SshConnectionAssembler
             : new VelaHostKeyPolicy(hostKey, settings, prompt, alerts);
 
         TimeSpan connectTimeout = ConnectTimeout(settings);
+        SshServerBanners banners = new();
 
         // 最内层跳板真正出网,代理装在它身上;外层每一跳用库的跳板拨号器包住内层。
         // 每一跳的连接由这里现建(要先连 agent、按跳准备凭据),所以用回调那一种。
@@ -81,13 +86,14 @@ internal static class SshConnectionAssembler
             ISshTransportDialer inner = dialer;
             dialer = DialerChain.Jump(
                 new SshEndPoint(hop.Host, hop.Port),
-                ct => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, ct));
+                (jump, ct) => ConnectAsync(hop, policy, settings, inner, connectTimeout, keyboardPrompt, banners, jump, ct));
         }
 
         ISshTransportDialer finalDialer = dialer;
         return new Assembled(
-            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, ct),
-            connectTimeout);
+            ct => ConnectAsync(info, policy, settings, finalDialer, connectTimeout, keyboardPrompt, banners, jump: null, ct),
+            connectTimeout,
+            banners);
     }
 
     /// <summary>
@@ -115,6 +121,8 @@ internal static class SshConnectionAssembler
         ISshTransportDialer dialer,
         TimeSpan connectTimeout,
         IKeyboardInteractivePrompt? keyboardPrompt,
+        SshServerBanners banners,
+        SshJumpContext? jump,
         CancellationToken cancellationToken)
     {
         // agent 这一路的签名要回到 agent 去做,所以 agent 客户端得一直活到认证结束 ——
@@ -123,9 +131,12 @@ internal static class SshConnectionAssembler
         // 每次尝试一个新的应答器:「口令只代答一次」与「用户点了取消」都是这一次认证的状态。
         KeyboardInteractiveResponder? keyboard =
             keyboardPrompt is null ? null : KeyboardInteractiveResponder.For(info, keyboardPrompt);
+        // 私钥签名器归这一次建连所有:连接建好(或失败)之后就不再需要它(重协商不会重新认证),
+        // 在 finally 里释放 —— 它释放时把私钥材料清零。交给后台「自动加钥」的那一把除外,由它用完再释放。
+        IReadOnlyList<SshCredential> credentials = [];
+        ISshSigner? handedToAgentLoader = null;
         try
         {
-            IReadOnlyList<SshCredential> credentials;
             if (info.AuthMethod == AuthMethod.Agent)
             {
                 agent = await ConnectAgentAsync(cancellationToken).ConfigureAwait(false);
@@ -148,26 +159,53 @@ internal static class SshConnectionAssembler
                 ConnectTimeout = connectTimeout,
                 KeepAlive = KeepAlive(settings, info),
                 Algorithms = Algorithms(info),
+                // 「允许老算法」也要放开用户钥的 SHA-1 签名:只认 ssh-rsa 的老设备上,只放开 KEX / 主机密钥 / MAC
+                // 而不放开这一项,RSA 私钥登录必然失败。库在对端不发 server-sig-algs 时会先试 SHA-2、被拒再降级一次。
+                AllowSha1RsaSignatures = info.Ssh?.LegacyAlgorithms == true,
+                BannerHandler = banners.OnBannerAsync,
+                DebugMessageHandler = banners.OnBannerAsync,
+                PreAuthBannerHandler = banners.OnPreAuthBannerAsync,
             };
 
             SshConnection connection;
             try
             {
-                connection = await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
+                // 跳板这一跳经上下文去连:外层连接的计时器一起带进去,
+                // 用户在跳板上看指纹、输动态码时外层停表。
+                connection = jump is null
+                    ? await SshConnection.ConnectAsync(options, cancellationToken).ConfigureAwait(false)
+                    : await jump.ConnectAsync(options, cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (keyboard is { Cancelled: true } && !cancellationToken.IsCancellationRequested)
+            catch (SshConnectException ex) when (keyboard is not null
+                                                 && ex is { Reason: SshFailureReason.Aborted, Phase: SshPhase.Authenticating }
+                                                 && !cancellationToken.IsCancellationRequested)
             {
-                // 库以「方法试完了」收场(应答回调抛的异常按它的契约记成「凭据取不到材料」):
-                // 在这里认回来 —— 用户在动态码框上点了取消,是「不连了」而不是认证失败。
-                throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"), ex);
+                // 认证期间会弹的框只有动态码框与「修改密码」框:库以 Aborted 结束,说明是应答回调抛了取消而调用方没取消
+                // —— 用户在框上点了取消,是「不连了」而不是认证失败(规格 08 §2.1)。
+                // 曾经库把这种取消报成认证超时,应答器只好自己记一笔、在这里按那一笔认回来。
+                throw new VelaSshAuthenticationCancelledException(
+                    Strings.Get(keyboard.PasswordChangeCancelled ? "SshErr_PasswordChangeCancelled" : "SshErr_KbdAuthCancelled"), ex);
             }
 
             // 「自动加载密钥到 Agent」:认证成功之后才加(配错的钥不该进 agent),而且丢到后台 ——
             // agent 没在跑时要等满三秒才知道,那段等待不该落在连接路径上。
             if (AddKeysToAgent(settings)
-                && SshAgentKeyLoader.TryGetKeyToAdd(info, credentials, out InMemorySshSigner key, out string comment))
+                && SshAgentKeyLoader.TryGetKeyToAdd(info, credentials, out ISshSigner key, out string comment))
             {
-                _ = Task.Run(() => SshAgentKeyLoader.AddAsync(key, comment, ConnectLocalAgentAsync), CancellationToken.None);
+                handedToAgentLoader = key;
+                _ = Task.Run(
+                    async () =>
+                    {
+                        try
+                        {
+                            await SshAgentKeyLoader.AddAsync(key, comment, ConnectLocalAgentAsync).ConfigureAwait(false);
+                        }
+                        finally
+                        {
+                            ((IDisposable)key).Dispose();
+                        }
+                    },
+                    CancellationToken.None);
             }
 
             return connection;
@@ -177,6 +215,30 @@ internal static class SshConnectionAssembler
             if (agent is not null)
             {
                 await agent.DisposeAsync().ConfigureAwait(false);
+            }
+
+            DisposeOwnedSigners(credentials, except: handedToAgentLoader);
+        }
+    }
+
+    /// <summary>释放这一次建连读出来的私钥签名器(释放时清零私钥)。</summary>
+    /// <remarks>
+    /// 只管本地读出的私钥(<see cref="InMemorySshSigner" />)与包着它的证书签名器(它会连同里面那把一起释放);
+    /// agent 的签名器不归这里 —— 它背后的连接由 agent 客户端管。
+    /// 曾经从不释放:私钥材料在托管堆上一直留到 GC,证书读失败时已经读出的私钥也留在原处。
+    /// </remarks>
+    internal static void DisposeOwnedSigners(IReadOnlyList<SshCredential> credentials, ISshSigner? except)
+    {
+        foreach (SshCredential credential in credentials)
+        {
+            if (credential is not PublicKeyCredential { Signer: var signer } || ReferenceEquals(signer, except))
+            {
+                continue;
+            }
+
+            if (signer is InMemorySshSigner or SshCertificateSigner)
+            {
+                ((IDisposable)signer).Dispose();
             }
         }
     }
@@ -192,32 +254,20 @@ internal static class SshConnectionAssembler
     /// </remarks>
     internal static SshAlgorithmSet Algorithms(VelaConnectionInfo info) => SshAlgorithmPreferences.Build(info.Ssh);
 
-    /// <summary>
-    /// 本机 agent 的端点:Windows 上默认是 OpenSSH Authentication Agent 服务的命名管道。
-    /// </summary>
-    /// <remarks>
-    /// Windows 上 <c>SSH_AUTH_SOCK</c> 只在它本身就是命名管道时才采用(1Password、KeePassXC
-    /// 之类会这样配);它更常指向 Git Bash / WSL 的 Unix 套接字,那是另一套 agent,.NET 连不上。
-    /// 其它平台交给库按 <c>SSH_AUTH_SOCK</c> 取。
-    /// </remarks>
-    internal static string? AgentEndpoint()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return null;
-        }
-        string? socket = Environment.GetEnvironmentVariable("SSH_AUTH_SOCK");
-        return socket is not null && socket.StartsWith(@"\\.\pipe\", StringComparison.Ordinal) ? socket : null;
-    }
 
     /// <summary>连本机 agent。</summary>
     /// <remarks>
     /// Windows 上 agent 服务没起时命名管道根本不存在 —— 等它出现的时限在库里
     /// (<c>SshAgentClient.PipeConnectTimeout</c>),到点以 <see cref="SshFailureReason.AgentNotRunning" /> 报出,
     /// agent 转发那一路也走同一个时限。宿主不再另套一层计时。
+    /// <para>
+    /// 端点交给库的默认值(<c>SshAgentClient.DefaultEndpoint</c>):Windows 上 <c>SSH_AUTH_SOCK</c> 是命名管道时采纳它
+    /// (1Password、KeePassXC),否则用 OpenSSH agent 服务的管道。曾经库在 Windows 上一律无视 <c>SSH_AUTH_SOCK</c>,
+    /// 宿主在这里另判断了一遍。
+    /// </para>
     /// </remarks>
     internal static ValueTask<SshAgentClient> ConnectLocalAgentAsync(CancellationToken cancellationToken) =>
-        SshAgentClient.ConnectAsync(AgentEndpoint(), cancellationToken);
+        SshAgentClient.ConnectAsync(endpoint: null, cancellationToken);
 
     private static async ValueTask<SshAgentClient> ConnectAgentAsync(CancellationToken cancellationToken)
     {
@@ -236,7 +286,7 @@ internal static class SshConnectionAssembler
     /// agent 里一把钥都没有时直接说清楚,而不是把一个空凭据列表交给库 ——
     /// 那样用户拿到的是一句笼统的「认证方法已用尽」,看不出问题在本机。
     /// </remarks>
-    private static async ValueTask<IReadOnlyList<SshCredential>> AgentCredentialsAsync(
+    internal static async ValueTask<IReadOnlyList<SshCredential>> AgentCredentialsAsync(
         SshAgentClient agent, CancellationToken cancellationToken)
     {
         IReadOnlyList<SshCredential> credentials;
@@ -246,7 +296,8 @@ internal static class SshConnectionAssembler
         }
         catch (SshAgentException ex)
         {
-            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", ex.Message), ex);
+            // 与连 agent 失败同一条提示、同样按原因码本地化;曾经这里直接塞库的消息(写给开发者看的中文)。
+            throw new VelaSshAuthenticationException(Strings.Format("SshErr_AgentUnavailable", SshInterop.Localize(ex)), ex);
         }
         return credentials.Count > 0
             ? credentials
@@ -270,7 +321,8 @@ internal static class SshConnectionAssembler
     /// 而用户填的就是同一个密码。没有界面可问时(<paramref name="keyboard" /> 为空)
     /// 由 <see cref="PasswordCredential" /> 的默认行为兼答;有界面时换成
     /// <see cref="KeyboardInteractiveResponder" />:口令提示照样用这个密码答,
-    /// 验证码之类的弹框问用户 —— 库的兼答只看形状,会把密码也填进验证码那一轮,所以要关掉。
+    /// 验证码之类的弹框问用户,一次交互就走完。库的兼答此时关掉:它每次交互只答一次口令、
+    /// 之后的轮次回空串(不会把密码填进验证码那一轮),但那样验证码一轮必然失败,要再走一遍才轮到界面。
     /// </para>
     /// <para>
     /// <b>有界面时每种认证方式后面都跟一条 keyboard-interactive</b>,好接住
@@ -281,18 +333,26 @@ internal static class SshConnectionAssembler
     internal static async ValueTask<IReadOnlyList<SshCredential>> BuildCredentialsAsync(
         VelaConnectionInfo info, CancellationToken cancellationToken, KeyboardInteractiveResponder? keyboard = null)
     {
-        IReadOnlyList<SshCredential> primary = await PrimaryCredentialsAsync(info, keyboard is not null, cancellationToken)
+        IReadOnlyList<SshCredential> primary = await PrimaryCredentialsAsync(info, keyboard, cancellationToken)
             .ConfigureAwait(false);
         return keyboard is null ? primary : [.. primary, keyboard.ToCredential()];
     }
 
     private static async ValueTask<IReadOnlyList<SshCredential>> PrimaryCredentialsAsync(
-        VelaConnectionInfo info, bool keyboardInteractive, CancellationToken cancellationToken)
+        VelaConnectionInfo info, KeyboardInteractiveResponder? keyboard, CancellationToken cancellationToken)
     {
         switch (info.AuthMethod)
         {
             case AuthMethod.Password:
-                return [new PasswordCredential(info.Password ?? "") { AlsoAnswerKeyboardInteractive = !keyboardInteractive }];
+                // 有界面时,服务端要求先改密码(密码过期)就弹框问新密码(规格 04 §5.1);没界面就不改,报「要先改密码」。
+                return
+                [
+                    new PasswordCredential(info.Password ?? "")
+                    {
+                        CanAnswerKeyboardInteractive = keyboard is null,
+                        NewPasswordProvider = keyboard is null ? null : keyboard.AskNewPasswordAsync,
+                    }
+                ];
 
             case AuthMethod.PrivateKey:
                 {
@@ -303,16 +363,26 @@ internal static class SshConnectionAssembler
 
             case AuthMethod.Certificate:
                 {
-                    ISshSigner signer = await LoadSignerAsync(
+                    InMemorySshSigner signer = await LoadSignerAsync(
                         info.PrivateKeyPath!, info.PrivateKeyPassphrase, cancellationToken).ConfigureAwait(false);
 
-                    OpenSshCertificate certificate = await OpenSshCertificate
-                        .LoadAsync(info.CertificatePath!, cancellationToken).ConfigureAwait(false);
+                    try
+                    {
+                        OpenSshCertificate certificate = await OpenSshCertificate
+                            .LoadAsync(info.CertificatePath!, cancellationToken).ConfigureAwait(false);
 
-                    // Create 当场核对「证书与私钥是不是一对」—— 不核对的话配错了的表现是
-                    // 服务端一句 Permission denied,与「CA 不被信任」「主体不匹配」没法区分。
-                    return [new PublicKeyCredential(
-                        SshCertificateSigner.Create(certificate, signer), info.CertificatePath)];
+                        // Create 当场核对「证书与私钥是不是一对」—— 不核对的话配错了的表现是
+                        // 服务端一句 Permission denied,与「CA 不被信任」「主体不匹配」没法区分。
+                        // 证书签名器接管私钥签名器:释放它就连同私钥一起释放。
+                        return [new PublicKeyCredential(
+                            SshCertificateSigner.Create(certificate, signer), info.CertificatePath)];
+                    }
+                    catch
+                    {
+                        // 证书读不出来或与私钥不是一对:已经读出的私钥没有人会再用,当场释放(清零)。
+                        signer.Dispose();
+                        throw;
+                    }
                 }
 
             default:
@@ -331,11 +401,19 @@ internal static class SshConnectionAssembler
     /// 因为那个底层库**只认 OpenSSH 格式**,用户导入的传统 PEM 会被静默跳过,
     /// 认证以一句 "skipped: publickey" 失败。现在库原生认这些格式,那段转换整个不需要了。
     /// </para>
+    /// <para>
+    /// 整个放到线程池上跑:加密私钥的口令派生(<c>bcrypt_pbkdf</c> 按轮数、Argon2id 按内存)是同步的 CPU 计算,
+    /// 库把切不切线程留给调用方,而建连是从界面线程发起的。曾经直接调用,解密离不离开调用线程全看库里读文件那一步
+    /// 是不是异步完成 —— 实测各平台上都是,所以没卡过;但那是碰巧,库哪天换成同步读、或者加一层缓存,
+    /// 一把轮数大的私钥就会把界面卡住好几秒。
+    /// </para>
     /// </remarks>
-    private static ValueTask<InMemorySshSigner> LoadSignerAsync(
+    internal static async ValueTask<InMemorySshSigner> LoadSignerAsync(
         string path, string? passphrase, CancellationToken cancellationToken) =>
-        SshPrivateKeyFile.LoadAsync(
-            path, string.IsNullOrWhiteSpace(passphrase) ? null : passphrase, cancellationToken);
+        await Task.Run(
+            () => SshPrivateKeyFile.LoadAsync(
+                path, string.IsNullOrWhiteSpace(passphrase) ? null : passphrase, cancellationToken).AsTask(),
+            cancellationToken).ConfigureAwait(false);
 
     /// <summary>设置 → 密钥管理 →「自动加载密钥到 Agent」。读不到设置时按默认值(关)。</summary>
     private static bool AddKeysToAgent(ISettingsService? settings)

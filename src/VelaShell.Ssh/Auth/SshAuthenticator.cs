@@ -12,6 +12,7 @@
 //   行为规格:      velashell-docs/zh/ssh/spec/04-authentication.md 全部
 
 using System.Buffers;
+using System.Diagnostics;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
@@ -24,11 +25,13 @@ namespace VelaShell.Ssh.Auth;
 /// <param name="Attempts">逐条尝试记录。</param>
 /// <param name="Banner">服务端发来的横幅文本（按出现顺序）。</param>
 /// <param name="ServerSignatureAlgorithms">服务端通过 <c>server-sig-algs</c> 宣告的签名算法。</param>
+/// <param name="ServerExtensions">服务端在 <c>EXT_INFO</c> 里宣告过的扩展名。</param>
 internal sealed record SshAuthenticationResult(
     string Method,
     IReadOnlyList<SshAuthAttempt> Attempts,
     IReadOnlyList<string> Banner,
-    IReadOnlyList<string> ServerSignatureAlgorithms);
+    IReadOnlyList<string> ServerSignatureAlgorithms,
+    IReadOnlyList<string> ServerExtensions);
 
 /// <summary>执行用户认证（客户端侧）。</summary>
 /// <remarks>
@@ -48,6 +51,13 @@ internal sealed record SshAuthenticationResult(
 internal sealed class SshAuthenticator(SshPacketTransport transport, string userName, byte[] sessionId)
 {
     private const int MaxFieldBytes = 64 * 1024;
+
+    /// <summary>keyboard-interactive 一轮里每个字符串（名字、说明、语言标记、提示）的上限。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §6.4〕4 KiB。这些文字来自还没认证的对端、要原样摆到界面上；
+    /// 曾经名字与说明放到了 64 KiB（只有提示是 4 KiB），与规格不符。
+    /// </remarks>
+    private const int MaxKeyboardStringBytes = 4 * 1024;
     private const int MaxBannerBytes = 256 * 1024;
     private const int MaxBannerCount = 1024;
 
@@ -80,6 +90,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
     private string[] _serverOffered = [];
     private string[] _serverSignatureAlgorithms = [];
+    private readonly List<string> _serverExtensions = [];
     private bool _partialSuccessAchieved;
     private bool _passwordChangeRequested;
 
@@ -104,6 +115,17 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
     /// <summary>横幅回调。文本来自**未认证**的对端，是注入面。</summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
+
+    /// <summary>标着 <c>always_display</c> 的 <c>SSH_MSG_DEBUG</c> 的回调（<c>SshConnectionOptions.DebugMessageHandler</c>）。</summary>
+    public Func<string, CancellationToken, ValueTask>? DebugMessageHandler { get; init; }
+
+    /// <summary>认证期间对端发起了重协商（收到 <c>KEXINIT</c>，载荷交进来）：就地把这次交换做完。</summary>
+    /// <remarks>
+    /// 〔RFC 4253 §9〕任何时刻都可以重协商 —— 用户找动态码花了几分钟，服务端按时间的 <c>RekeyLimit</c> 就会发起。
+    /// 认证阶段只有认证器一个读者、一个写者，交换就在这条传输上原地跑（由建连代码给出，认证器不依赖会话层）。
+    /// 曾经没有这条路：KEXINIT 被当成「意外的报文」，连接以协议错误失败。没给时照旧报协议错误，但说清是什么。
+    /// </remarks>
+    internal Func<ReadOnlyMemory<byte>, CancellationToken, ValueTask>? PeerKexInitHandler { get; init; }
 
     /// <summary>首次密钥交换里服务端的身份证明；背后是 ssh-agent 的签名器拿它向 agent 声明会话（spec/07 §7.4）。</summary>
     /// <remarks><see langword="null"/> 时不声明 —— 只有绕过连接工厂直接跑认证的测试会这样。</remarks>
@@ -233,12 +255,14 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// <returns>换用的凭据；换不了返回 <see langword="null"/>。</returns>
     private KeyboardInteractiveCredential? TryBridgeToKeyboardInteractive(SshCredential credential)
     {
-        if (credential is not PasswordCredential { AlsoAnswerKeyboardInteractive: true } password
+        if (credential is not PasswordCredential { CanAnswerKeyboardInteractive: true } password
             || !_serverOffered.Contains(SshProtocolNames.AuthKeyboardInteractive, StringComparer.Ordinal))
         {
             return null;
         }
 
+        // 这条桥接凭据只用于这一次键盘交互（每次桥接都新造一个），所以「答过了」记在这里就够了。
+        bool answered = false;
         return new KeyboardInteractiveCredential(
             async (challenge, cancellationToken) =>
             {
@@ -247,9 +271,18 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 // 其它形状（多条提示、要回显的提示）意味着这是真正的多因素询问。
                 // 此时**必须仍然回够条数**：中途放弃会把服务端晾在等应答的状态上，
                 // 让整条会话卡住。回空串让服务端干脆地拒绝，我们再换下一条凭据。
-                return challenge.Prompts is not [{ Echo: false }]
-                    ? [.. challenge.Prompts.Select(static _ => string.Empty)]
-                    : (IReadOnlyList<string>)(string[])[await password.GetPasswordAsync(cancellationToken).ConfigureAwait(false)];
+                //
+                // ⚠️ **同一次键盘交互里密码至多答一次**（velashell-docs/zh/ssh/spec/04 §6.5）。
+                //    PAM 两步验证常见的流程是「Password:」一轮、「Verification code:」再一轮，两轮都是单条不回显。
+                //    曾经只看形状不看轮次，第二轮也把密码发了出去：白耗一次失败计数，而且 pam_radius、Duo 一类模块
+                //    会把这一轮的应答转发到 RADIUS 或第三方服务 —— 密码就这样离开了目标主机。
+                if (answered || challenge.Prompts is not [{ Echo: false }])
+                {
+                    return [.. challenge.Prompts.Select(static _ => string.Empty)];
+                }
+
+                answered = true;
+                return [await password.GetPasswordAsync(cancellationToken).ConfigureAwait(false)];
             },
             label: $"{password.Label}（经 keyboard-interactive）");
     }
@@ -308,8 +341,8 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 PasswordCredential password => await TryPasswordAsync(password, cancellationToken).ConfigureAwait(false),
                 PublicKeyCredential publicKey => await TryPublicKeyAsync(publicKey, cancellationToken).ConfigureAwait(false),
                 KeyboardInteractiveCredential kbd => await TryKeyboardInteractiveAsync(kbd, cancellationToken).ConfigureAwait(false),
-                _ => throw new CredentialMaterialException(
-                    new NotSupportedException($"尚未实现的认证方法：{credential.MethodName}")),
+                // SshCredential 的构造函数是 private protected，库外写不出别的子类；none 在调度之前就滤掉了。
+                _ => throw new UnreachableException($"认证器不认识的凭据类型 {credential.GetType().Name}。"),
             };
         }
         catch (CredentialMaterialException ex)
@@ -326,7 +359,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             step = new AuthStepResult(SshAuthOutcome.SkippedNoMaterial, ex.Message);
         }
 
-        Record(credential, step.Outcome, step.Detail);
+        Record(credential, step.Outcome, step.Detail, step.SignatureAlgorithm);
         return step;
     }
 
@@ -356,31 +389,93 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         string password = await FromCredentialAsync(() => credential.GetPasswordAsync(cancellationToken))
             .ConfigureAwait(false);
 
+        await SendPasswordRequestAsync(password, newPassword: null, cancellationToken).ConfigureAwait(false);
+
+        // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ：服务端要求先改密码（〔velashell-docs/zh/ssh/spec/04 §5.1〕）。
+        // 配了取新密码的回调就改；没配、或者没改成，**要把原因说清楚** ——
+        // 「客户端直接断开且不说为什么」是用户最难自救的一种失败。
+        for (int attempt = 1; ; attempt++)
+        {
+            string? changePrompt = null;
+            AuthStepResult outcome = await ReadAuthOutcomeAsync(
+                onMethodSpecific: (number, payload) =>
+                {
+                    if (number != PasswordChangeRequest)
+                    {
+                        return null;
+                    }
+                    changePrompt = ParsePasswordChangeRequest(payload);
+                    return new AuthStepResult(SshAuthOutcome.Failure);
+                },
+                cancellationToken).ConfigureAwait(false);
+
+            if (changePrompt is null)
+            {
+                // 认证有了结论。发过改密码请求的话，结论就是改密码的结果（RFC 4252 §8）。
+                if (attempt == 1)
+                {
+                    return outcome;
+                }
+                if (outcome.Outcome is SshAuthOutcome.Success or SshAuthOutcome.PartialSuccess)
+                {
+                    _passwordChangeRequested = false;
+                    return outcome with { Detail = "已按服务端的要求修改了密码。" };
+                }
+                return outcome with { Detail = "服务端要求先修改密码，但没有改成：服务端不支持改密码，或旧密码不对。" };
+            }
+
+            // 记下来：方法都试完时据此报 PasswordExpired，而不是笼统的「方法用尽」。
+            _passwordChangeRequested = true;
+            if (credential.NewPasswordProvider is not { } provider)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码（没有配置取新密码的回调）。");
+            }
+            if (attempt > PasswordCredential.MaxNewPasswordAttempts)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure,
+                    $"服务端要求先修改密码，连续 {PasswordCredential.MaxNewPasswordAttempts} 次不接受新密码：" +
+                    PeerText.Sanitize(changePrompt, 256));
+            }
+
+            // 此时服务端的应答已经读完，没有请求在途：回调出错换下一条凭据不会让应答错位。
+            SshPasswordChangeRequest ask = new() { Prompt = changePrompt, Attempt = attempt };
+            string? newPassword = await FromCredentialAsync(() => provider(ask, cancellationToken)).ConfigureAwait(false);
+            if (newPassword is null)
+            {
+                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码，这次没有给出新密码。");
+            }
+
+            await SendPasswordRequestAsync(password, newPassword, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>发 <c>password</c> 请求；带 <paramref name="newPassword"/> 时是改密码请求（RFC 4252 §8）。</summary>
+    private async ValueTask SendPasswordRequestAsync(string password, string? newPassword, CancellationToken cancellationToken)
+    {
         ArrayBufferWriter<byte> request = new();
         SshDataWriter writer = new(request);
         WriteRequestHeader(ref writer, SshProtocolNames.AuthPassword);
-        writer.WriteBoolean(false);        // 不是改密码请求
+        writer.WriteBoolean(newPassword is not null);   // 是不是改密码请求
         writer.WriteUtf8String(password);
+        if (newPassword is not null)
+        {
+            writer.WriteUtf8String(newPassword);
+        }
 
+        // 请求里是明文密码：封进传输的缓冲之后就把这一份清零（velashell-docs/zh/ssh/spec/04 §5.2）。
         _transport.WritePacket(request.WrittenSpan);
+        request.Clear();
         await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
+    }
 
-        // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ：服务端要求先改密码。
-        // 〔决策 velashell-docs/zh/ssh/spec/04 §5.1〕我们不实现改密码流程，但**要把原因说清楚** ——
-        // 「客户端直接断开且不说为什么」是用户最难自救的一种失败。
-        return await ReadAuthOutcomeAsync(
-            onMethodSpecific: (number, payload) =>
-            {
-                if (number != PasswordChangeRequest)
-                {
-                    return null;
-                }
-
-                // 记下来：方法都试完时据此报 PasswordExpired，而不是笼统的「方法用尽」。
-                _passwordChangeRequested = true;
-                return new AuthStepResult(SshAuthOutcome.Failure, "服务端要求先修改密码（本库尚未实现改密码流程）。");
-            },
-            cancellationToken).ConfigureAwait(false);
+    /// <summary>解 <c>SSH_MSG_USERAUTH_PASSWD_CHANGEREQ</c>：提示文本（语言标记忽略）。</summary>
+    private static string ParsePasswordChangeRequest(ReadOnlyMemory<byte> payload)
+    {
+        SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+        reader.ReadByte();   // PasswordChangeRequest
+        string prompt = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        _ = reader.ReadUtf8String(MaxKeyboardStringBytes);   // 语言标记
+        return prompt;
     }
 
     private async ValueTask<AuthStepResult> TryPublicKeyAsync(
@@ -398,16 +493,114 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             throw new CredentialMaterialException(ex);
         }
 
+        AuthStepResult step = await TryPublicKeyWithAsync(credential, algorithm, cancellationToken).ConfigureAwait(false);
+        step = step with { SignatureAlgorithm = algorithm };
+
+        // 〔velashell-docs/zh/ssh/spec/04 §4.4〕没收到 server-sig-algs 时先试的是 SHA-2；
+        // 不认 rsa-sha2-* 的老服务器会拒，使用者允许 SHA-1 的话降级重试一次 ssh-rsa。
+        // 曾经不重试：「允许 SHA-1」只在 server-sig-algs 列了 ssh-rsa 时起作用，
+        // 而不发 server-sig-algs 的老服务器（正是要这个开关的那些）照样只收到 rsa-sha2-512。
+        if (step.Outcome == SshAuthOutcome.Failure
+            && Sha1FallbackFor(credential.Signer, algorithm) is { } sha1)
+        {
+            AuthStepResult retry = await TryPublicKeyWithAsync(credential, sha1, cancellationToken).ConfigureAwait(false);
+            step = retry with
+            {
+                Detail = WithNote(retry.Detail, $"服务端没有宣告 server-sig-algs，{algorithm} 被拒后降级为 {sha1}（SHA-1）重试"),
+                SignatureAlgorithm = sha1,
+            };
+        }
+        else if (HostKeys.SshPublicKey.StripCertificateSuffix(algorithm) == SshAlgorithmNames.SshRsa)
+        {
+            // 没有降级、直接挑中了 SHA-1（server-sig-algs 里能用的只有它，或这把钥只给得出它）：同样记一笔。
+            step = step with { Detail = WithNote(step.Detail, $"用的是 SHA-1 签名（{algorithm}）") };
+        }
+
+        // 〔§4.5〕证书被拒时，把本地看得出的线索写进记录：按本机时钟过期了、登录用户不在 principals 里……
+        // 客户端不因此拦着不发（那是服务端的判断，本机时钟也可能不准），只是让用户不必对着 Permission denied 猜。
+        if (step.Outcome == SshAuthOutcome.Failure && DescribeCertificateProblems(credential.Signer) is { } hints)
+        {
+            step = step with { Detail = WithNote(step.Detail, hints) };
+        }
+
+        return step;
+    }
+
+    private static string WithNote(string? detail, string note) => detail is null ? note : $"{detail}（{note}）";
+
+    /// <summary>证书被拒时本地看得出的线索；不是证书、或者看不出问题时为 <see langword="null"/>。</summary>
+    /// <remarks>只写事实：有效期按本机时钟判断（时钟不准时这条线索也不准，所以话里带着「按本机时钟」）。</remarks>
+    private string? DescribeCertificateProblems(ISshSigner signer)
+    {
+        if (!signer.PublicKey.IsCertificate)
+        {
+            return null;
+        }
+
+        OpenSshCertificate certificate;
+        if (signer is SshCertificateSigner certificateSigner)
+        {
+            certificate = certificateSigner.Certificate;
+        }
+        else
+        {
+            // agent 里的证书身份：签名器只交得出 blob。
+            try
+            {
+                certificate = OpenSshCertificate.Decode(signer.PublicKey.Blob);
+            }
+            catch (SshCertificateException)
+            {
+                return null;
+            }
+        }
+
+        string keyId = PeerText.Sanitize(certificate.KeyId, 128);
+        List<string> hints = [];
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (!certificate.IsTimeValid(now))
+        {
+            hints.Add(certificate.ValidBeforeTime is { } before && now >= before
+                ? $"证书（Key ID「{keyId}」）按本机时钟已于 {before:u} 过期"
+                : $"证书（Key ID「{keyId}」）按本机时钟要到 {certificate.ValidAfterTime:u} 才生效");
+        }
+        if (certificate.CertificateType != SshCertificateType.User)
+        {
+            hints.Add($"证书（Key ID「{keyId}」）是主机证书，不能用来登录");
+        }
+        if (certificate.ValidPrincipals.Count > 0 && !certificate.ValidPrincipals.Contains(_userName, StringComparer.Ordinal))
+        {
+            string principals = string.Join("、", certificate.ValidPrincipals.Take(8).Select(static p => PeerText.Sanitize(p, 64)));
+            hints.Add($"证书签给的用户是 {principals}{(certificate.ValidPrincipals.Count > 8 ? "……" : "")}，不含登录用户 {_userName}");
+        }
+
+        return hints.Count == 0 ? null : string.Join("；", hints);
+    }
+
+    /// <summary>该不该、能不能降级为 SHA-1 的 RSA 签名重试一次；能的话给出算法名。</summary>
+    private string? Sha1FallbackFor(ISshSigner signer, string attempted)
+    {
+        if (!AllowSha1RsaSignatures
+            || _serverSignatureAlgorithms.Length > 0
+            || HostKeys.SshPublicKey.StripCertificateSuffix(attempted) is not (SshAlgorithmNames.RsaSha512 or SshAlgorithmNames.RsaSha256))
+        {
+            return null;
+        }
+
+        return signer.SignatureAlgorithms.FirstOrDefault(
+            static a => HostKeys.SshPublicKey.StripCertificateSuffix(a) == SshAlgorithmNames.SshRsa);
+    }
+
+    private async ValueTask<AuthStepResult> TryPublicKeyWithAsync(
+        PublicKeyCredential credential, string algorithm, CancellationToken cancellationToken)
+    {
         // 〔决策 velashell-docs/zh/ssh/spec/04 §4.1〕本地私钥直接签，省一个 RTT；
         // 外部签名（agent / PKCS#11 / HSM）先问「你认这把钥吗」——
         // 为一把服务端根本不认的密钥去让用户按硬件键是不可接受的。
-        if (!credential.Signer.IsLocalAndCheap)
+        if (!credential.Signer.IsLocalAndCheap
+            && await ProbePublicKeyAsync(credential, algorithm, cancellationToken).ConfigureAwait(false) is { } settled)
         {
-            bool accepted = await ProbePublicKeyAsync(credential, algorithm, cancellationToken).ConfigureAwait(false);
-            if (!accepted)
-            {
-                return new AuthStepResult(SshAuthOutcome.Failure, "服务端不接受这把公钥。");
-            }
+            return settled;   // 不接受这把钥；或者服务端对探测直接回了 SUCCESS
         }
 
         // 被签名的数据是：string session_id ‖ 整个请求载荷（从消息编号字节起）。
@@ -456,7 +649,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return await ReadAuthOutcomeAsync(null, cancellationToken).ConfigureAwait(false);
     }
 
-    private async ValueTask<bool> ProbePublicKeyAsync(
+    /// <summary>问服务端「你认这把公钥吗」（不签名）。</summary>
+    /// <returns>认（<c>PK_OK</c>）、该去签了时为 <see langword="null"/>；否则是这一步的结论。</returns>
+    private async ValueTask<AuthStepResult?> ProbePublicKeyAsync(
         PublicKeyCredential credential, string algorithm, CancellationToken cancellationToken)
     {
         ArrayBufferWriter<byte> request = new();
@@ -471,19 +666,57 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
 
         bool accepted = false;
         AuthStepResult outcome = await ReadAuthOutcomeAsync(
-            onMethodSpecific: (number, _) =>
+            onMethodSpecific: (number, payload) =>
             {
                 if (number != PublicKeyOk)
                 {
                     return null;
                 }
                 // SSH_MSG_USERAUTH_PK_OK：服务端认这把公钥，可以去签了。
+                CheckPublicKeyOkEcho(payload, algorithm, credential.Signer.PublicKey);
                 accepted = true;
                 return new AuthStepResult(SshAuthOutcome.PartialSuccess);
             },
             cancellationToken).ConfigureAwait(false);
 
-        return accepted && outcome.Outcome == SshAuthOutcome.PartialSuccess;
+        if (accepted)
+        {
+            return null;
+        }
+
+        // 〔AU-E5〕服务端对探测直接回了 SUCCESS（不合规，个别实现会这样）：认证已经完成。
+        // RFC 4252 §5.1 说成功之后的认证请求一律忽略 —— 曾经记成「不接受这把公钥」、接着发下一条请求，
+        // 一直等到认证超时。
+        return outcome.Outcome == SshAuthOutcome.Success
+            ? outcome
+            : new AuthStepResult(SshAuthOutcome.Failure, "服务端不接受这把公钥。");
+    }
+
+    /// <summary><c>PK_OK</c> 回显的必须是我们问的那一把（RFC 4252 §7：算法名与公钥 blob 都取自请求）。</summary>
+    /// <remarks>
+    /// 公钥 blob 对不上是协议错误：签下去的是服务端没认过的那一把。算法名除了请求里的那个，
+    /// 也认这把钥自己的类型名（<c>rsa-sha2-256</c> 的请求回显成 <c>ssh-rsa</c>）—— 说的是同一把钥，签名算法照我们选的。
+    /// 曾经回显什么都不看。
+    /// </remarks>
+    private static void CheckPublicKeyOkEcho(ReadOnlyMemory<byte> payload, string algorithm, HostKeys.SshPublicKey key)
+    {
+        SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+        reader.ReadByte();   // PK_OK
+        string echoedAlgorithm = reader.ReadUtf8String(MaxFieldBytes);
+        byte[] echoedBlob = reader.ReadStringAsArray(MaxFieldBytes);
+
+        if (!echoedBlob.AsSpan().SequenceEqual(key.Blob.Span))
+        {
+            throw new SshProtocolException(
+                SshPhase.Authenticating, "服务端的 PK_OK 回显的公钥不是我们问的那一把。");
+        }
+
+        if (echoedAlgorithm != algorithm && echoedAlgorithm != key.KeyType)
+        {
+            throw new SshProtocolException(
+                SshPhase.Authenticating,
+                $"服务端的 PK_OK 回显的算法是 {PeerText.Sanitize(echoedAlgorithm, 64)}，我们问的是 {algorithm}。");
+        }
     }
 
     private async ValueTask<AuthStepResult> TryKeyboardInteractiveAsync(
@@ -553,7 +786,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 responseWriter.WriteUtf8String(answer);
             }
 
+            // 应答里是明文的口令 / 动态码：封进传输的缓冲之后就把这一份清零（velashell-docs/zh/ssh/spec/04 §5.2）。
             _transport.WritePacket(response.WrittenSpan);
+            response.Clear();
             await _transport.FlushAsync(cancellationToken).ConfigureAwait(false);
         }
     }
@@ -572,9 +807,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
         reader.ReadByte();   // InfoRequest
 
-        string name = reader.ReadUtf8String(MaxFieldBytes);
-        string instruction = reader.ReadUtf8String(MaxFieldBytes);
-        _ = reader.ReadUtf8String(MaxFieldBytes);   // 语言标记，忽略
+        string name = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        string instruction = reader.ReadUtf8String(MaxKeyboardStringBytes);
+        _ = reader.ReadUtf8String(MaxKeyboardStringBytes);   // 语言标记，忽略
 
         uint count = reader.ReadUInt32();
         if (count > MaxKeyboardPrompts)
@@ -587,7 +822,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         List<SshKeyboardPrompt> prompts = [];
         for (uint i = 0; i < count; i++)
         {
-            string text = reader.ReadUtf8String(4 * 1024);
+            string text = reader.ReadUtf8String(MaxKeyboardStringBytes);
             bool echo = reader.ReadBoolean();
             prompts.Add(new SshKeyboardPrompt(text, echo));
         }
@@ -608,7 +843,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// 「服务端要求先改密码」会退化成一句没有内容的「失败」——
     /// 而这正是用户最需要知道的那一句。
     /// </remarks>
-    private readonly record struct AuthStepResult(SshAuthOutcome Outcome, string? Detail = null);
+    private readonly record struct AuthStepResult(SshAuthOutcome Outcome, string? Detail = null, string? SignatureAlgorithm = null);
 
     /// <summary>读到一个认证结论（SUCCESS / FAILURE / 方法专用报文）。</summary>
     private async ValueTask<AuthStepResult> ReadAuthOutcomeAsync(
@@ -662,6 +897,12 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return (methods, partial);
     }
 
+    /// <summary>认证器已经读过的报文数（判断 <c>EXT_INFO</c> 是不是首次 <c>NEWKEYS</c> 之后的第一个报文）。</summary>
+    private int _packetsRead;
+
+    /// <summary>收到了不在第一个位置的 <c>EXT_INFO</c>：下一个报文必须是 <c>USERAUTH_SUCCESS</c>。</summary>
+    private bool _extInfoAwaitingSuccess;
+
     /// <summary>读下一个报文，顺手处理横幅、扩展信息与断开。</summary>
     private async ValueTask<SshInboundPacket> ReadAsync(CancellationToken cancellationToken)
     {
@@ -690,6 +931,16 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                     "对端在认证期间关闭了连接。");
             }
 
+            bool firstPacket = _packetsRead++ == 0;
+            if (_extInfoAwaitingSuccess && packet.MessageNumber != SshMessageNumber.UserAuthSuccess)
+            {
+                throw new SshProtocolException(
+                    SshPhase.Authenticating,
+                    $"服务端在认证中途发了 EXT_INFO，后面跟的却是 {packet.MessageNumber} —— " +
+                    "EXT_INFO 只能是首次 NEWKEYS 之后的第一个报文，或者紧挨着 USERAUTH_SUCCESS（RFC 8308 §2.4）。");
+            }
+            _extInfoAwaitingSuccess = false;
+
             switch (packet.MessageNumber)
             {
                 case SshMessageNumber.UserAuthBanner:
@@ -697,15 +948,31 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                     continue;
 
                 case SshMessageNumber.ExtInfo:
+                    // 〔velashell-docs/zh/ssh/spec/04 §7.1〕只有两个位置合法：首次 NEWKEYS 之后的第一个报文；
+                    // 紧挨着 USERAUTH_SUCCESS 之前（下一个报文才知道是不是，所以先记下、读下一个时核对）。
+                    // 曾经任何位置都照收，后到的整体覆盖 server-sig-algs —— 认证中途就能改掉 RSA 签名算法的选择。
+                    _extInfoAwaitingSuccess = !firstPacket;
                     HandleExtensionInfo(packet.Payload);
                     continue;
 
                 case SshMessageNumber.Ignore:
+                    continue;
+
                 case SshMessageNumber.Debug:
+                    await DeliverDebugMessageAsync(packet.Payload, cancellationToken).ConfigureAwait(false);
                     continue;
 
                 case SshMessageNumber.Disconnect:
                     throw BuildDisconnectException(packet.Payload);
+
+                case SshMessageNumber.KexInit when PeerKexInitHandler is { } rekey:
+                    // 对端在途的那个应答会在交换完成之后、用新密钥到来 —— 接着读就是。
+                    await rekey(packet.Payload, cancellationToken).ConfigureAwait(false);
+                    continue;
+
+                case SshMessageNumber.KexInit:
+                    throw new SshProtocolException(
+                        SshPhase.Authenticating, "服务端在认证期间发起了密钥重协商，而这条认证路径不支持就地重协商。");
 
                 default:
                     return packet;
@@ -726,9 +993,34 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         string text = reader.ReadUtf8String(64 * 1024);
         _banner.Add(text);
 
-        if (BannerHandler is not null)
+        if (BannerHandler is { } handler)
         {
-            await BannerHandler(text, cancellationToken).ConfigureAwait(false);
+            // 〔velashell-docs/zh/ssh/spec/04 §3.4〕回调自己抛的照实交还：不当成跳过，也不归成「对端断开」。
+            await SshCallbackFaultException.InvokeAsync(() => handler(text, cancellationToken)).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>标着 <c>always_display</c> 的调试消息清洗之后交给回调；格式不对的照 RFC 忽略。</summary>
+    private async ValueTask DeliverDebugMessageAsync(ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)
+    {
+        if (DebugMessageHandler is not { } handler)
+        {
+            return;
+        }
+
+        SshDebugMessage message;
+        try
+        {
+            message = SshDebugMessage.Decode(payload);
+        }
+        catch (SshWireFormatException)
+        {
+            return;
+        }
+
+        if (message.AlwaysDisplay && PeerText.Sanitize(message.Message) is { Length: > 0 } text)
+        {
+            await SshCallbackFaultException.InvokeAsync(() => handler(text, cancellationToken)).ConfigureAwait(false);
         }
     }
 
@@ -743,6 +1035,10 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         {
             string name = reader.ReadUtf8String(1024);
             ReadOnlySequence<byte> value = reader.ReadString(MaxFieldBytes);
+            if (!_serverExtensions.Contains(name))
+            {
+                _serverExtensions.Add(name);
+            }
 
             if (name == SshProtocolNames.ExtServerSigAlgs)
             {
@@ -821,9 +1117,14 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             return usable[0];
         }
 
+        // 〔AU-E6〕证书按去掉后缀的名字比：server-sig-algs 列的是签名算法（RFC 8308 §3.1），
+        // 证书的签名算法就是不带后缀的那个（rsa-sha2-256-cert-v01@openssh.com 签出来的是 rsa-sha2-256）。
+        // 曾经只按原样比，证书永远比不中、永远取第一偏好：只认 rsa-sha2-256 的服务端照样收到 512，
+        // 允许 SHA-1 时只认 ssh-rsa 的服务端也收不到 SHA-1。带后缀列出来的照样认。
         foreach (string candidate in usable)
         {
-            if (_serverSignatureAlgorithms.Contains(candidate, StringComparer.Ordinal))
+            if (_serverSignatureAlgorithms.Contains(candidate, StringComparer.Ordinal)
+                || _serverSignatureAlgorithms.Contains(HostKeys.SshPublicKey.StripCertificateSuffix(candidate), StringComparer.Ordinal))
             {
                 return candidate;
             }
@@ -834,12 +1135,12 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return usable[0];
     }
 
-    private void Record(SshCredential credential, SshAuthOutcome outcome, string? detail) =>
+    private void Record(SshCredential credential, SshAuthOutcome outcome, string? detail, string? signatureAlgorithm = null) =>
         _attempts.Add(new SshAuthAttempt(
-            credential.MethodName, credential.Label, outcome, _serverOffered, detail));
+            credential.MethodName, credential.Label, outcome, _serverOffered, detail, signatureAlgorithm));
 
     private SshAuthenticationResult BuildResult(string method) =>
-        new(method, _attempts, _banner, _serverSignatureAlgorithms);
+        new(method, _attempts, _banner, _serverSignatureAlgorithms, _serverExtensions);
 
     private SshAuthenticationException BuildExhaustedException()
     {
@@ -857,8 +1158,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         {
             (true, _) => (
                 SshFailureReason.PasswordExpired,
-                "服务端要求先修改密码（密码已过期或被管理员要求更换），本库没有改密码流程。" +
-                "请先用别的客户端登录一次改掉密码。"),
+                "服务端要求先修改密码（密码已过期或被管理员要求更换），密码没有改成。"),
             (_, true) => (
                 SshFailureReason.TwoFactorRequired,
                 "服务端要求键盘交互式认证（动态码 / OTP），但没有配置相应的凭据。" +

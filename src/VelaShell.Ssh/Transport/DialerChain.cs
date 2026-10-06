@@ -7,7 +7,7 @@ using VelaShell.Ssh.Session;
 
 namespace VelaShell.Ssh.Transport;
 
-/// <summary>内置拨号器的入口：直连、SOCKS5、HTTP 代理、跳板、代理命令。</summary>
+/// <summary>内置拨号器的入口：直连、SOCKS5、HTTP 代理、TLS、跳板、代理命令。</summary>
 /// <remarks>
 /// <para>
 /// 这里是拿到内置拨号器的<b>唯一</b>入口，返回的都是 <see cref="ISshTransportDialer"/> ——
@@ -46,6 +46,24 @@ public static class DialerChain
         string host, int port, SshProxyCredentials? credentials = null, ISshTransportDialer? via = null) =>
         new HttpConnectDialer(new SshEndPoint(host, port)) { Credentials = credentials, Inner = via ?? Tcp };
 
+    /// <summary>在到这一跳的连接上套一层 TLS（RFC 8446）。</summary>
+    /// <param name="options">SNI 与证书校验；<see langword="null"/> 用 <see cref="SshTlsOptions.Default"/>（系统的严格校验）。</param>
+    /// <param name="via">怎么到达这一跳；<see langword="null"/> 表示直连。</param>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/09 §4.4〕两种用法，都是「TLS 套在 <paramref name="via"/> 连到的那个端点上」：
+    /// </para>
+    /// <list type="bullet">
+    ///   <item>HTTPS 代理：当 HTTP 代理的内层，<c>HttpConnect("proxy", 443, via: DialerChain.Tls())</c> ——
+    ///   到代理的那一段走 TLS，代理凭据不再明文过网。</item>
+    ///   <item>SSH 套在 TLS 里走 443（只放行 HTTPS、有深度包检测的网络）：直接当连接的拨号器，
+    ///   服务端用 sslh / stunnel 剥掉 TLS 再交给 sshd。</item>
+    /// </list>
+    /// <para>握手失败报 <see cref="Diagnostics.SshFailureReason.TlsFailed"/>。</para>
+    /// </remarks>
+    public static ISshTransportDialer Tls(SshTlsOptions? options = null, ISshTransportDialer? via = null) =>
+        new TlsTransportDialer(options ?? SshTlsOptions.Default, via ?? Tcp);
+
     /// <summary>经跳板主机（<c>ProxyJump</c> / <c>ssh -J</c>）。</summary>
     /// <param name="jumpHost">跳板的连接参数：它自己的凭据、主机密钥策略，以及它自己的拨号器。</param>
     public static ISshTransportDialer Jump(SshConnectionOptions jumpHost) => new SshJumpDialer(jumpHost);
@@ -55,14 +73,16 @@ public static class DialerChain
     /// <param name="connect">
     /// 建立到跳板的连接。<b>每次拨号调一次</b> —— 断线重连时跳板也要重连；
     /// 返回的连接归拨出来的流所有，流释放时一并断开。
+    /// 准备好这一跳的参数之后，用上下文的 <see cref="SshJumpContext.ConnectAsync"/> 去连，
+    /// 而不是直接调 <see cref="SshConnection.ConnectAsync"/>：前者把外层连接的计时器带进去，
+    /// 跳板上看指纹、输动态码时外层停表（velashell-docs/zh/ssh/spec/09 §2.4）。
     /// </param>
     /// <remarks>
-    /// 给「每一跳都要现准备凭据」的调用方用（先连 ssh-agent、弹口令框之类）。
-    /// 能直接给出连接参数的，用 <see cref="Jump(SshConnectionOptions)"/> ——
-    /// 那样外层连接的计时器会传进跳板的建连里。
+    /// 给「每一跳都要现准备凭据」的调用方用（先连 ssh-agent 之类）。
+    /// 能直接给出连接参数的，用 <see cref="Jump(SshConnectionOptions)"/>。
     /// </remarks>
     public static ISshTransportDialer Jump(
-        SshEndPoint jumpHost, Func<CancellationToken, ValueTask<SshConnection>> connect) =>
+        SshEndPoint jumpHost, Func<SshJumpContext, CancellationToken, ValueTask<SshConnection>> connect) =>
         new SshJumpDialer(jumpHost, connect);
 
     /// <summary>

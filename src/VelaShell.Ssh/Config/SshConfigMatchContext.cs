@@ -44,8 +44,14 @@ public sealed record SshConfigMatchContext
     /// <para>
     /// 为 <see langword="null"/> 时带 <c>exec</c> 条件的块<b>一律不匹配</b>。
     /// </para>
+    /// <para>
+    /// 求值器拿到的是 <see cref="SshMatchExecRequest"/>：原样的命令、库按 <c>ProxyCommand</c> 同一套白名单展开好记号的命令
+    /// （<see cref="SshMatchExecRequest.ExpandedCommand"/>，<b>执行这一条</b>），以及主机与用户。值不能安全地代入时
+    /// 这一条判不了、不会来问。带求值器的上下文要用 <see cref="SshConfigFile.ResolveAsync"/> 求值。
+    /// 曾经是同步的 <c>Func&lt;string, bool&gt;</c>，只给原样的命令 —— 调用方自己去代入 <c>%h</c> 就回到了 CVE-2023-51385 那一类问题。
+    /// </para>
     /// </remarks>
-    public Func<string, bool>? ExecEvaluator { get; init; }
+    public Func<SshMatchExecRequest, CancellationToken, ValueTask<bool>>? ExecEvaluator { get; init; }
 
     /// <summary>只知道主机名时的上下文。</summary>
     public static SshConfigMatchContext ForHost(string host) => new() { Host = host };

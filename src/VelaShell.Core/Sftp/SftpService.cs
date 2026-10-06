@@ -19,6 +19,20 @@ public class SftpService : ISftpService
     private readonly ISettingsService? _settingsService;
     private readonly ConcurrentDictionary<Guid, ISftpClientWrapper> _sftpClients = new();
 
+    /// <summary>
+    /// 传输专用的 SFTP 客户端:同一条 SSH 连接上的<b>第二条</b> SFTP 通道(见 <see cref="GetTransferClientAsync" />)。
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, ISftpClientWrapper> _transferClients = new();
+
+    /// <summary>开不出第二条 SFTP 通道的会话(服务端 MaxSessions 太小之类):传输回到浏览用的那一条上。</summary>
+    private readonly ConcurrentDictionary<Guid, bool> _singleChannelSessions = new();
+
+    /// <summary>
+    /// 上一次被打断的上传留下的精确续传点(库交出来的 DurableLength),按会话与远端路径记;
+    /// 下一次续传这个路径时用它,而不是按远端长度盲退一个在途窗口(见 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, Stream, long, long?, CancellationToken)" />)。
+    /// </summary>
+    private readonly ConcurrentDictionary<(Guid Session, string Path), long> _durableUploads = new();
+
     /// <summary>属主/属组的数字 id → 名称翻译(按会话缓存,见 RemoteIdentityResolver)。</summary>
     private readonly RemoteIdentityResolver _identities;
 
@@ -69,12 +83,27 @@ public class SftpService : ISftpService
         ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         IEnumerable<SftpEntry> files = await client.ListDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
 
-        // 属主/属组名要查远端 passwd 库(SFTP 只报数字 id):每会话查一次,查不到回退数字。
-        RemoteIdentityMap identities = await _identities.GetAsync(sessionId).ConfigureAwait(false);
-        return [.. files.Where(f => f.Name is not "." and not "..").Select(f => MapToRemoteFileInfo(f, identities))];
+        // 属主/属组名要查远端 passwd 库(SFTP 只报数字 id):每会话查一次;表里没有的(只开了 SFTP 的账号整张表都没有)
+        // 经 SFTP 扩展补上,还查不到就回退数字。
+        SftpEntry[] entries = [.. files.Where(f => f.Name is not "." and not "..")];
+        RemoteIdentityMap identities = await _identities.FillAsync(
+            sessionId, client, entries.Select(f => f.UserId), entries.Select(f => f.GroupId), cancellationToken).ConfigureAwait(false);
+        return [.. entries.Select(f => MapToRemoteFileInfo(f, identities))];
     }
 
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持取消。</summary>
+    /// <summary>
+    /// 上传的几种形状只差几个参数:要保留时间戳或要落盘的,带着这些要求上传(关闭之前按同一个句柄做完);
+    /// 其余按有没有续传起点选重载。
+    /// </summary>
+    private static Task UploadAsync(ISftpClientWrapper client, Stream input, string remotePath, long resumeOffset,
+        DateTimeOffset? lastWriteTime, bool fsync, Action<ulong>? onBytes, CancellationToken cancellationToken) =>
+        lastWriteTime is not null || fsync
+            ? client.UploadAsync(input, remotePath, new RemoteUploadOptions(resumeOffset, lastWriteTime, fsync), onBytes, cancellationToken)
+            : resumeOffset > 0
+                ? client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken)
+                : client.UploadAsync(input, remotePath, onBytes, cancellationToken);
+
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持断点续传(resumeOffset > 0 时追加上传)。</summary>
     public async Task UploadFileAsync(Guid sessionId,
         string localPath,
@@ -83,18 +112,19 @@ public class SftpService : ISftpService
         long resumeOffset = 0,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         var fileInfo = new FileInfo(localPath);
         long totalBytes = fileInfo.Length;
         string fileName = Path.GetFileName(localPath);
         var reporter = new TransferProgressThrottle(progress, fileName, totalBytes);
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
-        (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (long uploadBps, _, bool preserveTimestamps, bool fsync) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         // 以此刻的远端状态重新核实续传起点;核实不通过会抛错,核实为"无可续"则整份重传。
+        long? durable = TakeDurableHint(sessionId, remotePath);
         if (resumeOffset > 0)
         {
-            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, localPath, totalBytes, cancellationToken).ConfigureAwait(false);
+            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, localPath, totalBytes, durable, cancellationToken).ConfigureAwait(false);
         }
 
         // 续传与全新上传只差一个偏移量参数,其余(限速包装、收尾上报)完全一致。
@@ -102,36 +132,22 @@ public class SftpService : ISftpService
         Stream fileStream = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
         try
         {
-            if (resumeOffset > 0)
+            try
             {
-                await client.UploadAsync(fileStream, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                // 保留时间戳(设置 → 文件传输,scp -p 语义):把远端 mtime 设回本地源文件的 mtime
+                // (下载方向的对等实现见 DownloadFileAsync)。关闭之前用同一个句柄设,一次往返;
+                // 尽力而为 —— 个别服务器禁 setstat,不能让一次时间戳设置失败把已完成的上传标成失败。
+                await UploadAsync(client, fileStream, remotePath, resumeOffset,
+                    preserveTimestamps ? new DateTimeOffset(fileInfo.LastWriteTimeUtc) : null, fsync, onBytes, cancellationToken).ConfigureAwait(false);
             }
-            else
+            catch (VelaSftpTransferInterruptedException interrupted)
             {
-                await client.UploadAsync(fileStream, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                RememberDurable(sessionId, remotePath, interrupted);
+                throw;
             }
 
             // 节流会丢弃最后一个时间片内的上报,不强制收尾进度条会停在 99%。
             reporter.ReportFinal(totalBytes);
-
-            // 保留时间戳(设置 → 文件传输,scp -p 语义):把远端 mtime 设回本地源文件的
-            // mtime(下载方向的对等实现见 DownloadFileAsync)。尽力而为——个别服务器
-            // 禁 setstat,不能让一次时间戳设置失败把已完成的上传标成失败。
-            if (preserveTimestamps)
-            {
-                try
-                {
-                    await client.SetLastWriteTimeAsync(remotePath, fileInfo.LastWriteTimeUtc, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // 时间戳只是尽力而为。
-                }
-            }
         }
         catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is not OperationCanceledException)
         {
@@ -167,14 +183,15 @@ public class SftpService : ISftpService
         {
             throw new ArgumentException("Resuming a streamed upload needs a seekable source.", nameof(source));
         }
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         var reporter = new TransferProgressThrottle(progress, GetUnixFileName(remotePath), length);
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
-        (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (long uploadBps, _, bool preserveTimestamps, bool fsync) = await GetTransferTuningAsync().ConfigureAwait(false);
 
+        long? durable = TakeDurableHint(sessionId, remotePath);
         if (resumeOffset > 0)
         {
-            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, source, length, cancellationToken).ConfigureAwait(false);
+            resumeOffset = await ResolveUploadResumeAsync(client, remotePath, source, length, durable, cancellationToken).ConfigureAwait(false);
             // 核实时两边都被定位过;整份重传要从头读(续传由下面的 UploadAsync 自己定位到起点)。
             if (resumeOffset == 0)
             {
@@ -187,31 +204,19 @@ public class SftpService : ISftpService
         Stream input = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
         try
         {
-            if (resumeOffset > 0)
+            DateTimeOffset? keepTime = preserveTimestamps && lastWriteTime is { } mtime && mtime != default
+                ? new DateTimeOffset(mtime.Kind == DateTimeKind.Utc ? mtime : mtime.ToUniversalTime())
+                : null;
+            try
             {
-                await client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
+                await UploadAsync(client, input, remotePath, resumeOffset, keepTime, fsync, onBytes, cancellationToken).ConfigureAwait(false);
             }
-            else
+            catch (VelaSftpTransferInterruptedException interrupted)
             {
-                await client.UploadAsync(input, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
+                RememberDurable(sessionId, remotePath, interrupted);
+                throw;
             }
             reporter.ReportFinal(length);
-            if (preserveTimestamps && lastWriteTime is { } mtime && mtime != default)
-            {
-                DateTime utc = mtime.Kind == DateTimeKind.Utc ? mtime : mtime.ToUniversalTime();
-                try
-                {
-                    await client.SetLastWriteTimeAsync(remotePath, new DateTimeOffset(utc), cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // 时间戳只是尽力而为(理由同 UploadFileAsync)。
-                }
-            }
         }
         catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is not OperationCanceledException)
         {
@@ -228,12 +233,12 @@ public class SftpService : ISftpService
         long resumeOffset = 0,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         string fileName = GetUnixFileName(remotePath);
         RemoteFileInfo fileInfo = await GetFileInfoAsync(sessionId, remotePath, cancellationToken).ConfigureAwait(false);
         long totalBytes = fileInfo.Size;
         var reporter = new TransferProgressThrottle(progress, fileName, totalBytes);
-        (_, long downloadBps, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (_, long downloadBps, bool preserveTimestamps, _) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         // 以此刻本地残留文件的实际长度重新核实续传起点(理由同上传侧)。
         if (resumeOffset > 0)
@@ -438,7 +443,7 @@ public class SftpService : ISftpService
         IProgress<TransferProgress>? progress = null,
         CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
 
         // 通过 stat 判断源是否为目录(旧实现名为 stat 实为列举整个父目录)。
         SftpEntry? entry = await client.GetEntryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
@@ -465,8 +470,8 @@ public class SftpService : ISftpService
     }
 
     /// <summary>
-    /// 经由临时本地文件复制单个远端文件,绝不在内存中缓冲整个文件。
-    /// 复用 DownloadFileAsync/UploadFileAsync 以进行限速与取消。
+    /// 复制单个远端文件:服务端支持 <c>copy-data</c> 时在服务端内复制(数据不出服务器);
+    /// 否则经由临时本地文件下载再上传,绝不在内存中缓冲整个文件(复用 DownloadFileAsync/UploadFileAsync 以进行限速与取消)。
     /// </summary>
     private async Task CopySingleFileAsync(
         Guid sessionId,
@@ -475,6 +480,11 @@ public class SftpService : ISftpService
         IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken)
     {
+        if (await TryCopyOnServerAsync(sessionId, sourcePath, destPath, progress, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         string tempDir = Path.Combine(Path.GetTempPath(), "VelaShell", "copy");
         Directory.CreateDirectory(tempDir);
         string tempPath = Path.Combine(tempDir, Guid.NewGuid().ToString("N"));
@@ -491,6 +501,54 @@ public class SftpService : ISftpService
         {
             try { File.Delete(tempPath); } catch { /* 尽力而为 */ }
         }
+    }
+
+    /// <summary>
+    /// 同一台服务器上在服务端内复制(SFTP 的 <c>copy-data</c>):省掉双倍的网络流量与本机的临时文件,
+    /// 几 GB 的文件从几分钟变成几秒。服务端不支持时返回 false,由调用方走下载再上传。
+    /// </summary>
+    /// <remarks>
+    /// 进度照常按字节报(库按段报,每段默认 64 MiB)。保留时间戳(设置 → 文件传输)时把目标的修改时间设成源的 ——
+    /// 下载再上传那条路本来就是这个结果,服务端内复制不该悄悄换成「现在」。尽力而为,设不上不算复制失败。
+    /// </remarks>
+    private async Task<bool> TryCopyOnServerAsync(
+        Guid sessionId,
+        string sourcePath,
+        string destPath,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (!client.SupportsServerCopy)
+        {
+            return false;
+        }
+
+        SftpEntry? source = await client.GetEntryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+        long total = source?.Length ?? 0;
+        var reporter = new TransferProgressThrottle(progress, GetUnixFileName(destPath), total);
+        Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
+
+        await client.CopyOnServerAsync(sourcePath, destPath, onBytes, cancellationToken).ConfigureAwait(false);
+        reporter.ReportFinal(total);
+
+        (_, _, bool preserveTimestamps, _) = await GetTransferTuningAsync().ConfigureAwait(false);
+        if (preserveTimestamps && source is { LastWriteTime: var mtime } && mtime != default)
+        {
+            try
+            {
+                await client.SetLastWriteTimeAsync(destPath, new DateTimeOffset(mtime), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // 时间戳只是尽力而为(理由同 UploadFileAsync)。
+            }
+        }
+        return true;
     }
 
     /// <summary>
@@ -518,7 +576,7 @@ public class SftpService : ISftpService
             throw new InvalidOperationException($"Cycle detected copying {sourcePath} — a directory contains a link to itself.");
         }
 
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         await EnsureDirectoryAsync(sessionId, destPath, cancellationToken).ConfigureAwait(false);
 
         IEnumerable<SftpEntry> children = await client.ListDirectoryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
@@ -659,7 +717,7 @@ public class SftpService : ISftpService
     /// <summary>打开远端文件的只读流(顺序读取,调用方负责释放)。</summary>
     public async Task<Stream> OpenReadAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default)
     {
-        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         return await client.OpenAsync(remotePath, FileMode.Open, FileAccess.Read, cancellationToken).ConfigureAwait(false);
     }
 
@@ -683,6 +741,20 @@ public class SftpService : ISftpService
         return await client.ExistsAsync(remotePath, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default)
+    {
+        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        return await client.GetSpaceAsync(remotePath, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default)
+    {
+        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        return await client.ExpandPathAsync(remotePath, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>返回该会话 SFTP 客户端的当前工作目录。</summary>
     public async Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
@@ -700,13 +772,22 @@ public class SftpService : ISftpService
 
         // 在下面的早退之前丢弃:即使本会话从未建过 SFTP 客户端,查表缓存也可能已存在。
         _identities.Invalidate(sessionId);
-        if (!_sftpClients.TryRemove(sessionId, out ISftpClientWrapper? client))
+        _singleChannelSessions.TryRemove(sessionId, out _);
+        foreach ((Guid Session, string Path) key in _durableUploads.Keys.Where(k => k.Session == sessionId))
         {
-            return;
+            _durableUploads.TryRemove(key, out _);
         }
+
         // 这里原先要 Task.Run 把释放甩到线程池 —— 因为那时释放是同步阻塞的,
         // 在调用线程上做会卡住关标签页这个动作。现在释放本身就是异步的,直接 await。
-        await DisposeQuietlyAsync(client).ConfigureAwait(false);
+        if (_transferClients.TryRemove(sessionId, out ISftpClientWrapper? transfer))
+        {
+            await DisposeQuietlyAsync(transfer).ConfigureAwait(false);
+        }
+        if (_sftpClients.TryRemove(sessionId, out ISftpClientWrapper? client))
+        {
+            await DisposeQuietlyAsync(client).ConfigureAwait(false);
+        }
     }
 
     /// <summary>尽力拆解一个 SFTP 客户端;标签页已经不在了,失败没有补救动作。</summary>
@@ -727,6 +808,11 @@ public class SftpService : ISftpService
     {
         // 先退订:连接服务比本服务活得久时,悬着的委托会把已释放的实例一直吊在内存里。
         _connectionService.SessionDisconnected -= OnSshSessionDisconnected;
+        foreach (KeyValuePair<Guid, ISftpClientWrapper> kvp in _transferClients)
+        {
+            await DisposeQuietlyAsync(kvp.Value).ConfigureAwait(false);
+        }
+        _transferClients.Clear();
         foreach (KeyValuePair<Guid, ISftpClientWrapper> kvp in _sftpClients)
         {
             await DisposeQuietlyAsync(kvp.Value).ConfigureAwait(false);
@@ -755,20 +841,25 @@ public class SftpService : ISftpService
         string remotePath,
         string localPath,
         long localLength,
+        long? durable,
         CancellationToken cancellationToken)
     {
         await using Stream local = OpenLocalRead(localPath);
-        return await ResolveUploadResumeAsync(client, remotePath, local, localLength, cancellationToken).ConfigureAwait(false);
+        return await ResolveUploadResumeAsync(client, remotePath, local, localLength, durable, cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
     /// 同上,只是源换成了调用方给的可 Seek 的流(双栏远程之间的中转:源是另一台机器上的文件)。
     /// 源流由调用方负责释放;这里会移动它的位置,调用方按返回值重新定位。
     /// </summary>
+    /// <remarks>
+    /// <c>durable</c> 是上一次被打断时库交出来的精确续传点;给了就从它续(不超过此刻的远端长度),不必盲退一个在途窗口。
+    /// </remarks>
     private static async Task<long> ResolveUploadResumeAsync(ISftpClientWrapper client,
         string remotePath,
         Stream source,
         long sourceLength,
+        long? durable,
         CancellationToken cancellationToken)
     {
         long localLength = sourceLength;
@@ -780,10 +871,13 @@ public class SftpService : ISftpService
             return 0;
         }
 
-        // 回退一整个在途写入窗口:文件长度只是"已确认的最高偏移",它之前可能还留着未落盘的空洞
+        // 上一次被打断时记下了精确续传点(从开头起连续确认落盘的字节数):从它续,一个字节都不用重传。
+        // 否则只能回退一整个在途写入窗口:文件长度只是"已确认的最高偏移",它之前可能还留着未落盘的空洞
         // (见 ISftpClientWrapper.ResumeSafetyMargin)。不回退的话尾部比对会落在已写入的那段上
         // 顺利通过,却从一个带洞的位置接着传 —— 那正是"续传出来的文件是坏的"的成因。
-        long candidate = remoteLength - client.ResumeSafetyMargin;
+        long candidate = durable is { } exact
+            ? Math.Min(exact, remoteLength)
+            : remoteLength - client.ResumeSafetyMargin;
         if (candidate <= 0)
         {
             return 0;
@@ -796,8 +890,16 @@ public class SftpService : ISftpService
         return candidate;
     }
 
+    /// <summary>取走这个路径上一次被打断时记下的续传点(只用一次:之后的上传各记各的)。</summary>
+    private long? TakeDurableHint(Guid sessionId, string remotePath) =>
+        _durableUploads.TryRemove((sessionId, remotePath), out long durable) ? durable : null;
+
+    /// <summary>记下这次被打断的上传精确落盘到了哪里,供下一次续传用。</summary>
+    private void RememberDurable(Guid sessionId, string remotePath, VelaSftpTransferInterruptedException interrupted) =>
+        _durableUploads[(sessionId, remotePath)] = interrupted.DurableLength;
+
     /// <summary>
-    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, string, long, CancellationToken)" />:
+    /// 核实一次下载的续传起点,理由同 <see cref="ResolveUploadResumeAsync(ISftpClientWrapper, string, string, long, long?, CancellationToken)" />:
     /// 以"此刻本地文件的实际长度"为准,并比对尾部确认本地那半截确实是远端文件的前缀。
     /// </summary>
     /// <returns>经核实的续传偏移量;返回 0 表示应整份重下(覆盖本地残留)。</returns>
@@ -894,22 +996,22 @@ public class SftpService : ISftpService
             FileOptions.Asynchronous | FileOptions.SequentialScan);
 
     /// <summary>带宽限制(设置 → 文件传输):返回字节/秒,0 = 不限速。</summary>
-    private async Task<(long UploadBps, long DownloadBps, bool PreserveTimestamps)> GetTransferTuningAsync()
+    private async Task<(long UploadBps, long DownloadBps, bool PreserveTimestamps, bool FsyncAfterUpload)> GetTransferTuningAsync()
     {
         if (_settingsService is null)
         {
-            return (0, 0, true);
+            return (0, 0, true, false);
         }
         try
         {
             TransferOptions t = (await _settingsService.GetSnapshotAsync().ConfigureAwait(false)).Transfer;
             long up = t.BandwidthLimitEnabled ? (long)Math.Max(0, t.UploadLimitMBps) * 1024 * 1024 : 0;
             long down = t.BandwidthLimitEnabled ? (long)Math.Max(0, t.DownloadLimitMBps) * 1024 * 1024 : 0;
-            return (up, down, t.PreserveTimestamps);
+            return (up, down, t.PreserveTimestamps, t.FsyncAfterUpload);
         }
         catch
         {
-            return (0, 0, true);
+            return (0, 0, true, false);
         }
     }
 
@@ -1033,7 +1135,9 @@ public class SftpService : ISftpService
             {
                 continue;
             }
-            total += await CountEntriesAsync(client, child.FullName, IsTraversableDirectory(child), cancellationToken).ConfigureAwait(false);
+            total += await CountEntriesAsync(
+                client, child.FullName, await ShouldDescendAsync(client, child, cancellationToken).ConfigureAwait(false), cancellationToken)
+                .ConfigureAwait(false);
         }
         return total;
     }
@@ -1056,7 +1160,8 @@ public class SftpService : ISftpService
                 {
                     continue;
                 }
-                await DeleteEntryAsync(client, child.FullName, IsTraversableDirectory(child), total, counter, progress, cancellationToken).ConfigureAwait(false);
+                bool descend = await ShouldDescendAsync(client, child, cancellationToken).ConfigureAwait(false);
+                await DeleteEntryAsync(client, child.FullName, descend, total, counter, progress, cancellationToken).ConfigureAwait(false);
             }
             await client.DeleteDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
         }
@@ -1074,6 +1179,26 @@ public class SftpService : ISftpService
     /// —— 链接可以指回祖先(无限递归),更要命的是进去删掉的是链接目标里的东西。
     /// </summary>
     private static bool IsTraversableDirectory(SftpEntry entry) => entry.IsDirectory && !entry.IsSymbolicLink;
+
+    /// <summary>
+    /// 列目录列出来的子项要不要进去:列表说它是真目录,还要用不跟随链接的 stat(<see cref="ISftpClientWrapper.GetEntryAsync" />)
+    /// 再确认一次。
+    /// </summary>
+    /// <remarks>
+    /// 「是不是真目录」在列表里只是 READDIR 的说法,而 SFTP 草案没规定那里的属性按 lstat 还是 stat 给。
+    /// 某个服务端给的是跟随之后的属性的话,指向目录的链接看起来就是一个真目录 —— 递归删除会进到链接目标里去删,
+    /// 链接指回祖先时计数还会无限递归。一个目录多一次往返,换不删错东西;文件不受影响。
+    /// </remarks>
+    private static async Task<bool> ShouldDescendAsync(ISftpClientWrapper client, SftpEntry child, CancellationToken cancellationToken)
+    {
+        if (!IsTraversableDirectory(child))
+        {
+            return false;
+        }
+
+        SftpEntry? confirmed = await client.GetEntryAsync(child.FullName, cancellationToken).ConfigureAwait(false);
+        return confirmed is not null && IsTraversableDirectory(confirmed);
+    }
 
     private async Task<ISftpClientWrapper> GetOrCreateSftpClientAsync(Guid sessionId, CancellationToken cancellationToken)
     {
@@ -1103,6 +1228,12 @@ public class SftpService : ISftpService
             }
             ISftpClientWrapper client = _sftpClientFactory(session);
             await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
+
+            // 换掉的那个(SFTP 通道已经死了)释放掉:它的通道、句柄表都还挂在连接上。
+            if (_sftpClients.TryGetValue(sessionId, out ISftpClientWrapper? stale) && !ReferenceEquals(stale, client))
+            {
+                await DisposeQuietlyAsync(stale).ConfigureAwait(false);
+            }
             _sftpClients[sessionId] = client;
             return client;
         }
@@ -1119,9 +1250,82 @@ public class SftpService : ISftpService
         }
     }
 
-    private bool TryGetUsableClient(Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client)
+    /// <summary>传输(上传、下载、远端复制、读流)用的 SFTP 客户端。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>传输与浏览分开两条 SFTP 通道</b>(同一条 SSH 连接上开第二个 session 通道)。sftp-server 按到达顺序处理请求:
+    /// 只有一条通道时,上传大文件约 16 MiB 的 WRITE 在途,这时点开一个目录,STAT / READDIR 就排在那 16 MiB 后面 ——
+    /// 10 Mbit/s 上行时是十几秒的界面卡顿。WinSCP、FileZilla 也是传输单开连接。
+    /// </para>
+    /// <para>
+    /// 开不出第二条(服务端 <c>MaxSessions</c> 太小、管理上禁止)就退回浏览用的那一条,并记住这个会话,之后不再试;
+    /// 传输照常,只是又会挡住浏览。会话关闭时一并清掉。
+    /// </para>
+    /// </remarks>
+    private async Task<ISftpClientWrapper> GetTransferClientAsync(Guid sessionId, CancellationToken cancellationToken)
     {
-        if (_sftpClients.TryGetValue(sessionId, out client))
+        if (_singleChannelSessions.ContainsKey(sessionId))
+        {
+            return await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        }
+        if (TryGetUsableClient(_transferClients, sessionId, out ISftpClientWrapper? existing))
+        {
+            return existing;
+        }
+
+        // 先确保浏览那一条在:会话状态、工厂这些前置条件由它报;传输那一条开不成时也有地方退。
+        ISftpClientWrapper interactive = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+
+        SemaphoreSlim gate = _clientGates.GetOrAdd(sessionId, static _ => new(1, 1));
+        await gate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (TryGetUsableClient(_transferClients, sessionId, out existing))
+            {
+                return existing;
+            }
+
+            SshSession session = _connectionService.GetSession(sessionId)
+                ?? throw new InvalidOperationException($"Session {sessionId} not found");
+            ISftpClientWrapper client = _sftpClientFactory!(session);
+            try
+            {
+                await client.ConnectAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception) when (!cancellationToken.IsCancellationRequested)
+            {
+                await DisposeQuietlyAsync(client).ConfigureAwait(false);
+                _singleChannelSessions[sessionId] = true;
+                return interactive;
+            }
+
+            if (_transferClients.TryGetValue(sessionId, out ISftpClientWrapper? stale) && !ReferenceEquals(stale, client))
+            {
+                await DisposeQuietlyAsync(stale).ConfigureAwait(false);
+            }
+            _transferClients[sessionId] = client;
+            return client;
+        }
+        finally
+        {
+            try
+            {
+                gate.Release();
+            }
+            catch (ObjectDisposedException)
+            {
+                // CloseSessionAsync 与创建赛跑时会把闸释放掉;创建结果本身已无所谓。
+            }
+        }
+    }
+
+    private bool TryGetUsableClient(Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client) =>
+        TryGetUsableClient(_sftpClients, sessionId, out client);
+
+    private static bool TryGetUsableClient(
+        ConcurrentDictionary<Guid, ISftpClientWrapper> clients, Guid sessionId, [NotNullWhen(true)] out ISftpClientWrapper? client)
+    {
+        if (clients.TryGetValue(sessionId, out client))
         {
             try
             {

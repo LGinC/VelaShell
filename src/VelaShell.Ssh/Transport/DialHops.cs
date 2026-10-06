@@ -14,6 +14,10 @@ namespace VelaShell.Ssh.Transport;
 /// </remarks>
 internal static class DialHops
 {
+    /// <summary>这个拨号器在跳信息里记成哪一类：库自己的报自己的种类，使用者实现的一律 <see cref="SshDialKind.Custom"/>。</summary>
+    public static SshDialKind KindOf(ISshTransportDialer dialer) =>
+        dialer is ISshDialKindSource known ? known.Kind : SshDialKind.Custom;
+
     public static SshHopInfo Hop(
         SshDialKind kind, SshEndPoint target, bool succeeded, long startedAtTicks, string? detail = null) =>
         new(kind, target.ToString(), succeeded, TimeSpan.FromMilliseconds(Environment.TickCount64 - startedAtTicks), detail);

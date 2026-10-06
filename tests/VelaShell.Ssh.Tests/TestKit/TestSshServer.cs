@@ -10,6 +10,7 @@
 //    它放在 tests/ 而不是 src/ 正是为了这一点。
 
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Transport;
@@ -21,6 +22,9 @@ internal sealed record TestSshServerOptions
 {
     /// <summary>服务端的版本标识串。</summary>
     public string Identification { get; init; } = "SSH-2.0-VelaShellTestServer_1.0";
+
+    /// <summary>设了就原样发这串字节作标识串（不经任何编码，可以带不是合法 UTF-8 的字节），交换哈希也用它。</summary>
+    public byte[]? IdentificationBytes { get; init; }
 
     /// <summary>标识串之前发的前导行。</summary>
     public IReadOnlyList<string> PreAuthBanner { get; init; } = [];
@@ -45,14 +49,39 @@ internal sealed record TestSshServerOptions
     /// </remarks>
     public bool InjectIgnoreDuringKex { get; init; }
 
+    /// <summary>在首个 <c>KEXINIT</c> <b>之前</b>先发一个 <c>SSH_MSG_IGNORE</c>。</summary>
+    /// <remarks>
+    /// 严格 KEX 要求对端的第一个报文就是 <c>KEXINIT</c>：客户端读 KEXINIT 时会照 RFC 跳过前面的 IGNORE，
+    /// 等协商出严格 KEX 之后必须回头追究。
+    /// </remarks>
+    public bool InjectIgnoreBeforeKexInit { get; init; }
+
+    /// <summary>设了就在首次交换里发这段载荷，代替自己的 <c>KEXINIT</c>（造畸形的 KEXINIT、空载荷之类）。</summary>
+    public byte[]? RawInitialKexInit { get; init; }
+
     /// <summary>把签名故意弄坏，用来验证客户端确实在验签。</summary>
     public bool CorruptSignature { get; init; }
+
+    /// <summary>设了就把首次交换里发出去的服务端公开值换成它的返回值（造长度不对、点不在曲线上的应答）；交换哈希照原值算。</summary>
+    public Func<byte[], byte[]>? MangleServerPublicValue { get; init; }
+
+    /// <summary>只在重协商时把签名弄坏（首次交换正常）。</summary>
+    public bool CorruptRekeySignature { get; init; }
 
     /// <summary>
     /// 设了就在重协商时换上一把这种类型的<b>新</b>主机密钥（签名照样是对的）——
     /// 模拟连接中途被换了主机密钥。
     /// </summary>
     public string? RekeyHostKeyType { get; init; }
+
+    /// <summary>
+    /// 群交换（<c>diffie-hellman-group-exchange-sha256</c>）时给客户端的群（无符号大端的 <c>p</c>、<c>g</c>）；
+    /// <see langword="null"/> 时给 RFC 3526 的 3072 位群。造小群、合数、越界的生成元就靠它。
+    /// </summary>
+    public (byte[] Prime, byte[] Generator)? GexGroup { get; init; }
+
+    /// <summary>群交换时收到的 <c>GEX_REQUEST</c>（min、n、max）。</summary>
+    public StrongBox<(uint Min, uint Preferred, uint Max)>? ObservedGexRequest { get; init; }
 }
 
 /// <summary>一次握手之后服务端这一侧的结果。</summary>
@@ -82,8 +111,11 @@ internal sealed class TestSshServer : IAsyncDisposable
     private byte[]? _sessionId;
 
     /// <summary>在给定的流上建立一个测试服务端。</summary>
+    private readonly Stream _stream;
+
     public TestSshServer(Stream stream, TestSshServerOptions? options = null)
     {
+        _stream = stream;
         _options = options ?? new TestSshServerOptions();
         Transport = new SshPacketTransport(stream);
         _hostKey = _options.HostKey ?? TestHostKey.Create(_options.HostKeyType);
@@ -106,7 +138,16 @@ internal sealed class TestSshServer : IAsyncDisposable
         {
             await Transport.WriteLineAsync(line, cancellationToken);
         }
-        await Transport.WriteLineAsync(_options.Identification, cancellationToken);
+        if (_options.IdentificationBytes is { } rawIdentification)
+        {
+            // 前面的行都已经刷出去了，直接写底层流不会乱序。
+            await _stream.WriteAsync((byte[])[.. rawIdentification, (byte)'\r', (byte)'\n'], cancellationToken);
+            await _stream.FlushAsync(cancellationToken);
+        }
+        else
+        {
+            await Transport.WriteLineAsync(_options.Identification, cancellationToken);
+        }
 
         string? clientVersion = null;
         while (clientVersion is null)
@@ -242,7 +283,11 @@ internal sealed class TestSshServer : IAsyncDisposable
         byte[] serverKexInit = ourKexInitAlreadySent ?? BuildServerKexInit(algorithms, KeyFor(isInitial), isInitial);
         if (ourKexInitAlreadySent is null)
         {
-            await send(serverKexInit, cancellationToken);
+            if (isInitial && _options.InjectIgnoreBeforeKexInit)
+            {
+                await send(new byte[] { (byte)SshMessageNumber.Ignore, 0, 0, 0, 0 }, cancellationToken);
+            }
+            await send(isInitial && _options.RawInitialKexInit is { } raw ? raw : serverKexInit, cancellationToken);
         }
         // 重协商时客户端的 KEXINIT 已经被收包循环读掉了 —— 不能再等一个。
         byte[] clientKexInitPayload = peerKexInitAlreadyRead
@@ -273,11 +318,35 @@ internal sealed class TestSshServer : IAsyncDisposable
             await Transport.FlushAsync(cancellationToken);
         }
 
-        // ③ 收客户端公开值，算共享密钥。
-        SshInboundPacket initPacket = await ExpectAsync(read, (SshMessageNumber)30, cancellationToken);
+        // ③ 收客户端公开值，算共享密钥。群交换先多一轮：收 GEX_REQUEST（34），回 GEX_GROUP（31）。
+        bool groupExchange = negotiated.KeyExchange == SshAlgorithmNames.DiffieHellmanGroupExchangeSha256;
+        Ssh.Crypto.SshGroupExchangeHashInput? groupHashInput = null;
+        if (groupExchange)
+        {
+            SshInboundPacket request = await ExpectAsync(read, (SshMessageNumber)34, cancellationToken);
+            SshDataReader requestReader = new(new ReadOnlySequence<byte>(request.Payload));
+            requestReader.ReadByte();
+            (uint min, uint preferred, uint max) = (requestReader.ReadUInt32(), requestReader.ReadUInt32(), requestReader.ReadUInt32());
+            _options.ObservedGexRequest?.Value = (min, preferred, max);
+
+            (byte[] prime, byte[] generator) = _options.GexGroup
+                ?? (Org.BouncyCastle.Crypto.Agreement.DHStandardGroups.rfc3526_3072.P.ToByteArrayUnsigned(),
+                    Org.BouncyCastle.Crypto.Agreement.DHStandardGroups.rfc3526_3072.G.ToByteArrayUnsigned());
+            ArrayBufferWriter<byte> group = new();
+            SshDataWriter groupWriter = new(group);
+            groupWriter.WriteByte(31);
+            groupWriter.WriteMpint(prime);
+            groupWriter.WriteMpint(generator);
+            await send(group.WrittenMemory, cancellationToken);
+            groupHashInput = new Ssh.Crypto.SshGroupExchangeHashInput(min, preferred, max, prime, generator);
+        }
+
+        SshInboundPacket initPacket = await ExpectAsync(read, (SshMessageNumber)(groupExchange ? 32 : 30), cancellationToken);
         byte[] clientPublic = ReadKexValue(initPacket.Payload, negotiated.KeyExchange);
 
-        TestKexResponse response = TestKexResponder.Respond(negotiated.KeyExchange, clientPublic);
+        TestKexResponse response = groupHashInput is { } gexInput
+            ? TestKexResponder.RespondGroupExchange(clientPublic, gexInput.Prime, gexInput.Generator)
+            : TestKexResponder.Respond(negotiated.KeyExchange, clientPublic);
 
         // ④ 算交换哈希并签名。
         using Ssh.Crypto.Kex.ISshKeyExchange shape =
@@ -287,7 +356,7 @@ internal sealed class TestSshServer : IAsyncDisposable
         byte[] exchangeHash = SshExchangeHash.Compute(shape.HashAlgorithm, new SshExchangeHashInput
         {
             ClientVersion = System.Text.Encoding.ASCII.GetBytes(clientVersion),
-            ServerVersion = System.Text.Encoding.ASCII.GetBytes(_options.Identification),
+            ServerVersion = _options.IdentificationBytes ?? System.Text.Encoding.ASCII.GetBytes(_options.Identification),
             ClientKexInit = clientKexInitPayload,
             ServerKexInit = serverKexInit,
             HostKeyBlob = hostKeyBlob,
@@ -296,25 +365,29 @@ internal sealed class TestSshServer : IAsyncDisposable
             SharedSecret = response.SharedSecret,
             PublicValueEncoding = shape.PublicValueEncoding,
             SharedSecretEncoding = shape.SharedSecretEncoding,
+            GroupExchange = groupHashInput,
         });
 
         byte[] signature = KeyFor(isInitial).Sign(exchangeHash, negotiated.HostKey);
-        if (_options.CorruptSignature)
+        if (_options.CorruptSignature || (!isInitial && _options.CorruptRekeySignature))
         {
             signature[^1] ^= 0xFF;
         }
 
         ArrayBufferWriter<byte> reply = new();
         SshDataWriter replyWriter = new(reply);
-        replyWriter.WriteByte(31);
+        replyWriter.WriteByte(groupExchange ? (byte)33 : (byte)31);
         replyWriter.WriteString(hostKeyBlob);
+        byte[] onWire = isInitial && _options.MangleServerPublicValue is { } mangle
+            ? mangle([.. response.ServerPublicValue])
+            : response.ServerPublicValue;
         if (shape.PublicValueEncoding == Ssh.Crypto.Kex.SshKexValueEncoding.Mpint)
         {
-            replyWriter.WriteMpint(response.ServerPublicValue);
+            replyWriter.WriteMpint(onWire);
         }
         else
         {
-            replyWriter.WriteString(response.ServerPublicValue);
+            replyWriter.WriteString(onWire);
         }
         replyWriter.WriteString(signature);
 
@@ -422,7 +495,8 @@ internal sealed class TestSshServer : IAsyncDisposable
 
         bool isMpint = kexAlgorithm is SshAlgorithmNames.DiffieHellmanGroup14Sha256
             or SshAlgorithmNames.DiffieHellmanGroup16Sha512
-            or SshAlgorithmNames.DiffieHellmanGroup14Sha1;
+            or SshAlgorithmNames.DiffieHellmanGroup14Sha1
+            or SshAlgorithmNames.DiffieHellmanGroupExchangeSha256;
 
         return isMpint
             ? reader.ReadMpint(MaxField).ToArray()
@@ -437,9 +511,19 @@ internal sealed class TestSshServer : IAsyncDisposable
         await Transport.FlushAsync(cancellationToken);
     }
 
+    /// <summary>握手期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; private set; }
+
     /// <summary>直接从传输读下一个报文 —— 只有首次交换能这么做（那时还没有别的读者）。</summary>
-    private async ValueTask<SshInboundPacket> ReadTransportAsync(CancellationToken cancellationToken) =>
-        await Transport.ReadPacketAsync(cancellationToken);
+    private async ValueTask<SshInboundPacket> ReadTransportAsync(CancellationToken cancellationToken)
+    {
+        SshInboundPacket packet = await Transport.ReadPacketAsync(cancellationToken);
+        if (!packet.IsEndOfStream && packet.MessageNumber == SshMessageNumber.Disconnect && packet.Payload.Length >= 5)
+        {
+            ClientDisconnectReason = System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+        }
+        return packet;
+    }
 
     /// <summary>从注入的读取器取下一个报文，并断言它的消息编号。</summary>
     private static async Task<SshInboundPacket> ExpectAsync(

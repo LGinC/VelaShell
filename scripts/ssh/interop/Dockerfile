@@ -46,6 +46,7 @@ RUN printf '%s\n' \
     'AllowAgentForwarding yes' \
     'PermitTunnel yes' \
     'Compression yes' \
+    'RekeyLimit 1M' \
     'Subsystem sftp /usr/lib/ssh/sftp-server' \
     > /etc/ssh/sshd_config.d/velashell.conf \
  && printf '%s\n' 'Include /etc/ssh/sshd_config.d/*.conf' > /tmp/include \

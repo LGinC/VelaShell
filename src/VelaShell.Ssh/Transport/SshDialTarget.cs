@@ -22,6 +22,9 @@ public sealed record SshDialTarget
     /// </summary>
     internal Session.SshConnectDeadline? Deadline { get; init; }
 
+    /// <summary>度量的 <c>host</c> 标签：发起这次拨号的那条连接的逻辑目标（velashell-docs/zh/ssh/spec/08 §7）。</summary>
+    internal string? MetricsHost { get; init; }
+
     /// <summary>直连到给定端点的请求。</summary>
     public static SshDialTarget Direct(string host, int port)
     {

@@ -40,6 +40,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>変更されたホスト指紋を受け入れ</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>ホスト指紋を保存できませんでした</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>ホスト指紋を拒否</value>
   </data>
@@ -174,6 +177,15 @@
   </data>
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>画面をクリア</value>
+  </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>Break を送信</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>Break を送信し、サーバーが実行しました。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>サーバーは Break を実行しませんでした(未対応か、このセッションに端末がない可能性があります)。</value>
   </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>行番号/時刻の余白を切り替え</value>
@@ -1018,6 +1030,18 @@
   <data name="Msg_Relaying" xml:space="preserve">
     <value>転送中</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>サーバーの SFTP サブシステムが時間内に応答しませんでした。</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>転送が中断されました。{0} バイトが確認済みで、そこから再開できます。</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>サーバーの SFTP サブシステムを利用できません(サーバーで SFTP が無効になっている可能性があります)。</value>
+  </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>サーバーの sftp-server が SFTP の開始前に終了しました(終了コード {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>{0} の再開位置を確認できないため(転送元を読み戻せないか、転送先が再開に対応していません)、同名の競合として処理します。</value>
   </data>
@@ -1081,6 +1105,9 @@
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>記録済み指紋</value>
   </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>指紋の図</value>
+  </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>サーバーが再構築または交換された可能性があります。想定内の変更であれば、新しいキーを受け入れて記録を上書きしてください。そうでない場合は通信が傍受されているおそれがあるため拒否してください。</value>
   </data>
@@ -1093,6 +1120,12 @@
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} のホストフィンガープリントが変更され、ユーザーが新しいフィンガープリントの永続的な信頼を確認しました:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
+    <value>サーバー {0} が別のホスト鍵の所持を証明したため、信頼済みとして追加しました:{1}</value>
+  </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>サーバー {0} がこのホスト鍵を提示しなくなったため、信頼済みの記録から削除しました:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} のホストフィンガープリントが変更され、ユーザーは今回のみ信頼を選択しました(保存されません):{1}</value>
   </data>
@@ -1101,6 +1134,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>ユーザーは {0} の初回接続フィンガープリントを今回のみ信頼しました(保存されません):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>{0} のホスト指紋を信頼しましたが、保存に失敗しました:{2}。この接続はそのまま続行します。VelaShell を再起動した後に接続すると、再度確認されます。指紋:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>鍵 {0} は既に存在します。</value>
@@ -1112,13 +1148,13 @@
     <value>{0} は解析できる SSH 公開鍵ではありません。何もインポートされていません。</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} は秘密鍵ではないようです (PEM ヘッダーがありません)。何もインポートされていません。</value>
+    <value>{0} は秘密鍵ではないようです (形式を認識できません。OpenSSH、PKCS#1/#8、SEC1、PuTTY .ppk に対応しています)。何もインポートされていません。</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>秘密鍵が見つかりません: {0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>対になる公開鍵 {0} がありません。.pub も一緒にインポートしてください。公開鍵のない鍵はこの一覧に表示されません。</value>
+    <value>対になる公開鍵 {0} がありません。この秘密鍵の暗号化形式には平文の公開鍵が含まれていません。.pub も一緒にインポートしてください。公開鍵のない鍵はこの一覧に表示されません。</value>
   </data>
   <data name="KeyType" xml:space="preserve">
     <value>鍵の種類</value>
@@ -1216,6 +1252,27 @@
   </data>
   <data name="Msg_AuthFailed" xml:space="preserve">
     <value>認証に失敗しました: {0} のユーザー名、パスワードまたは鍵が正しくありません。</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>操作はキャンセルされました。</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>すべての認証方式を試しましたが、成功しませんでした。サーバーが受け付ける方式: {0}。</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>少なくとも 1 つのステップは成功しており、後続のステップで止まっています。</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>ローカルの同時実行数の上限に達しました(転送接続数、agent / X11 チャネル数)。いくつか閉じてから再試行してください。</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>サーバーは先にパスワードの変更を求めています(期限切れ、または管理者による変更要求)が、パスワードは変更されませんでした。</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>サーバーが SSH プロトコルに違反しました。</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>サーバーはキーボード対話型認証(ワンタイムコード)を要求していますが、設定されていません。サーバーが受け付ける方式: {0}。</value>
   </data>
   <data name="Toast_ReconnectNow" xml:space="preserve">
     <value>今すぐ再接続</value>
@@ -2416,7 +2473,7 @@
     <value>鍵を自動的に Agent に追加</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// 秘密鍵ファイルでのログインに成功した後、その鍵をローカルの ssh-agent に追加します(OpenSSH の AddKeysToAgent と同じ)。agent 転送や他のツールから利用できます。鍵は ssh-add -d で削除するまで agent に残り、Windows の agent では再起動後も保持されます</value>
+    <value>// 秘密鍵ファイルまたは証明書でのログインに成功した後、その鍵を(証明書と一緒に)ローカルの ssh-agent に追加します(OpenSSH の AddKeysToAgent と同じ)。agent 転送や他のツールから利用できます。鍵は ssh-add -d で削除するまで agent に残り、Windows の agent では再起動後も保持されます</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>
@@ -3063,6 +3120,12 @@
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>ファイルのタイムスタンプを保持</value>
   </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>アップロード後にディスクへ書き込む</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>SFTP のアップロード後、閉じる前にファイルをディスクへ書き込むようサーバーに要求します(fsync)。サーバーの電源が落ちても失われません。ファイルごとに往復が 1 回増えます。fsync@openssh.com に対応していないサーバーでは省略します。</value>
+  </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>帯域制限</value>
   </data>
@@ -3605,6 +3668,18 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Upload" xml:space="preserve">
     <value>アップロード</value>
+  </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>空き {0} / 全体 {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>空き容量が足りない可能性</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>転送先のファイルシステムの空きは {0} ですが、これらのファイルは {1} あります。収まらない可能性があります — 途中で容量が尽きるとサーバーに不完全なファイルが残ります。それでもアップロードしますか?</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>アップロードする</value>
   </data>
   <data name="UploadHere" xml:space="preserve">
     <value>このフォルダーへアップロード</value>
@@ -4544,6 +4619,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>プロキシ接続に失敗しました: {0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>プロキシ サーバーに接続できません: {0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>プロキシ認証に失敗しました。ユーザー名とパスワードを確認してください。</value>
   </data>
@@ -5226,6 +5304,27 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
     <value>2 段階認証をキャンセルしました。</value>
   </data>
+  <data name="SshErr_PasswordChangeCancelled" xml:space="preserve">
+    <value>パスワードの変更をキャンセルしました。</value>
+  </data>
+  <data name="SshPwdChange_Title" xml:space="preserve">
+    <value>パスワードの変更</value>
+  </data>
+  <data name="SshPwdChange_Required" xml:space="preserve">
+    <value>サインインする前にパスワードを変更するよう、サーバーから求められています。保存済みのパスワードは自動では更新されません。</value>
+  </data>
+  <data name="SshPwdChange_Rejected" xml:space="preserve">
+    <value>新しいパスワードはサーバーに受け入れられませんでした。別のパスワードを指定してください。</value>
+  </data>
+  <data name="SshPwdChange_NewPassword" xml:space="preserve">
+    <value>新しいパスワード</value>
+  </data>
+  <data name="SshPwdChange_ConfirmPassword" xml:space="preserve">
+    <value>新しいパスワード(確認)</value>
+  </data>
+  <data name="SshPwdChange_Mismatch" xml:space="preserve">
+    <value>2 回入力したパスワードが一致しないか、空です。もう一度入力してください。</value>
+  </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>接続がタイムアウトしました。</value>
   </data>
@@ -5252,6 +5351,30 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>サーバーが転送要求を拒否しました。sshd_config の AllowAgentForwarding / AllowTcpForwarding / X11Forwarding を確認してください。</value>
+  </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>ファイルまたはディレクトリが存在しません</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>アクセス権がありません</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>サーバーはこの操作をサポートしていません</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>サーバーが要求の形式を不正と判断しました</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>接続が切断されました</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>操作に失敗しました</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}: {1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}。サーバーの応答: {1}</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>エージェント</value>
@@ -5358,6 +5481,27 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>鍵</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>「{0}」として SSH サーバーにログイン</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>データ署名(名前空間 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>認識できないデータ(SSH ログインではありません)</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>接続先</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>既知のホストにありません({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>確認できません。リモート側はログイン先のホストを証明していません</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒以内に応答がない場合は自動的に拒否します。</value>
   </data>
@@ -5371,7 +5515,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>このセッション中は許可</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>このセッションを閉じるまで、この鍵については確認しません</value>
+    <value>このセッションを閉じるまで、この鍵を同じ用途(同じユーザー・同じ接続先)に使うときは確認しません</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>選択した鍵だけを転送する</value>

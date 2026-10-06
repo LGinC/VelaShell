@@ -74,6 +74,13 @@
     </Grid>
     <Grid ColumnDefinitions="*,Auto">
       <StackPanel Spacing="2">
+        <TextBlock Classes="row-label" Text="{loc:Localize SetTransfer_FsyncAfterUpload}" />
+        <TextBlock Classes="row-desc" Text="{loc:Localize SetTransfer_FsyncAfterUploadDesc}" />
+      </StackPanel>
+      <ToggleSwitch Grid.Column="1" IsChecked="{Binding Transfer.FsyncAfterUpload}" VerticalAlignment="Center" />
+    </Grid>
+    <Grid ColumnDefinitions="*,Auto">
+      <StackPanel Spacing="2">
         <TextBlock Classes="row-label" Text="{loc:Localize SetTransfer_NotifyOnComplete}" />
         <TextBlock Classes="row-desc" Text="{loc:Localize SetTransfer_NotifyOnCompleteDesc}" />
       </StackPanel>

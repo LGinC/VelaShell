@@ -3,6 +3,8 @@
 //
 // 行为规格: velashell-docs/zh/ssh/spec/03-key-exchange.md §5.3、§5.4、§5.5
 
+using VelaShell.Ssh.Diagnostics;
+
 namespace VelaShell.Ssh.HostKeys;
 
 /// <summary>按 <c>known_hosts</c> 裁决主机密钥。</summary>
@@ -18,7 +20,7 @@ namespace VelaShell.Ssh.HostKeys;
 /// 停下来想一想的地方。异常消息里会指出是文件的第几行。
 /// </para>
 /// </remarks>
-public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
+public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, IHostKeyRotationPolicy
 {
     private readonly string _path;
     private readonly Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? _askUnknownHost;
@@ -38,7 +40,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
     }
 
     /// <summary>不读也不写任何文件：每台主机都当成没见过，接受了也不记（<c>UserKnownHostsFile none</c> / <c>/dev/null</c>）。</summary>
-    /// <param name="askUnknownHost">没见过这台主机时问使用者。</param>
+    /// <param name="askUnknownHost">没见过这台主机时问使用者。只在 <paramref name="unknownHost"/> 是 <see cref="UnknownHostBehavior.Ask"/> 时能给。</param>
     /// <param name="unknownHost">没见过这台主机时的行为（见 <see cref="UnknownHost"/>）。</param>
     public static KnownHostsPolicy WithoutFile(
         Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? askUnknownHost = null,
@@ -51,7 +53,27 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
     private bool _withoutFile;
 
     /// <summary>没见过这台主机时的行为。</summary>
-    public UnknownHostBehavior UnknownHost { get; init; } = UnknownHostBehavior.Ask;
+    /// <exception cref="ArgumentOutOfRangeException">不是定义过的值。</exception>
+    /// <exception cref="ArgumentException">
+    /// 给了询问回调（构造函数的 <c>askUnknownHost</c>），又设成不问 —— 回调永远不会被调用。曾经静默忽略回调。
+    /// </exception>
+    public UnknownHostBehavior UnknownHost
+    {
+        get;
+        init
+        {
+            if (!Enum.IsDefined(value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(UnknownHost), value, "不认识的取值。");
+            }
+            if (value != UnknownHostBehavior.Ask && _askUnknownHost is not null)
+            {
+                throw new ArgumentException(
+                    $"给了询问回调，又把没见过的主机设成 {value} —— 回调永远不会被调用。二者只取其一。", nameof(UnknownHost));
+            }
+            field = value;
+        }
+    } = UnknownHostBehavior.Ask;
 
     /// <summary>
     /// 允许在密钥变化时也接受。
@@ -61,10 +83,128 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
     /// 这个开关存在只是为了「我知道我刚重装了那台机器」这一种情形，
     /// 而那种情形下更好的做法是去把 <c>known_hosts</c> 里那一行删掉。
     /// </remarks>
-    public bool DangerouslyAcceptChangedKeys { get; init; }
+    public bool DangerousAcceptChangedKeys { get; init; }
 
     /// <summary>写入时是否把主机名散列掉（对应 <c>HashKnownHosts yes</c>）。</summary>
-    public bool HashHostNames { get; init; }
+    public bool IsHashingHostNames { get; init; }
+
+    /// <summary>
+    /// 主机密钥轮换（<c>UpdateHostKeys yes</c>，见 <see cref="IHostKeyRotationPolicy"/>）：服务端证明持有的新主机密钥补记进 <c>known_hosts</c>，
+    /// 不再出示的旧钥从里面删掉（只删专属于这台主机的记录，见 <see cref="KnownHostsFile.RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/>）。
+    /// 默认 <see langword="false"/>。不用文件（<see cref="WithoutFile"/>）时打开了也不记、不删。
+    /// </summary>
+    public bool AllowHostKeyUpdates { get; init; }
+
+    /// <summary>
+    /// 只读的全局 known_hosts（<c>ssh_config</c> 的 <c>GlobalKnownHostsFile</c>，如 <c>/etc/ssh/ssh_known_hosts</c>）：
+    /// 查的时候与自己的那份一起看（<c>@revoked</c>、<c>@cert-authority</c> 照样算），记的时候只写自己的那份。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕默认空 —— 不去读系统目录里的那一份：给了才读。读不到的（不存在、没权限）照没有处理。
+    /// </remarks>
+    public IReadOnlyList<string> GlobalKnownHostsFiles
+    {
+        get;
+        init => field = value is null ? [] : Array.AsReadOnly([.. value]);
+    } = [];
+
+    /// <summary>自己的那份，加上全局的几份（读不到的跳过）。</summary>
+    private async ValueTask<IReadOnlyList<KnownHostEntry>> LoadEntriesAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<KnownHostEntry> own = await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+        if (GlobalKnownHostsFiles.Count == 0)
+        {
+            return own;
+        }
+
+        List<KnownHostEntry> all = [.. own];
+        foreach (string path in GlobalKnownHostsFiles)
+        {
+            try
+            {
+                all.AddRange(await KnownHostsFile.LoadAsync(path, cancellationToken).ConfigureAwait(false));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SshException)
+            {
+                // 全局的那几份读不到（不存在、没权限）照没有处理：它们只是额外的信任来源。
+            }
+        }
+        return all;
+    }
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        IReadOnlyList<KnownHostEntry> entries =
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
+        return [.. KnownHostsFile.KnownHostKeys(entries, host, port).Select(key => key.Sha256Fingerprint)];
+    }
+
+    /// <inheritdoc />
+    public async ValueTask RecordHostKeysAsync(
+        string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(keys);
+        if (_withoutFile || !AllowHostKeyUpdates || !KnownHostsFile.IsRecordableHost(host))
+        {
+            return;
+        }
+
+        foreach (SshPublicKey key in keys)
+        {
+            await KnownHostsFile.AppendAsync(host, port, key, _path, IsHashingHostNames, cancellationToken).ConfigureAwait(false);
+        }
+        _cache = null;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>只删自己那份文件里专属于这台主机的记录；全局的几份只读，记在那里的旧钥删不了，不算进返回值。</remarks>
+    public async ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        if (_withoutFile || !AllowHostKeyUpdates || fingerprints.Count == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync(host, port, fingerprints, _path, cancellationToken)
+            .ConfigureAwait(false);
+        _cache = null;
+        return removed;
+    }
+
+    /// <summary>
+    /// 删掉这台主机在自己那份 <c>known_hosts</c> 里记着的普通主机密钥 —— 「密钥变了」、确认是服务器重装之后一键删掉旧的记录，下次连接按「没见过」处理。
+    /// </summary>
+    /// <param name="host">主机（与裁决时同一个名字）。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>删掉的钥的指纹；不用文件时、没有可删的时为空。</returns>
+    /// <exception cref="SshConnectException">改写不了：<see cref="SshFailureReason.HostKeyStoreFailed"/>。</exception>
+    /// <remarks>
+    /// 〔Q4，velashell-docs/zh/ssh/spec/03 §5.4〕只删专属于这台主机的记录（规则见
+    /// <see cref="KnownHostsFile.RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/>）：
+    /// <c>@revoked</c>、<c>@cert-authority</c>、通配行与全局的几份都不动 —— 冲突要是出在那些行上，删完再连照样报「变了」，消息里有行号。
+    /// 该不该删由调用方（使用者）决定：本库从不自己删，「变了」时的裁决照旧是拒绝。
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> RemoveHostKeysAsync(string host, int port, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        if (_withoutFile)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync(host, port, fingerprints: null, _path, cancellationToken)
+            .ConfigureAwait(false);
+        _cache = null;
+        return removed;
+    }
 
     /// <inheritdoc />
     public async ValueTask<SshHostKeyVerdict> EvaluateAsync(
@@ -73,7 +213,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
         ArgumentNullException.ThrowIfNull(context);
 
         IReadOnlyList<KnownHostEntry> entries =
-            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
 
         KnownHostLookup lookup = KnownHostsFile.Lookup(entries, context.Host, context.Port, context.Key);
 
@@ -84,7 +224,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
                                 $"{context.Target} 出示的主机密钥在 {_path} 里被标记为 @revoked" +
                                 $"（第 {lookup.MatchedEntry?.LineNumber} 行）。" +
                                 "这把密钥已经作废 —— 不要连。"),
-            KnownHostStatus.Changed => DangerouslyAcceptChangedKeys
+            KnownHostStatus.Changed => DangerousAcceptChangedKeys
                                 ? SshHostKeyVerdict.Accept
                                 : SshHostKeyVerdict.RejectChanged(BuildChangedMessage(context, lookup)),
             KnownHostStatus.CertificateInvalid => SshHostKeyVerdict.Reject(
@@ -94,7 +234,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
                                 "请联系管理员重新签发主机证书。"),
             // 与「变了」同样处理：连接时已经把记着的类型排在最前，正常的服务端会谈成它；
             // 还落到这里，要么服务端不再有那把钥，要么路上有人。**不能**当成「没见过」去问、去记。
-            KnownHostStatus.OtherKeyTypesKnown => DangerouslyAcceptChangedKeys
+            KnownHostStatus.OtherKeyTypesKnown => DangerousAcceptChangedKeys
                                 ? SshHostKeyVerdict.Accept
                                 : SshHostKeyVerdict.RejectChanged(BuildOtherTypeMessage(context, lookup)),
             _ => await HandleUnknownAsync(context, cancellationToken).ConfigureAwait(false),
@@ -106,7 +246,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
         string host, int port, CancellationToken cancellationToken = default)
     {
         IReadOnlyList<KnownHostEntry> entries =
-            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
         return KnownHostsFile.KnownKeyTypes(entries, host, port);
     }
 
@@ -182,8 +322,18 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
             return;   // 配置说了不用 known_hosts：记到哪里去都不对
         }
 
+        // 〔velashell-docs/zh/ssh/spec/03 §5.4〕主机名里有 known_hosts 另有含义的字符时不写、这次连接也不放行：
+        // 使用者说的是「信任并记住」，记不下来就不该悄悄当成「只信这一次」；而这样的名字本来就不是一台主机。
+        if (!KnownHostsFile.IsRecordableHost(context.Host))
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.KeyExchange,
+                $"主机名 {PeerText.Sanitize(context.Host)} 里有 known_hosts 里另有含义的字符" +
+                "（, * ? ! [ ] # 空白、控制字符，或开头的 @ |），不能记进 known_hosts。");
+        }
+
         await KnownHostsFile.AppendAsync(
-            context.Host, context.Port, context.Key, _path, HashHostNames, cancellationToken)
+            context.Host, context.Port, context.Key, _path, IsHashingHostNames, cancellationToken)
             .ConfigureAwait(false);
 
         // 缓存作废 —— 下一次裁决要看到刚写进去的这一条。

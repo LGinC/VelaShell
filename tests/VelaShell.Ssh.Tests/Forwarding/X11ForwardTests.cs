@@ -42,7 +42,7 @@ public sealed class X11ForwardTests
 
         Assert.AreEqual(XAuthority.MitMagicCookie1, request.AuthProtocol);
         Assert.AreEqual(7, request.ScreenNumber, "屏幕号要按 DISPLAY 里的来");
-        Assert.IsFalse(request.SingleConnection, "默认允许多条 X11 连接");
+        Assert.IsFalse(request.IsSingleConnection, "默认允许多条 X11 连接");
 
         // **真 cookie 一个字节都不该出现在线上。**
         Assert.AreNotEqual(
@@ -216,14 +216,29 @@ public sealed class X11ForwardTests
         Assert.AreEqual(0, forwarder.AcceptedChannels);
     }
 
+    /// <summary>
+    /// 连接器与非受信模式同时设是配置矛盾：开会话的入口在开通道之前就抛 <see cref="ArgumentException"/>，
+    /// 「转发没开成也继续」也不吞它。曾经要到发 x11-req 时才报成「转发没开成」。
+    /// </summary>
     [TestMethod]
-    public async Task 连接器与非受信模式同时设时请求直接抛()
+    public async Task 连接器与非受信模式同时设时开通道之前就抛()
     {
         await using Fixture fixture = await Fixture.StartAsync();
-        await Assert.ThrowsAsync<SshForwardException>(async () => await X11Forwarder.RequestAsync(
-            fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Trusted = false, LocalConnector = _ => ValueTask.FromResult<Stream>(new MemoryStream()) },
+        int opensBefore = fixture.Harness.Channels.Observation.ReceivedOpens;
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () => await fixture.Harness.Connection.OpenShellAsync(
+            new SshShellOptions
+            {
+                X11Forwarding = fixture.Options with
+                {
+                    IsTrusted = false,
+                    LocalConnector = _ => ValueTask.FromResult<Stream>(new MemoryStream()),
+                    FailureMode = ForwardFailureMode.Continue,
+                },
+            },
             fixture.Harness.Token));
+
+        Assert.AreEqual(opensBefore, fixture.Harness.Channels.Observation.ReceivedOpens, "开了通道");
         Assert.IsEmpty(fixture.Harness.Channels.Observation.X11Requests, "没有发 x11-req");
     }
 
@@ -299,8 +314,16 @@ public sealed class X11ForwardTests
         Assert.AreEqual(62, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.FromSeconds(1.2)), "不足一秒的部分向上取整");
 
         // 曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，而我们还在接受新的 x11 通道。
-        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.Zero));
-        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.FromSeconds(-5)));
+        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(Timeout.InfiniteTimeSpan));
+    }
+
+    [TestMethod]
+    public void 有效期不过期写InfiniteTimeSpan_0与负数设值时就抛()
+    {
+        // 〔AGENTS 4.2〕「不限时」全库一种写法。曾经这里用 Zero 表示不过期，而别的时限都用 InfiniteTimeSpan。
+        Assert.AreEqual(Timeout.InfiniteTimeSpan, new X11ForwardOptions { Timeout = Timeout.InfiniteTimeSpan }.Timeout);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new X11ForwardOptions { Timeout = TimeSpan.Zero });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new X11ForwardOptions { Timeout = TimeSpan.FromSeconds(-5) });
     }
 
     [TestMethod]
@@ -430,11 +453,11 @@ public sealed class X11ForwardTests
 
         await using X11Forwarder forwarder = await X11Forwarder.RequestAsync(
             fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Display = xserver.Display, SingleConnection = true },
+            fixture.Options with { Display = xserver.Display, IsSingleConnection = true },
             fixture.Harness.Token);
 
         TestX11Request request = fixture.Harness.Channels.Observation.X11Requests.Single();
-        Assert.IsTrue(request.SingleConnection);
+        Assert.IsTrue(request.IsSingleConnection);
         byte[] cookie = Convert.FromHexString(request.AuthCookieHex);
 
         await using Stream first = await OpenX11Async(fixture);
@@ -466,7 +489,7 @@ public sealed class X11ForwardTests
 
         await using X11Forwarder forwarder = await X11Forwarder.RequestAsync(
             fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Display = xserver.Display, SingleConnection = true },
+            fixture.Options with { Display = xserver.Display, IsSingleConnection = true },
             fixture.Harness.Token);
 
         byte[] cookie = Convert.FromHexString(
@@ -588,7 +611,7 @@ public sealed class X11ForwardTests
     /// <summary>非受信模式 + 一个不存在的 <c>xauth</c>：在本机这一侧就失败。</summary>
     private static X11ForwardOptions UnrunnableXAuth(X11ForwardOptions options) => options with
     {
-        Trusted = false,
+        IsTrusted = false,
         XAuthLocation = Path.Combine(Path.GetTempPath(), $"velashell-no-xauth-{Guid.NewGuid():N}", "xauth"),
     };
 
@@ -596,7 +619,7 @@ public sealed class X11ForwardTests
     public void 非受信模式的xauth一定写进临时文件()
     {
         IReadOnlyList<string> arguments = X11Forwarder.BuildGenerateArguments(
-            "/tmp/velashell-x11-abc/xauthfile", X11Display.Parse(":3")!, 1200);
+            "/tmp/velashell-x11-abc/xauthfile", X11Display.Parse(":3"), 1200);
 
         // ⚠️ 少了 -f，受限 cookie 会覆盖使用者 .Xauthority 里的完全授权 cookie。
         Assert.AreEqual("-f", arguments[0]);
@@ -608,12 +631,12 @@ public sealed class X11ForwardTests
     [TestMethod]
     public void xauth的显示名保留主机与套接字路径()
     {
-        Assert.AreEqual(":0", X11Display.Parse(":0")!.XAuthName);
-        Assert.AreEqual(":0", X11Display.Parse("unix:0")!.XAuthName);
-        Assert.AreEqual("remote.example:10", X11Display.Parse("remote.example:10.0")!.XAuthName);
+        Assert.AreEqual(":0", X11Display.Parse(":0").XAuthName);
+        Assert.AreEqual(":0", X11Display.Parse("unix:0").XAuthName);
+        Assert.AreEqual("remote.example:10", X11Display.Parse("remote.example:10.0").XAuthName);
         Assert.AreEqual(
             "/private/tmp/com.apple.launchd.x/org.xquartz:0",
-            X11Display.Parse("/private/tmp/com.apple.launchd.x/org.xquartz:0")!.XAuthName);
+            X11Display.Parse("/private/tmp/com.apple.launchd.x/org.xquartz:0").XAuthName);
     }
 
     // ------------------------------------------------------------ 脚手架
@@ -707,7 +730,7 @@ public sealed class X11ForwardTests
             // 用例不该依赖本机装没装 X。
             X11ForwardOptions options = new()
             {
-                Trusted = true,
+                IsTrusted = true,
                 Display = X11Display.Parse(":0.7"),
                 XAuthorityPath = WriteXAuthority(),
             };
@@ -786,7 +809,7 @@ public sealed class X11ForwardTests
                 {
                     socket.Bind(new IPEndPoint(IPAddress.Loopback, X11Display.TcpPortBase + number));
                     socket.Listen(4);
-                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}")!);
+                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}"));
                 }
                 catch (SocketException)
                 {

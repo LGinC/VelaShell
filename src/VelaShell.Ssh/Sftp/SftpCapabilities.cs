@@ -5,6 +5,8 @@
 //   OpenSSH PROTOCOL  limits@openssh.com 与其它 SFTP 扩展
 //   行为规格:         velashell-docs/zh/ssh/spec/06-sftp.md §5.2、§七
 
+using System.Collections.Frozen;
+
 namespace VelaShell.Ssh.Sftp;
 
 /// <summary>这台服务端支持什么。</summary>
@@ -24,12 +26,13 @@ public sealed class SftpCapabilities
     internal SftpCapabilities(uint serverVersion, IReadOnlyDictionary<string, byte[]> rawExtensions)
     {
         ServerVersion = serverVersion;
-        RawExtensions = rawExtensions.ToDictionary(
+        // 冻结的字典：曾经交出去的是 Dictionary，下转型就能改 —— 改了 RawExtensions，HasPosixRename 跟着变。
+        RawExtensions = rawExtensions.ToFrozenDictionary(
             static pair => pair.Key, static pair => (ReadOnlyMemory<byte>)pair.Value, StringComparer.Ordinal);
-        Limits = SftpLimits.Conservative;
+        Limits = SftpLimits.Default;
     }
 
-    /// <summary>服务端宣告的版本号（我们按 3 工作，更高的会降级）。</summary>
+    /// <summary>服务端宣告的版本号（只认 3：更低、更高的都不连）。</summary>
     public uint ServerVersion { get; }
 
     /// <summary>服务端在 <c>SSH_FXP_VERSION</c> 里宣告的全部扩展，原样（只读视图）。</summary>
@@ -61,6 +64,12 @@ public sealed class SftpCapabilities
 
     /// <summary>支持展开 <c>~</c>。</summary>
     public bool HasExpandPath => RawExtensions.ContainsKey(SftpExtensionNames.ExpandPath);
+
+    /// <summary>支持不跟随符号链接地设属性（改链接自身）。</summary>
+    public bool HasLSetStat => RawExtensions.ContainsKey(SftpExtensionNames.LSetStat);
+
+    /// <summary>支持把数字 uid / gid 翻成名字。</summary>
+    public bool HasUsersGroupsById => RawExtensions.ContainsKey(SftpExtensionNames.UsersGroupsById);
 
     /// <summary>服务端支不支持某个扩展。</summary>
     public bool Supports(string extensionName) => RawExtensions.ContainsKey(extensionName);

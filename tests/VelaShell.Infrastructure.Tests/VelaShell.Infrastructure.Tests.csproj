@@ -21,6 +21,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 真 ssh-keygen 生成的加密私钥(64 轮 bcrypt_pbkdf),口令见那边的 README。 -->
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\ed25519-rounds64" Link="Ssh\Fixtures\ed25519-rounds64" CopyToOutputDirectory="PreserveNewest" />
+    <!-- puttygen 生成的加密 .ppk(v3,Argon2id)与它导出的 .pub:导入「只有 .ppk」时用。 -->
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\putty-ed25519-v3-hi-enc.ppk" Link="Ssh\Fixtures\putty-ed25519-v3-hi-enc.ppk" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\putty-ed25519-v3-hi-enc.pub" Link="Ssh\Fixtures\putty-ed25519-v3-hi-enc.pub" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\VelaShell.Infrastructure\VelaShell.Infrastructure.csproj" />
     <!-- 插件运行时端到端测试需要真实的插件程序集(装载走的是"从磁盘目录发现 plugin.json →
          在可收集 ALC 里装载独立 dll"这条真路径,测试程序集里手写个假入口顶不上)。

@@ -25,6 +25,42 @@ namespace VelaShell.Ssh.Tests.Crypto;
 [TestCategory("Crypto")]
 public sealed class KeyExchangeTests
 {
+    // ------------------------------------------------------- ML-KEM 的两种实现
+
+    /// <summary>
+    /// 〔AGENTS 3.3〕ML-KEM（768 / 1024）平台支持时走 BCL、否则走 BouncyCastle —— 两种实现都会被用到，必须互通：
+    /// 一边生成、另一边封装、生成的那边解封装，共享密钥一致。
+    /// </summary>
+    [TestMethod]
+    [DataRow(768)]
+    [DataRow(1024)]
+    public void MLKem的BCL实现与BouncyCastle实现互通(int level)
+    {
+        if (!MLKem.IsSupported)
+        {
+            Assert.Inconclusive("这个平台的 BCL 不支持 ML-KEM，用的是 BouncyCastle。");
+        }
+        MLKemAlgorithm algorithm = level == 1024 ? MLKemAlgorithm.MLKem1024 : MLKemAlgorithm.MLKem768;
+        MLKemParameters parameters = level == 1024 ? MLKemParameters.ml_kem_1024 : MLKemParameters.ml_kem_768;
+
+        // BCL 生成、BouncyCastle 封装、BCL 解封装。
+        using HybridKeyExchange.BclMlKem bcl = new(algorithm);
+        byte[] bclPublic = bcl.GenerateKeyPairAndGetPublicKey();
+        MLKemEncapsulator encapsulator = new(parameters);
+        encapsulator.Init(MLKemPublicKeyParameters.FromEncoding(parameters, bclPublic));
+        byte[] ciphertext = new byte[encapsulator.EncapsulationLength];
+        byte[] secret = new byte[encapsulator.SecretLength];
+        encapsulator.Encapsulate(ciphertext, 0, ciphertext.Length, secret, 0, secret.Length);
+        Assert.AreSequenceEqual(secret, bcl.Decapsulate(ciphertext));
+
+        // BouncyCastle 生成、BCL 封装、BouncyCastle 解封装。
+        using HybridKeyExchange.BouncyCastleMlKem bouncy = new(parameters);
+        byte[] bouncyPublic = bouncy.GenerateKeyPairAndGetPublicKey();
+        Assert.AreEqual(algorithm.CiphertextSizeInBytes, bouncy.CiphertextBytes);
+        using MLKem encapsulationKey = MLKem.ImportEncapsulationKey(algorithm, bouncyPublic);
+        encapsulationKey.Encapsulate(out byte[] ciphertext2, out byte[] secret2);
+        Assert.AreSequenceEqual(secret2, bouncy.Decapsulate(ciphertext2));
+    }
     // ------------------------------------------------------- 椭圆曲线 / 有限域
 
     [TestMethod]
@@ -57,6 +93,94 @@ public sealed class KeyExchangeTests
 
         Assert.ThrowsExactly<SshKeyExchangeException>(
             () => client.ComputeSharedSecret(new byte[32]));
+    }
+
+    /// <summary>
+    /// 密钥交换的失败是建连阶段的失败（<see cref="Diagnostics.SshConnectException"/>），与协商失败同一层：
+    /// 按 getting-started 的说法分流的调用方曾经把它落进兜底分支。
+    /// </summary>
+    [TestMethod]
+    public void 密钥交换失败是建连阶段的失败()
+    {
+        using Curve25519KeyExchange client = new();
+        _ = client.CreateClientPublicValue();
+
+        SshKeyExchangeException error = Assert.ThrowsExactly<SshKeyExchangeException>(() => client.ComputeSharedSecret(new byte[31]));
+
+        Assert.IsInstanceOfType<Diagnostics.SshConnectException>(error);
+        Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
+        Assert.AreEqual(Diagnostics.SshPhase.KeyExchange, error.Phase);
+    }
+
+    /// <summary>算法清单与工厂表对不上是库自己的编程错误：<see cref="InvalidOperationException"/>，不借对端的名义报协议错误。</summary>
+    [TestMethod]
+    [DataRow("no-such-cipher@example.com", "hmac-sha2-256", DisplayName = "加密算法")]
+    [DataRow("aes128-ctr", "no-such-mac@example.com", DisplayName = "MAC 算法")]
+    [DataRow("aes128-ctr", null, DisplayName = "非 AEAD 却没有 MAC")]
+    public void 工厂表里没有的算法是编程错误(string encryption, string? mac)
+    {
+        SshNegotiatedAlgorithms algorithms = new(
+            "curve25519-sha256", "ssh-ed25519", encryption, encryption, mac, mac, "none", "none",
+            StrictKeyExchange: true, PeerSupportsExtensionInfo: false);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => SshSessionKeys.Derive(
+            algorithms, HashAlgorithmName.SHA256, new byte[32], SshKexValueEncoding.Mpint, new byte[32], new byte[32]));
+    }
+
+    /// <summary>
+    /// ECDH 的「点在不在曲线上」先由库自己查（方程与坐标范围），不全靠平台后端的导入校验 ——
+    /// 那一层各平台各是各的（CNG / OpenSSL / Apple），曾经只在 Windows 上验证过。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp256, 32)]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp384, 48)]
+    [DataRow(SshAlgorithmNames.EcdhSha2Nistp521, 66)]
+    public void ECDH自己核对点在曲线上(string name, int coord)
+    {
+        using EcdhKeyExchange exchange = new(name);
+        ECCurve curve = name switch
+        {
+            SshAlgorithmNames.EcdhSha2Nistp256 => ECCurve.NamedCurves.nistP256,
+            SshAlgorithmNames.EcdhSha2Nistp384 => ECCurve.NamedCurves.nistP384,
+            _ => ECCurve.NamedCurves.nistP521,
+        };
+
+        // 平台造出来的公钥一定在曲线上。
+        using ECDiffieHellman peer = ECDiffieHellman.Create(curve);
+        ECParameters q = peer.ExportParameters(includePrivateParameters: false);
+        byte[] x = new byte[coord];
+        byte[] y = new byte[coord];
+        q.Q.X!.CopyTo(x, coord - q.Q.X!.Length);
+        q.Q.Y!.CopyTo(y, coord - q.Q.Y!.Length);
+        Assert.IsTrue(exchange.IsOnCurve(x, y), "合法的点被拒了");
+
+        // y 改一个比特就不在曲线上了；全零（无穷远点写不出来）也不在。
+        byte[] tampered = (byte[])y.Clone();
+        tampered[^1] ^= 1;
+        Assert.IsFalse(exchange.IsOnCurve(x, tampered));
+        Assert.IsFalse(exchange.IsOnCurve(new byte[coord], new byte[coord]));
+
+        // 曲线常数与平台给的一致（支持导出显式参数的平台上核对；macOS 不支持就只靠上面的用例）。
+        try
+        {
+            ECParameters explicitParameters = peer.ExportExplicitParameters(includePrivateParameters: false);
+            System.Numerics.BigInteger p = new(explicitParameters.Curve.Prime!, isUnsigned: true, isBigEndian: true);
+            System.Numerics.BigInteger a = new(explicitParameters.Curve.A!, isUnsigned: true, isBigEndian: true);
+            Assert.AreEqual(p - 3, a, "三条 NIST 曲线的 a 都是 −3");
+
+            // P-521 的坐标有 66 字节、p 只有 521 位：x + p 编得进去，与 x 同余、方程照样成立，必须按「坐标不小于 p」拦下。
+            if (name == SshAlgorithmNames.EcdhSha2Nistp521)
+            {
+                System.Numerics.BigInteger shifted = new System.Numerics.BigInteger(x, isUnsigned: true, isBigEndian: true) + p;
+                byte[] big = shifted.ToByteArray(isUnsigned: true, isBigEndian: true);
+                byte[] encoded = new byte[coord];
+                big.CopyTo(encoded, coord - big.Length);
+                Assert.IsFalse(exchange.IsOnCurve(encoded, y), "坐标不小于 p 的编码不合法");
+            }
+        }
+        catch (PlatformNotSupportedException)
+        {
+        }
     }
 
     [TestMethod]

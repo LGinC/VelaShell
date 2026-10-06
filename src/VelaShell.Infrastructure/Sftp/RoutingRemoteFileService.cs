@@ -109,6 +109,14 @@ public sealed class RoutingRemoteFileService(
         Resolve(sessionId).ExistsAsync(sessionId, remotePath, cancellationToken);
 
     /// <inheritdoc />
+    public Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) =>
+        Resolve(sessionId).GetSpaceAsync(sessionId, remotePath, cancellationToken);
+
+    /// <inheritdoc />
+    public Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) =>
+        Resolve(sessionId).ExpandPathAsync(sessionId, remotePath, cancellationToken);
+
+    /// <inheritdoc />
     public Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
         Resolve(sessionId).GetWorkingDirectoryAsync(sessionId, cancellationToken);
 

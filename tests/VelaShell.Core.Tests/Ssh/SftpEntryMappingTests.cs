@@ -24,8 +24,8 @@ public class SftpEntryMappingTests
             UserId = 1000,
             GroupId = 1000,
             Permissions = permissions | (uint)typeBits,
-            AccessTime = (int)modified.ToUnixTimeSeconds(),
-            ModifyTime = (int)modified.ToUnixTimeSeconds(),
+            AccessTime = (uint)modified.ToUnixTimeSeconds(),
+            ModifyTime = (uint)modified.ToUnixTimeSeconds(),
             Extended = [],
         };
 
@@ -46,7 +46,7 @@ public class SftpEntryMappingTests
         SftpEntry entry = VelaSftpClientWrapper.MapEntry(
             "/home/rocktech/a.txt",
             Attributes(utcInstant, 0b110_000_000, SftpFileTypeBits.RegularFile, size: 42),
-            isSymbolicLink: false, linkTarget: null);
+            isSymbolicLink: false, linkTarget: null, name: "x");
 
         Assert.AreEqual(DateTimeKind.Local, entry.LastWriteTime.Kind, "映射结果必须是本地时区时间(Kind=Local)。");
         Assert.AreEqual(utcInstant.LocalDateTime, entry.LastWriteTime, "墙钟数应为该 UTC 瞬间换算到本机时区的值。");
@@ -63,7 +63,7 @@ public class SftpEntryMappingTests
         SftpEntry entry = VelaSftpClientWrapper.MapEntry(
             "/srv/app/current",
             Attributes(DateTimeOffset.UnixEpoch, 0b111_101_101, SftpFileTypeBits.SymbolicLink),
-            isSymbolicLink: true, linkTarget: "/srv/app/releases/42");
+            isSymbolicLink: true, linkTarget: "/srv/app/releases/42", name: "current");
 
         Assert.IsTrue(entry.IsSymbolicLink);
         Assert.IsFalse(entry.IsDirectory, "lstat 得来的链接条目在补上目标信息之前不能冒充目录。");
@@ -84,7 +84,7 @@ public class SftpEntryMappingTests
         SftpEntry entry = VelaSftpClientWrapper.MapEntry(
             "/srv/app/current",
             Attributes(DateTimeOffset.UnixEpoch, 0b111_101_101, SftpFileTypeBits.Directory),
-            isSymbolicLink: true, linkTarget: "/srv/app/releases/42");
+            isSymbolicLink: true, linkTarget: "/srv/app/releases/42", name: "current");
 
         Assert.IsTrue(entry.IsSymbolicLink);
         Assert.IsTrue(entry.IsDirectory);
@@ -97,7 +97,7 @@ public class SftpEntryMappingTests
         SftpEntry entry = VelaSftpClientWrapper.MapEntry(
             "/tmp/x",
             Attributes(DateTimeOffset.UnixEpoch, 0b101_011_110, SftpFileTypeBits.RegularFile),
-            isSymbolicLink: false, linkTarget: null);
+            isSymbolicLink: false, linkTarget: null, name: "x");
 
         Assert.IsTrue(entry.OwnerCanRead);
         Assert.IsFalse(entry.OwnerCanWrite);

@@ -74,6 +74,43 @@ public sealed class SocksTests
         Assert.AreSequenceEqual(new byte[] { 0x05, 0x00 }, reply, "只该回一个方法协商应答");
     }
 
+    /// <summary>〔FW-E10〕非 ASCII 的域名按 UTF-8 解、转成 Punycode 交给服务端（曾经按 ASCII 解，成了一串「?」）。</summary>
+    [TestMethod]
+    public async Task 国际化域名转成Punycode()
+    {
+        byte[] host = Encoding.UTF8.GetBytes("测试.example");
+        byte[] request =
+        [
+            .. Greeting(),
+            0x05, 0x01, 0x00, 0x03,
+            (byte)host.Length, .. host,
+            0x01, 0xBB,
+        ];
+
+        (SocksTarget? target, _) = await RunAsync(request);
+
+        Assert.IsNotNull(target);
+        Assert.AreEqual("xn--0zwm56d.example", target.Value.Host);
+    }
+
+    /// <summary>不是合法 UTF-8 的域名：当成不支持的地址回掉，而不是带着替换字符去连。</summary>
+    [TestMethod]
+    public async Task 非法UTF8的域名回地址类型不支持()
+    {
+        byte[] request =
+        [
+            .. Greeting(),
+            0x05, 0x01, 0x00, 0x03,
+            0x02, 0xC3, 0x28,           // 非法的 UTF-8 序列
+            0x01, 0xBB,
+        ];
+
+        (SocksTarget? target, byte[] reply) = await RunAsync(request);
+
+        Assert.IsNull(target);
+        Assert.AreEqual((byte)SocksReply.AddressTypeNotSupported, reply[2 + 1]);
+    }
+
     [TestMethod]
     public async Task IPv4目标()
     {
@@ -151,6 +188,24 @@ public sealed class SocksTests
         // 回 0x07 而不是沉默 —— 让对面知道是「不支持」而不是「连不上」。
         Assert.AreEqual(0x05, reply[2 + 0]);
         Assert.AreEqual((byte)SocksReply.CommandNotSupported, reply[2 + 1]);
+    }
+
+    /// <summary>〔FW-E9〕端口 0：握手阶段就回 0x01，而不是放过去、到开隧道时才抛（客户端一句应答也收不到）。</summary>
+    [TestMethod]
+    public async Task 端口为0时握手阶段就回失败()
+    {
+        byte[] request =
+        [
+            .. Greeting(),
+            0x05, 0x01, 0x00, 0x01,     // CONNECT，IPv4
+            10, 0, 0, 9,
+            0x00, 0x00,                 // 端口 0
+        ];
+
+        (SocksTarget? target, byte[] reply) = await RunAsync(request);
+
+        Assert.IsNull(target);
+        Assert.AreEqual((byte)SocksReply.GeneralFailure, reply[2 + 1]);
     }
 
     [TestMethod]

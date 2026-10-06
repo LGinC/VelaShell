@@ -112,9 +112,11 @@ internal sealed class SshKexInitMessage
         RandomNumberGenerator.Fill(cookie);
         writer.WriteRaw(cookie);
 
+        // 清单里混进的指示符一律滤掉、只在首次按需加 —— 纵深防御：校验之外的路径也不会让重协商的 KEXINIT 带上它们。
+        IEnumerable<string> algorithmsOnly = algorithms.KeyExchange.Where(static n => !SshAlgorithmNegotiator.IsIndicator(n));
         string[] kex = includeIndicators
-            ? [.. algorithms.KeyExchange, SshAlgorithmNames.ExtInfoClient, SshAlgorithmNames.StrictKexClient]
-            : [.. algorithms.KeyExchange];
+            ? [.. algorithmsOnly, SshAlgorithmNames.ExtInfoClient, SshAlgorithmNames.StrictKexClient]
+            : [.. algorithmsOnly];
 
         // 指示符放在列表末尾：它们按名字根本选不中，但放末尾能让人一眼看出
         // 它们不是候选项（velashell-docs/zh/ssh/spec/03 §2.3）。

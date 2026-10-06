@@ -2,6 +2,7 @@ using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
+using VelaShell.Infrastructure.Persistence;
 using VelaShell.Ssh.HostKeys;
 
 namespace VelaShell.Infrastructure.Ssh;
@@ -35,8 +36,112 @@ internal sealed class VelaHostKeyPolicy(
     IHostKeyService hostKey,
     ISettingsService? settings,
     IHostKeyPrompt? prompt,
-    ISecurityAlertService? alerts) : IHostKeyPolicy
+    ISecurityAlertService? alerts) : IHostKeyPolicy, IHostKeyTypePreference, IHostKeyRotationPolicy
 {
+    /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// 交出这台主机记着的钥的类型(最近见过的在前),库会把它们的算法排到最前:协商以客户端的顺序为准,
+    /// 正常的服务端因此谈成已记下的那一种。信任库按类型分开记(API-H4),接受过的几种都在这里。
+    /// </para>
+    /// <para>
+    /// 曾经没有实现它。服务端新增一把 Ed25519 钥(或系统升级后自动生成了一把)时,
+    /// 库默认把 Ed25519 排在前面,谈成的类型一变,而信任库按 host:port 只记一把钥,
+    /// 就报「主机指纹已变更」—— 开着「变更即阻断」时连接直接失败;用户学会无视这个告警之后,
+    /// 真有中间人时它也就没用了。
+    /// </para>
+    /// <para>读不到记录时返回空、不阻断建连:裁决那一步还会再查一次。</para>
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> GetKnownKeyTypesAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+            return [.. known.Select(entry => entry.KeyType).Where(type => !string.IsNullOrEmpty(type)).Distinct(StringComparer.Ordinal)];
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
+            return [];
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 开着(OpenSSH 的 <c>UpdateHostKeys</c> 默认也开):服务端证明持有的新主机密钥补记进信任库,不再出示的旧钥删掉(Q4),
+    /// 运维给服务器加一把 Ed25519、或者轮换掉老的 RSA 钥之后,用户不会看到「指纹已变更」。
+    /// 只在这次用的钥已经永久信任过时才做(库里核对),「仅本次信任」的不算。信任库按类型分开记(API-H4),补记的就是新类型的那几条。
+    /// </remarks>
+    public bool AllowHostKeyUpdates => true;
+
+    /// <inheritdoc />
+    public async ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(
+        string host, int port, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+            return [.. known.Select(entry => entry.Fingerprint).Where(fingerprint => !string.IsNullOrEmpty(fingerprint))];
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            System.Diagnostics.Trace.WriteLine($"[VelaShell] known_hosts lookup failed: {ex}");
+            return [];
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>补记一把就告诉用户一声(安全告警),与 OpenSSH 的「Learned new hostkey」同一个意思。</remarks>
+    public async ValueTask RecordHostKeysAsync(
+        string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(keys);
+        string target = port == 22 ? host : $"{host}:{port}";
+        foreach (SshPublicKey key in keys)
+        {
+            await hostKey.TrustHostKeyAsync(host, port, key.PlainKeyType, key.Sha256Fingerprint, cancellationToken).ConfigureAwait(false);
+            if (alerts is not null)
+            {
+                await alerts.RaiseAsync("hostkey-learned",
+                    Strings.Format("KeySvc_AlertHostKeyLearned", target, $"{key.PlainKeyType} {key.Sha256Fingerprint}")).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 〔Q4〕服务端不再出示的旧钥从信任库删掉(OpenSSH 的 <c>UpdateHostKeys</c> 也删),删一把告诉用户一声。
+    /// 信任库按类型记、按类型删:一种类型的记录全都在要忘掉的指纹里才删那一种 —— 这期间又信任了同类型的别的钥,就不动。
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        string target = port == 22 ? host : $"{host}:{port}";
+        IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+        List<string> forgotten = [];
+        foreach (IGrouping<string, KnownHost> type in known.GroupBy(entry => entry.KeyType, StringComparer.Ordinal))
+        {
+            if (!type.All(entry => fingerprints.Any(fingerprint => SonnetDbHostKeyService.SameFingerprint(entry.Fingerprint, fingerprint))))
+            {
+                continue;
+            }
+
+            await hostKey.RemoveKnownHostAsync(host, port, type.Key, cancellationToken).ConfigureAwait(false);
+            foreach (KnownHost entry in type)
+            {
+                forgotten.Add(entry.Fingerprint);
+                if (alerts is not null)
+                {
+                    await alerts.RaiseAsync("hostkey-forgotten",
+                        Strings.Format("KeySvc_AlertHostKeyForgotten", target, $"{type.Key} {entry.Fingerprint}")).ConfigureAwait(false);
+                }
+            }
+        }
+        return forgotten;
+    }
+
     /// <inheritdoc />
     /// <remarks>
     /// 三条出路:已信任直接放行、按设置弹窗裁决、fail-closed 拒绝。
@@ -79,8 +184,11 @@ internal sealed class VelaHostKeyPolicy(
         {
             try
             {
-                knownFingerprint = (await hostKey.FindKnownHostAsync(host, port, cancellationToken)
-                    .ConfigureAwait(false))?.Fingerprint;
+                // 摆同一种类型的那一把(真换了钥);没有这种类型的,摆最近见过的那一把(服务端换了类型)。
+                IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken)
+                    .ConfigureAwait(false);
+                knownFingerprint = (known.FirstOrDefault(entry => string.Equals(entry.KeyType, keyType, StringComparison.Ordinal))
+                                    ?? (known.Count > 0 ? known[0] : null))?.Fingerprint;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
@@ -93,7 +201,7 @@ internal sealed class VelaHostKeyPolicy(
                        && (firstSeen ? security.ConfirmFirstFingerprint : !security.BlockOnFingerprintChange);
 
         HostKeyDecision decision = askUser
-            ? await prompt!.DecideAsync(host, port, keyType, fingerprint, verification, knownFingerprint)
+            ? await prompt!.DecideAsync(host, port, keyType, fingerprint, verification, knownFingerprint, context.Key.RandomArt)
                 .ConfigureAwait(false)
             // 不问的两条默认:首次连接按 TOFU 记下,指纹变更 fail-closed 拒掉。
             : firstSeen
@@ -142,15 +250,34 @@ internal sealed class VelaHostKeyPolicy(
     /// 落盘发生在密钥交换阶段、认证**之前**,与 OpenSSH 的时机一致:
     /// 主机身份在 KEX 就已经证明完了,认证成不成功是另一回事。
     /// </para>
+    /// <para>
+    /// 记不下来(信任库出错)时库照常连下去,失败记在连接的 <c>HostKeyPersistFailure</c> 上
+    /// (velashell-docs/zh/ssh/spec/03 §5.4)。这里补两件只有宿主做得了的事:本次运行里记住这把指纹,
+    /// 下一次连接别再弹窗;再告诉用户一声 —— 不然重启之后又被问一遍,他不会知道为什么。
+    /// </para>
     /// </remarks>
     public async ValueTask PersistAsync(
         SshHostKeyContext context, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(context);
 
-        await hostKey.TrustHostKeyAsync(
-            context.Host, context.Port, context.Key.PlainKeyType, context.Key.Sha256Fingerprint, cancellationToken)
-            .ConfigureAwait(false);
+        try
+        {
+            await hostKey.TrustHostKeyAsync(
+                context.Host, context.Port, context.Key.PlainKeyType, context.Key.Sha256Fingerprint, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            HostTrustOnceCache.Remember(context.Host, context.Port, context.Key.Sha256Fingerprint);
+            if (alerts is not null)
+            {
+                await alerts.RaiseAsync("hostkey-persist-failed",
+                    Strings.Format("KeySvc_AlertPersistFailed", context.Target, context.Key.Sha256Fingerprint, ex.Message))
+                    .ConfigureAwait(false);
+            }
+            throw;
+        }
     }
 
     /// <summary>被拒时给用户看的那句话:说清是哪台、哪把指纹、以及下一步去哪操作。</summary>

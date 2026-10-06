@@ -1,8 +1,8 @@
-using System.Text;
 using System.Text.RegularExpressions;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
 using VelaShell.Ssh.Auth;
+using VelaShell.Ssh.Diagnostics;
 
 namespace VelaShell.Infrastructure.Ssh;
 
@@ -34,16 +34,6 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
     private bool _passwordUsed;
     private string? _pendingNotice;
 
-    /// <summary>
-    /// 用户在框上点了取消。
-    /// </summary>
-    /// <remarks>
-    /// 库把应答回调抛出的异常记成「凭据取不到材料」、接着以「方法试完了」收场(规格 04 §3.4),
-    /// 取消则会被它当成自己的计时器到点 —— 两条路都说不出「用户不连了」。
-    /// 所以取消记在这里,由装配处在连接失败之后认回来(见 <c>SshConnectionAssembler.ConnectAsync</c>)。
-    /// </remarks>
-    public bool Cancelled { get; private set; }
-
     /// <summary>按连接信息建应答器:密码认证把它的密码交给应答器代答口令提示,其余认证方式不代答。</summary>
     public static KeyboardInteractiveResponder For(Core.Models.ConnectionInfo info, IKeyboardInteractivePrompt prompt) =>
         new(prompt, $"{info.Username}@{info.Host}:{info.Port}",
@@ -52,7 +42,57 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
     /// <summary>包成库的凭据。</summary>
     public KeyboardInteractiveCredential ToCredential() => new(RespondAsync, "keyboard-interactive");
 
+    /// <summary>用户在「修改密码」框上点了取消(装配处据此报「已取消修改密码」而不是「已取消两步验证」)。</summary>
+    public bool PasswordChangeCancelled { get; private set; }
+
+    /// <summary>
+    /// 服务端要求先改密码(规格 04 §5.1):弹框让用户把新密码输两遍,对上了交给库(<see cref="PasswordCredential.NewPasswordProvider" />)。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 协议里没有「再输一次」这一步,输错了的新密码会直接成为账户的密码 —— 所以两遍对不上(或空着)就再问,不交给库。
+    /// 用的是动态码那个框(两条不回显的提示),标题、说明换成改密码的。
+    /// </para>
+    /// <para>
+    /// 用户点了取消与动态码那一问同一个口径:抛 <see cref="OperationCanceledException" />,库以 <c>Aborted</c> 结束。
+    /// 改成之后,连接里保存着的旧密码就过时了:下次用它登录被拒,走登录框重输、存回的那条路。框里先说一声。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<string?> AskNewPasswordAsync(SshPasswordChangeRequest request, CancellationToken cancellationToken)
+    {
+        string server = Clean(request.Prompt, MaxInstructionLength);
+        string notice = Strings.Get(request.Attempt == 1 ? "SshPwdChange_Required" : "SshPwdChange_Rejected");
+        KeyboardInteractiveField[] fields =
+        [
+            new(Strings.Get("SshPwdChange_NewPassword"), Echo: false),
+            new(Strings.Get("SshPwdChange_ConfirmPassword"), Echo: false),
+        ];
+
+        while (true)
+        {
+            string instruction = server.Length == 0 ? notice : $"{notice}\n{server}";
+            IReadOnlyList<string>? answers = await prompt
+                .AskAsync(new(target, Strings.Get("SshPwdChange_Title"), instruction, fields), cancellationToken)
+                .ConfigureAwait(false);
+            if (answers is null)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                PasswordChangeCancelled = true;
+                throw new OperationCanceledException(Strings.Get("SshErr_PasswordChangeCancelled"));
+            }
+            if (answers is [{ Length: > 0 } first, { } second] && first == second)
+            {
+                return first;
+            }
+            notice = Strings.Get("SshPwdChange_Mismatch");
+        }
+    }
+
     /// <summary>应答一轮询问。</summary>
+    /// <exception cref="OperationCanceledException">
+    /// 用户在框上点了取消。库据此以 <c>Aborted</c> 结束这次连接(调用方没取消、认证计时器也没到点的取消,
+    /// 就是回调自己不连了,规格 08 §2.1),装配处再把它报成「已取消」—— 而不是认证失败或超时。
+    /// </exception>
     public async ValueTask<IReadOnlyList<string>> RespondAsync(SshKeyboardChallenge challenge, CancellationToken cancellationToken)
     {
         if (challenge.IsInformationalOnly)
@@ -96,11 +136,10 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
             .ConfigureAwait(false);
         if (answers is null)
         {
-            // 令牌触发(关了标签、认证超时)仍按取消上报,由库按它自己的口径处理;
-            // 只有用户在框上点了取消,才是「不连了」。
+            // 令牌触发(关了标签、认证超时)带着令牌抛,库按它自己的口径处理;
+            // 令牌没触发的取消就是用户在框上点了取消 —— 库认得出这一种(报 Aborted),不必在这里另记一笔。
             cancellationToken.ThrowIfCancellationRequested();
-            Cancelled = true;
-            throw new VelaSshAuthenticationCancelledException(Strings.Get("SshErr_KbdAuthCancelled"));
+            throw new OperationCanceledException(Strings.Get("SshErr_KbdAuthCancelled"));
         }
         // 条数对不上时库会报协议错误并卡在半截 —— 界面层的错不该变成一句看不懂的协议异常。
         return answers.Count == fields.Length
@@ -113,23 +152,23 @@ internal sealed partial class KeyboardInteractiveResponder(IKeyboardInteractiveP
         PasswordWords().IsMatch(text) && !OneTimeCodeWords().IsMatch(text);
 
     /// <summary>
-    /// 去掉控制字符与双向文本控制符、统一换行、限长 —— 文字来自尚未认证的对端。
+    /// 净化来自尚未认证的对端的文字：规则用库的 <see cref="PeerText.Sanitize"/>（控制字符、<c>DEL</c>、C1 控制码与双向文本控制符换成 <c>?</c>）。
     /// </summary>
+    /// <remarks>
+    /// 曾经这里另写了一份规则（把它们删掉），与库的那一份各管各的 —— 库把净化器公开出来，正是为了使用者不必各写一份。
+    /// 换成 <c>?</c> 而不是删掉，被塞了控制字符这件事在界面上看得见。这里只多做两件库不做的事：
+    /// 保留换行（多行的说明要分行显示）、制表符换成空格；再整体去掉首尾空白、限长。
+    /// </remarks>
     internal static string Clean(string text, int maxLength)
     {
-        var builder = new StringBuilder(Math.Min(text.Length, maxLength));
-        foreach (char c in text.Replace("\r\n", "\n", StringComparison.Ordinal))
-        {
-            if (c is '\n' or '\t' || !(char.IsControl(c) || IsBidiControl(c)))
-            {
-                builder.Append(c is '\t' ? ' ' : c);
-            }
-        }
-        string cleaned = builder.ToString().Trim();
+        string[] lines = text
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace('\r', '\n')
+            .Replace('\t', ' ')
+            .Split('\n');
+        string cleaned = string.Join('\n', lines.Select(line => PeerText.Sanitize(line, line.Length))).Trim();
         return cleaned.Length <= maxLength ? cleaned : string.Concat(cleaned.AsSpan(0, maxLength - 1), "…");
     }
-
-    private static bool IsBidiControl(char c) => c is >= '‪' and <= '‮' or >= '⁦' and <= '⁩' or '‎' or '‏' or '؜';
 
     [GeneratedRegex(@"\bpass(word|phrase)?\b|密码|口令|密碼|パスワード|비밀번호|암호", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex PasswordWords();

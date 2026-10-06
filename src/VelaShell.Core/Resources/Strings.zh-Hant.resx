@@ -132,6 +132,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>接受了變更的主機指紋</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>主機指紋未能儲存</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>拒絕了主機指紋</value>
   </data>
@@ -615,8 +618,41 @@
   <data name="Copy" xml:space="preserve">
     <value>複製</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>伺服器的 SFTP 子系統沒有及時回應。</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>傳輸中斷。已確認 {0} 位元組,可以從這裡續傳。</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>伺服器的 SFTP 子系統無法使用(伺服器可能沒有啟用 SFTP)。</value>
+  </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>伺服器的 sftp-server 沒等 SFTP 建立就結束了(結束代碼 {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>無法核實 {0} 的續傳起點(來源端不能回讀,或目標端不支援續傳),依同名衝突處理。</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>操作已取消。</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>所有驗證方法都已嘗試,均未成功。伺服器接受:{0}。</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>其中至少有一步已經通過,卡在後續步驟。</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>達到了本機的並行上限(轉送連線數、agent / X11 通道數)。等其中一些關閉後再試。</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>伺服器要求先修改密碼(密碼已過期或管理員要求更換),密碼沒有改成。</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>伺服器違反了 SSH 協定。</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>伺服器要求鍵盤互動式驗證(動態碼 / OTP),但沒有設定。伺服器接受:{0}。</value>
   </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>已選 {0} 字元</value>
@@ -656,6 +692,18 @@
   </data>
   <data name="Upload" xml:space="preserve">
     <value>上傳</value>
+  </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>可用 {0} / 共 {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>空間可能不夠</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>目標分割區還剩 {0}，這批檔案共 {1}，可能放不下 —— 傳到一半磁碟滿會在伺服器上留下不完整的檔案。仍要上傳嗎？</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>仍要上傳</value>
   </data>
   <data name="Download" xml:space="preserve">
     <value>下載</value>
@@ -848,6 +896,9 @@
   </data>
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>已記錄指紋</value>
+  </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>指紋圖</value>
   </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>伺服器可能已重新安裝或更換。若變更在預期內，接受新金鑰即可覆寫原記錄；否則連線可能正被劫持，請拒絕。</value>
@@ -1079,6 +1130,15 @@
   </data>
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>清除畫面</value>
+  </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>傳送 Break</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>已傳送 Break,伺服器已執行。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>伺服器沒有執行 Break(可能不支援,或這個工作階段沒有終端)。</value>
   </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>切換行號/時間側欄</value>
@@ -1482,6 +1542,12 @@
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} 的主機指紋已變更,使用者確認永久信任新指紋:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
+    <value>伺服器 {0} 證明了它還持有另一把主機金鑰,已補記為受信任:{1}</value>
+  </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>伺服器 {0} 不再出示這把主機金鑰,已從受信任記錄中刪除:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} 的主機指紋已變更,使用者選擇僅本次信任(不落盤):{1}</value>
   </data>
@@ -1490,6 +1556,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>使用者對 {0} 的首次連線指紋選擇僅本次信任(不落盤):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>已信任 {0} 的主機指紋,但儲存失敗:{2}。本次連線照常進行;重新啟動 VelaShell 後再連線會再次詢問。指紋:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>金鑰 {0} 已存在。</value>
@@ -1501,13 +1570,13 @@
     <value>{0} 不是可解析的 SSH 公鑰,未匯入任何內容。</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} 看起來不是私鑰(沒有 PEM 標頭),未匯入任何內容。</value>
+    <value>{0} 看起來不是私鑰(認不出格式;支援 OpenSSH、PKCS#1/#8、SEC1 與 PuTTY .ppk),未匯入任何內容。</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>找不到私鑰檔案:{0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>缺少配對的公鑰 {0}。請連同 .pub 一起匯入 —— 只有私鑰的金鑰不會出現在本清單中。</value>
+    <value>缺少配對的公鑰 {0},而這把私鑰的加密格式不帶明文公鑰。請連同 .pub 一起匯入 —— 只有私鑰的金鑰不會出現在本清單中。</value>
   </data>
   <data name="Main_CloseConfirmBody" xml:space="preserve">
     <value>仍有使用中的工作階段，關閉視窗將中斷所有連線。確定結束嗎?</value>
@@ -2675,7 +2744,7 @@
     <value>自動將金鑰加入 Agent</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// 以私鑰檔登入成功後,將這把金鑰加入本機 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 轉送與其他工具使用。金鑰會一直留在 agent 中,直到以 ssh-add -d 移除;Windows 的 agent 重新開機後仍保留</value>
+    <value>// 以私鑰檔或憑證登入成功後,將這把金鑰(連同憑證)加入本機 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 轉送與其他工具使用。金鑰會一直留在 agent 中,直到以 ssh-add -d 移除;Windows 的 agent 重新開機後仍保留</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>
@@ -3288,6 +3357,12 @@
   </data>
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>保留檔案時間戳記</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>上傳後寫入磁碟</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>SFTP 上傳完、關閉之前要求伺服器把檔案寫到磁碟上(fsync),伺服器斷電也不會遺失。每個檔案多一次往返;伺服器不支援 fsync@openssh.com 時略過。</value>
   </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>頻寬限制</value>
@@ -4762,6 +4837,9 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>代理連線失敗:{0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>無法連線到代理伺服器:{0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>代理驗證失敗,請檢查代理使用者名稱與密碼。</value>
   </data>
@@ -5685,6 +5763,27 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
     <value>已取消兩步驗證。</value>
   </data>
+  <data name="SshErr_PasswordChangeCancelled" xml:space="preserve">
+    <value>已取消修改密碼。</value>
+  </data>
+  <data name="SshPwdChange_Title" xml:space="preserve">
+    <value>修改密碼</value>
+  </data>
+  <data name="SshPwdChange_Required" xml:space="preserve">
+    <value>伺服器要求先修改密碼才能登入。已儲存的密碼不會隨之自動更新。</value>
+  </data>
+  <data name="SshPwdChange_Rejected" xml:space="preserve">
+    <value>伺服器沒有接受這個新密碼,請換一個。</value>
+  </data>
+  <data name="SshPwdChange_NewPassword" xml:space="preserve">
+    <value>新密碼</value>
+  </data>
+  <data name="SshPwdChange_ConfirmPassword" xml:space="preserve">
+    <value>再輸入一次新密碼</value>
+  </data>
+  <data name="SshPwdChange_Mismatch" xml:space="preserve">
+    <value>兩次輸入的新密碼不一致或為空,請重新輸入。</value>
+  </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>連線逾時。</value>
   </data>
@@ -5711,6 +5810,30 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>伺服器拒絕了轉送請求。檢查 sshd_config 裡的 AllowAgentForwarding / AllowTcpForwarding / X11Forwarding。</value>
+  </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>檔案或目錄不存在</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>權限不足</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>伺服器不支援這項操作</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>伺服器認為請求的格式不正確</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>連線已中斷</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>操作失敗</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}:{1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}。伺服器表示:{1}</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>Agent</value>
@@ -5817,6 +5940,27 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>金鑰</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>以「{0}」身分登入 SSH 伺服器</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>資料簽章(命名空間 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>無法辨識的資料 —— 不是 SSH 登入</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>目的主機</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>不在已知主機中({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>無法核實 —— 遠端沒有證明要登入哪台主機</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒內未回應將自動拒絕。</value>
   </data>
@@ -5830,7 +5974,7 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>本工作階段內允許</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>在這個工作階段關閉之前,這把金鑰不再詢問</value>
+    <value>在這個工作階段關閉之前,這把金鑰用於同一用途(同一使用者、同一目的主機)時不再詢問</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>只轉送選取的金鑰</value>

@@ -16,6 +16,26 @@ namespace VelaShell.Ssh.Crypto;
 /// <remarks>各密码套件共用这些规则；套件之间的差异只在 <see cref="CipherSuiteShape"/>。</remarks>
 internal static class SshPacketFormat
 {
+    /// <summary>
+    /// 解密直接写进了输出时：核对 <c>padding_length</c>，把载荷挪到开头，清掉后面的填充，返回载荷长度。
+    /// </summary>
+    /// <param name="decrypted">解出来的 <c>padding_length ‖ payload ‖ padding</c>（就在输出缓冲里）。</param>
+    /// <exception cref="SshFrameFormatException"><c>padding_length</c> 非法。</exception>
+    public static int MoveDecryptedPayloadToFront(Span<byte> decrypted)
+    {
+        byte paddingLength = decrypted[0];
+        int payloadLength = decrypted.Length - PaddingLengthFieldBytes - paddingLength;
+        if (paddingLength < MinimumPadding || payloadLength < 0)
+        {
+            throw new SshFrameFormatException($"padding_length {paddingLength} 非法。");
+        }
+
+        // 重叠的拷贝：Span.CopyTo 按 memmove 处理，往低地址挪是安全的。
+        decrypted.Slice(PaddingLengthFieldBytes, payloadLength).CopyTo(decrypted);
+        decrypted[payloadLength..].Clear();
+        return payloadLength;
+    }
+
     /// <summary><c>packet_length</c> 字段的字节数。</summary>
     public const int LengthFieldBytes = 4;
 
@@ -115,16 +135,7 @@ internal static class SshPacketFormat
     /// </remarks>
     public static void ValidateHeader(uint packetLength, byte paddingLength, int maxPacketLength, in CipherSuiteShape shape)
     {
-        if (packetLength > (uint)maxPacketLength)
-        {
-            throw new SshFrameFormatException($"packet_length {packetLength} 超过上限 {maxPacketLength}。");
-        }
-
-        // 至少要容下 padding_length 字节本身 + 最小填充。
-        if (packetLength < PaddingLengthFieldBytes + MinimumPadding)
-        {
-            throw new SshFrameFormatException($"packet_length {packetLength} 过小。");
-        }
+        ValidateLength(packetLength, maxPacketLength, Math.Max(shape.BlockBytes, 8), shape.LengthInAlignment, "帧");
 
         if (paddingLength < MinimumPadding)
         {
@@ -136,13 +147,31 @@ internal static class SshPacketFormat
             throw new SshFrameFormatException(
                 $"padding_length {paddingLength} 超过 packet_length {packetLength} 所能容纳的范围。");
         }
+    }
 
-        int block = Math.Max(shape.BlockBytes, 8);
-        long aligned = packetLength + (shape.LengthInAlignment ? LengthFieldBytes : 0);
-        if (aligned % block != 0)
+    /// <summary>
+    /// 校验收到的 <c>packet_length</c>：不超过上限、至少 5（<c>padding_length</c> 一字节 + 最小填充）、按块对齐。
+    /// </summary>
+    /// <param name="packetLength">读到的 <c>packet_length</c>。</param>
+    /// <param name="maxPacketLength">上限。</param>
+    /// <param name="block">对齐的块大小。</param>
+    /// <param name="lengthInAlignment">4 字节长度字段算不算进对齐（MtE 算；EtM 与 AEAD 不算）。</param>
+    /// <param name="label">进错误消息的套件名。</param>
+    /// <exception cref="SshFrameFormatException">任一项不满足。</exception>
+    /// <remarks>
+    /// 〔TR-D4〕各套件在长度还没被认证时就要据它等数据、分配内存 —— 先做这三项检查，否则等于让对端决定我们等多少字节。
+    /// 曾经这三项在四个套件里各写一份。
+    /// </remarks>
+    public static void ValidateLength(uint packetLength, int maxPacketLength, int block, bool lengthInAlignment, string label)
+    {
+        long aligned = packetLength + (lengthInAlignment ? LengthFieldBytes : 0);
+        if (packetLength > (uint)maxPacketLength
+            || packetLength < PaddingLengthFieldBytes + MinimumPadding
+            || aligned % block != 0)
         {
             throw new SshFrameFormatException(
-                $"帧长 {aligned} 不是块大小 {block} 的整数倍。");
+                $"{label}帧头非法：packet_length={packetLength}（上限 {maxPacketLength}、至少 {PaddingLengthFieldBytes + MinimumPadding}，" +
+                $"{(lengthInAlignment ? "连同长度字段" : "")}须为 {block} 的倍数）。");
         }
     }
 }

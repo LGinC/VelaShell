@@ -55,6 +55,9 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary>事件流的终结事件；关了之后 <see cref="ReadEventAsync"/> 一直交回它。</summary>
     private SshChannelEvent.Closed? _closedEvent;
 
+    /// <summary>通道关了时完成。<see cref="WaitForExitAsync"/> 等它，<b>不去读事件流</b>。</summary>
+    private readonly TaskCompletionSource _closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     private readonly Channel<SshChannelEvent> _events =
         Channel.CreateUnbounded<SshChannelEvent>(new UnboundedChannelOptions
         {
@@ -80,9 +83,13 @@ public sealed class SshChannel : IAsyncDisposable
     private Task? _stdinPump;
     private Task? _windowAdjustPump;
 
-    /// <summary>消费者已消费、但还没回补给对端的字节数。</summary>
+    /// <summary>消费者已消费、但还没回补给对端的字节数。跨轮累加，攒够回补阈值时由回补泵整笔取走。</summary>
     private long _consumedPendingAdjust;
     private readonly AsyncGate _consumedGate = new();
+    private int _windowAdjustPumpWakeups;
+
+    /// <summary>回补泵被叫醒过几次（测试用：离阈值还远时不该叫醒它）。</summary>
+    internal int WindowAdjustPumpWakeups => Volatile.Read(ref _windowAdjustPumpWakeups);
 
     /// <summary>stdin 泵已经交给会话发送的字节数（<see cref="WaitStandardInputSentAsync"/> 用）。</summary>
     private long _stdinSentBytes;
@@ -124,12 +131,22 @@ public sealed class SshChannel : IAsyncDisposable
     private bool _closeSent;
     private bool _closeReceived;
 
+    /// <summary>对端的 <c>CHANNEL_CLOSE</c> 到的时候我们还没发 —— 是对端先关的。</summary>
+    private bool _peerClosedFirst;
+
     /// <summary>通道号已经还给会话。</summary>
     private bool _idReleased;
     private bool _disposed;
 
     /// <summary><see cref="MayStillSend"/> 的缓存委托 —— 每一帧都要用，别每次分配。</summary>
     private readonly Func<bool> _mayStillSend;
+
+    /// <summary>发 stdin 数据帧用的放行判定：同 <see cref="_mayStillSend"/>，另把结论记进 <see cref="_dataAdmitted"/>。</summary>
+    /// <remarks>数据帧只有 stdin 泵一个发送方、一帧一帧地发，所以一个字段就够记，不必每帧分配一个闭包。</remarks>
+    private readonly Func<bool> _admitData;
+
+    /// <summary>上一个 stdin 数据帧有没有放行（<see cref="_admitData"/> 写，泵在那一帧发完之后读）。</summary>
+    private bool _dataAdmitted;
 
     /// <summary>这条通道此刻计在会话窗口总预算上的字节数。</summary>
     /// <remarks>
@@ -149,8 +166,11 @@ public sealed class SshChannel : IAsyncDisposable
         LocalId = localId;
         ChannelType = channelType;
         _mayStillSend = MayStillSend;
+        _admitData = () => _dataAdmitted = MayStillSend();
 
         _windowPolicy = options.WindowPolicy;
+        ReceiveMaxPacketBytes = options.ReceiveMaxPacketBytes;
+        IsInteractive = options.IsInteractive;
         int window = options.WindowPolicy.InitialBytes;
         _receiveWindow = new SshWindow(window);
         _budgetCharged = window;   // 会话开通道时按它计的
@@ -178,6 +198,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         _stdoutPipe = new Pipe(pipeOptions);
         _stderrPipe = options.StderrMode == SshStderrMode.Buffer ? new Pipe(pipeOptions) : null;
+        _stderrTailLimit = _stderrPipe is null ? options.DiscardedStderrTailBytes : 0;
         _stdinPipe = new Pipe(new PipeOptions(useSynchronizationContext: false));
 
         StandardOutput = new WindowedPipeReader(_stdoutPipe.Reader, NoteReaderConsumed);
@@ -196,6 +217,14 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary>通道类型（<c>"session"</c> / <c>"direct-tcpip"</c> / …）。</summary>
     public string ChannelType { get; }
 
+    /// <summary>对端确认（或者我们确认对端开过来）的时刻；还在打开、或者没开成时为 <see langword="null"/>。</summary>
+    /// <remarks>连接信息里列「这条隧道开了多久」用它；曾经没有，每通道只有字节数。</remarks>
+    public DateTimeOffset? OpenedAt => Volatile.Read(ref _openedAtTicks) is var ticks and > 0
+        ? new DateTimeOffset(ticks, TimeSpan.Zero)
+        : null;
+
+    private long _openedAtTicks;
+
     /// <summary>通道<b>整个</b>结束（状态进入 <see cref="SshChannelState.Closed"/>）时被取消。</summary>
     /// <remarks>
     /// 回调在线程池上执行，不在接收循环上。
@@ -203,6 +232,19 @@ public sealed class SshChannel : IAsyncDisposable
     /// 到了这里，两个方向都没有了。
     /// </remarks>
     public CancellationToken Closed => _lifetime.Token;
+
+    /// <summary>通道为什么关闭；还没关时是 <see cref="SshChannelCloseReason.Unknown"/>。</summary>
+    /// <remarks>
+    /// <para>
+    /// 在 stdout / stderr 读到头之前就已经记下：读端看到结尾时来看它，就分得出「对端关的（远端进程退了）」「会话没了」「本端关的」。
+    /// 只收到 EOF、还没收到 CLOSE 时读端也会读到头，那时它还是 <see cref="SshChannelCloseReason.Unknown"/>。
+    /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §一〕事件流里也有（<see cref="SshChannelEvent.Closed"/>），但事件流是单读者的；这里谁来问、问几次都一样。
+    /// 曾经只在事件流里，宿主只好从读管道的结束方式反推「远端退出 / 断线 / 本端拆除」。
+    /// </para>
+    /// </remarks>
+    public SshChannelCloseReason CloseReason => Volatile.Read(ref _closedEvent)?.Reason ?? SshChannelCloseReason.Unknown;
 
     /// <summary>当前状态。</summary>
     public SshChannelState State
@@ -218,6 +260,15 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>对端宣告的单个数据段上限。<b>发送时必须遵守</b>。</summary>
     public int RemoteMaxPacketBytes { get; private set; }
+
+    /// <summary>一个 <c>CHANNEL_DATA</c> 的数据段最多多大：本端报文长度上限减去报文头、通道头与最大填充。</summary>
+    private const int MaxSendDataBytes = Crypto.SshPacketFormat.DefaultMaxPacketLength - 512;
+
+    /// <summary>我们宣告的单个数据段上限（<c>maximum packet size</c>）：对端发来的每个 DATA / EXTENDED_DATA 都不许超过它。</summary>
+    internal int ReceiveMaxPacketBytes { get; }
+
+    /// <summary>这条通道发的报文走交互道（<see cref="SshChannelOptions.IsInteractive"/>）；开通道时定下，之后不变 —— 中途换道会让它自己的报文乱序。</summary>
+    internal bool IsInteractive { get; }
 
     /// <summary>远端的标准输出。</summary>
     /// <remarks>
@@ -247,10 +298,32 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>写进去的内容变成 <c>CHANNEL_DATA</c>。</summary>
     /// <remarks>
+    /// <para>
     /// 完成这个 writer（<c>Complete</c> / <c>CompleteAsync</c>）等同于 <see cref="SendEofAsync"/>：
     /// 已写入的内容冲干净之后发 <c>CHANNEL_EOF</c>。要等 EOF 真正入队再往下走，用 <see cref="SendEofAsync"/>。
+    /// </para>
+    /// <para>
+    /// 通道关了之后，<c>FlushAsync</c> / <c>WriteAsync</c> 返回 <see cref="FlushResult.IsCompleted"/> 为真（<see cref="PipeWriter"/>
+    /// 表达「读的一方不要了」的惯用法），不抛异常。这个 writer 归调用方：库不替它完成。
+    /// </para>
     /// </remarks>
     public PipeWriter StandardInput { get; }
+
+    /// <summary>经这条通道发出的应用数据字节数（<c>CHANNEL_DATA</c> 的数据段，不含协议开销）。</summary>
+    /// <remarks>传输面板、隧道统计里每条通道的数字。线上的总流量看 <c>SshConnection.BytesSent</c>。</remarks>
+    public long BytesSent => Interlocked.Read(ref _bytesSent);
+
+    /// <summary>经这条通道收到的应用数据字节数（<c>CHANNEL_DATA</c> 与 <c>CHANNEL_EXTENDED_DATA</c> 的数据段，读没读走都算）。</summary>
+    public long BytesReceived => Interlocked.Read(ref _bytesReceived);
+
+    private long _bytesSent;
+    private long _bytesReceived;
+
+    /// <summary>开着的通道数记没记上 +1（收尾时据此 -1）；在 <see cref="_stateLock"/> 里读写。</summary>
+    private bool _activeMetered;
+
+    /// <summary>度量的 <c>host</c> 标签（来自会话）；<see langword="null"/> 时不记。</summary>
+    internal string? MetricsHost => _host.MetricsHost;
 
     /// <summary>当前的接收窗口剩余（诊断用）。</summary>
     public uint ReceiveWindowRemaining => _receiveWindow.Remaining;
@@ -286,10 +359,10 @@ public sealed class SshChannel : IAsyncDisposable
             ?? throw new InvalidOperationException("事件流结束了却没有 Closed 事件 —— 这是库的 bug。");
     }
 
-    /// <summary>读走一条对端的未知请求，积压计数减一（见 <see cref="OnPeerRequest"/>）。</summary>
+    /// <summary>读走一条对端请求带来的事件，积压计数减一（见 <see cref="OnPeerRequest"/>）。</summary>
     private void NoteEventRead(SshChannelEvent? channelEvent)
     {
-        if (channelEvent is SshChannelEvent.PeerRequest)
+        if (channelEvent is SshChannelEvent.PeerRequest or SshChannelEvent.FlowControl)
         {
             Interlocked.Decrement(ref _queuedPeerRequests);
         }
@@ -303,36 +376,32 @@ public sealed class SshChannel : IAsyncDisposable
     /// </remarks>
     public SshChannelStream AsStream(bool ownsChannel = true) => new(this, ownsChannel);
 
-    /// <summary>读事件直到通道关闭，收集退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
+    /// <summary>等通道关闭，交回退出状态（<see cref="SshCommand.WaitAsync"/> 与 <see cref="SshShell.WaitAsync"/> 共用）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §5.4〕退出状态缓存在通道上（<see cref="_exitEvent"/>），不只活在事件流里 ——
+    /// 事件流是单读者的，读过一次就没了：曾经 <c>ReadToEndAsync</c> 之后再 <c>WaitAsync</c>、或者调用方自己读过事件，
+    /// 再问就是 null。现在调多少次、谁先读过事件，答案都一样。
+    /// <para>
+    /// 等的是关闭信号，<b>不读事件流</b>：事件流归调用方（<see cref="ReadEventAsync"/>）。曾经这里循环读事件直到 <c>Closed</c>，
+    /// 与调用方自己的读者抢同一条单读者流 —— 并发时谁拿到退出状态说不准，先等完再读的话事件已经被它读光了。
+    /// </para>
+    /// </remarks>
     internal async ValueTask<SshExitStatus> WaitForExitAsync(CancellationToken cancellationToken)
     {
-        int? exitCode = null;
-        string? signalName = null;
-        bool coreDumped = false;
-        string? errorMessage = null;
+        await _closedSignal.Task.WaitAsync(cancellationToken).ConfigureAwait(false);
 
-        while (true)
+        // 收到 CLOSE 时可能还没有退出状态 —— 对端实现不规范，或者连接断了。
+        // 那时 ExitCode 是 null，那不是 bug 而是事实：进程到底怎么结束的，我们不知道。
+        return Volatile.Read(ref _exitEvent) switch
         {
-            switch (await ReadEventAsync(cancellationToken).ConfigureAwait(false))
-            {
-                case SshChannelEvent.ExitStatus status:
-                    exitCode = status.Code;
-                    break;
-
-                case SshChannelEvent.ExitSignal signal:
-                    signalName = signal.SignalName;
-                    coreDumped = signal.CoreDumped;
-                    errorMessage = signal.ErrorMessage;
-                    break;
-
-                case SshChannelEvent.Closed:
-                    // 收到 CLOSE 时可能还没有退出状态 —— 对端实现不规范，
-                    // 或者连接断了。那时 ExitCode 是 null，那不是 bug 而是事实：
-                    // 进程到底怎么结束的，我们不知道。
-                    return new SshExitStatus(exitCode, signalName, coreDumped, errorMessage);
-            }
-        }
+            SshChannelEvent.ExitStatus status => new SshExitStatus(status.Code, null, false, null),
+            SshChannelEvent.ExitSignal signal => new SshExitStatus(null, signal.SignalName, signal.CoreDumped, signal.ErrorMessage),
+            _ => new SshExitStatus(null, null, false, null),
+        };
     }
+
+    /// <summary>对端报来的那一份退出状态 / 退出信号（只收第一份）。在进事件流之前写下。</summary>
+    private SshChannelEvent? _exitEvent;
 
     /// <summary>给远端进程发信号（<see cref="SshCommand.SendSignalAsync"/> 与 <see cref="SshShell.SendSignalAsync"/> 共用）。</summary>
     internal async ValueTask SendSignalAsync(string signalName, CancellationToken cancellationToken)
@@ -389,7 +458,7 @@ public sealed class SshChannel : IAsyncDisposable
         if (!wantReply)
         {
             bool sent = false;
-            await _host.SendIfAsync(buffer.WrittenMemory, () => sent = MayStillSend(), cancellationToken)
+            await _host.SendIfAsync(buffer.WrittenMemory, () => sent = MayStillSend(), IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
             return sent;
         }
@@ -402,14 +471,15 @@ public sealed class SshChannel : IAsyncDisposable
             buffer.WrittenMemory,
             () =>
             {
+                // 账本已经关了（通道在本端收尾了）也不发：发出去的话对端的应答回来时没人认领。
                 if (!MayStillSend())
                 {
                     return false;
                 }
-                reply = _pendingRequests.Register();
-                return true;
+                reply = _pendingRequests.TryRegister();
+                return reply is not null;
             },
-            cancellationToken).ConfigureAwait(false);
+            IsInteractive, cancellationToken).ConfigureAwait(false);
 
         return reply is not null && await reply.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -436,6 +506,36 @@ public sealed class SshChannel : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 这边不再要对端的标准输出了：本端把 <see cref="StandardOutput"/> 收尾、之后到的数据丢弃，并告诉对端（<c>eow@openssh.com</c>）。
+    /// </summary>
+    /// <returns>
+    /// 告诉对端的请求有没有发出去：对端不是 OpenSSH、或者通道已经在关时为 <see langword="false"/> —— 那时只在本端丢弃，
+    /// 远端进程照常跑完。
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §5.2〕场景是只要输出的前几行（<c>head</c>、<c>grep -m 1</c> 那样）：读够了就不读了。
+    /// OpenSSH 的服务端收到之后关掉远端进程的输出端，进程再写就收到 <c>SIGPIPE</c> 提前结束，不再白跑完、白占带宽；
+    /// 通道仍然开着，退出状态照常回来，标准输入也还能写。与 <c>CHANNEL_EOF</c> 方向相反、同样不是关闭通道。
+    /// </para>
+    /// <para>
+    /// <b>只发给 OpenSSH</b>（按服务端的版本标识串）：这是 OpenSSH 的扩展，有的实现收到不认识的通道请求会直接断开连接。
+    /// 不要应答、不占窗口。本端丢弃的数据照常回补窗口，对端不会因此停住。标准错误不受影响。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<bool> StopStandardOutputAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // 读端完成之后，到达的数据在 TryDeliver 里就被判为「消费者不读了」：丢弃并立刻回补窗口。
+        await StandardOutput.CompleteAsync().ConfigureAwait(false);
+
+        return _host.PeerAcceptsEndOfWrite
+            && await SendRequestAsync(SshProtocolNames.RequestEndOfWrite, default, wantReply: false, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
     /// <summary>发 <c>CHANNEL_EOF</c>：我们不再发数据了。</summary>
     /// <remarks>
     /// <b>这不是关闭通道。</b>发完之后仍然可以继续收对端的数据。
@@ -449,6 +549,9 @@ public sealed class SshChannel : IAsyncDisposable
 
         // 先把 stdin 里还没发出去的内容冲干净，再发 EOF ——
         // 反过来会让最后一段数据排在 EOF 之后，对端多半已经不读了。
+        // 〔velashell-docs/zh/ssh/spec/05 §4.3〕EOF 由 stdin 泵在冲干净之后发（用通道自己的生命周期，不用这里的令牌）：
+        // 这里被取消只是不再等，EOF 照样会发出去。曾经由这里发：等泵的时候被取消，EOF 就永远不会再发，
+        // 远端的 cat / sort 一直等输入。
         await _stdinPipe.Writer.CompleteAsync().ConfigureAwait(false);
         if (_stdinPump is not null)
         {
@@ -462,10 +565,17 @@ public sealed class SshChannel : IAsyncDisposable
             }
         }
 
-        // 泵收尾期间对端可能已经 CLOSE 了 —— 那时 EOF 不能再发，入队时一并判定。
-        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
-            .ConfigureAwait(false);
+        // 泵正常收尾时已经发了（_eofOwed 已是 0）。泵从没起来（通道还没确认）、或者是出错退出的：在这里补发。
+        // 对端可能已经 CLOSE 了 —— 那时不发，入队时一并判定。
+        if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
+        {
+            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, IsInteractive, cancellationToken)
+                .ConfigureAwait(false);
+        }
     }
+
+    /// <summary>本端已经推进到 EOF、而 <c>CHANNEL_EOF</c> 还没发：1；否则 0。谁把它换成 0 谁发（只发一次）。</summary>
+    private int _eofOwed;
 
     /// <summary>把状态推进到「本端已 EOF」；已经 EOF 过或者通道在关，返回 <see langword="false"/>。</summary>
     /// <remarks>
@@ -484,6 +594,7 @@ public sealed class SshChannel : IAsyncDisposable
             _state = _state == SshChannelState.RemoteEof
                 ? SshChannelState.BothEof
                 : SshChannelState.LocalEof;
+            Volatile.Write(ref _eofOwed, 1);
             return true;
         }
     }
@@ -549,7 +660,7 @@ public sealed class SshChannel : IAsyncDisposable
             // 「已发」这个标记在入队锁里、与入队同一时刻设上（TryCommitClose）。
             // 曾经是先设标记、后发 —— 发送被取消（释放通道有 5 秒时限）的话，标记已经是真的，
             // CLOSE 却永远不会再发：服务端那条通道一直开着，远端进程也一直跑着。
-            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelClose), TryCommitClose, cancellationToken)
+            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelClose), TryCommitClose, IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -587,20 +698,72 @@ public sealed class SshChannel : IAsyncDisposable
 
     // ------------------------------------------------------------ 会话回调
 
+    /// <summary>我们开的通道被对端确认了。</summary>
     internal void OnOpenConfirmed(uint remoteId, uint initialWindow, uint maxPacket)
     {
+        OnOpenAccepted(remoteId, initialWindow, maxPacket);
+        StartPumps();
+    }
+
+    /// <summary>记下对端的通道号、初始窗口与包上限，通道进入 Open（泵还没起）。</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>对端开过来的通道，确认发出去之前就要做完这一步。</b>曾经是先发确认、后设对端的号：
+    /// 对端收到确认立刻 EOF + CLOSE（端口扫描、健康检查），而决定开通道的后台任务恰好在两步之间被抢占，
+    /// 接收循环先处理了那个 CLOSE —— 我们的 CLOSE 带着还是 0 的对端号发了出去，关掉的是对端的 0 号通道
+    /// （往往是用户的第一条 shell），真正那条通道永远收不到 CLOSE。
+    /// </para>
+    /// <para>
+    /// 已经收尾了的（会话断开与确认撞在一起）不改回 Open —— 曾经无条件改，关掉的通道又被「复活」、泵照样起来。
+    /// </para>
+    /// </remarks>
+    internal void OnOpenAccepted(uint remoteId, uint initialWindow, uint maxPacket)
+    {
         RemoteId = remoteId;
-        RemoteMaxPacketBytes = (int)Math.Min(maxPacket, int.MaxValue);
+
+        // 对端宣告的 max packet 按本端的上限截断：照单全收的话，宣告 4 GiB 的对端会让 stdin 泵把管道里攒着的
+        // 几 MiB 拼成一个报文发出去 —— 超过任何实现愿意收的报文长度（包括我们自己收的上限）。
+        RemoteMaxPacketBytes = (int)Math.Min(maxPacket, MaxSendDataBytes);
         _sendWindow.Add(initialWindow);
 
+        bool opened = false;
         lock (_stateLock)
         {
-            _state = SshChannelState.Open;
+            if (_state == SshChannelState.Opening)
+            {
+                _state = SshChannelState.Open;
+                Volatile.Write(ref _openedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+                opened = _activeMetered = MetricsHost is not null;
+            }
+        }
+
+        if (opened && MetricsHost is { } host)
+        {
+            KeyValuePair<string, object?> type = Diagnostics.SshMetrics.ChannelTypeTag(ChannelType);
+            Diagnostics.SshMetrics.ChannelsActive.Add(1, Diagnostics.SshMetrics.HostTag(host), type);
+            Diagnostics.SshMetrics.ChannelWindow.Record(_receiveWindow.Size, Diagnostics.SshMetrics.HostTag(host), type);
+        }
+    }
+
+    /// <summary>起 stdin 泵与回补泵。已经收尾了就不起。</summary>
+    /// <remarks>
+    /// 与 <see cref="FinishClose"/> 在同一把锁里对「泵起没起」达成一致：收尾时泵没起，由收尾替它完成 stdin 的 reader；
+    /// 起了就归泵自己完成 —— 两边各自判断的话，收尾刚完成 reader、泵就起来去读它。
+    /// </remarks>
+    internal void StartPumps()
+    {
+        lock (_stateLock)
+        {
+            if (_state == SshChannelState.Closed)
+            {
+                return;
+            }
+
+            _stdinPump = Task.Run(() => PumpStandardInputAsync(_lifetime.Token));
+            _windowAdjustPump = Task.Run(() => PumpWindowAdjustAsync(_lifetime.Token));
         }
 
         _sendWindowGate.Signal();
-        _stdinPump = Task.Run(() => PumpStandardInputAsync(_lifetime.Token));
-        _windowAdjustPump = Task.Run(() => PumpWindowAdjustAsync(_lifetime.Token));
     }
 
     internal void OnOpenFailed()
@@ -609,6 +772,16 @@ public sealed class SshChannel : IAsyncDisposable
 
         // 对端从没建起这条通道，不会再有发往这个号的报文。
         ReleaseId(force: true);
+    }
+
+    /// <summary>窗口额定大小变了：记进 <c>velashell.ssh.channel.window</c>。</summary>
+    private void RecordWindow(int size)
+    {
+        if (MetricsHost is { } host && Diagnostics.SshMetrics.ChannelWindow.Enabled)
+        {
+            Diagnostics.SshMetrics.ChannelWindow.Record(
+                size, Diagnostics.SshMetrics.HostTag(host), Diagnostics.SshMetrics.ChannelTypeTag(ChannelType));
+        }
     }
 
     /// <summary>收到 <c>CHANNEL_DATA</c>。</summary>
@@ -620,6 +793,7 @@ public sealed class SshChannel : IAsyncDisposable
         {
             return false;
         }
+        Interlocked.Add(ref _bytesReceived, length);
 
         NoteWindowPressure();
 
@@ -647,6 +821,7 @@ public sealed class SshChannel : IAsyncDisposable
         {
             return false;
         }
+        Interlocked.Add(ref _bytesReceived, length);
 
         NoteWindowPressure();
 
@@ -654,6 +829,11 @@ public sealed class SshChannel : IAsyncDisposable
         // 保留值的语义未来可能被定义，为它断开会让我们无法与新实现共处。
         if (dataTypeCode != ExtendedDataStderr || _stderrPipe is null || !TryDeliver(_stderrPipe.Writer, data))
         {
+            if (dataTypeCode == ExtendedDataStderr && _stderrTailLimit > 0)
+            {
+                KeepStderrTail(data);
+            }
+
             // 丢弃也要立刻回补窗口 —— 不然「丢弃」就变成了死锁。
             NoteConsumed(length);
         }
@@ -662,6 +842,44 @@ public sealed class SshChannel : IAsyncDisposable
             Interlocked.Add(ref _unreadBytes, length);
         }
         return true;
+    }
+
+    /// <summary>丢弃 stderr 时留住的末尾上限（<see cref="SshChannelOptions.DiscardedStderrTailBytes"/>）；0 不留。</summary>
+    private readonly int _stderrTailLimit;
+
+    private readonly Lock _stderrTailLock = new();
+    private byte[]? _stderrTail;
+    private int _stderrTailLength;
+
+    /// <summary>把丢弃的 stderr 记进末尾缓冲：只留最后 <see cref="_stderrTailLimit"/> 字节。</summary>
+    private void KeepStderrTail(ReadOnlySequence<byte> data)
+    {
+        lock (_stderrTailLock)
+        {
+            _stderrTail ??= new byte[_stderrTailLimit];
+            ReadOnlySequence<byte> incoming = data.Length > _stderrTailLimit ? data.Slice(data.Length - _stderrTailLimit) : data;
+            int keep = Math.Min(_stderrTailLength, _stderrTailLimit - (int)incoming.Length);
+            _stderrTail.AsSpan(_stderrTailLength - keep, keep).CopyTo(_stderrTail);
+            incoming.CopyTo(_stderrTail.AsSpan(keep));
+            _stderrTailLength = keep + (int)incoming.Length;
+        }
+    }
+
+    /// <summary>丢弃的 stderr 的末尾，按 UTF-8 解、照对端文本清洗过；没留或没有时为 <see langword="null"/>。</summary>
+    internal string? DiscardedStderrTail
+    {
+        get
+        {
+            lock (_stderrTailLock)
+            {
+                if (_stderrTail is null || _stderrTailLength == 0)
+                {
+                    return null;
+                }
+                string text = System.Text.Encoding.UTF8.GetString(_stderrTail, 0, _stderrTailLength);
+                return Diagnostics.PeerText.SanitizeTail(text) is { Length: > 0 } clean ? clean : null;
+            }
+        }
     }
 
     /// <summary>收到 <c>CHANNEL_WINDOW_ADJUST</c>。</summary>
@@ -681,7 +899,10 @@ public sealed class SshChannel : IAsyncDisposable
     {
         lock (_stateLock)
         {
-            if (_state is SshChannelState.Closing or SshChannelState.Closed)
+            // 重复的 EOF 什么也不做：曾经它把 BothEof 退回 RemoteEof（本端随后可能再发一次 EOF），
+            // 每来一份还往事件流里塞一条 Eof —— 同样不受积压上限约束。
+            if (_state is SshChannelState.Closing or SshChannelState.Closed
+                or SshChannelState.RemoteEof or SshChannelState.BothEof)
             {
                 return;
             }
@@ -716,33 +937,67 @@ public sealed class SshChannel : IAsyncDisposable
         {
             _closeReceived = true;
             mustReply = !_closeSent;
+            _peerClosedFirst = mustReply;
             _closeSent = true;
         }
 
         return mustReply;
     }
 
-    /// <summary>双向 CLOSE 都走完了。</summary>
-    internal void OnCloseCompleted(SshChannelCloseReason reason)
+    /// <summary>双向 CLOSE 都走完了（收到对端的那一个之后调用）。</summary>
+    internal void OnCloseCompleted()
     {
+        // 原因看谁先发的 CLOSE。曾经一律记成 ClosedByPeer：本端 CloseAsync 先发、对端照规矩回一个，
+        // 事件流里也说是「对端关的」。
+        bool peerClosedFirst;
+        lock (_stateLock)
+        {
+            peerClosedFirst = _peerClosedFirst;
+        }
+
         // 本端先收尾过（释放了通道）的话，状态早就是 Closed，FinishClose 什么都不做 ——
         // 但号一直扣着在等的正是这一个 CLOSE。
-        FinishClose(reason);
+        FinishClose(peerClosedFirst ? SshChannelCloseReason.ClosedByPeer : SshChannelCloseReason.ClosedLocally);
         ReleaseId(force: false);
     }
 
     /// <summary>收到通道请求的应答。</summary>
-    /// <returns>队列里有没有人在等。<see langword="false"/> 说明 FIFO 失步了。</returns>
-    internal bool OnRequestReply(bool success) => _pendingRequests.TryComplete(success);
+    /// <returns><see langword="false"/> 说明 FIFO 失步了：账本还开着，却没有人在等。</returns>
+    /// <remarks>
+    /// <para>
+    /// 账本已经关了（本端收尾过这条通道）时，迟到的应答照单吸收，不算失步。
+    /// 典型的时序：exec 已经发出，调用方等应答时取消了 → 释放通道，CLOSE 发出、账本关掉、
+    /// 通道号还扣着等对端的 CLOSE → 对端按顺序先回 exec 的应答，再回 CLOSE。
+    /// 那个应答是合法的在途报文（RFC 4254 §5.3；velashell-docs/zh/ssh/spec/05 §1 规则 4），
+    /// 在途的请求在关账时已经以「没成」结算过了。
+    /// </para>
+    /// <para>
+    /// 曾经它被判成失步，整条连接以 PROTOCOL_ERROR 断开 —— 同一连接上的终端、SFTP、隧道一起陪葬，
+    /// 而起因只是一个带超时的探测命令。
+    /// </para>
+    /// </remarks>
+    internal bool OnRequestReply(bool success) =>
+        _pendingRequests.TryComplete(success) || _pendingRequests.IsClosed;
 
     /// <summary>收到对端发来的通道请求。</summary>
     /// <returns>我们是否「认得」它。不认得且对端要应答时，调用方要回 <c>CHANNEL_FAILURE</c>。</returns>
     internal bool OnPeerRequest(string requestType, ReadOnlyMemory<byte> payload)
     {
+        // 退出状态 / 退出信号每条通道只有一次（RFC 4254 §6.10）：只收第一份，之后的照样「认得」但丢掉。
+        // 曾经每来一份都进事件流，而它们不受下面那个积压上限约束 —— 对端不停地发 exit-signal
+        // （每条带两个最长 64 KiB 的字符串），没人读事件流时内存无界增长，完全绕过窗口流控。
+        if (requestType is SshProtocolNames.RequestExitStatus or SshProtocolNames.RequestExitSignal
+            && Interlocked.Exchange(ref _exitReported, 1) != 0)
+        {
+            return true;
+        }
+
         if (requestType == SshProtocolNames.RequestExitStatus)
         {
             SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
-            _events.Writer.TryWrite(new SshChannelEvent.ExitStatus((int)reader.ReadUInt32()));
+            SshChannelEvent.ExitStatus status = new((int)reader.ReadUInt32());
+            Volatile.Write(ref _exitEvent, status);
+            _events.Writer.TryWrite(status);
             return true;
         }
 
@@ -752,7 +1007,24 @@ public sealed class SshChannel : IAsyncDisposable
             string signalName = reader.ReadUtf8String(MaxFieldBytes);
             bool coreDumped = reader.ReadBoolean();
             string message = reader.ReadUtf8String(MaxFieldBytes);
-            _events.Writer.TryWrite(new SshChannelEvent.ExitSignal(signalName, coreDumped, message));
+            SshChannelEvent.ExitSignal signal = new(signalName, coreDumped, message);
+            Volatile.Write(ref _exitEvent, signal);
+            _events.Writer.TryWrite(signal);
+            return true;
+        }
+
+        if (requestType == SshProtocolNames.RequestXonXoff)
+        {
+            // 〔velashell-docs/zh/ssh/spec/05 §5.4〕类型化成一条事件，最近一次的值留在属性上。
+            // 事件与未知请求一起受下面那个积压上限约束：对端可以来回翻个不停。
+            SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+            bool clientCanDo = reader.ReadBoolean();
+            Volatile.Write(ref _clientFlowControl, clientCanDo ? 1 : 0);
+            if (Volatile.Read(ref _queuedPeerRequests) < MaxQueuedEvents
+                && _events.Writer.TryWrite(new SshChannelEvent.FlowControl(clientCanDo)))
+            {
+                Interlocked.Increment(ref _queuedPeerRequests);
+            }
             return true;
         }
 
@@ -775,8 +1047,28 @@ public sealed class SshChannel : IAsyncDisposable
     }
 
     /// <summary>事件流里最多积压多少条没读的对端未知请求，超过就不再收。</summary>
-    /// <remarks>退出状态、EOF、关闭这几件不受它限制 —— 它们每条通道只有一次。</remarks>
+    /// <remarks>
+    /// 退出状态、EOF、关闭这几件不受它限制 —— 它们每条通道只进事件流一次（重复的照样丢掉，
+    /// 见 <see cref="OnPeerRequest"/> 与 <see cref="OnEof"/>）。
+    /// </remarks>
     internal const int MaxQueuedEvents = 64;
+
+    /// <summary>已经收到过退出状态或退出信号了。</summary>
+    private int _exitReported;
+
+    /// <summary>最近一次 <c>xon-xoff</c> 的值：-1 没收到过，0 / 1。</summary>
+    private int _clientFlowControl = -1;
+
+    /// <summary>
+    /// 服务端最近一次说的「客户端能不能在本地做 ^S / ^Q 流控」（<c>xon-xoff</c>，RFC 4254 §6.8）；没说过时为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>每次变化同时以 <see cref="SshChannelEvent.FlowControl"/> 进事件流。</remarks>
+    public bool? ClientMayDoFlowControl => Volatile.Read(ref _clientFlowControl) switch
+    {
+        0 => false,
+        1 => true,
+        _ => null,
+    };
 
     /// <summary>事件流里还没被读走的 <see cref="SshChannelEvent.PeerRequest"/> 条数。</summary>
     private int _queuedPeerRequests;
@@ -890,35 +1182,41 @@ public sealed class SshChannel : IAsyncDisposable
             return;
         }
 
-        Interlocked.Add(ref _consumedPendingAdjust, bytes);
-        _consumedGate.Signal();
+        // 〔CH-P2〕攒够回补阈值才叫醒回补泵。曾经每消费一次都叫：消费者读得碎（逐行读几十字节）时，
+        // 每一次都是新建票、注册令牌、一次线程池调度，而绝大多数都是白醒 —— 离阈值还远。
+        // 不会漏醒：阈值只随窗口大小变，而窗口只由回补泵自己改，改完它接着重查。
+        if (Interlocked.Add(ref _consumedPendingAdjust, bytes) >= AdjustThreshold)
+        {
+            _consumedGate.Signal();
+        }
     }
+
+    /// <summary>
+    /// 攒够这么多已消费的字节再发 <c>WINDOW_ADJUST</c>：半个窗口。
+    /// </summary>
+    /// <remarks>
+    /// 每消费几十字节就发一个是在拿控制报文淹没链路。攒着不发也不会卡住对端：
+    /// 本地未消费的数据接近 0 时，对端手上至少还剩半个窗口。
+    /// </remarks>
+    private long AdjustThreshold => _receiveWindow.Size / 2;
 
     private async Task PumpWindowAdjustAsync(CancellationToken cancellationToken)
     {
         try
         {
-            // 已消费、但还没告诉对端的字节数。
-            //
-            // ⚠️ 它必须**跨轮累加**。攒不够阈值就把这一轮的 consumed 丢掉的话，
+            // ⚠️ 已消费、但还没告诉对端的字节数必须**跨轮累加**（_consumedPendingAdjust 本身就是那个累加器，
+            //    够了阈值才整笔取走）。攒不够阈值就把这一轮的 consumed 丢掉的话，
             //    对端视角的窗口会一点一点缩小，最后归零 —— 症状是传了一阵子之后
             //    通道永久停住，而本地账面上看窗口明明是满的。
             //    消费者每次只读几十字节（逐行读）时最容易撞上。
-            long unreported = 0;
-
             while (!cancellationToken.IsCancellationRequested)
             {
                 Task ticket = _consumedGate.NextChange();
 
-                unreported += Interlocked.Exchange(ref _consumedPendingAdjust, 0);
-
-                // 攒够半个窗口再发 —— 每消费几十字节就发一个 WINDOW_ADJUST
-                // 是在拿控制报文淹没链路。
-                //
-                // 攒着不发也不会卡住对端：本地未消费的数据接近 0 时，
-                // 对端手上至少还剩半个窗口。
-                if (unreported >= _receiveWindow.Size / 2)
+                if (Volatile.Read(ref _consumedPendingAdjust) >= AdjustThreshold)
                 {
+                    long unreported = Interlocked.Exchange(ref _consumedPendingAdjust, 0);
+
                     // 扩窗要**当场把多出来的额度授予对端**。
                     //
                     // 只改本地的 Size 而不多授一点，结果是：阈值（Size/2）涨了，
@@ -934,11 +1232,11 @@ public sealed class SshChannel : IAsyncDisposable
                         await SendWindowAdjustAsync(delta, cancellationToken).ConfigureAwait(false);
                     }
 
-                    unreported = 0;
                     continue;
                 }
 
                 await ticket.WaitAsync(cancellationToken).ConfigureAwait(false);
+                Interlocked.Increment(ref _windowAdjustPumpWakeups);
             }
         }
         catch (OperationCanceledException)
@@ -1049,6 +1347,7 @@ public sealed class SshChannel : IAsyncDisposable
             }
 
             _receiveWindow.Resize(grown);
+            RecordWindow(grown);
             return grown - current;
         }
 
@@ -1067,6 +1366,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         _receiveWindow.Resize(shrunk);
         RefundBudget(current - shrunk);
+        RecordWindow(shrunk);
 
         // 负数：这一轮少授这么多，窗口就此回落。
         return shrunk - current;
@@ -1120,7 +1420,7 @@ public sealed class SshChannel : IAsyncDisposable
         packet[0] = (byte)SshMessageNumber.ChannelWindowAdjust;
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(1), RemoteId);
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(5), bytes);
-        await _host.SendIfAsync(packet, _mayStillSend, cancellationToken).ConfigureAwait(false);
+        await _host.SendIfAsync(packet, _mayStillSend, IsInteractive, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PumpStandardInputAsync(CancellationToken cancellationToken)
@@ -1137,6 +1437,14 @@ public sealed class SshChannel : IAsyncDisposable
 
                 while (!buffer.IsEmpty)
                 {
+                    // 对端宣告的 max packet 是 0：它不收任何数据。曾经算出的块是 0、被当成「通道关了」，泵悄悄退出 ——
+                    // stdin 静默失效，之后连 EOF 也不再发。现在照实失败：写入方的 FlushAsync 拿到这个异常。
+                    if (RemoteMaxPacketBytes == 0)
+                    {
+                        throw new SshChannelException(Diagnostics.SshFailureReason.ProtocolError,
+                            $"对端给通道 {LocalId} 宣告的 max packet 是 0 —— 它不收任何数据，写进 stdin 的内容发不出去。");
+                    }
+
                     // 单个数据段**必须**不超过对端宣告的上限 —— 超了对端会断连。
                     int chunk = (int)Math.Min(buffer.Length, RemoteMaxPacketBytes);
 
@@ -1147,7 +1455,12 @@ public sealed class SshChannel : IAsyncDisposable
                         return;   // 通道关了
                     }
 
-                    await SendDataAsync(buffer.Slice(0, chunk), cancellationToken).ConfigureAwait(false);
+                    if (!await SendDataAsync(buffer.Slice(0, chunk), cancellationToken).ConfigureAwait(false))
+                    {
+                        // CLOSE 已经入队，这一帧没有发出去：通道关了。不能计进「已发」——
+                        // 曾经照计，FlushAsync 对被丢掉的数据报了成功。
+                        return;
+                    }
                     buffer = buffer.Slice(chunk);
 
                     Interlocked.Add(ref _stdinSentBytes, chunk);
@@ -1158,13 +1471,13 @@ public sealed class SshChannel : IAsyncDisposable
 
                 if (read.IsCompleted)
                 {
-                    // 调用方直接完成了 StandardInput（PipeWriter 表达「写完了」的惯用法）——
-                    // 那就是 EOF，照 SendEofAsync 的样子补发。不补的话，远端等着读完的程序
-                    // （cat、sort）会一直挂着。是 SendEofAsync 或关通道完成的 writer 时，
-                    // 状态已经推进过，这里什么也不发。
-                    if (TryMarkLocalEof())
+                    // writer 完成了：调用方直接完成了 StandardInput（PipeWriter 表达「写完了」的惯用法），
+                    // 或者 SendEofAsync 完成了它。两种都是 EOF —— 数据已经冲干净，现在发。
+                    // 不发的话，远端等着读完的程序（cat、sort）会一直挂着。通道在关时状态推进不了，什么也不发。
+                    _ = TryMarkLocalEof();
+                    if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
                     {
-                        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
+                        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, IsInteractive, cancellationToken)
                             .ConfigureAwait(false);
                     }
                     return;
@@ -1223,7 +1536,9 @@ public sealed class SshChannel : IAsyncDisposable
         }
     }
 
-    private async ValueTask SendDataAsync(ReadOnlySequence<byte> data, CancellationToken cancellationToken)
+    /// <summary>发一个 <c>CHANNEL_DATA</c>。</summary>
+    /// <returns>发出去了（入队了）为 <see langword="true"/>；CLOSE 已经入队、这一帧不再发时为 <see langword="false"/>。</returns>
+    private async ValueTask<bool> SendDataAsync(ReadOnlySequence<byte> data, CancellationToken cancellationToken)
     {
         // 缓冲从池里租：这是上传路径上每一块都要走的一步，曾经每块新分配一个数组（最大一个 max packet），
         // 高速上传时就是每秒几千次分配。发送方的 await 返回时发送泵已经不再引用它
@@ -1237,8 +1552,14 @@ public sealed class SshChannel : IAsyncDisposable
             System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(rented.AsSpan(5), (uint)length);
             data.CopyTo(rented.AsSpan(9));
 
-            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _mayStillSend, cancellationToken)
+            _dataAdmitted = false;
+            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _admitData, IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
+            if (_dataAdmitted)
+            {
+                Interlocked.Add(ref _bytesSent, length);
+            }
+            return _dataAdmitted;
         }
         finally
         {
@@ -1288,6 +1609,8 @@ public sealed class SshChannel : IAsyncDisposable
 
     private void FinishClose(SshChannelCloseReason reason, Exception? failure = null)
     {
+        bool pumpStarted;
+        bool wasMetered;
         lock (_stateLock)
         {
             if (_state == SshChannelState.Closed)
@@ -1295,26 +1618,43 @@ public sealed class SshChannel : IAsyncDisposable
                 return;
             }
             _state = SshChannelState.Closed;
+
+            // 与 StartPumps 在同一把锁里看：这之后泵不会再起来。
+            pumpStarted = _stdinPump is not null;
+            wasMetered = _activeMetered;
+            _activeMetered = false;
+        }
+
+        if (wasMetered && MetricsHost is { } host)
+        {
+            Diagnostics.SshMetrics.ChannelsActive.Add(
+                -1, Diagnostics.SshMetrics.HostTag(host), Diagnostics.SshMetrics.ChannelTypeTag(ChannelType));
         }
 
         SshChannelEvent.Closed closed = new(reason);
         Volatile.Write(ref _closedEvent, closed);
         _events.Writer.TryWrite(closed);
         _events.Writer.TryComplete();
+        _closedSignal.TrySetResult();
 
         // 还在等应答的请求不会再有应答了。让它们返回 false 而不是永远挂着 ——
         // 挂死没有堆栈也没有日志，只有一个再也不返回的 await。
         _pendingRequests.Close(false);
 
         CompleteReceivePipes(failure);
-        _stdinPipe.Writer.Complete();
 
+        // 〔velashell-docs/zh/ssh/spec/05 §4.4〕stdin 的 writer 归调用方，这里**不替它完成**。
+        // 曾经在这里完成它：调用方随后再写，拿到的是 BCL 的 InvalidOperationException（「writer 已完成」）——
+        // 不是 SshException、不带断开原因；而这里常常跑在接收循环上，调用方可能正在别的线程写，
+        // 本身就是跨线程动了别人的 PipeWriter。改为让 reader 一侧收尾：reader 完成之后，
+        // 写入方的 FlushAsync 返回 IsCompleted（PipeWriter 表达「读的一方不要了」的惯用法）。
+        //
         // stdin 的 reader 在泵起来之后**归泵所有**，这里不能替它完成：
         // 泵可能正读到一半，或者刚 AdvanceTo 完要回头再读 —— 从外面完成 reader
-        // 会让它撞上「reader 完成后不许再读」。完成 writer、取消 _lifetime 之后，
+        // 会让它撞上「reader 完成后不许再读」。取消 _lifetime（下面）、放开发送窗口的闸之后，
         // 泵的每条路径都会退出，并在退出时自己完成 reader。
-        // 泵从没起来（通道没开成）时才由这里完成。
-        if (_stdinPump is null)
+        // 泵从没起来（通道没开成，或者确认之前就收尾了）时才由这里完成。
+        if (!pumpStarted)
         {
             _stdinPipe.Reader.Complete();
         }

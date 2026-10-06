@@ -30,10 +30,12 @@ namespace VelaShell.Ssh.Transport;
 public static class InMemoryTransport
 {
     /// <summary>创建一对互联的双工流。</summary>
-    /// <param name="options">缓冲参数；<see langword="null"/> 时用默认值。</param>
     /// <returns>两端。第一端写出的字节，第二端读得到，反之亦然。</returns>
-    public static InMemoryStreamPair CreatePair(
-        InMemoryTransportOptions? options = null)
+    public static InMemoryStreamPair CreatePair() => CreatePair(options: null);
+
+    /// <summary>创建一对互联的双工流，按 <paramref name="options"/> 设缓冲水位（测试制造背压用）。</summary>
+    /// <param name="options">缓冲参数；<see langword="null"/> 时用默认值。</param>
+    internal static InMemoryStreamPair CreatePair(InMemoryTransportOptions? options)
     {
         options ??= new InMemoryTransportOptions();
 
@@ -51,13 +53,13 @@ public static class InMemoryTransport
     }
 
     /// <summary>
-    /// 一个把 <see cref="CreatePair"/> 的一端交出去的拨号器，另一端留给测试的服务端桩。
+    /// 一个把 <see cref="CreatePair(InMemoryTransportOptions)"/> 的一端交出去的拨号器，另一端留给测试的服务端桩。
     /// </summary>
     /// <param name="onAccepted">
     /// 每次拨号成功时以「服务端那一端」回调。测试在这里挂上报文脚本或服务端桩。
     /// </param>
     /// <param name="options">缓冲参数。</param>
-    public static ISshTransportDialer CreateDialer(
+    internal static ISshTransportDialer CreateDialer(
         Func<InMemoryDuplexStream, SshDialTarget, CancellationToken, ValueTask> onAccepted,
         InMemoryTransportOptions? options = null)
     {
@@ -67,7 +69,7 @@ public static class InMemoryTransport
 
     private sealed class InMemoryDialer(
         Func<InMemoryDuplexStream, SshDialTarget, CancellationToken, ValueTask> onAccepted,
-        InMemoryTransportOptions? options) : ISshTransportDialer
+        InMemoryTransportOptions? options) : ISshTransportDialer, ISshDialKindSource
     {
         public SshDialKind Kind => SshDialKind.InMemory;
 

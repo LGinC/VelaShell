@@ -117,6 +117,19 @@ public class SshSessionFeaturesIntegrationTests
     /// 服务端拒绝 X11 时 shell 照样打开,终端里留一条带原因的黄字提示 —— 这里用一个
     /// 认不出来的显示地址触发本机这一侧的失败。
     /// </summary>
+    /// <summary>「发送 Break」(RFC 4335)走到真实服务端:SSH 会话的流支持它,OpenSSH 对伪终端执行、回 SUCCESS。</summary>
+    [TestMethod]
+    [Timeout(60_000)]
+    public async Task SendBreak_IsPerformedByARealServer()
+    {
+        RequireContainer();
+        await using VelaSshClientWrapper ssh = await ConnectAsync(null);
+        await using IShellStreamWrapper shell = await OpenShellAsync(ssh);
+
+        Assert.IsTrue(shell.SupportsBreak);
+        Assert.IsTrue(await shell.SendBreakAsync(TestContext.CancellationToken));
+    }
+
     [TestMethod]
     [Timeout(60_000)]
     public async Task X11_BadDisplay_StillOpensTheShellWithAWarning()

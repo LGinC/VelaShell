@@ -144,11 +144,13 @@ public sealed class StatusMetricsPoller(
     }
 
     /// <summary>
-    /// 状态栏延迟指示:每 3 次 tick 对活动标签的主机发一次 ICMP ping,RTT 写入
-    /// <c>tab.Latency</c>(经既有 WhenAnyValue 管道刷新状态栏)。
+    /// 状态栏延迟指示:每 3 次 tick 量一次活动标签的往返时间,写入 <c>tab.Latency</c>
+    /// (经既有 WhenAnyValue 管道刷新状态栏)。SSH 会话用 SSH 层的保活请求量(经代理、跳板也准),
+    /// 别的会话退回对主机发 ICMP ping。
     /// </summary>
     /// <remarks>
-    /// 目标禁 ICMP 或解析失败时清空显示,不打扰;不用 TCP 探测以免刷爆 sshd 日志。
+    /// 量不到(目标禁 ICMP、解析失败、SSH 量超时)时清空显示,不打扰;不另开 TCP 连接探测以免刷爆 sshd 日志。
+    /// 曾经一律 ICMP:经跳板、代理连的机器量的是本机直连目标的那条路(常常根本不通),禁 ICMP 的服务器永远没有延迟。
     /// </remarks>
     internal async Task PollLatencyAsync()
     {
@@ -165,17 +167,20 @@ public sealed class StatusMetricsPoller(
         _latencyPolling = true;
         try
         {
-            using var ping = new Ping();
-            PingReply reply = await ping.SendPingAsync(tab.Profile.Host, TimeSpan.FromSeconds(2));
+            // 先用 SSH 自己的往返时间:经代理、跳板也量得到(ICMP 只到得了目标本身,还常被禁)。
+            // 拿不到(不是 SSH 会话)才退回 ICMP ping;SSH 量超时就不显示,而不是换一个偏小的 ICMP 数。
+            (bool available, TimeSpan? latency) = await MeasureSshRoundTripAsync(tab);
+            if (!available)
+            {
+                latency = await PingAsync(tab.Profile.Host);
+            }
 
             // 探测期间用户可能切换了标签;不要把结果写到别的会话上。
             if (!ReferenceEquals(activeTab(), tab))
             {
                 return;
             }
-            tab.Latency = reply.Status == IPStatus.Success
-                              ? TimeSpan.FromMilliseconds(reply.RoundtripTime)
-                              : null;
+            tab.Latency = latency;
         }
         catch
         {
@@ -185,6 +190,31 @@ public sealed class StatusMetricsPoller(
         {
             _latencyPolling = false;
         }
+    }
+
+    /// <summary>SSH 层的往返时间:不是 SSH 会话时 <c>available</c> 为假;超时(2 秒)或出错时可用但没有值。</summary>
+    private async Task<(bool Available, TimeSpan? Latency)> MeasureSshRoundTripAsync(TerminalTabViewModel tab)
+    {
+        if (metricsService is null)
+        {
+            return (false, null);
+        }
+        try
+        {
+            TimeSpan? rtt = await metricsService.MeasureRoundTripAsync(tab.SessionId).WaitAsync(TimeSpan.FromSeconds(2));
+            return (rtt is not null, rtt);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
+        {
+            return (true, null);
+        }
+    }
+
+    private static async Task<TimeSpan?> PingAsync(string host)
+    {
+        using var ping = new Ping();
+        PingReply reply = await ping.SendPingAsync(host, TimeSpan.FromSeconds(2));
+        return reply.Status == IPStatus.Success ? TimeSpan.FromMilliseconds(reply.RoundtripTime) : null;
     }
 
     /// <summary>采一次远端指标写进状态栏。</summary>

@@ -25,8 +25,12 @@ internal sealed record SshVersionExchangeResult(
     /// <summary>客户端标识串的原始字节 —— **交换哈希的第一个输入**。</summary>
     public byte[] ClientVersionBytes { get; } = Encoding.ASCII.GetBytes(ClientVersion);
 
-    /// <summary>服务端标识串的原始字节 —— 交换哈希的第二个输入。</summary>
-    public byte[] ServerVersionBytes { get; } = Encoding.UTF8.GetBytes(ServerVersion);
+    /// <summary>服务端标识串的原始字节（去行尾）—— 交换哈希的第二个输入。</summary>
+    /// <remarks>
+    /// 版本交换填的是线上收到的那串字节；没有填（测试直接构造）时按 UTF-8 编 <see cref="ServerVersion"/>。
+    /// 不能由 string 编回去：非法 UTF-8 的字节解码时成了 U+FFFD，编回去就不是服务端自己算的那串了。
+    /// </remarks>
+    public byte[] ServerVersionBytes { get; init; } = Encoding.UTF8.GetBytes(ServerVersion);
 }
 
 /// <summary>版本标识串交换（RFC 4253 §4.2）。</summary>
@@ -87,10 +91,10 @@ internal static class SshVersionExchange
 
         while (true)
         {
-            string? line;
+            byte[]? raw;
             try
             {
-                line = await transport.ReadLineAsync(cancellationToken).ConfigureAwait(false);
+                raw = await transport.ReadRawLineAsync(cancellationToken).ConfigureAwait(false);
             }
             catch (SshFrameFormatException ex)
             {
@@ -99,7 +103,7 @@ internal static class SshVersionExchange
                     $"读取版本标识串失败：{ex.Message}", ex);
             }
 
-            if (line is null)
+            if (raw is null)
             {
                 throw new SshConnectException(
                     SshFailureReason.ClosedByPeer, SshPhase.VersionExchange,
@@ -108,15 +112,18 @@ internal static class SshVersionExchange
                         : "对端未发出任何数据就关闭了连接 —— 这个端口上可能没有 SSH 服务。");
             }
 
+            // 文本只用来判断与展示；进交换哈希的是原始字节（见 SshVersionExchangeResult.ServerVersionBytes）。
+            string line = Encoding.UTF8.GetString(raw);
             if (line.StartsWith("SSH-", StringComparison.Ordinal))
             {
                 ValidateProtocolVersion(line);
-                return new SshVersionExchangeResult(ours, line, banner);
+                return new SshVersionExchangeResult(ours, line, banner) { ServerVersionBytes = raw };
             }
 
             // 前导行：服务端可以在标识串之前发任意行文本（RFC 4253 §4.2）。
             // 它们不参与交换哈希，但**必须**设上限 —— 否则是一个无成本的内存耗尽面。
-            bannerBytes += line.Length;
+            // 按线上的字节数累计 —— 曾经按 UTF-16 字符数，CJK 文本能超过上限约 3 倍。
+            bannerBytes += raw.Length;
             if (banner.Count >= MaxBannerLines || bannerBytes > MaxBannerBytes)
             {
                 throw new SshConnectException(

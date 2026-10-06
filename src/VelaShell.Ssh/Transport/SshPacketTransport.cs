@@ -94,6 +94,19 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         _writer = PipeWriter.Create(_counting, new StreamPipeWriterOptions(leaveOpen: true));
     }
 
+    /// <summary>度量的 <c>host</c> 标签；<see langword="null"/>（单独用传输的测试）时不记度量。</summary>
+    internal string? MetricsHost
+    {
+        get => _counting.MetricsHost;
+        init
+        {
+            _counting.MetricsHost = value;
+            _metricsHostTag = value is null ? null : Diagnostics.SshMetrics.HostTag(value);
+        }
+    }
+
+    private readonly KeyValuePair<string, object?>? _metricsHostTag;
+
     /// <summary>线上收到的字节数（含协议头、填充与 MAC）。</summary>
     public long BytesReceived => _counting.BytesRead;
 
@@ -101,16 +114,74 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     public long BytesSent => _counting.BytesWritten;
 
     /// <summary>收到的报文数。</summary>
-    public long PacketsReceived { get; private set; }
+    /// <remarks>
+    /// 写在收包路径上、读在重协商的阈值监视与诊断里 —— 两个线程。64 位计数在 32 位平台上普通读写会撕裂，
+    /// 读到半新半旧的值可能误触发或漏触发重协商；所以与字节数一样走 <see cref="Interlocked"/>（AGENTS 4.3）。
+    /// </remarks>
+    public long PacketsReceived => Interlocked.Read(ref _packetsReceived);
 
-    /// <summary>发出的报文数。</summary>
-    public long PacketsSent { get; private set; }
+    /// <summary>发出的报文数（同 <see cref="PacketsReceived"/> 的说明）。</summary>
+    public long PacketsSent => Interlocked.Read(ref _packetsSent);
+
+    private long _packetsReceived;
+    private long _packetsSent;
 
     /// <summary>当前允许的最大 <c>packet_length</c>。认证成功后由会话放宽。</summary>
     public int MaxPacketLength { get; set; } = SshPacketFormat.PreAuthMaxPacketLength;
 
+    /// <summary>
+    /// 同一套密钥下，任一方向最多处理多少个报文。默认 2³²：再多一个，序号就回绕到这套密钥用过的值上。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 这是<b>最后一道</b>保险，与重协商策略无关、关不掉。chacha20-poly1305 的 nonce 就是序号 ——
+    /// 同一把钥下序号重复，密钥流与 Poly1305 的一次性密钥一起重用，报文可以被伪造；HMAC 套件则可以被重放
+    /// （RFC 4344 §3.1：序号回绕之前必须换钥）。正常情况下会话在 2³¹ 处就主动重协商了，走不到这里。
+    /// </para>
+    /// <para>只有测试会把它调小。</para>
+    /// </remarks>
+    internal long MaxPacketsPerKey { get; init; } = 1L << 32;
+
+    private long _sendPacketsUnderKey;
+    private long _receivePacketsUnderKey;
+
+    /// <summary>当前这套密钥下已经发了多少个报文。</summary>
+    internal long SendPacketsUnderKey => Volatile.Read(ref _sendPacketsUnderKey);
+
+    /// <summary>当前这套密钥下已经收了多少个报文。</summary>
+    internal long ReceivePacketsUnderKey => Volatile.Read(ref _receivePacketsUnderKey);
+
     /// <summary>接收方向的当前序号（下一个要收的报文用它）。</summary>
     public uint ReceiveSequenceNumber { get; private set; }
+
+    /// <summary>报文旁路（<see cref="Diagnostics.IPacketTap"/>）；<see langword="null"/> 时不调。</summary>
+    internal Diagnostics.IPacketTap? PacketTap { get; set; }
+
+    /// <summary>旁路拿不拿得到载荷（认证报文 50–79 无论如何都不给）。</summary>
+    internal bool AllowPacketTapPayload { get; set; }
+
+    /// <summary>把一个报文交给旁路。旁路抛的异常吞掉：旁路出错不该弄坏连接。</summary>
+    private void Tap(Diagnostics.IPacketTap tap, Diagnostics.PacketDirection direction, ReadOnlySpan<byte> payload, uint sequence)
+    {
+        byte number = payload.IsEmpty ? (byte)0 : payload[0];
+
+        // 通道消息（CHANNEL_OPEN_CONFIRMATION 91 … CHANNEL_FAILURE 100）紧跟着就是接收方通道号。
+        uint? channel = number is >= 91 and <= 100 && payload.Length >= 5
+            ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload[1..5])
+            : null;
+
+        // 〔velashell-docs/zh/ssh/spec/08 §9 第 3 条〕认证报文（50–79）的载荷永远不给，没有开关。
+        bool includePayload = AllowPacketTapPayload && number is not (>= 50 and <= 79);
+        try
+        {
+            tap.OnPacket(new Diagnostics.PacketTapRecord(
+                direction, number, payload.Length, sequence, channel, includePayload ? payload : default));
+        }
+        catch (Exception)
+        {
+            // 旁路是使用者的代码：它出错不该让连接断开。
+        }
+    }
 
     /// <summary>发送方向的当前序号（下一个要发的报文用它）。</summary>
     public uint SendSequenceNumber { get; private set; }
@@ -134,6 +205,23 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// </remarks>
     public async ValueTask<string?> ReadLineAsync(CancellationToken cancellationToken = default)
     {
+        byte[]? line = await ReadRawLineAsync(cancellationToken).ConfigureAwait(false);
+
+        // 标识串按 RFC 是 US-ASCII，但前导行（banner）可能是任意 UTF-8。
+        // 用宽容的 UTF-8 解码：这里的文本只用于展示与判断开头，进交换哈希的是原始字节（见 ReadRawLineAsync）。
+        return line is null ? null : Encoding.UTF8.GetString(line);
+    }
+
+    /// <summary>
+    /// 同 <see cref="ReadLineAsync"/>，但交回<b>原始字节</b>（去掉行尾的 <c>\r\n</c> / <c>\n</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/02 §六〕服务端标识串进交换哈希（<c>V_S</c>）的必须是它发来的那串字节。
+    /// 先解成 string 再编回去的话，注释段里一个不是合法 UTF-8 的字节（Latin-1 的 ©）会变成 <c>EF BF BD</c>，
+    /// 两边算出的交换哈希不同 —— 验签失败、报「主机密钥被拒、可能有中间人」，一个兼容性问题被报成了安全事件。
+    /// </remarks>
+    internal async ValueTask<byte[]?> ReadRawLineAsync(CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         while (true)
@@ -144,20 +232,22 @@ internal sealed class SshPacketTransport : IAsyncDisposable
             SequencePosition? newline = buffer.PositionOf((byte)'\n');
             if (newline is not null)
             {
+                // 〔RFC 4253 §4.2〕255 字节**含行尾**。line 到 \n 为止（不含 \n），所以上限是 254 ——
+                // 曾经写成 > 255，含 CRLF 共 256 字节的行能过。
                 ReadOnlySequence<byte> line = buffer.Slice(0, newline.Value);
-                if (line.Length > MaxIdentificationLineBytes)
+                if (line.Length + 1 > MaxIdentificationLineBytes)
                 {
                     _reader.AdvanceTo(buffer.Start, buffer.End);
                     throw new SshFrameFormatException(
-                        $"标识串行超过 {MaxIdentificationLineBytes} 字节（收到 {line.Length}）。");
+                        $"标识串行（含行尾）超过 {MaxIdentificationLineBytes} 字节（收到 {line.Length + 1}）。");
                 }
 
-                string text = DecodeLine(line);
+                byte[] raw = StripCarriageReturn(line);
                 _reader.AdvanceTo(buffer.GetPosition(1, newline.Value));
-                return text;
+                return raw;
             }
 
-            if (buffer.Length > MaxIdentificationLineBytes)
+            if (buffer.Length >= MaxIdentificationLineBytes)
             {
                 _reader.AdvanceTo(buffer.Start, buffer.End);
                 throw new SshFrameFormatException(
@@ -197,26 +287,11 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         await _writer.FlushAsync(cancellationToken).ConfigureAwait(false);
     }
 
-    private static string DecodeLine(ReadOnlySequence<byte> line)
+    /// <summary>一行的原始字节，顺带去掉行尾的 CR（见 <see cref="ReadLineAsync"/> 的互操作说明）。</summary>
+    private static byte[] StripCarriageReturn(ReadOnlySequence<byte> line)
     {
-        int length = (int)line.Length;
-        byte[] rented = ArrayPool<byte>.Shared.Rent(Math.Max(length, 1));
-        try
-        {
-            line.CopyTo(rented);
-            // 顺带去掉 CR —— 见 <remarks> 的互操作说明。
-            if (length > 0 && rented[length - 1] == (byte)'\r')
-            {
-                length--;
-            }
-            // 标识串按 RFC 是 US-ASCII，但前导行（banner）可能是任意 UTF-8。
-            // 用宽容的 UTF-8 解码：这些文本只用于展示，不参与任何判定。
-            return Encoding.UTF8.GetString(rented.AsSpan(0, length));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
+        byte[] bytes = line.ToArray();
+        return bytes.Length > 0 && bytes[^1] == (byte)'\r' ? bytes[..^1] : bytes;
     }
 
     // ------------------------------------------------------------ 帧式（稳态）
@@ -242,6 +317,12 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
             if (!buffer.IsEmpty)
             {
+                if (_receivePacketsUnderKey >= MaxPacketsPerKey)
+                {
+                    _reader.AdvanceTo(buffer.Start, buffer.End);
+                    throw SequenceExhausted("接收");
+                }
+
                 _payloadBuffer.ResetWrittenCount();
                 SshOpenStatus status;
                 try
@@ -254,7 +335,12 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                         _reader.AdvanceTo(buffer.GetPosition(consumed));
                         // 序号在**成功取出一帧之后**才推进，与密码套件的约定一致。
                         ReceiveSequenceNumber = unchecked(ReceiveSequenceNumber + 1);
-                        PacketsReceived++;
+                        Interlocked.Increment(ref _packetsReceived);
+                        Interlocked.Increment(ref _receivePacketsUnderKey);
+                        if (_metricsHostTag is { } hostTag)
+                        {
+                            Diagnostics.SshMetrics.Packets.Add(1, hostTag, Diagnostics.SshMetrics.DirectionReceived);
+                        }
                     }
                 }
                 catch
@@ -271,10 +357,21 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                     // ⚠️ 解压放在上面那个 try **外面**：reader 在那里已经 AdvanceTo 过了。
                     //    曾经放在里面，解压一失败（压缩炸弹、坏的 zlib 流），catch 就再 AdvanceTo 一次，
                     //    真正的原因被「PipeReader 已经越过这个位置」的 InvalidOperationException 盖掉。
-                    return new SshInboundPacket(
-                        _receiveCompressor.IsActive
-                            ? DecompressPayload(_payloadBuffer.WrittenMemory)
-                            : _payloadBuffer.WrittenMemory);
+                    ReadOnlyMemory<byte> payload = _receiveCompressor.IsActive
+                        ? DecompressPayload(_payloadBuffer.WrittenMemory)
+                        : _payloadBuffer.WrittenMemory;
+
+                    // 〔velashell-docs/zh/ssh/spec/01 §5〕载荷为空的报文在协议里不存在（每个报文至少有一个消息编号字节）：
+                    // 在帧层就拒收，不让它带着一个「取不出消息编号」的载荷往上走。
+                    if (payload.IsEmpty)
+                    {
+                        throw new SshFrameFormatException("报文载荷为空，没有消息编号。");
+                    }
+                    if (PacketTap is { } tap)
+                    {
+                        Tap(tap, Diagnostics.PacketDirection.Inbound, payload.Span, unchecked(ReceiveSequenceNumber - 1));
+                    }
+                    return new SshInboundPacket(payload);
                 }
             }
 
@@ -304,7 +401,16 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// </remarks>
     public void WritePacket(ReadOnlySpan<byte> payload)
     {
+        if (PacketTap is { } tap)
+        {
+            Tap(tap, Diagnostics.PacketDirection.Outbound, payload, SendSequenceNumber);
+        }
         ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_sendPacketsUnderKey >= MaxPacketsPerKey)
+        {
+            throw SequenceExhausted("发送");
+        }
 
         // **先压缩，再加密。**反过来的话压缩器面对的是密文 ——
         // 密文没有可压缩性，压出来只会更长，而且会泄漏明文的统计特征。
@@ -320,8 +426,18 @@ internal sealed class SshPacketTransport : IAsyncDisposable
         }
 
         SendSequenceNumber = unchecked(SendSequenceNumber + 1);
-        PacketsSent++;
+        Interlocked.Increment(ref _packetsSent);
+        Interlocked.Increment(ref _sendPacketsUnderKey);
+        if (_metricsHostTag is { } hostTag)
+        {
+            Diagnostics.SshMetrics.Packets.Add(1, hostTag, Diagnostics.SshMetrics.DirectionSent);
+        }
     }
+
+    /// <summary>同一套密钥下的序号要用完了，重协商却没有完成：宁可断开，也不让序号回绕。</summary>
+    private SshFrameFormatException SequenceExhausted(string direction) =>
+        new($"{direction}方向在同一套密钥下已经处理了 {MaxPacketsPerKey} 个报文，重协商却没有完成 —— " +
+            "再处理一个序号就会回绕（nonce 重用），为此断开连接。");
 
     /// <summary>把刚解密出来的载荷解压。</summary>
     private ReadOnlyMemory<byte> DecompressPayload(ReadOnlyMemory<byte> compressed)
@@ -386,6 +502,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
         _receiveSuite.Dispose();
         _receiveSuite = suite;
+        Volatile.Write(ref _receivePacketsUnderKey, 0);
         if (resetSequenceNumber)
         {
             ReceiveSequenceNumber = 0;
@@ -406,6 +523,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
 
         _sendSuite.Dispose();
         _sendSuite = suite;
+        Volatile.Write(ref _sendPacketsUnderKey, 0);
         if (resetSequenceNumber)
         {
             SendSequenceNumber = 0;
@@ -491,6 +609,17 @@ internal sealed class CountingStream(Stream inner) : Stream
 
     public long BytesWritten => Interlocked.Read(ref _bytesWritten);
 
+    /// <summary>度量的 <c>host</c> 标签；<see langword="null"/> 时不记度量（<c>velashell.ssh.bytes</c>）。</summary>
+    public string? MetricsHost { get; set; }
+
+    private void Meter(int bytes, KeyValuePair<string, object?> direction)
+    {
+        if (bytes > 0 && MetricsHost is { } host && Diagnostics.SshMetrics.Bytes.Enabled)
+        {
+            Diagnostics.SshMetrics.Bytes.Add(bytes, Diagnostics.SshMetrics.HostTag(host), direction);
+        }
+    }
+
     public override bool CanRead => inner.CanRead;
 
     public override bool CanWrite => inner.CanWrite;
@@ -510,6 +639,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         int read = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
         Interlocked.Add(ref _bytesRead, read);
+        Meter(read, Diagnostics.SshMetrics.DirectionReceived);
         return read;
     }
 
@@ -518,6 +648,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         await inner.WriteAsync(buffer, cancellationToken).ConfigureAwait(false);
         Interlocked.Add(ref _bytesWritten, buffer.Length);
+        Meter(buffer.Length, Diagnostics.SshMetrics.DirectionSent);
     }
 
     public override Task<int> ReadAsync(
@@ -537,6 +668,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         int read = inner.Read(buffer, offset, count);
         Interlocked.Add(ref _bytesRead, read);
+        Meter(read, Diagnostics.SshMetrics.DirectionReceived);
         return read;
     }
 
@@ -544,6 +676,7 @@ internal sealed class CountingStream(Stream inner) : Stream
     {
         inner.Write(buffer, offset, count);
         Interlocked.Add(ref _bytesWritten, count);
+        Meter(count, Diagnostics.SshMetrics.DirectionSent);
     }
 
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

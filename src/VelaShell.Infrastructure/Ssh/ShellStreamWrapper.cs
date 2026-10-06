@@ -95,8 +95,8 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
 
                 if (result.IsCompleted)
                 {
-                    // 读完且没抛:对端正常关闭了通道 —— 远端 shell 自己退了。
-                    EndRead(ShellCloseReason.RemoteExited);
+                    // 读完且没抛:看库记下的关闭原因,不靠管道的结束方式反推(W7)。
+                    EndRead(FromChannel(_shell.Channel.CloseReason));
                     return 0;
                 }
 
@@ -116,6 +116,18 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
         catch (InvalidOperationException) { EndRead(ShellCloseReason.LocalTeardown); return 0; }
         catch (OperationCanceledException) { EndRead(ShellCloseReason.LocalTeardown); return 0; }
     }
+
+    /// <summary>库记下的通道关闭原因换成终端流的结束原因。</summary>
+    /// <remarks>
+    /// 会话没了是断线(自动重连该管),本端关的是拆除;对端关的、以及只收到 EOF 还没收到 CLOSE 的(<see cref="SshChannelCloseReason.Unknown" />),
+    /// 是远端 shell 自己退了 —— 用户在远端敲了 <c>exit</c>,不该再把他连回去(#383)。
+    /// </remarks>
+    internal static ShellCloseReason FromChannel(SshChannelCloseReason reason) => reason switch
+    {
+        SshChannelCloseReason.SessionClosed => ShellCloseReason.ConnectionLost,
+        SshChannelCloseReason.ClosedLocally => ShellCloseReason.LocalTeardown,
+        _ => ShellCloseReason.RemoteExited,
+    };
 
     /// <summary>标记读端到此为止,并记下第一次给出的原因(后续读一律短路,不再改写)。</summary>
     private void EndRead(ShellCloseReason reason)
@@ -157,10 +169,11 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
                 _channelClosed = true;
             }
         }
-        catch (Exception ex) when (ex is SshException or ObjectDisposedException
-                                      or InvalidOperationException or IOException)
+        catch (Exception ex) when (ex is SshException or ObjectDisposedException or IOException)
         {
             // 通道已断:后续写入一律短路,不再逐次去撞库内异常(断线时键盘输入仍在入队)。
+            // 不再接 InvalidOperationException:库曾在关通道时替我们完成 StandardInput,再写就是它;
+            // 现在通道关了之后写入返回 IsCompleted(上面那条分支)。
             _channelClosed = true;
         }
     }
@@ -207,6 +220,28 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
         catch
         {
             // 其它原因(参数、瞬时状态)吞掉,不永久禁写。
+        }
+    }
+
+    /// <inheritdoc />
+    public bool SupportsBreak => !_disposed && !_channelClosed;
+
+    /// <inheritdoc />
+    /// <remarks>服务端没执行(回 FAILURE)、通道已经没了都是 <see langword="false" />:按了「发送 Break」不该弹异常。</remarks>
+    public async Task<bool> SendBreakAsync(CancellationToken cancellationToken)
+    {
+        if (!SupportsBreak)
+        {
+            return false;
+        }
+
+        try
+        {
+            return await _shell.SendBreakAsync(length: null, cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SshException or ObjectDisposedException or InvalidOperationException)
+        {
+            return false;
         }
     }
 

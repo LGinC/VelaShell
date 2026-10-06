@@ -52,7 +52,7 @@ Console.WriteLine(result.StandardOutput);
 **一个运行时依赖：`BouncyCastle.Cryptography`**（MIT），只用来做 BCL 缺失的密码学原语 ——
 raw ChaCha20 块函数、独立 Poly1305、Ed25519、X25519、DH 标准群、ML-KEM-768、sntrup761、
 Argon2id（`.ppk` v3）。**没有第二种用途。** BCL 有的一律走 BCL。版本登记在
-`src/Directory.Packages.props`，与宿主的 `SshKeyService` 共用一条。
+`src/Directory.Packages.props`（中央包管理与宿主共用；宿主不直接引用 BouncyCastle）。
 
 **我们不自己写密码学原语**，唯一的例外是 `Keys/BcryptPbkdf.cs`（加密的 OpenSSH 私钥的 KDF），
 范围钉死，理由见 [`AGENTS.md`](AGENTS.md) §3.3。
@@ -86,6 +86,18 @@ pwsh scripts/ssh/interop/Start-TestServer.ps1 -X11   # -X11 会装 xauth 并打�
 dotnet test tests/VelaShell.Ssh.Tests/VelaShell.Ssh.Tests.csproj --filter "TestCategory=Interop"
 pwsh scripts/ssh/interop/Stop-TestServer.ps1
 ```
+
+没有 docker 时可以在 WSL 里起一台**非 root** 的 sshd（[`wsl-sshd.sh`](../../scripts/ssh/interop/wsl-sshd.sh)：只开公钥认证，
+打开了有限域 DH 与 `RekeyLimit 1M`）。非 root 的 sshd 验不了口令，用例的默认凭据改用私钥：
+
+```powershell
+wsl sh scripts/ssh/interop/wsl-sshd.sh /mnt/c/temp      # 前台运行；私钥写到 C:\temp\interop_client
+$env:VELASHELL_SSH_INTEROP = '1'; $env:VELASHELL_SSH_INTEROP_USER = '<WSL 用户名>'
+$env:VELASHELL_SSH_INTEROP_KEY = 'C:\temp\interop_client'; $env:VELASHELL_SSH_INTEROP_KEY_ONLY = '1'
+dotnet test tests/VelaShell.Ssh.Tests/VelaShell.Ssh.Tests.csproj --filter "TestCategory=Interop"
+```
+
+要口令、加密私钥、证书、X11 的那几条照常跳过。
 
 **性能基准**（BenchmarkDotNet，单文件应用，不进 CI 门禁）。Release 在本仓库意味着强名签名，
 本机没有 `VelaShell.snk`，所以关掉签名：

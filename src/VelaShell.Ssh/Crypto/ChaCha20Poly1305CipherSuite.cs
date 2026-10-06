@@ -31,7 +31,7 @@ namespace VelaShell.Ssh.Crypto;
 ///   <item><b>两把独立密钥。</b>64 字节密钥材料切成两半：
 ///   前 32 字节加密载荷并产出 Poly1305 密钥，后 32 字节**只**加密那 4 字节长度。</item>
 ///   <item><b>长度字段被单独加密。</b>因此收包时要先用第二把钥解出长度，
-///   才知道这一帧有多长 —— 这就是 <see cref="CipherSuiteShape.LengthIsEncrypted"/>。</item>
+///   才知道这一帧有多长。</item>
 ///   <item><b>nonce 是 8 字节大端的报文序号</b>，配原始 ChaCha 的 64 位 nonce 布局，
 ///   不是 RFC 8439 的 96 位。</item>
 /// </list>
@@ -88,16 +88,11 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
     /// <inheritdoc />
     public CipherSuiteShape Shape { get; } = new()
     {
-        LengthIsEncrypted = true,
-        AadBytes = 0,
         TagBytes = TagBytes,
         BlockBytes = 8,
         // 对齐不含长度字段 —— 与 AES-GCM 同理。
         LengthInAlignment = false,
-        EncryptThenMac = true,
         IsEncrypted = true,
-        // 长度只有 4 字节，且 ChaCha20 是流密码，读 4 字节就能解出来。
-        LengthProbeBytes = SshPacketFormat.LengthFieldBytes,
     };
 
     /// <inheritdoc />
@@ -180,13 +175,7 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
 
         // 长度此刻还**没有被认证**（tag 要等整帧收齐才能验）。所以必须先做范围检查 ——
         // 不检查就等于让一个还没被验证过的数字决定我们要等多少字节、分配多少内存。
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || packetLength % 8 != 0)
-        {
-            throw new SshFrameFormatException(
-                $"chacha20-poly1305 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}，须为 8 的倍数）。");
-        }
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, block: 8, lengthInAlignment: false, "chacha20-poly1305");
 
         long total = SshPacketFormat.LengthFieldBytes + packetLength + TagBytes;
         if (input.Length < total)
@@ -194,9 +183,40 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
             return SshOpenStatus.NeedMoreData;
         }
 
-        byte[] rented = ArrayPool<byte>.Shared.Rent((int)total);
         Span<byte> polyKey = stackalloc byte[PolyKeyBytes];
         ChaChaEngine engine = Rewind(_payloadEngine, sequenceNumber);
+
+        // 整帧在一段连续内存里（绝大多数时候如此）：tag 直接在输入上验，载荷区直接解进输出 ——
+        // 不拷整帧、不租中转缓冲。曾经每帧先把整帧拷进租来的缓冲，再拷一遍载荷。
+        if (input.Slice(0, total).IsSingleSegment)
+        {
+            ReadOnlySpan<byte> frame = input.Slice(0, total).FirstSpan;
+            try
+            {
+                DerivePolyKey(engine, polyKey);
+
+                // **先验 tag，再解密。** 顺序反过来就是一个解密预言机。
+                Span<byte> expectedTag = stackalloc byte[TagBytes];
+                ComputeTag(polyKey, frame[..(SshPacketFormat.LengthFieldBytes + (int)packetLength)], expectedTag);
+                if (!CryptographicOperations.FixedTimeEquals(expectedTag, frame[^TagBytes..]))
+                {
+                    throw SshFrameFormatException.IntegrityCheckFailed();
+                }
+
+                Span<byte> plain = payload.GetSpan((int)packetLength)[..(int)packetLength];
+                engine.ProcessBytes(frame.Slice(SshPacketFormat.LengthFieldBytes, (int)packetLength), plain);
+                payload.Advance(SshPacketFormat.MoveDecryptedPayloadToFront(plain));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(polyKey);
+            }
+
+            consumed = total;
+            return SshOpenStatus.Opened;
+        }
+
+        byte[] rented = ArrayPool<byte>.Shared.Rent((int)total);
         try
         {
             Span<byte> frame = rented.AsSpan(0, (int)total);
@@ -277,6 +297,13 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
 
     private void DecryptLengthField(ReadOnlySpan<byte> encrypted, uint sequenceNumber, Span<byte> plain) => Rewind(_lengthEngine, sequenceNumber).ProcessBytes(encrypted, plain);
 
+    /// <remarks>
+    /// ⚠️ 〔已知局限〕BouncyCastle 的 <see cref="KeyParameter"/> 总是另存一份密钥，公开 API 拿不到那份去清零 ——
+    /// 每个报文的 Poly1305 一次性密钥因此在堆上留一份，等 GC。它只对那一个报文（那一个序号）有用，
+    /// 而 Poly1305 自己的内部状态里本来也留着由它展开的 r / s，直到下一次 Init。
+    /// 同理，每个报文换 nonce 都要新建 <see cref="ParametersWithIV"/>（引擎没有公开的「只换 nonce」入口）。
+    /// 要消掉这几处小分配与副本得自己写 Poly1305 / ChaCha20 —— 那是 AGENTS 3.3 不许的。我们这边的那份（栈上）照常清零。
+    /// </remarks>
     private void ComputeTag(ReadOnlySpan<byte> polyKey, ReadOnlySpan<byte> data, Span<byte> tag)
     {
         _poly.Init(new KeyParameter(polyKey));
@@ -294,8 +321,10 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
         _disposed = true;
 
         // 引擎里留着密钥展开后的状态：装一把全零的钥把它覆盖掉。
+        // Poly1305 里留着最后一个报文的 r / s（由那个报文的一次性密钥展开）：同样用全零的钥覆盖。
         byte[] zeroKey = new byte[32];
         _payloadEngine.Init(forEncryption: true, new ParametersWithIV(new KeyParameter(zeroKey), _nonce));
         _lengthEngine.Init(forEncryption: true, new ParametersWithIV(new KeyParameter(zeroKey), _nonce));
+        _poly.Init(new KeyParameter(zeroKey));
     }
 }

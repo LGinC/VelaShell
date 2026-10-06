@@ -34,7 +34,9 @@ internal static class TestKexResponder
         SshAlgorithmNames.EcdhSha2Nistp256 or SshAlgorithmNames.EcdhSha2Nistp384 or SshAlgorithmNames.EcdhSha2Nistp521 => true,
         SshAlgorithmNames.DiffieHellmanGroup14Sha256 or SshAlgorithmNames.DiffieHellmanGroup16Sha512
             or SshAlgorithmNames.DiffieHellmanGroup14Sha1 => true,
+        SshAlgorithmNames.DiffieHellmanGroupExchangeSha256 => true,
         SshAlgorithmNames.MlKem768X25519Sha256 => true,
+        SshAlgorithmNames.MlKem768Nistp256Sha256 or SshAlgorithmNames.MlKem1024Nistp384Sha384 => true,
         SshAlgorithmNames.Sntrup761X25519Sha512 or SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh => true,
         _ => false,
     };
@@ -59,8 +61,65 @@ internal static class TestKexResponder
         SshAlgorithmNames.Sntrup761X25519Sha512 or SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh =>
             RespondHybrid(clientPublicValue, kemPublicBytes: 1158, HashAlgorithmName.SHA512, SNtruEncapsulate),
 
+        SshAlgorithmNames.MlKem768Nistp256Sha256 or SshAlgorithmNames.MlKem1024Nistp384Sha384 =>
+            RespondNistHybrid(algorithm, clientPublicValue, out _),
+
         _ => throw new NotSupportedException($"测试桩不支持的 KEX：{algorithm}"),
     };
+
+    /// <summary>
+    /// 面向 FIPS 的混合（RFC 10042）的服务端一侧：ML-KEM 封装 + NIST 曲线 ECDH。
+    /// </summary>
+    /// <param name="algorithm"><c>mlkem768nistp256-sha256</c> 或 <c>mlkem1024nistp384-sha384</c>。</param>
+    /// <param name="clientPublic">客户端的 <c>C_INIT</c>（<c>ek_pq ‖ Q_C</c>）。</param>
+    /// <param name="classicalSecret">算出的 <c>K_CL</c>（定长 X 坐标），给「前导零」那条用例看。</param>
+    /// <remarks>
+    /// ⚠️ <c>K_CL</c> 与 <c>K</c> 在这里<b>独立地</b>算一遍，不调被测的代码（velashell-docs/zh/ssh/spec/03 §3.7.6）：
+    /// 两边要是共用一段补零的逻辑，错得一样时用例照样通过。
+    /// </remarks>
+    internal static TestKexResponse RespondNistHybrid(string algorithm, ReadOnlySpan<byte> clientPublic, out byte[] classicalSecret)
+    {
+        (MLKemParameters kem, ECCurve curve, int coordinate) = algorithm == SshAlgorithmNames.MlKem1024Nistp384Sha384
+            ? (MLKemParameters.ml_kem_1024, ECCurve.NamedCurves.nistP384, 48)
+            : (MLKemParameters.ml_kem_768, ECCurve.NamedCurves.nistP256, 32);
+        int pointBytes = 1 + (2 * coordinate);
+        int encapsulationKeyBytes = clientPublic.Length - pointBytes;
+
+        MLKemEncapsulator encapsulator = new(kem);
+        encapsulator.Init(MLKemPublicKeyParameters.FromEncoding(kem, clientPublic[..encapsulationKeyBytes].ToArray()));
+        byte[] ciphertext = new byte[encapsulator.EncapsulationLength];
+        byte[] kemSecret = new byte[encapsulator.SecretLength];
+        encapsulator.Encapsulate(ciphertext, 0, ciphertext.Length, kemSecret, 0, kemSecret.Length);
+
+        using var server = ECDiffieHellman.Create(curve);
+        ECParameters own = server.ExportParameters(false);
+        byte[] serverPoint = new byte[pointBytes];
+        serverPoint[0] = 0x04;
+        own.Q.X!.CopyTo(serverPoint.AsSpan(1 + coordinate - own.Q.X!.Length));
+        own.Q.Y!.CopyTo(serverPoint.AsSpan(pointBytes - own.Q.Y!.Length));
+
+        ReadOnlySpan<byte> clientPoint = clientPublic[encapsulationKeyBytes..];
+        using var peer = ECDiffieHellman.Create(new ECParameters
+        {
+            Curve = curve,
+            Q = new ECPoint
+            {
+                X = clientPoint[1..(1 + coordinate)].ToArray(),
+                Y = clientPoint[(1 + coordinate)..].ToArray(),
+            },
+        });
+
+        // K_CL：共享点的 X 坐标，按坐标长度定长、前导零保留（SEC 1 §2.3.5）。
+        byte[] rawX = server.DeriveRawSecretAgreement(peer.PublicKey);
+        ReadOnlySpan<byte> significant = rawX.AsSpan().TrimStart((byte)0);
+        classicalSecret = new byte[coordinate];
+        significant.CopyTo(classicalSecret.AsSpan(coordinate - significant.Length));
+
+        // K = HASH(K_PQ ‖ K_CL)
+        byte[] combined = [.. kemSecret, .. classicalSecret];
+        byte[] secret = coordinate == 48 ? SHA384.HashData(combined) : SHA256.HashData(combined);
+        return new TestKexResponse([.. ciphertext, .. serverPoint], secret);
+    }
 
     private static TestKexResponse RespondCurve25519(ReadOnlySpan<byte> clientPublic)
     {
@@ -97,6 +156,10 @@ internal static class TestKexResponder
 
         return new TestKexResponse(serverPublic, server.DeriveRawSecretAgreement(peer.PublicKey));
     }
+
+    /// <summary>群交换：群是服务端自己给出去的那一个（见 <c>TestSshServerOptions.GexGroup</c>）。</summary>
+    public static TestKexResponse RespondGroupExchange(ReadOnlySpan<byte> clientPublic, byte[] prime, byte[] generator) =>
+        RespondDiffieHellman(clientPublic, new DHParameters(new BcBigInteger(1, prime), new BcBigInteger(1, generator)));
 
     private static TestKexResponse RespondDiffieHellman(ReadOnlySpan<byte> clientPublic, DHParameters group)
     {

@@ -232,6 +232,8 @@ sed -i 's/^X11Forwarding .*/X11Forwarding yes/' "$conf"
 grep -q '^X11Forwarding yes' "$conf" || echo 'X11Forwarding yes' >> "$conf"
 grep -q '^X11UseLocalhost' "$conf" || echo 'X11UseLocalhost yes' >> "$conf"
 grep -q '^AllowStreamLocalForwarding' "$conf" || echo 'AllowStreamLocalForwarding yes' >> "$conf"
+# 服务端按字节数主动发起重协商：「开着压缩时服务端发起的重协商」那条用例靠它。
+grep -q '^RekeyLimit' "$conf" || echo 'RekeyLimit 1M' >> "$conf"
 
 kill -HUP "$pid"
 
@@ -296,6 +298,15 @@ docker cp (Join-Path $PSScriptRoot 'host-cert.sh') "${ContainerName}:/tmp/host-c
 docker exec $ContainerName sh /tmp/host-cert.sh "$containerHostKey-cert.pub"
 if ($LASTEXITCODE -ne 0) {
     throw '配置 HostCertificate 失败 —— 主机证书的互操作用例会连不上。'
+}
+Start-Sleep -Milliseconds 500
+
+# 群交换（RFC 4419）：OpenSSH 10 起服务端默认不开，这里追加进清单（不动默认的那些）。
+Write-Step '让 sshd 再开 diffie-hellman-group-exchange-sha256（验群交换）'
+docker cp (Join-Path $PSScriptRoot 'kex-gex.sh') "${ContainerName}:/tmp/kex-gex.sh" | Out-Null
+docker exec $ContainerName sh /tmp/kex-gex.sh
+if ($LASTEXITCODE -ne 0) {
+    throw '打开群交换失败 —— 群交换的互操作用例会记成 Inconclusive。'
 }
 Start-Sleep -Milliseconds 500
 

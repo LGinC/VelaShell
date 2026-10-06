@@ -162,6 +162,14 @@
                          TextWrapping="Wrap" />
             </Grid>
 
+            <!-- 指纹图:人眼比对一张图比比对 43 个字符可靠得多。等宽字体,不折行。 -->
+            <Grid ColumnDefinitions="100,*" IsVisible="{Binding HasRandomArt}">
+              <TextBlock Grid.Column="0" Classes="info-label" Text="{loc:Localize HostKeyRandomArt}" />
+              <TextBlock Grid.Column="1" Classes="mono"
+                         Text="{Binding RandomArt}"
+                         TextWrapping="NoWrap" />
+            </Grid>
+
             <!-- 变更时把 known_hosts 里的旧指纹一并摆出来:用户要两把对照才判断得了
                  "这是我刚重装的那台"还是"路上有人"。首次连接没有旧指纹,整行不显示。 -->
             <Grid ColumnDefinitions="100,*" IsVisible="{Binding HasKnownFingerprint}">

@@ -20,6 +20,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- 证书 + 私钥的样本借 SSH 库测试的那一份（真 ssh-keygen 生成与签发，见那边 Keys/Fixtures/README.md）。 -->
+    <None Include="..\VelaShell.Ssh.Tests\Keys\Fixtures\cert-ed25519;..\VelaShell.Ssh.Tests\Keys\Fixtures\cert-ed25519-cert.pub"
+          Link="Fixtures\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\..\src\VelaShell.Core\VelaShell.Core.csproj" />
     <ProjectReference Include="..\..\src\VelaShell.Infrastructure\VelaShell.Infrastructure.csproj" />
   </ItemGroup>

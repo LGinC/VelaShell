@@ -18,14 +18,17 @@ public class HostKeyPromptViewModel : ReactiveObject
     /// <param name="fingerprint">本次主机密钥的指纹。</param>
     /// <param name="verificationResult">本次指纹相对 known_hosts 的校验结果。</param>
     /// <param name="knownFingerprint">known_hosts 里已记录的旧指纹;首次连接时为 null。</param>
+    /// <param name="randomArt">本次主机密钥的指纹图(等宽字体显示);没有时为 null。</param>
     public HostKeyPromptViewModel(
         string host,
         int port,
         string keyType,
         string fingerprint,
         HostKeyVerification verificationResult,
-        string? knownFingerprint = null)
+        string? knownFingerprint = null,
+        string? randomArt = null)
     {
+        RandomArt = randomArt ?? string.Empty;
         Host = host;
         Port = port;
         KeyType = keyType;
@@ -43,6 +46,12 @@ public class HostKeyPromptViewModel : ReactiveObject
 
     /// <summary>目标主机地址(主机名或 IP)。</summary>
     public string Host { get; }
+
+    /// <summary>本次主机密钥的指纹图(OpenSSH 风格的 17×9 图);没有时为空串。</summary>
+    public string RandomArt { get; }
+
+    /// <summary>有没有指纹图(没有就不显示那一行)。</summary>
+    public bool HasRandomArt => RandomArt.Length > 0;
 
     /// <summary>目标主机的 SSH 端口。</summary>
     public int Port { get; }

@@ -46,6 +46,44 @@ internal sealed class FifoRequestLedger<TResult>
         }
     }
 
+    /// <summary>是不是已经关账了。</summary>
+    /// <remarks>
+    /// 关账之后到达的应答不是失步：关账的一方（通道本端收尾）已经把在途的请求一并结算掉了，
+    /// 对端在看到我们的 <c>CHANNEL_CLOSE</c> 之前回的应答是合法的在途报文（RFC 4254 §5.3）。
+    /// </remarks>
+    public bool IsClosed
+    {
+        get
+        {
+            lock (_lock)
+            {
+                return _closed;
+            }
+        }
+    }
+
+    /// <summary>登记一个即将发出的请求；已经关账时不登记。</summary>
+    /// <returns>应答到达（或账本关闭）时完成的任务；已经关账时为 <see langword="null"/> —— 这时请求不该再发。</returns>
+    /// <remarks>
+    /// 关账之后照样登记（拿一个现成的结果）再把请求发出去的话，对端的应答回来时账本里没有它，
+    /// 会被当成失步。要用这个结果决定发不发，就得用这个方法。
+    /// </remarks>
+    public Task<TResult>? TryRegister()
+    {
+        lock (_lock)
+        {
+            if (_closed)
+            {
+                return null;
+            }
+
+            TaskCompletionSource<TResult> completion =
+                new(TaskCreationOptions.RunContinuationsAsynchronously);
+            _pending.Enqueue((completion, null));
+            return completion.Task;
+        }
+    }
+
     /// <summary>登记一个即将发出的请求。</summary>
     /// <param name="onResult">
     /// 应答（或关账的结果）到达时，在完成任务<b>之前</b>、在交付应答的那个线程上同步调用。

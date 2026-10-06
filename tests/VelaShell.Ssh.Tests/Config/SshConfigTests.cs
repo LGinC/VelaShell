@@ -110,6 +110,30 @@ public sealed class SshConfigTests
             ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"], [.. config.IdentityFiles], "顺序就是尝试顺序，不能重排");
     }
 
+    /// <summary>
+    /// 展开好的私钥路径是公开的：~ 与 %d %h %r %% 照这台主机与用户展开（与连接时读私钥同一套），none 不算。
+    /// 曾经展开是 internal 的，宿主导入时只好自己再写一份。
+    /// </summary>
+    [TestMethod]
+    public void 私钥路径照主机与用户展开()
+    {
+        SshHostConfig config = Resolve(
+            """
+            Host prod
+                HostName 10.0.0.5
+                User deploy
+                IdentityFile none
+                IdentityFile ~/.ssh/%h_%r
+                IdentityFile %d/keys/100%%
+            """,
+            "prod");
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.AreSequenceEqual(
+            [home + "/.ssh/10.0.0.5_deploy", home + "/keys/100%"], [.. config.ExpandIdentityFiles()]);
+        Assert.AreEqual(home + "/.ssh/10.0.0.5_root", config.ExpandIdentityFiles("root")[0], "给了登录用户就用它");
+    }
+
     [TestMethod]
     public void 键不区分大小写()
     {
@@ -188,13 +212,13 @@ public sealed class SshConfigTests
     }
 
     [TestMethod]
-    public void Match_exec要执行必须由调用方显式传求值器()
+    public async Task Match_exec要执行必须由调用方显式传求值器()
     {
         // 传了才执行，而且执行什么由调用方说了算 ——
         // 「要不要跑外部命令」这个决定明确地落在调用方身上。
-        List<string> asked = [];
+        List<SshMatchExecRequest> asked = [];
 
-        SshHostConfig config = SshConfigFile.Resolve(
+        SshHostConfig config = await SshConfigFile.ResolveAsync(
             SshConfigFile.Parse(
                 """
                 Match exec "test -f /etc/special"
@@ -206,15 +230,95 @@ public sealed class SshConfigTests
             new SshConfigMatchContext
             {
                 Host = "x",
-                ExecEvaluator = command =>
+                ExecEvaluator = (request, _) =>
                 {
-                    asked.Add(command);
-                    return true;
+                    asked.Add(request);
+                    return ValueTask.FromResult(true);
                 },
             });
 
         Assert.AreEqual("特殊用户", config.User);
         Assert.HasCount(1, asked, "求值器应当被问过一次");
+        Assert.AreEqual("test -f /etc/special", asked[0].ExpandedCommand);
+    }
+
+    /// <summary>
+    /// 〔FW-D5〕求值器拿到的是库按 ProxyCommand 同一套白名单展开好记号的命令，连同主机、用户与取消令牌。
+    /// </summary>
+    [TestMethod]
+    public async Task Match_exec的命令由库展开好记号再交给求值器()
+    {
+        using CancellationTokenSource cancel = new();
+        SshMatchExecRequest? seen = null;
+        CancellationToken seenToken = default;
+
+        SshHostConfig config = await SshConfigFile.ResolveAsync(
+            SshConfigFile.Parse(
+                """
+                Match exec "check %h %n %r %u 100%%"
+                    Port 2022
+                """),
+            new SshConfigMatchContext
+            {
+                Host = "web.example.com",
+                OriginalHost = "web",
+                User = "deploy",
+                LocalUser = "joe",
+                ExecEvaluator = (request, token) =>
+                {
+                    seen = request;
+                    seenToken = token;
+                    return ValueTask.FromResult(true);
+                },
+            },
+            cancel.Token);
+
+        Assert.AreEqual(2022, config.Port);
+        Assert.IsNotNull(seen);
+        Assert.AreEqual("check %h %n %r %u 100%%", seen.Command);
+        Assert.AreEqual("check web.example.com web deploy joe 100%", seen.ExpandedCommand);
+        Assert.AreEqual("web.example.com", seen.Host);
+        Assert.AreEqual("deploy", seen.User);
+        Assert.AreEqual(cancel.Token, seenToken);
+    }
+
+    /// <summary>
+    /// 〔FW-D5〕代入的值不安全（主机名里有 shell 元字符）、或者有不认识的记号：这一条判不了，不去问求值器，块不生效。
+    /// </summary>
+    [TestMethod]
+    [DataRow("x;touch /tmp/pwn", "check %h", DisplayName = "主机名带分号")]
+    [DataRow("-oProxyCommand=evil", "check %h", DisplayName = "主机名以 - 开头")]
+    [DataRow("web", "check %p", DisplayName = "不认识的记号")]
+    public async Task Match_exec的值不安全时不去问求值器(string host, string command)
+    {
+        int asked = 0;
+
+        SshHostConfig config = await SshConfigFile.ResolveAsync(
+            SshConfigFile.Parse($"""
+                Match exec "{command}"
+                    Port 2022
+                """),
+            new SshConfigMatchContext
+            {
+                Host = host,
+                ExecEvaluator = (_, _) =>
+                {
+                    asked++;
+                    return ValueTask.FromResult(true);
+                },
+            });
+
+        Assert.AreEqual(0, asked);
+        Assert.AreEqual(22, config.Port, "判不了的条件让整块不生效");
+    }
+
+    /// <summary>带异步求值器的上下文不能交给同步的 Resolve —— 明确报错，而不是悄悄不执行。</summary>
+    [TestMethod]
+    public void 带求值器的上下文用同步Resolve时报错()
+    {
+        Assert.ThrowsExactly<ArgumentException>(() => SshConfigFile.Resolve(
+            SshConfigFile.Parse("Host x\n    Port 2022"),
+            new SshConfigMatchContext { Host = "x", ExecEvaluator = (_, _) => ValueTask.FromResult(true) }));
     }
 
     [TestMethod]
@@ -519,6 +623,68 @@ public sealed class SshConfigTests
     }
 
     [TestMethod]
+    public async Task 一组文件互相通配包含也有总量上限()
+    {
+        // ⚠️ 挂死防护。环检测只看当前这条包含链：9 个文件互相 `Include *.conf`，
+        // 每一条不成环的链都要走一遍 —— 近一百万次读文件。深度上限管不到这种「宽」的爆炸。
+        string root = Path.Combine(Path.GetTempPath(), $"velashell-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            for (int i = 1; i <= 9; i++)
+            {
+                await File.WriteAllTextAsync(
+                    Path.Combine(root, $"{i}.conf"), $"Include *.conf\n\nHost h{i}\n    User u{i}\n");
+            }
+            await File.WriteAllTextAsync(Path.Combine(root, "config"), "Include *.conf\n");
+
+            using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(10));
+            IReadOnlyList<SshConfigBlock> blocks =
+                await SshConfigFile.LoadAsync(Path.Combine(root, "config"), cancellationToken: timeout.Token);
+
+            for (int i = 1; i <= 9; i++)
+            {
+                Assert.AreEqual($"u{i}", SshConfigFile.Resolve(blocks, $"h{i}").User, "每个文件都至少读到一次");
+            }
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
+    public async Task 超过大小上限的配置文件整个跳过()
+    {
+        // `Include /dev/zero` 那一类：读不完的文件不能把读配置拖死。大小超限的整个不读，配置的其余部分照常可用。
+        string root = Path.Combine(Path.GetTempPath(), $"velashell-cfg-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+
+        try
+        {
+            System.Text.StringBuilder big = new("Host big\n    User 太大了\n");
+            while (big.Length <= SshConfigFile.MaxConfigFileBytes)
+            {
+                big.Append("# padding padding padding padding padding padding padding\n");
+            }
+            await File.WriteAllTextAsync(Path.Combine(root, "big.conf"), big.ToString());
+            await File.WriteAllTextAsync(Path.Combine(root, "empty.conf"), "");
+            await File.WriteAllTextAsync(
+                Path.Combine(root, "config"), "Include big.conf empty.conf\n\nHost ok\n    User 照常\n");
+
+            IReadOnlyList<SshConfigBlock> blocks = await SshConfigFile.LoadAsync(Path.Combine(root, "config"));
+
+            Assert.IsNull(SshConfigFile.Resolve(blocks, "big").User);
+            Assert.AreEqual("照常", SshConfigFile.Resolve(blocks, "ok").User);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task Include的通配结果是排好序的()
     {
         // 目录枚举的顺序在不同文件系统上不一样，而 ssh_config 是
@@ -594,5 +760,47 @@ public sealed class SshConfigTests
 
         // 第一次用的机器上它本来就不存在。那不是错误。
         Assert.IsEmpty(blocks);
+    }
+
+    /// <summary>
+    /// 〔FW-E15〕<c>#</c> 只在行首、或前面是空白时才开始注释：词中间的是值的一部分（<c>id_#work</c>），行尾注释照旧去掉。
+    /// </summary>
+    [TestMethod]
+    public void 词中间的井号不当注释_行尾注释照旧去掉()
+    {
+        SshHostConfig config = Resolve("""
+            # 整行注释
+            Host x
+                IdentityFile ~/.ssh/id_#work
+                Port 2222 # 行尾注释
+                User "a # b"
+            """, "x");
+
+        Assert.AreSequenceEqual(["~/.ssh/id_#work"], config.IdentityFiles.ToArray());
+        Assert.AreEqual(2222, config.Port);
+        Assert.AreEqual("a # b", config.User, "引号里的 # 不是注释");
+    }
+
+    /// <summary>〔FW-E15〕带空格的 Include 路径用引号括起来：是一个路径，不被切成两个。</summary>
+    [TestMethod]
+    public async Task Include的带空格路径用引号括起来时是一个路径()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"velashell-include-{Guid.NewGuid():N}", "my dir");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            string included = Path.Combine(directory, "x.conf");
+            await File.WriteAllTextAsync(included, "Host q\n    Port 2022\n", CancellationToken.None);
+            string main = Path.Combine(directory, "..", "config");
+            await File.WriteAllTextAsync(main, $"Include \"{included}\"\n", CancellationToken.None);
+
+            IReadOnlyList<SshConfigBlock> blocks = await SshConfigFile.LoadAsync(main, cancellationToken: CancellationToken.None);
+
+            Assert.AreEqual(2022, SshConfigFile.Resolve(blocks, "q").Port);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(directory)!, recursive: true);
+        }
     }
 }

@@ -5,6 +5,7 @@
 //   RFC 4253 §7.1  协商规则:取客户端列表中第一个双方都支持的
 //   行为规格:      velashell-docs/zh/ssh/spec/00-overview.md §6(总表)、§7(优先级);velashell-docs/zh/ssh/spec/03 §2.2
 
+using System.Collections.ObjectModel;
 using VelaShell.Ssh.Crypto.Kex;
 using VelaShell.Ssh.Protocol;
 
@@ -27,32 +28,83 @@ namespace VelaShell.Ssh.Crypto;
 ///   <item>同等安全性下选有硬件加速的 —— 见 <see cref="Default"/> 对 AES 与 ChaCha 的运行期排序。</item>
 ///   <item>默认关闭的老算法不进默认列表，只在使用者显式配置时加入。</item>
 /// </list>
+/// <para>
+/// 〔velashell-docs/zh/ssh/spec/03 §2.2〕<b>每条清单在设值时抄一份只读的存下来</b>，之后调用方改自己手里那份不影响这里。
+/// 曾经原样存下调用方给的集合：传一个 <c>List</c> 进来、<c>Validate()</c> 之后再改，连接把这份清单存进重协商的上下文，
+/// 下一次重协商用的就是改过的、没校验过的清单；<see cref="Default"/> 里的数组下转型就能改，加密与 MAC 两个方向还共用同一个数组。
+/// </para>
 /// </remarks>
 public sealed record SshAlgorithmSet
 {
     /// <summary>密钥交换算法，按偏好排序。</summary>
-    public required IReadOnlyList<string> KeyExchange { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> KeyExchange { get; init => field = Freeze(value, nameof(KeyExchange)); }
 
     /// <summary>主机密钥算法，按偏好排序。</summary>
-    public required IReadOnlyList<string> HostKey { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> HostKey { get; init => field = Freeze(value, nameof(HostKey)); }
 
     /// <summary>加密算法（客户端 → 服务端）。</summary>
-    public required IReadOnlyList<string> EncryptionClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> EncryptionClientToServer { get; init => field = Freeze(value, nameof(EncryptionClientToServer)); }
 
     /// <summary>加密算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> EncryptionServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> EncryptionServerToClient { get; init => field = Freeze(value, nameof(EncryptionServerToClient)); }
 
     /// <summary>MAC 算法（客户端 → 服务端）。AEAD 加密下协商结果被忽略。</summary>
-    public required IReadOnlyList<string> MacClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> MacClientToServer { get; init => field = Freeze(value, nameof(MacClientToServer)); }
 
     /// <summary>MAC 算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> MacServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> MacServerToClient { get; init => field = Freeze(value, nameof(MacServerToClient)); }
 
     /// <summary>压缩算法（客户端 → 服务端）。</summary>
-    public required IReadOnlyList<string> CompressionClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> CompressionClientToServer { get; init => field = Freeze(value, nameof(CompressionClientToServer)); }
 
     /// <summary>压缩算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> CompressionServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> CompressionServerToClient { get; init => field = Freeze(value, nameof(CompressionServerToClient)); }
+
+    /// <summary>抄一份只读的：之后调用方改它手里那份，这里不跟着变。</summary>
+    private static ReadOnlyCollection<string> Freeze(IReadOnlyList<string> value, string name) =>
+        value is null ? throw new ArgumentNullException(name) : Array.AsReadOnly([.. value]);
+
+    /// <summary>逐类、按顺序比较清单的内容。</summary>
+    /// <remarks>
+    /// 记录默认按成员的引用比较，而清单设值时会抄一份 —— 内容一样的两个清单引用不同，按引用比较就说不通了。
+    /// 顺序也算在内：顺序就是偏好。
+    /// </remarks>
+    public bool Equals(SshAlgorithmSet? other) =>
+        ReferenceEquals(this, other)
+        || (other is not null
+            && KeyExchange.SequenceEqual(other.KeyExchange)
+            && HostKey.SequenceEqual(other.HostKey)
+            && EncryptionClientToServer.SequenceEqual(other.EncryptionClientToServer)
+            && EncryptionServerToClient.SequenceEqual(other.EncryptionServerToClient)
+            && MacClientToServer.SequenceEqual(other.MacClientToServer)
+            && MacServerToClient.SequenceEqual(other.MacServerToClient)
+            && CompressionClientToServer.SequenceEqual(other.CompressionClientToServer)
+            && CompressionServerToClient.SequenceEqual(other.CompressionServerToClient));
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        foreach (IReadOnlyList<string> list in (IReadOnlyList<string>[])[
+            KeyExchange, HostKey, EncryptionClientToServer, EncryptionServerToClient,
+            MacClientToServer, MacServerToClient, CompressionClientToServer, CompressionServerToClient])
+        {
+            hash.Add(list.Count);
+            foreach (string name in list)
+            {
+                hash.Add(name, StringComparer.Ordinal);
+            }
+        }
+        return hash.ToHashCode();
+    }
 
     /// <summary>
     /// 默认清单：安全、现代、不含任何已被弃用的算法。
@@ -109,6 +161,11 @@ public sealed record SshAlgorithmSet
             [
                 // 后量子混合排最前：「先截获、以后再解」的攻击今天就在发生。
                 SshAlgorithmNames.MlKem768X25519Sha256,
+
+                // 〔velashell-docs/zh/ssh/spec/00 §6.1〕面向 FIPS 的两种排在 X25519 那种之后（三种都给的服务端照旧谈成它）、
+                // sntrup761 与不带后量子的椭圆曲线之前：开了 FIPS 策略的服务端不给 X25519，没有它们就只剩 ecdh-sha2-nistp256。
+                SshAlgorithmNames.MlKem768Nistp256Sha256,
+                SshAlgorithmNames.MlKem1024Nistp384Sha384,
                 SshAlgorithmNames.Sntrup761X25519Sha512,
                 SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh,
                 SshAlgorithmNames.Curve25519Sha256,
@@ -116,6 +173,10 @@ public sealed record SshAlgorithmSet
                 SshAlgorithmNames.EcdhSha2Nistp256,
                 SshAlgorithmNames.EcdhSha2Nistp384,
                 SshAlgorithmNames.EcdhSha2Nistp521,
+
+                // 群交换排在 DH 标准群之前、椭圆曲线之后：别的都谈不成时它才会被选中（客户端的顺序为准），
+                // 而只开它的服务端（老设备、加固过的）原来直接连不上。
+                SshAlgorithmNames.DiffieHellmanGroupExchangeSha256,
                 SshAlgorithmNames.DiffieHellmanGroup16Sha512,
                 SshAlgorithmNames.DiffieHellmanGroup14Sha256,
             ],
@@ -144,6 +205,80 @@ public sealed record SshAlgorithmSet
             MacClientToServer = mac,
             MacServerToClient = mac,
             // 默认不开压缩，与 OpenSSH 一致（velashell-docs/zh/ssh/spec/00 §6.5）。
+            CompressionClientToServer = [SshAlgorithmNames.None],
+            CompressionServerToClient = [SshAlgorithmNames.None],
+        };
+    }
+
+    /// <summary>
+    /// 只含 FIPS 认可算法的清单：与 RHEL 的 FIPS 加密策略对 SSH 放行的一致。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/00 §6.6〕合规环境要求客户端也只谈认可的算法时用它：密钥交换先是两种面向 FIPS 的后量子混合
+    /// （<c>mlkem768nistp256-sha256</c>、<c>mlkem1024nistp384-sha384</c>），再是 NIST 曲线的 ECDH 与 DH 标准群；
+    /// 主机密钥只用 ECDSA 与 SHA-2 的 RSA（含对应的证书），加密只用 AES（GCM 与 CTR），MAC 只用 HMAC-SHA2。
+    /// 不含 X25519、Ed25519、ChaCha20-Poly1305，也不含带 X25519 或 sntrup761 的后量子混合。
+    /// </para>
+    /// <para>
+    /// 两种混合排最前：它们只用 FIPS 认可的原语（ML-KEM、P-256 / P-384 上的 ECDH、SHA-2），不给 X25519 的服务端上，
+    /// 没有它们就只剩不带后量子的 ECDH。不支持它们的服务端照旧谈成 <c>ecdh-sha2-nistp256</c>。
+    /// 〔历史〕最初不含这两种：那时还没有能对照验证线上格式的服务端（velashell-docs/zh/ssh/spec/03 §3.7）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这只限定了算法，不等于本库通过了 FIPS 140 验证。</b>AES、SHA-2、ECDH、ECDSA、RSA 走 BCL
+    /// （Windows 上是经过验证的 CNG，Linux / macOS 上取决于系统的 OpenSSL 与是否开了 FIPS 模式），
+    /// ML-KEM 在平台支持时走 BCL、否则与 DH 标准群的模幂一样走 BouncyCastle。
+    /// </para>
+    /// </remarks>
+    public static SshAlgorithmSet FipsApprovedOnly { get; } = CreateFipsApprovedOnly();
+
+    private static SshAlgorithmSet CreateFipsApprovedOnly()
+    {
+        string[] encryption =
+        [
+            SshAlgorithmNames.Aes256Gcm,
+            SshAlgorithmNames.Aes128Gcm,
+            SshAlgorithmNames.Aes256Ctr,
+            SshAlgorithmNames.Aes192Ctr,
+            SshAlgorithmNames.Aes128Ctr,
+        ];
+        string[] mac =
+        [
+            SshAlgorithmNames.HmacSha256Etm,
+            SshAlgorithmNames.HmacSha512Etm,
+            SshAlgorithmNames.HmacSha256,
+            SshAlgorithmNames.HmacSha512,
+        ];
+        return new SshAlgorithmSet
+        {
+            KeyExchange =
+            [
+                SshAlgorithmNames.MlKem768Nistp256Sha256,
+                SshAlgorithmNames.MlKem1024Nistp384Sha384,
+                SshAlgorithmNames.EcdhSha2Nistp256,
+                SshAlgorithmNames.EcdhSha2Nistp384,
+                SshAlgorithmNames.EcdhSha2Nistp521,
+                SshAlgorithmNames.DiffieHellmanGroup16Sha512,
+                SshAlgorithmNames.DiffieHellmanGroup14Sha256,
+            ],
+            HostKey =
+            [
+                SshAlgorithmNames.EcdsaSha2Nistp256,
+                SshAlgorithmNames.EcdsaSha2Nistp384,
+                SshAlgorithmNames.EcdsaSha2Nistp521,
+                SshAlgorithmNames.RsaSha512,
+                SshAlgorithmNames.RsaSha256,
+                SshAlgorithmNames.EcdsaSha2Nistp256CertV01,
+                SshAlgorithmNames.EcdsaSha2Nistp384CertV01,
+                SshAlgorithmNames.EcdsaSha2Nistp521CertV01,
+                SshAlgorithmNames.RsaSha512CertV01,
+                SshAlgorithmNames.RsaSha256CertV01,
+            ],
+            EncryptionClientToServer = encryption,
+            EncryptionServerToClient = encryption,
+            MacClientToServer = mac,
+            MacServerToClient = mac,
             CompressionClientToServer = [SshAlgorithmNames.None],
             CompressionServerToClient = [SshAlgorithmNames.None],
         };
@@ -214,6 +349,16 @@ public sealed record SshAlgorithmSet
     {
         Check(KeyExchange, nameof(KeyExchange),
             static n => SshKeyExchangeFactory.IsSupported(n) || SshAlgorithmNegotiator.IsIndicator(n));
+
+        // 〔velashell-docs/zh/ssh/spec/03 §2.3〕指示符（ext-info-c、kex-strict-c-v00@openssh.com 之类）不是算法，
+        // 由编码 KEXINIT 时按需加在首次交换里。写进清单的话它会出现在每一个 KEXINIT 里，包括重协商 ——
+        // ext-info-c 在重协商里再出现是协议违规（RFC 8308 §2.2）。曾经这里放行。
+        if (KeyExchange.FirstOrDefault(SshAlgorithmNegotiator.IsIndicator) is { } indicator)
+        {
+            throw new ArgumentException(
+                $"算法清单的 KeyExchange 里不要写指示符 {indicator}：它不是算法，库会在首次 KEXINIT 里自己加上。",
+                nameof(KeyExchange));
+        }
         Check(HostKey, nameof(HostKey), static _ => true);
         Check(EncryptionClientToServer, nameof(EncryptionClientToServer), SshSessionKeys.IsSupportedEncryption);
         Check(EncryptionServerToClient, nameof(EncryptionServerToClient), SshSessionKeys.IsSupportedEncryption);

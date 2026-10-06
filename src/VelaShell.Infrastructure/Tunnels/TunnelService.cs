@@ -243,10 +243,10 @@ public class TunnelService(
     /// <summary>默认的占用探测:比对系统 TCP 监听表。</summary>
     private static bool IsLocalPortInUse(string host, uint port)
     {
-        IPAddress requested;
+        IPAddress[] requested;
         try
         {
-            requested = ParseBindAddress(host);
+            requested = ParseBindAddresses(host);
         }
         catch (FormatException)
         {
@@ -267,7 +267,7 @@ public class TunnelService(
         {
             return false;
         }
-        return listeners.Any(listener => listener.Port == port && Overlaps(listener.Address, requested));
+        return listeners.Any(listener => listener.Port == port && requested.Any(address => Overlaps(listener.Address, address)));
     }
 
     /// <summary>
@@ -280,18 +280,19 @@ public class TunnelService(
     private static bool IsAnyAddress(IPAddress address) =>
         address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any);
 
-    /// <summary>把配置里的监听主机翻译成绑定地址(与转发句柄的解析保持一致)。</summary>
-    private static IPAddress ParseBindAddress(string host) =>
-        host is "0.0.0.0" or "*" ? IPAddress.Any :
-        host == "::" ? IPAddress.IPv6Any :
-        host is "localhost" or "127.0.0.1" ? IPAddress.Loopback :
-        IPAddress.Parse(host);
+    /// <summary>把配置里的监听主机翻译成要绑的地址(与转发句柄的解析保持一致:<c>localhost</c> 是两个环回)。</summary>
+    private static IPAddress[] ParseBindAddresses(string host) =>
+        host is "0.0.0.0" or "*" ? [IPAddress.Any] :
+        host == "::" ? [IPAddress.IPv6Any] :
+        host == "localhost" ? [IPAddress.Loopback, IPAddress.IPv6Loopback] :
+        host == "127.0.0.1" ? [IPAddress.Loopback] :
+        [IPAddress.Parse(host)];
 
     /// <summary>
     /// 把转发通道异常翻译成用户可理解的提示;最常见的是把目标填成了服务器的
     /// 公网地址,而服务只监听 127.0.0.1。
     /// </summary>
-    private static string DescribeForwardError(Exception ex)
+    internal static string DescribeForwardError(Exception ex)
     {
         // 库把底层异常包在 SshForwardException / SshChannelException 里,
         // 宿主的 SshInterop 又会再包一层 —— 所以沿整条 InnerException 链找,而不是只看一层。
@@ -309,16 +310,26 @@ public class TunnelService(
         }
         // 认原因码而不是认文案:库的消息是中文,「administratively prohibited」这串字只在
         // 服务端原文里才有。原因码是协议定死的(RFC 4254 §5.1),不随谁的措辞变。
+        // 曾经匹配不到原因码时还去找消息里的那串英文 —— 宿主唯一一处解析库的句子,删掉;
+        // ConnectFailed(服务端连不上 -L 的目标)也曾没有映射,直接显示原文。
         for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            if (e is SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.AdministrativelyProhibited })
+            switch (e)
             {
-                return Strings.Get("TunnelSvc_ForwardProhibited");
+                case SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.AdministrativelyProhibited }:
+                    return Strings.Get("TunnelSvc_ForwardProhibited");
+                case SshChannelException { OpenFailureReason: SshChannelOpenFailureReason.ConnectFailed }:
+                    return Strings.Get("TunnelSvc_TargetRefused");
             }
         }
-        if (ex.Message.Contains("administratively prohibited", StringComparison.OrdinalIgnoreCase))
+
+        // 其余的按原因码本地化(库的消息是写给开发者看的中文),不认识的才显示原文。
+        for (Exception? e = ex; e is not null; e = e.InnerException)
         {
-            return Strings.Get("TunnelSvc_ForwardProhibited");
+            if (e is VelaShell.Ssh.Diagnostics.SshException ssh)
+            {
+                return VelaShell.Infrastructure.Ssh.SshInterop.Localize(ssh);
+            }
         }
         return ex.Message;
     }

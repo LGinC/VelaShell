@@ -52,6 +52,18 @@ public sealed class SftpFileStream : Stream
     private Exception? _writeFault;
     private bool _closed;
 
+
+    // ---- 流水线写的攒块：不足一块的尾巴留在本端，凑满一块再发（velashell-docs/zh/ssh/spec/06 §5.2）----
+
+    /// <summary>攒块缓冲（租来的，至少一块大）；还没攒过时为 <see langword="null"/>。</summary>
+    private byte[]? _coalesce;
+
+    /// <summary>攒块缓冲里有多少字节。</summary>
+    private int _coalesceLength;
+
+    /// <summary>攒块缓冲第一个字节在文件里的偏移。</summary>
+    private long _coalesceOffset;
+
     // ---- 顺序读的预读（velashell-docs/zh/ssh/spec/06 §5.5）----
 
     /// <summary>一个已经发出、按偏移排队的预读请求。</summary>
@@ -65,6 +77,14 @@ public sealed class SftpFileStream : Stream
 
     /// <summary>下一个预读请求的偏移。</summary>
     private long _readAheadNext;
+
+    /// <summary>
+    /// 每个预读请求要多长：起初是块大小；服务端在已知长度之内也读不满一块时，降到它实际给的长度（不低于 <see cref="MinReadAheadLength"/>）。
+    /// </summary>
+    private int _readAheadLength;
+
+    /// <summary>学到的请求长度的下限：偶尔一次短得离谱的短读，不该把之后的每个请求都压成几个字节。</summary>
+    private const int MinReadAheadLength = 4096;
 
     /// <summary>取了一半的块：调用方的缓冲比块小时，剩下的留到下一次读。</summary>
     private SftpResponse? _partial;
@@ -89,6 +109,7 @@ public sealed class SftpFileStream : Stream
         _handle = handle;
         Path = path;
         _blockSize = blockSize;
+        _readAheadLength = blockSize;
         _knownLength = initialLength;
         _readable = canRead;
         _writable = canWrite;
@@ -150,6 +171,12 @@ public sealed class SftpFileStream : Stream
     /// <summary>打开时拿到了文件的真实长度（或者是截断打开的，长度就是 0）。</summary>
     internal bool LengthKnown { get; init; }
 
+    /// <summary>句柄关掉之后（不论 CLOSE 成没成）调一次：还文件系统的句柄额度。</summary>
+    internal Action? OnHandleClosed { get; init; }
+
+    /// <summary>关闭时等在途写入确认、等 <c>CLOSE</c> 应答各最多多久（见 <see cref="SftpOptions.CloseTimeout"/>）。</summary>
+    internal TimeSpan CloseTimeout { get; init; } = TimeSpan.FromSeconds(30);
+
     /// <inheritdoc />
     public override long Position
     {
@@ -187,6 +214,9 @@ public sealed class SftpFileStream : Stream
         {
             return 0;
         }
+
+        // 读写同一个句柄：攒着没发的写要先发，读到的才是写过之后的内容。
+        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
 
         // ① 上一块还没交完。
         if (_partial is not null)
@@ -235,6 +265,7 @@ public sealed class SftpFileStream : Stream
                     SshPhase.Open, $"读取时期望 SSH_FXP_DATA，收到 {response.Type}。");
             }
 
+            response.ExpectType(Path, SftpOperation.Read, SftpMessageType.Data);
             data = SftpWire.ReadData(response.Payload, head.Length);
         }
         catch (Exception)
@@ -255,8 +286,18 @@ public sealed class SftpFileStream : Stream
 
         if (data.Length < head.Length)
         {
-            // 短读：后面已发的请求与读位置之间隔着一个洞。从读位置重来最简单也最不会错。
-            DiscardReadAhead();
+            // 〔Q11，velashell-docs/zh/ssh/spec/06 §5.5〕短读：读位置之后、下一个已发请求之前隔着一个洞。只为这个洞补发请求、插到队首，
+            // 后面已发的请求照用，窗口不动。曾经整队作废、窗口回到 1 —— 对每一块都短读的服务端（实际读上限比块小、又没宣告 limits），
+            // 吞吐塌到一块 / RTT，已经读回来的后面几块也白读了。洞那里要是到了文件末尾，补发的会回 EOF，照常当读完了。
+            if (head.Offset + head.Length <= _knownLength)
+            {
+                // 整块都在已知长度之内还读不满：服务端的读上限比块小。之后的请求按它实际给的长度发，不再每块都短读。
+                _readAheadLength = Math.Min(_readAheadLength, Math.Max(MinReadAheadLength, (int)data.Length));
+            }
+            if (_readAhead.Count > 0)
+            {
+                RequestGap(head.Offset + data.Length, head.Length - data.Length);
+            }
         }
         else
         {
@@ -278,17 +319,39 @@ public sealed class SftpFileStream : Stream
         while (_readAhead.Count < _readAheadDepth
                && (_readAhead.Count == 0 || _readAheadNext < _knownLength))
         {
-            long offset = _readAheadNext;
-            int length = _blockSize;
-
-            // 不带调用方的令牌：预读请求属于流，不属于这一次读。
-            Task<SftpResponse> response = _pipeline.SendAsync(
-                (output, id) => SftpWire.WriteRead(output, id, _handle, (ulong)offset, (uint)length),
-                cancellationToken: CancellationToken.None).AsTask();
-
-            _readAhead.Enqueue(new ReadAheadBlock(offset, length, response));
-            _readAheadNext += length;
+            ReadAheadBlock block = SendRead(_readAheadNext, _readAheadLength);
+            _readAhead.Enqueue(block);
+            _readAheadNext += block.Length;
         }
+    }
+
+    /// <summary>〔Q11〕为短读留下的洞补发请求（按当前的请求长度切开），排在队首；后面已发的请求原样留着。</summary>
+    private void RequestGap(long offset, long length)
+    {
+        List<ReadAheadBlock> requeued = [];
+        while (length > 0)
+        {
+            ReadAheadBlock block = SendRead(offset, (int)Math.Min(length, _readAheadLength));
+            requeued.Add(block);
+            offset += block.Length;
+            length -= block.Length;
+        }
+
+        requeued.AddRange(_readAhead);
+        _readAhead.Clear();
+        foreach (ReadAheadBlock block in requeued)
+        {
+            _readAhead.Enqueue(block);
+        }
+    }
+
+    /// <summary>发一个预读的 <c>READ</c>。不带调用方的令牌：预读请求属于流，不属于这一次读。</summary>
+    private ReadAheadBlock SendRead(long offset, int length)
+    {
+        Task<SftpResponse> response = _pipeline.SendAsync(
+            (output, id) => SftpWire.WriteRead(output, id, _handle, (ulong)offset, (uint)length),
+            cancellationToken: CancellationToken.None).AsTask();
+        return new ReadAheadBlock(offset, length, response);
     }
 
     private int TakeFromPartial(Span<byte> destination)
@@ -354,16 +417,24 @@ public sealed class SftpFileStream : Stream
     /// <b>返回的字节数可能少于请求的</b>，那不是错误 ——
     /// 调用方要循环读直到拿够或返回 0。
     /// </remarks>
+    /// <exception cref="NotSupportedException">这个流是以只写方式打开的。</exception>
     public async ValueTask<int> ReadAtAsync(
         long offset, Memory<byte> buffer, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
+        if (!_readable)
+        {
+            throw new NotSupportedException("这个流是以只写方式打开的。");
+        }
 
         if (buffer.IsEmpty)
         {
             return 0;
         }
+
+        // 攒着没发的写先发（理由同 ReadAsync）。
+        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
 
         // 一次至多读一块：更长的 READ 要么被服务端截短，要么应答超出我们肯收的报文长度。
         // 反正调用方要循环读（见上），这里少给一些不改变语义。
@@ -393,6 +464,7 @@ public sealed class SftpFileStream : Stream
                 SshPhase.Open, $"读取时期望 SSH_FXP_DATA，收到 {response.Type}。");
         }
 
+        response.ExpectType(Path, SftpOperation.Read, SftpMessageType.Data);
         return SftpWire.ReadDataInto(response.Payload, buffer.Span);
     }
 
@@ -439,6 +511,18 @@ public sealed class SftpFileStream : Stream
     // ------------------------------------------------------------ 写
 
     /// <inheritdoc />
+    /// <remarks>
+    /// <para>
+    /// <b>流水线模式下按整块发</b>：不足一块的尾巴先留在本端，与后面的写凑满一块再发；
+    /// <see cref="FlushAsync(CancellationToken)"/>、释放、读、改长度、按偏移写之前都会先把它发出去。
+    /// </para>
+    /// <para>
+    /// 在途写入按<b>请求个数</b>限流，每个 <c>WRITE</c> 不论大小都占一个名额。曾经每次调用各自按块切：
+    /// 调用方每次写 256 KiB、而服务端的块是 255 KiB 时，每次都切成「一大一小」两个请求，
+    /// 在途的字节数因此少了一半，高 RTT 链路上的上传吞吐跟着掉一半。
+    /// </para>
+    /// <para>顺序模式不攒：它的承诺是每次写返回时数据已经确认落盘。</para>
+    /// </remarks>
     public override async ValueTask WriteAsync(
         ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
     {
@@ -448,14 +532,70 @@ public sealed class SftpFileStream : Stream
             throw new NotSupportedException("这个流是以只读方式打开的。");
         }
 
-        int offset = 0;
-        while (offset < buffer.Length)
+        if (WriteMode == SftpWriteMode.Sequential)
         {
-            int chunk = Math.Min(buffer.Length - offset, _blockSize);
-            await WriteAtAsync(_position, buffer.Slice(offset, chunk), cancellationToken).ConfigureAwait(false);
-            _position += chunk;
-            offset += chunk;
+            int offset = 0;
+            while (offset < buffer.Length)
+            {
+                int chunk = Math.Min(buffer.Length - offset, _blockSize);
+                await WriteBlockAtAsync(_position, buffer.Slice(offset, chunk), cancellationToken).ConfigureAwait(false);
+                _position += chunk;
+                offset += chunk;
+            }
+            return;
         }
+
+        ThrowIfWriteFaulted();
+
+        while (!buffer.IsEmpty)
+        {
+            // 攒着的尾巴接不上当前位置（中间 Seek 过）：先把它发出去。
+            if (_coalesceLength > 0 && _coalesceOffset + _coalesceLength != _position)
+            {
+                await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
+            }
+
+            // 没有攒着的、手上又有一整块：直接发，不经攒块缓冲。
+            if (_coalesceLength == 0 && buffer.Length >= _blockSize)
+            {
+                await WriteBlockAtAsync(_position, buffer[.._blockSize], cancellationToken).ConfigureAwait(false);
+                _position += _blockSize;
+                buffer = buffer[_blockSize..];
+                continue;
+            }
+
+            _coalesce ??= ArrayPool<byte>.Shared.Rent(_blockSize);
+            if (_coalesceLength == 0)
+            {
+                _coalesceOffset = _position;
+            }
+
+            int take = Math.Min(_blockSize - _coalesceLength, buffer.Length);
+            buffer[..take].CopyTo(_coalesce.AsMemory(_coalesceLength));
+            _coalesceLength += take;
+            _position += take;
+            buffer = buffer[take..];
+            _knownLength = Math.Max(_knownLength, _coalesceOffset + _coalesceLength);
+
+            if (_coalesceLength == _blockSize)
+            {
+                await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
+            }
+        }
+    }
+
+    /// <summary>把攒着的尾巴作为一个 <c>WRITE</c> 发出去（不等确认）。</summary>
+    /// <remarks>交出去之后才清空：没交出去（等名额时被取消）的话数据还在，下一次照样发。</remarks>
+    private async ValueTask FlushCoalescedAsync(CancellationToken cancellationToken)
+    {
+        if (_coalesceLength == 0)
+        {
+            return;
+        }
+
+        await WriteBlockAtAsync(_coalesceOffset, _coalesce.AsMemory(0, _coalesceLength), cancellationToken)
+            .ConfigureAwait(false);
+        _coalesceLength = 0;
     }
 
     /// <summary>往指定偏移写，不动当前位置。</summary>
@@ -463,11 +603,21 @@ public sealed class SftpFileStream : Stream
     /// 流水线模式下这个方法<b>在应答回来之前就返回</b> ——
     /// 真正确认落盘要看 <see cref="DurableLength"/>，或者 <see cref="FlushAsync"/> 之后。
     /// </remarks>
+    /// <exception cref="NotSupportedException">这个流是以只读方式打开的。</exception>
     public async ValueTask WriteAtAsync(
         long offset, ReadOnlyMemory<byte> data, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
         ArgumentOutOfRangeException.ThrowIfNegative(offset);
+
+        // 在本地就拒掉：曾经发出去让服务端拒，那个失败记成写入故障 —— 之后关闭这个只读流会抛「传输中断」。
+        if (!_writable)
+        {
+            throw new NotSupportedException("这个流是以只读方式打开的。");
+        }
+
+        // 攒着的尾巴先发：它与这次写可能重叠，服务端按到达顺序处理，先写的要先到。
+        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
 
         // 按块切开：一个比服务端 max-write-length 还长的 WRITE 会被拒 ——
         // OpenSSH 收到超长报文直接断开 SFTP 会话，连同别的在途请求一起。
@@ -494,14 +644,26 @@ public sealed class SftpFileStream : Stream
         // 读写同一个句柄时，预读到的内容可能正好被这一次写盖掉。
         ResetReadAhead();
 
-        // 在途写的数量就是背压。满了就等，不报错。
+        // 在途写的数量就是背压。满了就等，不报错。调用方的令牌只管「等写槽」这一段。
         await _writeSlots.WaitAsync(cancellationToken).ConfigureAwait(false);
+
+        // 等写槽的时候，前面的写可能已经失败了：别再往一条坏掉的流上堆请求。
+        if (Volatile.Read(ref _writeFault) is not null)
+        {
+            _writeSlots.Release();
+            ThrowIfWriteFaulted();
+        }
 
         // 调用方的缓冲在我们返回之后就可能被复用 —— 必须先复制。
         byte[] rented = ArrayPool<byte>.Shared.Rent(data.Length);
         data.CopyTo(rented);
 
-        Task write = SendWriteAsync(offset, rented, data.Length, cancellationToken);
+        // 〔velashell-docs/zh/ssh/spec/06 §6.4〕
+        // ⚠️ 入队的 WRITE 不带这一次 WriteAsync 的令牌：WriteAsync 返回时它还在路上，
+        //    令牌之后被取消的话，已经发出的 WRITE 照样落盘，本端却不再记账（DurableLength 偏小），
+        //    流还被标成写入故障，之后 Flush / 关闭抛「传输中断，从 N 续传」而不是取消。
+        //    要打断等待，用 FlushAsync(ct)。它只会以应答或流水线收工（通道断了会把在途请求一次性收尾）结束。
+        Task write = SendWriteAsync(offset, rented, data.Length);
 
         lock (_pendingLock)
         {
@@ -514,20 +676,21 @@ public sealed class SftpFileStream : Stream
         if (WriteMode == SftpWriteMode.Sequential)
         {
             // 顺序模式的承诺是「任何时刻文件都是一个完整前缀」——
-            // 那就必须等这一块确认了才返回。
-            await write.ConfigureAwait(false);
+            // 那就必须等这一块确认了才返回。取消只是不再等，这一块照样会被确认、记账。
+            await write.WaitAsync(cancellationToken).ConfigureAwait(false);
+            ThrowIfWriteFaulted();
         }
     }
 
-    private async Task SendWriteAsync(long offset, byte[] rented, int length, CancellationToken cancellationToken)
+    private async Task SendWriteAsync(long offset, byte[] rented, int length)
     {
         try
         {
             using SftpResponse response = await _pipeline.SendAsync(
                 (output, id) => SftpWire.WriteWrite(output, id, _handle, (ulong)offset, rented.AsSpan(0, length)),
-                cancellationToken: cancellationToken).ConfigureAwait(false);
+                cancellationToken: CancellationToken.None).ConfigureAwait(false);
 
-            response.ThrowIfError(Path, SftpOperation.Write);
+            response.ThrowIfError(Path, SftpOperation.Write, SftpMessageType.Status);
 
             // 确认了才并入 —— DurableLength 的可信度全靠这一行的位置。
             _acked.Add(offset, length);
@@ -535,9 +698,12 @@ public sealed class SftpFileStream : Stream
         catch (Exception ex)
         {
             // 记下第一个错误。后续的 WriteAtAsync 会立刻抛，
-            // 而不是继续往一条已经坏掉的流上堆请求。
+            // 而不是继续往一条已经坏掉的流上堆请求；FlushAsync / 关闭由它报出带精确续传点的中断。
+            //
+            // ⚠️ 不再往外抛：这个任务没人逐个 await（在途写的清单只在 FlushAsync 里一起等，中途还会摘掉做完的），
+            //    让它以异常结束就是一个未观察的任务异常 —— 断线时几十个写同时失败，宿主的崩溃日志里全是它们。
+            //    错误已经在 _writeFault 上了，这里交出去的只是「这一块结束了」。
             Interlocked.CompareExchange(ref _writeFault, ex, null);
-            throw;
         }
         finally
         {
@@ -576,40 +742,37 @@ public sealed class SftpFileStream : Stream
     /// <exception cref="SftpTransferInterruptedException">
     /// 有写入失败。异常里带着<b>精确</b>的 <c>DurableLength</c>。
     /// </exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> 取消了：只是不再等，在途的写入照样会被确认、记账。
+    /// </exception>
     public override async Task FlushAsync(CancellationToken cancellationToken)
     {
+        // 不足一块的尾巴还在本端：先发出去，再一起等确认。
+        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
+
         Task[] pending;
         lock (_pendingLock)
         {
             pending = [.. _pendingWrites];
         }
 
-        try
-        {
-            await Task.WhenAll(pending).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            // 把「已经确切落盘了多少」一并交出去，让上层不必再 stat 一次、
-            // 更不必盲退一个在途窗口。
-            throw new SftpTransferInterruptedException(
-                DurableLength,
-                $"写入 {Path} 时中断。已连续确认 {DurableLength} 字节，从这里续传即可。",
-                ex);
-        }
+        // 在途的写不会以异常结束（失败记在 _writeFault 上，见 SendWriteAsync）；取消只是不再等。
+        await Task.WhenAll(pending).WaitAsync(cancellationToken).ConfigureAwait(false);
 
+        // 把「已经确切落盘了多少」一并交出去，让上层不必再 stat 一次、更不必盲退一个在途窗口。
         ThrowIfWriteFaulted();
     }
 
     /// <summary>
-    /// 本端没有缓冲，所以没有东西要「冲」—— 这是一个不阻塞的空操作。
-    /// <b>要确认数据已经落盘，用 <see cref="FlushAsync(CancellationToken)"/></b>。
+    /// 不阻塞的空操作：不发攒着的尾巴，也不等确认。
+    /// <b>要把数据发完并确认落盘，用 <see cref="FlushAsync(CancellationToken)"/></b>（释放时也会做）。
     /// </summary>
     /// <exception cref="SftpTransferInterruptedException">此前已经有写入失败。</exception>
     /// <remarks>
     /// <para>
-    /// 每次 <c>WriteAsync</c> 返回时，数据已经作为 <c>WRITE</c> 请求发了出去；
-    /// <see cref="FlushAsync(CancellationToken)"/> 做的是「等服务端逐个确认」——
+    /// 流水线模式下，不足一块的尾巴留在本端等凑满（见 <see cref="WriteAsync(ReadOnlyMemory{byte}, CancellationToken)"/>），
+    /// 其余的在 <c>WriteAsync</c> 返回时已经作为 <c>WRITE</c> 请求发了出去；
+    /// <see cref="FlushAsync(CancellationToken)"/> 做的是「发出尾巴、等服务端逐个确认」——
     /// 那要等网络往返，同步版本只能阻塞线程，本库不提供（架构原则 1）。
     /// </para>
     /// <para>
@@ -662,24 +825,63 @@ public sealed class SftpFileStream : Stream
         ArgumentOutOfRangeException.ThrowIfNegative(value);
         ResetReadAhead();
 
+        // 攒着的尾巴与在途的写都先落地：截断之后才到的写会把文件又撑长（中间留一个空洞）。
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+
         using SftpResponse response = await _pipeline.SendAsync(
             (output, id) => SftpWire.WriteFSetStat(
                 output, id, _handle, SftpFileAttributes.WithSize((ulong)value)),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(Path, SftpOperation.SetLength);
+        response.ThrowIfError(Path, SftpOperation.SetLength, SftpMessageType.Status);
         _knownLength = value;
+
+        // 〔velashell-docs/zh/ssh/spec/06 §6.2〕截掉的那部分不再算「已确认落盘」：曾经 DurableLength 不回退，
+        // 之后再断开，报出的续传点会跨过已经被截掉的数据，续传出一个中间是空洞的文件。
+        // 扩长不动它：服务端补的零不是我们写的数据。
+        _acked.TruncateTo(value);
     }
+
+    /// <summary>服务端给的句柄（<c>copy-data</c> 这类要两个句柄的扩展用）。</summary>
+    internal ReadOnlySpan<byte> Handle => _handle;
+
+    /// <summary>按句柄设属性（<c>FSETSTAT</c>）。</summary>
+    /// <remarks>先等攒着的与在途的写都落地：之后才到的写会把修改时间又改成「现在」。</remarks>
+    public async ValueTask SetAttributesAsync(SftpFileAttributes attributes, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_closed, this);
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) => SftpWire.WriteFSetStat(output, id, _handle, attributes),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(Path, SftpOperation.SetAttributes, SftpMessageType.Status);
+    }
+
+    /// <summary>按句柄设访问时间与修改时间（两者共用一个标志位，要一起给）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕上传完、关闭之前用同一个句柄设修改时间：一次往返，
+    /// 而 <see cref="SftpFileSystem.SetLastWriteTimeAsync"/> 要先 <c>STAT</c> 取回访问时间再 <c>SETSTAT</c>，两次往返 ——
+    /// 批量上传小文件时差别明显。
+    /// </remarks>
+    public ValueTask SetTimesAsync(
+        DateTimeOffset lastAccessTime, DateTimeOffset lastWriteTime, CancellationToken cancellationToken = default) =>
+        SetAttributesAsync(SftpFileAttributes.WithTimes(lastAccessTime, lastWriteTime), cancellationToken);
 
     /// <summary>取当前属性。</summary>
     public async ValueTask<SftpFileAttributes> GetAttributesAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_closed, this);
+
+        // 攒着的尾巴先发，服务端报的大小才算上它。
+        await FlushCoalescedAsync(cancellationToken).ConfigureAwait(false);
+
         using SftpResponse response = await _pipeline.SendAsync(
             (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.FStat, id, _handle),
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(Path, SftpOperation.GetAttributes);
+        response.ThrowIfError(Path, SftpOperation.GetAttributes, SftpMessageType.Attrs);
         return SftpWire.ReadAttrs(response.Payload);
     }
 
@@ -699,7 +901,7 @@ public sealed class SftpFileStream : Stream
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
 
-        response.ThrowIfError(Path, SftpOperation.Fsync);
+        response.ThrowIfError(Path, SftpOperation.Fsync, SftpMessageType.Status);
     }
 
     /// <inheritdoc />
@@ -734,20 +936,78 @@ public sealed class SftpFileStream : Stream
         // 还在路上的预读：应答到了就释放。CLOSE 排在它们后面发，服务端按顺序处理。
         ResetReadAhead();
 
+        // 〔velashell-docs/zh/ssh/spec/06 §6.5〕两段都有时限：服务端不再应答时，释放曾经一直等下去。
         Exception? failure = null;
-        try
+        using (CancellationTokenSource flushDeadline = new(CloseTimeout))
         {
-            await FlushAsync(CancellationToken.None).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            failure = ex;
+            try
+            {
+                await FlushAsync(flushDeadline.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (flushDeadline.IsCancellationRequested)
+            {
+                failure = new SftpTransferInterruptedException(
+                    SshFailureReason.Timeout,
+                    DurableLength,
+                    $"关闭 {Path} 时等了 {CloseTimeout.TotalSeconds:0} 秒，服务端还没确认完在途的写入。" +
+                    $"已连续确认 {DurableLength} 字节，从这里续传即可。");
+            }
+            catch (Exception ex)
+            {
+                failure = ex;
+            }
         }
 
+        if (!_writable)
+        {
+            // 〔velashell-docs/zh/ssh/spec/06 §6.5〕只读的流关不上无关紧要（不报），那就不必等 CLOSE 的应答：
+            // 小文件下载省掉一整轮往返。CLOSE 照发，句柄额度等应答回来（或发不出去）之后再还。
+            _ = CloseReadOnlyInBackgroundAsync();
+        }
+        else
+        {
+            failure = await CloseAsync(failure).ConfigureAwait(false);
+        }
+
+        // 写槽不释放：关闭超时的话还有写在路上，它们收尾时要 Release —— 对一个已释放的信号量那是个异常，
+        // 落在一个没人看的任务上。它没有用到等待句柄，不释放也不漏任何非托管资源。
+        if (_coalesce is not null)
+        {
+            ArrayPool<byte>.Shared.Return(_coalesce);
+            _coalesce = null;
+            _coalesceLength = 0;
+        }
+        await base.DisposeAsync().ConfigureAwait(false);
+
+        if (failure is not null)
+        {
+            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
+        }
+    }
+
+    /// <summary>只读的流：在后台发 CLOSE、等应答、还句柄额度；什么错都不报。</summary>
+    private async Task CloseReadOnlyInBackgroundAsync()
+    {
         try
         {
+            await CloseAsync(failure: null).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // CloseAsync 自己不抛；这里只是不让后台任务留下任何未观察的异常。
+        }
+    }
+
+    /// <summary>发 CLOSE、等应答（有时限），之后还句柄额度。</summary>
+    /// <returns>可写的流上 CLOSE 回了错误状态、而此前没有更早的失败时，交回那个错误；否则交回 <paramref name="failure"/>。</returns>
+    private async Task<Exception?> CloseAsync(Exception? failure)
+    {
+        try
+        {
+            using CancellationTokenSource closeDeadline = new(CloseTimeout);
             using SftpResponse response = await _pipeline.SendAsync(
-                (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.Close, id, _handle))
+                (output, id) => SftpWire.WriteHandleRequest(output, SftpMessageType.Close, id, _handle),
+                cancellationToken: closeDeadline.Token)
                 .ConfigureAwait(false);
 
             // 看的是打开方式，不是 CanWrite —— 那个在关闭之后已经是假了。
@@ -764,14 +1024,8 @@ public sealed class SftpFileStream : Stream
             // 关不上多半是通道已经没了 —— 那样服务端也会自己回收句柄。
             // 在释放路径上为此抛异常，只会盖住真正的失败原因。
         }
-
-        _writeSlots.Dispose();
-        await base.DisposeAsync().ConfigureAwait(false);
-
-        if (failure is not null)
-        {
-            System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(failure);
-        }
+        OnHandleClosed?.Invoke();
+        return failure;
     }
 
     /// <summary>续传时，偏移之前的部分由上一次传输确认过了（见 <c>SftpFileSystem.OpenAppendAsync</c>）。</summary>

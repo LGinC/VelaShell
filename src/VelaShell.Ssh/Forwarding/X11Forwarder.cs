@@ -66,7 +66,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         _slots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
 
         // 有效期与受信与否无关 —— 见 X11ForwardOptions.Timeout 上的说明。
-        _expiresAtTicks = options.Timeout <= TimeSpan.Zero
+        _expiresAtTicks = options.Timeout == Timeout.InfiniteTimeSpan
             ? long.MaxValue
             : Environment.TickCount64 + (long)options.Timeout.TotalMilliseconds;
     }
@@ -115,11 +115,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 "拿不到本机的 X 显示：DISPLAY 没设或者格式不认识。" +
                 "可以在 X11ForwardOptions.Display 里显式指定。");
 
-        if (effective.LocalConnector is not null && !effective.Trusted)
-        {
-            throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
-                "本机显示经连接器接入时只支持受信模式:非受信模式要 xauth 连上本机显示签受限 cookie,连接器后面没有可供它去连的显示。");
-        }
+        effective.Validate();   // 开会话的入口已经核对过；这里留着是给直接调用的（测试）
 
         byte[] realCookie = effective.LocalConnector is not null
             ? effective.LocalCookie.ToArray()
@@ -137,7 +133,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         {
             ArrayBufferWriter<byte> payload = new();
             SshDataWriter writer = new(payload);
-            writer.WriteBoolean(effective.SingleConnection);
+            writer.WriteBoolean(effective.IsSingleConnection);
             writer.WriteUtf8String(XAuthority.MitMagicCookie1);
 
             // ⚠️ cookie 字段是**十六进制文本**，不是原始字节（RFC 4254 §6.3.1）。
@@ -195,7 +191,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         // ⚠️ 名额要**原子地认领**。以前是「看 _acceptedChannels 是否 > 0」，而计数要等建立报文
         // 发给本机显示之后才加一 —— 两条 x11 通道挨着到达时，第二条看到的还是 0，两条都被放行。
         bool claimedSingle = false;
-        if (_options.SingleConnection)
+        if (_options.IsSingleConnection)
         {
             if (Interlocked.Exchange(ref _singleConnectionClaimed, 1) != 0)
             {
@@ -267,7 +263,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 remoteEnd, localEnd,
                 onBytesFromLeft: static _ => { },
                 onBytesFromRight: static _ => { },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -338,7 +334,7 @@ public sealed class X11Forwarder : IAsyncDisposable
     private static async ValueTask<byte[]> ResolveRealCookieAsync(
         X11Display display, X11ForwardOptions options, CancellationToken cancellationToken)
     {
-        if (options.Trusted)
+        if (options.IsTrusted)
         {
             // 〔velashell-docs/zh/ssh/spec/07 §7.5.7〕受信模式**不跑外部程序** —— 读文件就够了，
             // 少跑一个外部程序就少一条攻击面。
@@ -448,13 +444,13 @@ public sealed class X11Forwarder : IAsyncDisposable
     /// 曾经传的就是有效期本身。
     /// </para>
     /// <para>
-    /// <b>有效期为 0（不过期）时传 0。</b>曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，
+    /// <b>不过期（<see cref="Timeout.InfiniteTimeSpan"/>）时传 0。</b>曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，
     /// 我们却还在接受新的 <c>x11</c> 通道，之后的 X 程序一律被 X server 拒绝。
     /// </para>
     /// </remarks>
     internal static int XAuthTimeoutSeconds(TimeSpan validity)
     {
-        if (validity <= TimeSpan.Zero)
+        if (validity == Timeout.InfiniteTimeSpan)
         {
             return 0;
         }
@@ -495,7 +491,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         {
             throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
                 $"跑不起来 {xauth}：{ex.Message}。" +
-                "Windows 上通常没有 xauth —— 那里请用受信模式（Trusted = true）。", ex);
+                "Windows 上通常没有 xauth —— 那里请用受信模式（IsTrusted = true）。", ex);
         }
 
         using (process)
@@ -543,7 +539,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
                     $"{xauth} generate 失败（退出码 {process.ExitCode}）：{error.Trim()}。" +
                     "非受信 X11 转发需要本机有 xauth、且 X server 支持 SECURITY 扩展；" +
-                    "都没有的话请显式用受信模式（Trusted = true），但要清楚那等于把本机显示完全交给远端。");
+                    "都没有的话请显式用受信模式（IsTrusted = true），但要清楚那等于把本机显示完全交给远端。");
             }
         }
     }

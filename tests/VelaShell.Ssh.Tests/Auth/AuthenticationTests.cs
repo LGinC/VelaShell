@@ -177,9 +177,107 @@ public sealed class AuthenticationTests
         // 本库不实现改密码流程，但**必须说清楚为什么连不上** ——
         // 「直接断开且不说原因」是用户最难自救的一种失败。
         SshAuthenticationException error = run.Failed;
+        Assert.AreEqual(SshFailureReason.PasswordExpired, error.Reason);
         Assert.Contains(
             a => a.Detail is not null && a.Detail.Contains("修改密码", StringComparison.Ordinal), error.Attempts,
             $"应当说明服务端要求改密码：{Environment.NewLine}{error.DescribeAttempts()}");
+        Assert.IsEmpty(run.Observation.PasswordChanges, "没配取新密码的回调，不该发改密码请求");
+    }
+
+    /// <summary>配了取新密码的回调：带着旧密码与新密码发改密码请求，改成了就登录成功（RFC 4252 §8）。</summary>
+    [TestMethod]
+    public async Task 服务端要求改密码时按回调给的新密码改_改成了就登录成功()
+    {
+        List<SshPasswordChangeRequest> asked = [];
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult<string?>("correct horse");
+            },
+        };
+
+        AuthRun run = await RunAsync([credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual(new[] { ("hunter2", "correct horse") }, run.Observation.PasswordChanges);
+        Assert.HasCount(1, asked);
+        Assert.AreEqual("你的密码已过期。", asked[0].Prompt);
+        Assert.AreEqual(1, asked[0].Attempt);
+    }
+
+    /// <summary>服务端嫌新密码不好会再回 PASSWD_CHANGEREQ：再问一次（提示是服务端的新说法），给对了就成。</summary>
+    [TestMethod]
+    public async Task 新密码不被接受时再问一次()
+    {
+        List<SshPasswordChangeRequest> asked = [];
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (request, _) =>
+            {
+                asked.Add(request);
+                return ValueTask.FromResult<string?>(request.Attempt == 1 ? "123" : "correct horse");
+            },
+        };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, RejectNewPasswords = 1 });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual(new[] { 1, 2 }, asked.Select(a => a.Attempt).ToArray());
+        Assert.AreEqual("新密码太简单。", asked[1].Prompt);
+        Assert.AreSequenceEqual(new[] { ("hunter2", "123"), ("hunter2", "correct horse") }, run.Observation.PasswordChanges);
+    }
+
+    /// <summary>服务端一直不接受：最多问 <see cref="PasswordCredential.MaxNewPasswordAttempts"/> 次，然后报「要先改密码」。</summary>
+    [TestMethod]
+    public async Task 新密码一直不被接受时问够次数就停()
+    {
+        int calls = 0;
+        PasswordCredential credential = new("hunter2")
+        {
+            NewPasswordProvider = (_, _) =>
+            {
+                calls++;
+                return ValueTask.FromResult<string?>($"try{calls}");
+            },
+        };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, RejectNewPasswords = 100 });
+
+        Assert.AreEqual(PasswordCredential.MaxNewPasswordAttempts, calls);
+        Assert.HasCount(PasswordCredential.MaxNewPasswordAttempts, run.Observation.PasswordChanges);
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.Contains(a => a.Detail?.Contains("新密码太简单", StringComparison.Ordinal) == true, run.Failed.Attempts);
+    }
+
+    /// <summary>回调返回 null（用户这次不改）：不发改密码请求，报「要先改密码」。</summary>
+    [TestMethod]
+    public async Task 回调不给新密码时不发改密码请求()
+    {
+        PasswordCredential credential = new("hunter2") { NewPasswordProvider = (_, _) => ValueTask.FromResult<string?>(null) };
+
+        AuthRun run = await RunAsync([credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true });
+
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.IsEmpty(run.Observation.PasswordChanges);
+    }
+
+    /// <summary>改密码请求被回 FAILURE（不支持改密码，或旧密码不对）：说清楚没改成。</summary>
+    [TestMethod]
+    public async Task 服务端不支持改密码时说清楚没改成()
+    {
+        PasswordCredential credential = new("hunter2") { NewPasswordProvider = (_, _) => ValueTask.FromResult<string?>("correct horse") };
+
+        AuthRun run = await RunAsync(
+            [credential], new TestAuthPolicy { AcceptPassword = "hunter2", RequestPasswordChange = true, PasswordChangeUnsupported = true });
+
+        Assert.AreEqual(SshFailureReason.PasswordExpired, run.Failed.Reason);
+        Assert.HasCount(1, run.Observation.PasswordChanges);
+        Assert.Contains(a => a.Detail?.Contains("没有改成", StringComparison.Ordinal) == true, run.Failed.Attempts,
+            run.Failed.DescribeAttempts());
     }
 
     // ------------------------------------------------------------ 公钥
@@ -260,6 +358,73 @@ public sealed class AuthenticationTests
         Assert.AreEqual(1, run.Observation.PublicKeyProbeCount);
         Assert.AreEqual(0, signer.SignCalls,
             "两段式存在的全部意义就是这一条：不认就不签，用户不用白按一次硬件键");
+    }
+
+    /// <summary>
+    /// 〔AU-E5〕服务端对探测直接回 SUCCESS（不合规，个别实现会这样）：认证就此完成，不再签名、也不再试下一条凭据。
+    /// 曾经记成「不接受这把公钥」接着发下一条请求 —— 成功之后的请求服务端一律忽略（RFC 4252 §5.1），一直等到认证超时。
+    /// </summary>
+    [TestMethod]
+    public async Task 探测时服务端直接回SUCCESS就算认证完成()
+    {
+        using var inner = InMemorySshSigner.GenerateEd25519();
+        ExpensiveSigner signer = new(inner);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer), new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                AcceptPassword = "hunter2",
+                SucceedOnPublicKeyProbe = true,
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreEqual(0, signer.SignCalls, "认证已经完成，不该再签");
+        Assert.DoesNotContain(SshProtocolNames.AuthPassword, run.Observation.RequestedMethods, "认证已经完成，不该再试下一条凭据");
+    }
+
+    /// <summary>〔AU-E5〕PK_OK 回显的公钥不是我们问的那一把：协议错误 —— 签下去的会是服务端没认过的钥。</summary>
+    [TestMethod]
+    public async Task PK_OK回显的公钥不是我们问的那一把时报协议错误()
+    {
+        using var inner = InMemorySshSigner.GenerateEd25519();
+        using var other = InMemorySshSigner.GenerateEd25519();
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new PublicKeyCredential(new ExpensiveSigner(inner))],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                PublicKeyOkEchoBlob = other.PublicKey.Blob.ToArray(),
+            }));
+
+        Assert.Contains("PK_OK", error.Message);
+    }
+
+    /// <summary>PK_OK 回显的算法名是这把钥自己的类型名（而不是请求里的签名算法）：说的是同一把钥，照常签。</summary>
+    [TestMethod]
+    public async Task PK_OK回显钥的类型名时照常签()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var inner = InMemorySshSigner.FromRsa(rsa);
+        ExpensiveSigner signer = new(inner);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [inner.PublicKey.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha256],   // 我们请求的是 rsa-sha2-256
+                PublicKeyOkEchoAlgorithm = SshAlgorithmNames.SshRsa,         // 回显的却是钥的类型名
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreEqual(1, signer.SignCalls);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha256], run.Observation.PublicKeySignatureAlgorithms, "签名算法照我们选的");
     }
 
     [TestMethod]
@@ -397,7 +562,9 @@ public sealed class AuthenticationTests
     {
         // 横幅回调在「密码请求已发出、SUCCESS 还没读」时抛异常。当成「跳过这条凭据」的话，
         // 客户端会报「所有方法都失败」—— 而服务端其实已经认证通过了。
-        InvalidOperationException error = await Assert.ThrowsExactlyAsync<InvalidOperationException>(
+        // 认证器把调用方的异常裹一层往外送（不让建连路上按类型归类的 catch 认出它），ConnectAsync 的出口再原样还原
+        // （ConnectionTests.横幅回调自己抛的IO错原样交还）。
+        SshCallbackFaultException fault = await Assert.ThrowsExactlyAsync<SshCallbackFaultException>(
             () => RunAsync(
                 [new PasswordCredential("hunter2")],
                 new TestAuthPolicy { AcceptPassword = "hunter2", BannersBeforeSuccess = ["维护通知"] },
@@ -408,6 +575,7 @@ public sealed class AuthenticationTests
                         : ValueTask.CompletedTask,
                 }));
 
+        InvalidOperationException error = Assert.IsInstanceOfType<InvalidOperationException>(fault.InnerException);
         Assert.AreEqual("界面已经关了", error.Message);
     }
 
@@ -432,6 +600,39 @@ public sealed class AuthenticationTests
             [SshAlgorithmNames.RsaSha256], run.Observation.PublicKeySignatureAlgorithms, "我们自己更偏好 SHA-512，但服务端说只认 SHA-256 —— 就得听它的（RFC 8308）");
         Assert.Contains(
 SshAlgorithmNames.RsaSha256, [.. run.Succeeded.ServerSignatureAlgorithms]);
+    }
+
+    /// <summary>
+    /// 〔RFC 8308 §2.4、spec/04 §7.1〕EXT_INFO 只有两个合法位置；认证中途（后面跟的不是 SUCCESS）收到就是协议错误。
+    /// 曾经任何位置都照收，后到的整体覆盖 server-sig-algs —— 认证中途就能改掉 RSA 签名算法的选择。
+    /// </summary>
+    [TestMethod]
+    public async Task 认证中途的EXT_INFO是协议错误()
+    {
+        await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new PasswordCredential("wrong"), new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                ExtInfoBeforeFirstFailure = [SshAlgorithmNames.RsaSha256],
+            }));
+    }
+
+    /// <summary>紧挨着 USERAUTH_SUCCESS 的那个 EXT_INFO 是合法的第二个位置。</summary>
+    [TestMethod]
+    public async Task 紧挨着SUCCESS的EXT_INFO照收()
+    {
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha512],
+                ExtInfoBeforeSuccess = [SshAlgorithmNames.RsaSha256],
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha256], run.Succeeded.ServerSignatureAlgorithms.ToArray());
     }
 
     [TestMethod]
@@ -497,6 +698,86 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
             [SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms, "开关打开之后才肯用它 —— 为的是还能连上停在 OpenSSH 7.x 的老机器");
+
+        // 没有降级、直接挑中 SHA-1：尝试记录里同样写明（规格 04 §4.4）。
+        SshAuthAttempt attempt = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshRsa, attempt.SignatureAlgorithm);
+        Assert.Contains("SHA-1", attempt.Detail ?? "");
+    }
+
+    /// <summary>
+    /// 不发 server-sig-algs、只认 ssh-rsa 的老服务器：先试 SHA-2，被拒后降级重试一次 SHA-1。
+    /// 曾经不重试 —— 「允许 SHA-1」只在 server-sig-algs 列了 ssh-rsa 时起作用，
+    /// 而最需要这个开关的老服务器恰恰不发 server-sig-algs。
+    /// </summary>
+    [TestMethod]
+    public async Task 没有server_sig_algs时SHA2被拒就降级重试一次SHA1()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var signer = InMemorySshSigner.FromRsa(rsa);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+                AcceptedPublicKeyAlgorithms = [SshAlgorithmNames.SshRsa],
+            },
+            authenticatorFactory: static (t, u, s) => new SshAuthenticator(t, u, s)
+            {
+                AllowSha1RsaSignatures = true,
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(
+            [SshAlgorithmNames.RsaSha512, SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms);
+
+        SshAuthAttempt attempt = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshRsa, attempt.SignatureAlgorithm, "记的是重试那一次的算法");
+        Assert.Contains("降级", attempt.Detail ?? "");
+    }
+
+    /// <summary>每一步 publickey 都记下用的签名算法；不是 SHA-1 时不附说明。</summary>
+    [TestMethod]
+    public async Task 尝试记录里写着用的签名算法()
+    {
+        using var signer = InMemorySshSigner.GenerateEd25519();
+
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("wrong"), new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+            });
+
+        SshAuthAttempt publicKey = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshEd25519, publicKey.SignatureAlgorithm);
+        Assert.IsNull(publicKey.Detail);
+        Assert.Contains($"（{SshAlgorithmNames.SshEd25519}）", publicKey.ToString());
+        Assert.IsNull(run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPassword).SignatureAlgorithm);
+    }
+
+    [TestMethod]
+    public async Task 不允许SHA1时不降级()
+    {
+        using var rsa = System.Security.Cryptography.RSA.Create(2048);
+        using var signer = InMemorySshSigner.FromRsa(rsa);
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+                AcceptedPublicKeyAlgorithms = [SshAlgorithmNames.SshRsa],
+            });
+
+        Assert.IsNotNull(run.Failed);
+        Assert.AreSequenceEqual([SshAlgorithmNames.RsaSha512], run.Observation.PublicKeySignatureAlgorithms,
+            "默认不降级：无条件降级会把降级攻击的收益还回去");
     }
 
     // ------------------------------------------------------------ 键盘交互
@@ -536,6 +817,28 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.HasCount(1, seen[0].Prompts);
         Assert.IsFalse(seen[0].Prompts[0].Echo, "不回显的提示必须以密码方式采集");
         Assert.IsFalse(seen[0].IsInformationalOnly);
+    }
+
+    /// <summary>〔spec/04 §6.4〕一轮里每个字符串（名字、说明、提示）上限 4 KiB，超了是协议错误。曾经名字与说明放到了 64 KiB。</summary>
+    [TestMethod]
+    public async Task 键盘交互的说明超过4KiB是协议错误()
+    {
+        await Assert.ThrowsExactlyAsync<SshProtocolException>(() => RunAsync(
+            [new KeyboardInteractiveCredential((_, _) => ValueTask.FromResult<IReadOnlyList<string>>(["123456"]))],
+            new TestAuthPolicy
+            {
+                OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                RequiredMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                KeyboardRounds =
+                [
+                    new TestKeyboardRound
+                    {
+                        Instruction = new string('x', 4 * 1024 + 1),
+                        Prompts = [("Verification code: ", false)],
+                        ExpectedAnswers = ["123456"],
+                    },
+                ],
+            }));
     }
 
     [TestMethod]
@@ -647,11 +950,45 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
             "记录里要看得出走的是桥接那条路");
     }
 
+    /// <summary>
+    /// PAM 两步验证：「Password:」一轮、「Verification code:」再一轮，两轮都是单条不回显。
+    /// 兼答只答第一轮；第二轮回空串 —— 曾经把密码也填了进去，pam_radius、Duo 一类模块会把它转发到第三方。
+    /// </summary>
+    [TestMethod]
+    public async Task 兼答在同一次键盘交互里只答一次密码()
+    {
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("hunter2")],
+            new TestAuthPolicy
+            {
+                OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                RequiredMethods = [SshProtocolNames.AuthKeyboardInteractive],
+                KeyboardRounds =
+                [
+                    new TestKeyboardRound
+                    {
+                        Prompts = [("Password: ", false)],
+                        ExpectedAnswers = ["hunter2"],
+                    },
+                    new TestKeyboardRound
+                    {
+                        Prompts = [("Verification code: ", false)],
+                        ExpectedAnswers = ["123456"],
+                    },
+                ],
+            });
+
+        Assert.IsNotNull(run.Failed, "没配动态码，这一次本来就该失败");
+        Assert.HasCount(2, run.Observation.KeyboardAnswers);
+        Assert.AreSequenceEqual(["hunter2"], [.. run.Observation.KeyboardAnswers[0]]);
+        Assert.AreSequenceEqual([""], [.. run.Observation.KeyboardAnswers[1]], "密码被填进了动态码那一轮");
+    }
+
     [TestMethod]
     public async Task 关掉开关之后密码不再自动填进键盘交互()
     {
         AuthRun run = await RunAsync(
-            [new PasswordCredential("hunter2") { AlsoAnswerKeyboardInteractive = false }],
+            [new PasswordCredential("hunter2") { CanAnswerKeyboardInteractive = false }],
             new TestAuthPolicy
             {
                 OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
@@ -734,7 +1071,7 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
 
         AuthRun run = await RunAsync(
             [
-                new PasswordCredential("hunter2") { AlsoAnswerKeyboardInteractive = false },
+                new PasswordCredential("hunter2") { CanAnswerKeyboardInteractive = false },
                 new PublicKeyCredential(signer),
             ],
             new TestAuthPolicy
@@ -916,6 +1253,43 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.AreSequenceEqual(received, run.Succeeded.Banner.ToArray());
     }
 
+    /// <summary>
+    /// 证书被拒：按本机时钟已经过期这件事写进尝试记录（规格 04 §4.5）—— 不在本地拦，照样发出去由服务端判断。
+    /// 登录用户在 principals 里时不附 principals 的说法。
+    /// </summary>
+    [TestMethod]
+    public async Task 证书被拒时写明按本机时钟已过期()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-expired");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)], new TestAuthPolicy { RequiredMethods = [SshProtocolNames.AuthPublicKey] });
+
+        Assert.AreEqual(1, run.Observation.PublicKeySignedCount, "过期的证书照样发出去：判断是服务端的事");
+        string detail = run.Failed.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey).Detail ?? "";
+        Assert.Contains("按本机时钟已于 2020-01-02", detail);
+        Assert.Contains("expired@velashell", detail);
+        Assert.DoesNotContain("不含登录用户", detail);
+    }
+
+    /// <summary>证书被拒、登录用户不在 principals 里：写明证书签给了谁。agent 里的证书身份（签名器只交得出 blob）一样。</summary>
+    [TestMethod]
+    [DataRow(false, DisplayName = "证书签名器")]
+    [DataRow(true, DisplayName = "agent 那样只交得出 blob 的签名器")]
+    public async Task 证书被拒时写明登录用户不在principals里(bool opaque)
+    {
+        SshCertificateSigner certificateSigner = await LoadCertificateSignerAsync("cert-ed25519");
+        ISshSigner signer = opaque ? new ExpensiveSigner(certificateSigner) : certificateSigner;
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy { RequiredMethods = [SshProtocolNames.AuthPublicKey] },
+            userName: "alice");
+
+        string detail = run.Failed.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey).Detail ?? "";
+        Assert.Contains("证书签给的用户是 joe、deploy，不含登录用户 alice", detail);
+    }
+
     // ------------------------------------------------------------ 测试替身
 
     /// <summary>假装签名很贵的签名器 —— 用来验证两段式。</summary>
@@ -1000,6 +1374,50 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
 
         Assert.DoesNotContain(
 "ssh-rsa-cert-v01@openssh.com", run.Observation.PublicKeySignatureAlgorithms, "默认不用 SHA-1 —— 证书也一样");
+    }
+
+    /// <summary>
+    /// 〔AU-E6〕server-sig-algs 列的是签名算法（不带证书后缀）：只认 rsa-sha2-256 的服务端，RSA 证书就用 rsa-sha2-256 那一种。
+    /// 曾经按带后缀的名字原样比、永远比不中，证书一律用第一偏好（512）。
+    /// </summary>
+    [TestMethod]
+    public async Task 服务端只认rsa_sha2_256时RSA证书用它()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-rsa");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.Certificate.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.RsaSha256],
+            });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(["rsa-sha2-256-cert-v01@openssh.com"], run.Observation.PublicKeySignatureAlgorithms);
+        Assert.IsTrue(run.Observation.AllSignaturesValid);
+    }
+
+    /// <summary>〔AU-E6〕允许 SHA-1 时，只认 ssh-rsa 的服务端收到的 RSA 证书签名就是 SHA-1 那一种（曾经对证书不起作用）。</summary>
+    [TestMethod]
+    public async Task 允许SHA1且服务端只认ssh_rsa时RSA证书用SHA1()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-rsa");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.Certificate.Blob.ToArray()],
+                ServerSignatureAlgorithms = [SshAlgorithmNames.SshRsa],
+            },
+            authenticatorFactory: (t, u, s) => new SshAuthenticator(t, u, s) { AllowSha1RsaSignatures = true });
+
+        Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
+        Assert.AreSequenceEqual(["ssh-rsa-cert-v01@openssh.com"], run.Observation.PublicKeySignatureAlgorithms);
+        Assert.IsTrue(run.Observation.AllSignaturesValid);
     }
 
     /// <summary>证书走的仍然是 publickey，没有第三种认证方法。</summary>

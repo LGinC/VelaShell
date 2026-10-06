@@ -524,7 +524,11 @@ public class FileBrowserViewModel : ReactiveObject
         {
             await EnsureHomePathAsync();
         }
-        string? target = RemotePathInput.Normalize(PathEditText, CurrentPath, _homePath);
+        // ~用户名 本地展开不了:请服务端展开(SFTP 的 expand-path / home-directory);展开不了照旧原样透传。
+        string? target = RemotePathInput.UserHomeReference(PathEditText) is { } reference
+            && await TryExpandOnServerAsync(reference) is { } expanded
+                ? expanded
+                : RemotePathInput.Normalize(PathEditText, CurrentPath, _homePath);
         if (target is null)
         {
             IsPathEditing = false;
@@ -537,6 +541,22 @@ public class FileBrowserViewModel : ReactiveObject
         if (string.IsNullOrEmpty(ErrorMessage))
         {
             IsPathEditing = false;
+        }
+    }
+
+    private async Task<string?> TryExpandOnServerAsync(string path)
+    {
+        if (_sftpService is null || _sessionId == Guid.Empty)
+        {
+            return null;
+        }
+        try
+        {
+            return await _sftpService.ExpandPathAsync(_sessionId, path, _lifetime.Token);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return null;
         }
     }
 
@@ -607,6 +627,20 @@ public class FileBrowserViewModel : ReactiveObject
         get;
         set => this.RaiseAndSetIfChanged(ref field, value);
     }
+
+    /// <summary>
+    /// 当前目录所在分区的剩余空间(「可用 12 GB / 共 50 GB」);查不到(服务端不支持 statvfs、FTP、插件协议)时为 null,表头不显示。
+    /// </summary>
+    public string? FreeSpaceText
+    {
+        get;
+        private set => this.RaiseAndSetIfChanged(ref field, value);
+    }
+
+    /// <summary>
+    /// 由视图设置:上传前预检发现目标分区可能放不下时问用户(参数 = 提示消息) → true 表示仍要上传。没设时不拦。
+    /// </summary>
+    public Func<string, Task<bool>>? ConfirmLowSpace { get; set; }
 
     /// <summary>
     /// 工具栏切换“显示隐藏文件”后的回调(宿主用它把新值写回 Transfer.ShowHiddenFiles);
@@ -1309,6 +1343,7 @@ public class FileBrowserViewModel : ReactiveObject
             {
                 return;
             }
+            _ = RefreshFreeSpaceAsync(path, navigationVersion);
             bool pathChanged = !string.Equals(CurrentPath, path, StringComparison.Ordinal);
             bool visibleRowsInitialized =
                 path == "/" || _files.FirstOrDefault()?.IsParentEntry == true;
@@ -1699,6 +1734,77 @@ public class FileBrowserViewModel : ReactiveObject
     private async Task RefreshAsync(CancellationToken ct = default) =>
         await NavigateToAsync(CurrentPath, ct);
 
+    /// <summary>刷新表头的剩余空间。查不到、出错都只是不显示 —— 它是附带的信息,不该变成一条错误。</summary>
+    private async Task RefreshFreeSpaceAsync(string path, long navigationVersion)
+    {
+        RemoteSpaceInfo? space;
+        try
+        {
+            space = await _sftpService.GetSpaceAsync(_sessionId, path);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            space = null;
+        }
+
+        // 这期间又跳到了别的目录:那一次会自己刷新,这一份过时了。
+        if (navigationVersion != Volatile.Read(ref _navigationVersion))
+        {
+            return;
+        }
+        FreeSpaceText = space is null
+            ? null
+            : Strings.Format("FileBrowser_FreeSpace", FormatBytes(space.AvailableBytes), FormatBytes(space.TotalBytes));
+    }
+
+    private static string FormatBytes(ulong bytes) => RemoteFileInfoViewModel.FormatSize((long)Math.Min(bytes, long.MaxValue));
+
+    /// <summary>
+    /// 上传前预检:这批文件放得下吗(SFTP 的 statvfs)。可能放不下时问一句,用户说不传就不传 ——
+    /// 传到一半磁盘满,远端会留下半个文件。查不到用量(服务端不支持、FTP)时不拦。
+    /// </summary>
+    private async Task<bool> ConfirmEnoughSpaceAsync(IReadOnlyList<PlannedFileTransfer> plan, CancellationToken ct)
+    {
+        if (ConfirmLowSpace is null || plan.Count == 0)
+        {
+            return true;
+        }
+
+        long needed = 0;
+        foreach (PlannedFileTransfer item in plan)
+        {
+            if (item.Type != TransferType.Upload || item.Source is not null)
+            {
+                continue;   // 只算从本机传上去的;另一栏中转过来的大小这里不知道
+            }
+            try
+            {
+                needed += Math.Max(0, new FileInfo(item.LocalPath).Length - item.ResumeOffset);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 读不到大小的文件不计:真读不了的话上传那一步自己会报。
+            }
+        }
+
+        RemoteSpaceInfo? space;
+        try
+        {
+            space = await _sftpService.GetSpaceAsync(_sessionId, CurrentPath, ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not OutOfMemoryException)
+        {
+            return true;
+        }
+
+        if (space is null || (ulong)needed <= space.AvailableBytes)
+        {
+            return true;
+        }
+        return await ConfirmLowSpace(
+            Strings.Format("FileBrowser_LowSpaceMessage", FormatBytes(space.AvailableBytes), FormatBytes((ulong)needed)));
+    }
+
     /// <summary>
     /// 上传入口:选一次,文件和文件夹一起选。选完原样交给
     /// <see cref="UploadLocalPathsAsync" /> —— 它本来就按每个路径的实际类型分派,
@@ -1737,6 +1843,10 @@ public class FileBrowserViewModel : ReactiveObject
             foreach (string path in roots)
             {
                 await BuildUploadPlanAsync(path, CurrentPath, plan, ct);
+            }
+            if (!await ConfirmEnoughSpaceAsync(plan, ct))
+            {
+                return;
             }
             await RunTransferBatchAsync(plan, ct);
         }

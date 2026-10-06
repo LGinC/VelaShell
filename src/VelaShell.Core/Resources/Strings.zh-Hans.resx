@@ -132,6 +132,9 @@
   <data name="AuditLog_ActionHostKeyChangedAccepted" xml:space="preserve">
     <value>接受了变更的主机指纹</value>
   </data>
+  <data name="AuditLog_ActionHostKeyPersistFailed" xml:space="preserve">
+    <value>主机指纹未能保存</value>
+  </data>
   <data name="AuditLog_ActionHostKeyRejected" xml:space="preserve">
     <value>拒绝了主机指纹</value>
   </data>
@@ -615,8 +618,41 @@
   <data name="Copy" xml:space="preserve">
     <value>复制</value>
   </data>
+  <data name="SftpErr_HandshakeTimeout" xml:space="preserve">
+    <value>服务器的 SFTP 子系统没有及时响应。</value>
+  </data>
+  <data name="SftpErr_TransferInterrupted" xml:space="preserve">
+    <value>传输中断。已确认 {0} 字节,可以从这里续传。</value>
+  </data>
+  <data name="SftpErr_Unavailable" xml:space="preserve">
+    <value>服务器的 SFTP 子系统不可用(服务器可能没有启用 SFTP)。</value>
+  </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>服务器的 sftp-server 没等 SFTP 建立就退出了(退出码 {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>无法核实 {0} 的续传起点(源端不能回读,或目标端不支持续传),按同名冲突处理。</value>
+  </data>
+  <data name="SshErr_Aborted" xml:space="preserve">
+    <value>操作已取消。</value>
+  </data>
+  <data name="SshErr_AuthExhausted" xml:space="preserve">
+    <value>所有认证方法都已尝试,均未成功。服务器接受:{0}。</value>
+  </data>
+  <data name="SshErr_AuthPartialSuccess" xml:space="preserve">
+    <value>其中至少有一步已经通过,卡在后续步骤。</value>
+  </data>
+  <data name="SshErr_LimitExceeded" xml:space="preserve">
+    <value>达到了本机的并发上限(转发连接数、agent / X11 通道数)。等其中一些关闭后再试。</value>
+  </data>
+  <data name="SshErr_PasswordExpired" xml:space="preserve">
+    <value>服务器要求先修改密码(密码已过期或管理员要求更换),密码没有改成。</value>
+  </data>
+  <data name="SshErr_ProtocolError" xml:space="preserve">
+    <value>服务器违反了 SSH 协议。</value>
+  </data>
+  <data name="SshErr_TwoFactorRequired" xml:space="preserve">
+    <value>服务器要求键盘交互式认证(动态码 / OTP),但没有配置。服务器接受:{0}。</value>
   </data>
   <data name="Status_Selected" xml:space="preserve">
     <value>已选 {0} 字符</value>
@@ -656,6 +692,18 @@
   </data>
   <data name="Upload" xml:space="preserve">
     <value>上传</value>
+  </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>可用 {0} / 共 {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>空间可能不够</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>目标分区还剩 {0}，这批文件共 {1}，可能放不下 —— 传到一半磁盘满会在服务器上留下不完整的文件。仍要上传吗？</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>仍要上传</value>
   </data>
   <data name="Download" xml:space="preserve">
     <value>下载</value>
@@ -848,6 +896,9 @@
   </data>
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>已记录指纹</value>
+  </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>指纹图</value>
   </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>服务器可能已重装或更换。若变更在预期内，接受新密钥即可覆盖原记录；否则连接可能正被劫持，请拒绝。</value>
@@ -1079,6 +1130,15 @@
   </data>
   <data name="Cmd_ClearScreen" xml:space="preserve">
     <value>清屏</value>
+  </data>
+  <data name="Cmd_SendBreak" xml:space="preserve">
+    <value>发送 Break</value>
+  </data>
+  <data name="Toast_BreakSent" xml:space="preserve">
+    <value>已发送 Break,服务器已执行。</value>
+  </data>
+  <data name="Toast_BreakNotPerformed" xml:space="preserve">
+    <value>服务器没有执行 Break(可能不支持,或者这个会话没有终端)。</value>
   </data>
   <data name="Cmd_ToggleLineGutter" xml:space="preserve">
     <value>切换行号/时间侧栏</value>
@@ -1482,6 +1542,12 @@
   <data name="KeySvc_AlertChangedAccepted" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户确认永久信任新指纹:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
+    <value>服务器 {0} 证明了它还持有另一把主机密钥,已补记为受信:{1}</value>
+  </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>服务器 {0} 不再出示这把主机密钥,已从受信记录里删掉:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户选择仅本次信任(不落盘):{1}</value>
   </data>
@@ -1490,6 +1556,9 @@
   </data>
   <data name="KeySvc_AlertFirstTrustOnce" xml:space="preserve">
     <value>用户对 {0} 的首次连接指纹选择仅本次信任(不落盘):{1}</value>
+  </data>
+  <data name="KeySvc_AlertPersistFailed" xml:space="preserve">
+    <value>已信任 {0} 的主机指纹,但保存失败:{2}。本次连接照常进行;重启 VelaShell 后再连接会再次询问。指纹:{1}</value>
   </data>
   <data name="KeySvc_AlreadyExists" xml:space="preserve">
     <value>密钥 {0} 已存在。</value>
@@ -1501,13 +1570,13 @@
     <value>{0} 不是可解析的 SSH 公钥,未导入任何内容。</value>
   </data>
   <data name="KeySvc_ImportNotAPrivateKey" xml:space="preserve">
-    <value>{0} 看起来不是私钥(没有 PEM 头),未导入任何内容。</value>
+    <value>{0} 看起来不是私钥(认不出格式;支持 OpenSSH、PKCS#1/#8、SEC1 与 PuTTY .ppk),未导入任何内容。</value>
   </data>
   <data name="KeySvc_ImportPrivateKeyMissing" xml:space="preserve">
     <value>找不到私钥文件:{0}</value>
   </data>
   <data name="KeySvc_ImportPublicKeyMissing" xml:space="preserve">
-    <value>缺少配对的公钥 {0}。请连同 .pub 一起导入 —— 只有私钥的密钥不会出现在本列表中。</value>
+    <value>缺少配对的公钥 {0},而这把私钥的加密格式不带明文公钥。请连同 .pub 一起导入 —— 只有私钥的密钥不会出现在本列表中。</value>
   </data>
   <data name="Main_CloseConfirmBody" xml:space="preserve">
     <value>仍有活动的会话，关闭窗口将断开所有连接。确定退出吗?</value>
@@ -2675,7 +2744,7 @@
     <value>自动将密钥加入 Agent</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// 用私钥文件登录成功后,把这把密钥加入本机 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 转发与其它工具使用。密钥会一直留在 agent 里,直到用 ssh-add -d 删除;Windows 的 agent 重启后仍保留</value>
+    <value>// 用私钥文件或证书登录成功后,把这把密钥(连同证书)加入本机 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 转发与其它工具使用。密钥会一直留在 agent 里,直到用 ssh-add -d 删除;Windows 的 agent 重启后仍保留</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>
@@ -3288,6 +3357,12 @@
   </data>
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>保留文件时间戳</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>上传后落盘</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>SFTP 上传完、关闭之前要求服务器把文件写到磁盘上(fsync),服务器断电也不会丢。每个文件多一次往返;服务器不支持 fsync@openssh.com 时跳过。</value>
   </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>带宽限制</value>
@@ -4762,6 +4837,9 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>代理连接失败:{0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>连不上代理服务器:{0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>代理认证失败,请检查代理用户名与密码。</value>
   </data>
@@ -5685,6 +5763,27 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="SshErr_KbdAuthCancelled" xml:space="preserve">
     <value>已取消两步验证。</value>
   </data>
+  <data name="SshErr_PasswordChangeCancelled" xml:space="preserve">
+    <value>已取消修改密码。</value>
+  </data>
+  <data name="SshPwdChange_Title" xml:space="preserve">
+    <value>修改密码</value>
+  </data>
+  <data name="SshPwdChange_Required" xml:space="preserve">
+    <value>服务器要求先修改密码才能登录。保存着的密码不会随之自动更新。</value>
+  </data>
+  <data name="SshPwdChange_Rejected" xml:space="preserve">
+    <value>服务器没有接受这个新密码,请换一个。</value>
+  </data>
+  <data name="SshPwdChange_NewPassword" xml:space="preserve">
+    <value>新密码</value>
+  </data>
+  <data name="SshPwdChange_ConfirmPassword" xml:space="preserve">
+    <value>再输一次新密码</value>
+  </data>
+  <data name="SshPwdChange_Mismatch" xml:space="preserve">
+    <value>两次输入的新密码不一致或为空,请重新输入。</value>
+  </data>
   <data name="SshErr_Timeout" xml:space="preserve">
     <value>连接超时。</value>
   </data>
@@ -5711,6 +5810,30 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   </data>
   <data name="SshErr_ForwardRejected" xml:space="preserve">
     <value>服务器拒绝了转发请求。检查 sshd_config 里的 AllowAgentForwarding / AllowTcpForwarding / X11Forwarding。</value>
+  </data>
+  <data name="SftpErr_NoSuchFile" xml:space="preserve">
+    <value>文件或目录不存在</value>
+  </data>
+  <data name="SftpErr_PermissionDenied" xml:space="preserve">
+    <value>权限不足</value>
+  </data>
+  <data name="SftpErr_Unsupported" xml:space="preserve">
+    <value>服务器不支持这个操作</value>
+  </data>
+  <data name="SftpErr_BadMessage" xml:space="preserve">
+    <value>服务器认为请求的格式不对</value>
+  </data>
+  <data name="SftpErr_ConnectionLost" xml:space="preserve">
+    <value>连接已断开</value>
+  </data>
+  <data name="SftpErr_Failure" xml:space="preserve">
+    <value>操作失败</value>
+  </data>
+  <data name="SftpErr_WithPath" xml:space="preserve">
+    <value>{0}:{1}</value>
+  </data>
+  <data name="SftpErr_ServerSaid" xml:space="preserve">
+    <value>{0}。服务器说:{1}</value>
   </data>
   <data name="Profile_AgentAuth" xml:space="preserve">
     <value>Agent</value>
@@ -5817,6 +5940,27 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="AgentSign_Comment" xml:space="preserve">
     <value>密钥</value>
   </data>
+  <data name="AgentSign_Purpose" xml:space="preserve">
+    <value>用途</value>
+  </data>
+  <data name="AgentSign_PurposeLogin" xml:space="preserve">
+    <value>以「{0}」身份登录 SSH 服务器</value>
+  </data>
+  <data name="AgentSign_PurposeSshSig" xml:space="preserve">
+    <value>数据签名(命名空间 {0})</value>
+  </data>
+  <data name="AgentSign_PurposeUnknown" xml:space="preserve">
+    <value>无法识别的数据 —— 不是 SSH 登录</value>
+  </data>
+  <data name="AgentSign_Destination" xml:space="preserve">
+    <value>目的主机</value>
+  </data>
+  <data name="AgentSign_DestinationNotKnown" xml:space="preserve">
+    <value>不在已知主机里({0})</value>
+  </data>
+  <data name="AgentSign_DestinationUnverified" xml:space="preserve">
+    <value>无法核实 —— 远端没有证明要登录哪台主机</value>
+  </data>
   <data name="AgentSign_TimeoutHint" xml:space="preserve">
     <value>{0} 秒内不作答将自动拒绝。</value>
   </data>
@@ -5830,7 +5974,7 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>本次会话内允许</value>
   </data>
   <data name="AgentSign_AllowForSessionTip" xml:space="preserve">
-    <value>这条会话关闭之前,这把密钥不再询问</value>
+    <value>这条会话关闭之前,这把密钥用于同一用途(同一用户、同一目的主机)时不再询问</value>
   </data>
   <data name="Profile_SshAgentForwardRestrict" xml:space="preserve">
     <value>只转发选中的密钥</value>

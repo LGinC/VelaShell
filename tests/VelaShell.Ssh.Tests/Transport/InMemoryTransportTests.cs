@@ -281,7 +281,7 @@ public sealed class InMemoryTransportTests
             return ValueTask.CompletedTask;
         });
 
-        Assert.AreEqual(SshDialKind.InMemory, dialer.Kind);
+        Assert.AreEqual(SshDialKind.InMemory, DialHops.KindOf(dialer));
 
         var target = SshDialTarget.Direct("example.com", 22);
         await using Stream client = await dialer.DialAsync(target);

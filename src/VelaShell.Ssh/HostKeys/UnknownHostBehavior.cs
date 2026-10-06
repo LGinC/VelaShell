@@ -6,8 +6,12 @@
 namespace VelaShell.Ssh.HostKeys;
 
 /// <summary>没见过这台主机时怎么办。</summary>
+/// <remarks>零值是 <see cref="Reject"/>（安全的那个）：曾经是 <see cref="Ask"/>，<c>default</c> 出来的就是「问」。</remarks>
 public enum UnknownHostBehavior
 {
+    /// <summary>拒绝。对应 <c>StrictHostKeyChecking yes</c>。</summary>
+    Reject = 0,
+
     /// <summary>
     /// 问使用者（TOFU）。
     /// </summary>
@@ -20,7 +24,4 @@ public enum UnknownHostBehavior
     /// <summary>直接接受并记下来。</summary>
     /// <remarks>⚠️ 等于 <c>StrictHostKeyChecking no</c> 的第一次，首连是盲信的。</remarks>
     AcceptAndPersist,
-
-    /// <summary>拒绝。对应 <c>StrictHostKeyChecking yes</c>。</summary>
-    Reject,
 }

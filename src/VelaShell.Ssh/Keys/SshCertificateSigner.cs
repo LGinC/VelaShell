@@ -35,16 +35,21 @@ namespace VelaShell.Ssh.Keys;
 public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDisposable
 {
     private readonly ISshSigner _inner;
+    private readonly bool _ownsInner;
 
-    private SshCertificateSigner(ISshSigner inner, OpenSshCertificate certificate, SshPublicKey publicKey)
+    private SshCertificateSigner(ISshSigner inner, bool ownsInner, OpenSshCertificate certificate, SshPublicKey publicKey)
     {
         _inner = inner;
+        _ownsInner = ownsInner;
         Certificate = certificate;
         PublicKey = publicKey;
     }
 
     /// <summary>被出示的那张证书。</summary>
     public OpenSshCertificate Certificate { get; }
+
+    /// <summary>证书里那把钥的签名器（往 agent 里加「证书 + 私钥」时要它的私钥）。</summary>
+    internal ISshSigner Inner => _inner;
 
     /// <summary>
     /// 认证时出示的「公钥」—— 它的 <see cref="SshPublicKey.Blob" /> 是整张证书。
@@ -61,7 +66,11 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     /// 把一张证书与它对应的私钥配成一个签名器。
     /// </summary>
     /// <param name="certificate">证书。</param>
-    /// <param name="signer">被签发的那把私钥的签名器。<b>交进来就归返回的签名器所有</b>：释放它时一并释放。</param>
+    /// <param name="signer">被签发的那把私钥的签名器。</param>
+    /// <param name="ownsSigner">
+    /// 释放返回的签名器时是否一并释放 <paramref name="signer"/>。默认 <see langword="true"/>：交进来就归它；
+    /// 同一把私钥还要单独用（或者配别的证书）时传 <see langword="false"/>。
+    /// </param>
     /// <returns>可直接交给 <see cref="PublicKeyCredential" /> 的签名器。</returns>
     /// <exception cref="SshCertificateException">
     /// 证书不是用户证书,或者它里面的公钥与 <paramref name="signer" /> 的不是同一把。
@@ -72,7 +81,7 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     /// 「主体不匹配」「证书过期」长得一模一样,用户根本无从下手。
     /// 核对是本地一次字节比较,代价为零。
     /// </remarks>
-    public static SshCertificateSigner Create(OpenSshCertificate certificate, ISshSigner signer)
+    public static SshCertificateSigner Create(OpenSshCertificate certificate, ISshSigner signer, bool ownsSigner = true)
     {
         ArgumentNullException.ThrowIfNull(certificate);
         ArgumentNullException.ThrowIfNull(signer);
@@ -96,7 +105,7 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
         var presented = SshPublicKey.ForCertificate(
             certificate.Key, certificate.Algorithm, certificate.Blob.ToArray(), certificate);
 
-        return new SshCertificateSigner(signer, certificate, presented);
+        return new SshCertificateSigner(signer, ownsSigner, certificate, presented);
     }
 
     /// <inheritdoc />
@@ -114,6 +123,12 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     ValueTask ISessionAwareSigner.PrepareForSessionAsync(SshSessionProof proof, CancellationToken cancellationToken) =>
         _inner is ISessionAwareSigner aware ? aware.PrepareForSessionAsync(proof, cancellationToken) : ValueTask.CompletedTask;
 
-    /// <summary>释放内层的签名器（持有私钥材料时清零）。</summary>
-    public void Dispose() => (_inner as IDisposable)?.Dispose();
+    /// <summary>拥有内层的签名器时释放它（持有私钥材料时清零）。</summary>
+    public void Dispose()
+    {
+        if (_ownsInner)
+        {
+            (_inner as IDisposable)?.Dispose();
+        }
+    }
 }

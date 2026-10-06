@@ -48,6 +48,9 @@ internal sealed record TestChannelScript
     /// <summary>拒绝 <c>pty-req</c>。</summary>
     public bool RejectPty { get; init; }
 
+    /// <summary>对 <c>break</c> 回 FAILURE（没执行 BREAK）。</summary>
+    public bool RejectBreak { get; init; }
+
     /// <summary>拒绝 <c>CHANNEL_OPEN</c>，回这个原因码。</summary>
     public SshChannelOpenFailureReason? RejectOpenWith { get; init; }
 
@@ -82,14 +85,50 @@ internal sealed record TestChannelScript
     public SshChannelOpenFailureReason RejectTunnelWith { get; init; } =
         SshChannelOpenFailureReason.AdministrativelyProhibited;
 
+    /// <summary>收到隧道的 <c>CHANNEL_OPEN</c> 时不回话、直接把连接断掉（模拟跳板在开隧道时掉线）。</summary>
+    public bool DropConnectionOnTunnelOpen { get; init; }
+
+    /// <summary>收到隧道的 <c>CHANNEL_OPEN</c> 时一直不应答（模拟服务端还在连一个不通的目标）。</summary>
+    public bool IgnoreTunnelOpens { get; init; }
+
     /// <summary>接受 <c>x11-req</c> 通道请求。</summary>
     public bool GrantX11Forward { get; init; }
 
     /// <summary>接受 <c>streamlocal-forward@openssh.com</c> 全局请求。</summary>
     public bool GrantStreamLocalForward { get; init; }
 
+    /// <summary>
+    /// 一开始就宣告这些主机密钥（<c>hostkeys-00@openssh.com</c>，want_reply = false），并按它们回 <c>hostkeys-prove-00@openssh.com</c>；
+    /// 证明要用 <see cref="HostKeySessionId"/>。
+    /// </summary>
+    public IReadOnlyList<TestHostKey>? AnnouncedHostKeys { get; init; }
+
+    /// <summary>主机密钥证明里签的会话标识（首次交换的 H）。</summary>
+    public byte[]? HostKeySessionId { get; init; }
+
+    /// <summary>把第一把钥的证明签名弄坏。</summary>
+    public bool CorruptHostKeyProof { get; init; }
+
+    /// <summary>一开始先宣告 <c>ping@openssh.com</c>（认证之后的 EXT_INFO），再发一个 PING（数据是这几个字节）。</summary>
+    public byte[]? PingOnStart { get; init; }
+
+    /// <summary>认证之后一开始就发出的 <c>SSH_MSG_DEBUG</c>（是否 always_display、正文）。</summary>
+    public IReadOnlyList<(bool AlwaysDisplay, string Text)> DebugMessagesOnStart { get; init; } = [];
+
+    /// <summary>回客户端的 PING（宣告了 <see cref="PingOnStart"/> 时）。</summary>
+    public bool AnswerPings { get; init; }
+
     /// <summary>接受 <c>tcpip-forward</c> 全局请求，并回这个端口（<c>0</c> = 拒绝）。</summary>
     public int GrantRemoteForwardPort { get; init; }
+
+    /// <summary>服务端开过去的通道一被客户端确认，就立刻 EOF + CLOSE（端口扫描、健康检查就是这样）。</summary>
+    public bool CloseServerOpenedChannelOnConfirm { get; init; }
+
+    /// <summary><c>tcpip-forward</c> 的应答等这么久才回（监听在收到请求时就已经开好）。</summary>
+    public TimeSpan DelayRemoteForwardReply { get; init; }
+
+    /// <summary>不回 <c>cancel-tcpip-forward</c> 的应答 —— 模拟半死的链路。</summary>
+    public bool IgnoreCancelForward { get; init; }
 
     /// <summary>
     /// 回完 <c>tcpip-forward</c> 的 <c>REQUEST_SUCCESS</c>，<b>紧接着</b>开一条 <c>forwarded-tcpip</c> 回连 ——
@@ -105,6 +144,12 @@ internal sealed record TestChannelScript
 
     /// <summary>拒绝 <c>auth-agent-req@openssh.com</c>。</summary>
     public bool RejectAgentForward { get; init; }
+
+    /// <summary>
+    /// 第一个要应答的通道请求，等这么久才回 —— 期间服务端不处理后面的报文（与真实 sshd 一样按序处理）。
+    /// </summary>
+    /// <remarks>模拟 PAM 慢、命令启动慢：客户端在等应答时放弃了这条通道，应答在它的 CLOSE 之后才到。</remarks>
+    public TimeSpan DelayFirstRequestReply { get; init; }
 
     /// <summary>收到 stdin 也不回补客户端的发送窗口 —— 模拟远端进程不读 stdin。</summary>
     public bool WithholdWindowAdjust { get; init; }
@@ -126,19 +171,34 @@ internal sealed record TestChannelScript
 
     /// <summary>回放退出状态之前，先发这么多条客户端不认识的通道请求（每条带 1 KiB 载荷）。</summary>
     public int UnknownRequestsBeforeExit { get; init; }
+
+    /// <summary>收到全局请求、应答之前先跑一下（参数是请求类型）—— 用例在这里拨手动时钟，量往返时间。</summary>
+    public Func<string, Task>? BeforeGlobalReply { get; init; }
+
+    /// <summary>回放退出状态之前，按顺序发这些 <c>xon-xoff</c>（RFC 4254 §6.8，<c>client can do</c> 的值）。</summary>
+    public IReadOnlyList<bool> XonXoffBeforeExit { get; init; } = [];
+
+    /// <summary>退出状态 / 退出信号重复发几遍（恶意或有缺陷的服务端）；EOF 也跟着重复这么多遍。</summary>
+    public int RepeatExitReport { get; init; } = 1;
 }
 
 /// <summary>测试服务端收到的一条 <c>x11-req</c>。</summary>
-/// <param name="SingleConnection">只允许一条 X11 连接。</param>
+/// <param name="IsSingleConnection">只允许一条 X11 连接。</param>
 /// <param name="AuthProtocol">授权协议名。</param>
 /// <param name="AuthCookieHex">cookie 的十六进制文本 —— <b>应当是假的那个</b>。</param>
 /// <param name="ScreenNumber">屏幕号。</param>
 internal sealed record TestX11Request(
-    bool SingleConnection, string AuthProtocol, string AuthCookieHex, int ScreenNumber);
+    bool IsSingleConnection, string AuthProtocol, string AuthCookieHex, int ScreenNumber);
 
 /// <summary>服务端在通道上观察到的事实。</summary>
 internal sealed class TestChannelObservation
 {
+    /// <summary>客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; set; }
+
+    /// <summary>最近一次<b>客户端发起</b>的重协商里，客户端的 <c>KEXINIT</c> 载荷。</summary>
+    public byte[]? LastClientInitiatedKexInit { get; set; }
+
     /// <summary>收到的 <c>exec</c> 命令行。</summary>
     public List<string> Commands { get; } = [];
 
@@ -147,6 +207,9 @@ internal sealed class TestChannelObservation
 
     /// <summary>收到的环境变量。</summary>
     public Dictionary<string, string> Environment { get; } = [];
+
+    /// <summary>收到的 <c>break</c> 请求里的长度（毫秒）。</summary>
+    public List<uint> BreakLengths { get; } = [];
 
     /// <summary>收到的 <c>pty-req</c>：终端类型与尺寸。</summary>
     public List<(string Term, SshTerminalSize Size, byte[] Modes)> PtyRequests { get; } = [];
@@ -168,6 +231,9 @@ internal sealed class TestChannelObservation
 
     /// <summary>是否收到过客户端的 <c>CHANNEL_CLOSE</c>。</summary>
     public bool ReceivedClose { get; set; }
+
+    /// <summary>客户端的 <c>CHANNEL_CLOSE</c> 各自指向的服务端通道号（按到达顺序）。</summary>
+    public List<uint> ClosedServerChannels { get; } = [];
 
     /// <summary>客户端宣告的初始窗口与最大报文长度。</summary>
     public (uint Window, uint MaxPacket) ClientAnnounced { get; set; }
@@ -232,6 +298,12 @@ internal sealed class TestChannelObservation
     /// <summary>收到的全局请求类型。</summary>
     public List<string> GlobalRequests { get; } = [];
 
+    /// <summary>客户端回的 PONG 里的数据。</summary>
+    public List<byte[]> Pongs { get; } = [];
+
+    /// <summary>客户端发来的 PING 个数。</summary>
+    public int PingsReceived { get; set; }
+
     /// <summary><see cref="TestChannelScript.OpenForwardedTcpIpAfterGrant"/> 开出的那条回连；客户端拒了是 null。</summary>
     public Task<Stream?>? ForwardedOpenAfterGrant { get; set; }
 
@@ -240,6 +312,17 @@ internal sealed class TestChannelObservation
 
     /// <summary>被拒绝的 <c>CHANNEL_OPEN</c> 次数。</summary>
     public int RejectedOpens { get; set; }
+
+    /// <summary>服务端发起的通道最近一次被客户端拒绝时的原因码。</summary>
+    public SshChannelOpenFailureReason? LastClientOpenFailure { get; set; }
+
+    /// <summary>收到的 <c>CHANNEL_OPEN</c> 次数（拒绝的、还扣着确认的都算）。</summary>
+    public int ReceivedOpens => Volatile.Read(ref _receivedOpens);
+
+    private int _receivedOpens;
+
+    /// <summary>记一次收到的 <c>CHANNEL_OPEN</c>。</summary>
+    public void CountReceivedOpen() => Interlocked.Increment(ref _receivedOpens);
 
     /// <summary>客户端请求隧道到哪些目标（<c>host:port</c> 或套接字路径）。</summary>
     public List<string> TunnelTargets { get; } = [];
@@ -257,10 +340,14 @@ internal sealed class TestChannelServer : IDisposable
     private const int MaxField = 256 * 1024;
 
     private readonly SshPacketTransport _transport;
+
+    /// <summary>按 <see cref="TestChannelScript.DropConnectionOnTunnelOpen"/> 断掉了连接：主循环就此收工。</summary>
+    private bool _dropped;
     private readonly TestChannelScript _script;
 
     /// <summary>本端（服务端）给通道的编号 → 客户端的编号。</summary>
     private readonly Dictionary<uint, uint> _peerIds = [];
+    private int _repliedRequests;
 
     /// <summary>本端能往客户端发多少字节（客户端的接收窗口）。</summary>
     /// <remarks>
@@ -334,6 +421,48 @@ internal sealed class TestChannelServer : IDisposable
         _running.TrySetResult();
         try
         {
+            foreach ((bool alwaysDisplay, string text) in _script.DebugMessagesOnStart)
+            {
+                ArrayBufferWriter<byte> debug = new();
+                SshDataWriter debugWriter = new(debug);
+                debugWriter.WriteMessageNumber(SshMessageNumber.Debug);
+                debugWriter.WriteBoolean(alwaysDisplay);
+                debugWriter.WriteUtf8String(text);
+                debugWriter.WriteUtf8String("");
+                await SendAsync(debug.WrittenMemory, cancellationToken);
+            }
+
+            if (_script.PingOnStart is { } pingData)
+            {
+                ArrayBufferWriter<byte> extInfo = new();
+                SshDataWriter extWriter = new(extInfo);
+                extWriter.WriteMessageNumber(SshMessageNumber.ExtInfo);
+                extWriter.WriteUInt32(1);
+                extWriter.WriteUtf8String(SshProtocolNames.ExtPing);
+                extWriter.WriteUtf8String("0");
+                await SendAsync(extInfo.WrittenMemory, cancellationToken);
+
+                ArrayBufferWriter<byte> ping = new();
+                SshDataWriter pingWriter = new(ping);
+                pingWriter.WriteMessageNumber(SshMessageNumber.Ping);
+                pingWriter.WriteString(pingData);
+                await SendAsync(ping.WrittenMemory, cancellationToken);
+            }
+
+            if (_script.AnnouncedHostKeys is { } announced)
+            {
+                ArrayBufferWriter<byte> buffer = new();
+                SshDataWriter writer = new(buffer);
+                writer.WriteMessageNumber(SshMessageNumber.GlobalRequest);
+                writer.WriteUtf8String(SshProtocolNames.RequestHostKeys);
+                writer.WriteBoolean(false);
+                foreach (TestHostKey key in announced)
+                {
+                    writer.WriteString(key.PublicKeyBlob);
+                }
+                await SendAsync(buffer.WrittenMemory, cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 SshInboundPacket packet;
@@ -348,10 +477,19 @@ internal sealed class TestChannelServer : IDisposable
 
                 if (packet.IsEndOfStream || packet.MessageNumber == SshMessageNumber.Disconnect)
                 {
+                    if (!packet.IsEndOfStream && packet.Payload.Length >= 5)
+                    {
+                        Observation.ClientDisconnectReason =
+                            System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+                    }
                     return;
                 }
 
                 await HandleAsync(packet.MessageNumber, packet.Payload.ToArray(), cancellationToken);
+                if (_dropped)
+                {
+                    return;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -450,6 +588,10 @@ internal sealed class TestChannelServer : IDisposable
         byte[]? ours = Interlocked.Exchange(ref _pendingRekeyKexInit, null);
         TaskCompletionSource<TestSshServerHandshake>? request =
             Interlocked.Exchange(ref _rekeyRequest, null);
+        if (ours is null)
+        {
+            Observation.LastClientInitiatedKexInit = payload;
+        }
 
         if (HoldRekeyCompletionUntil is { } hold)
         {
@@ -539,8 +681,27 @@ internal sealed class TestChannelServer : IDisposable
                 await OnGlobalRequestAsync(payload, cancellationToken);
                 return;
 
+            case SshMessageNumber.Pong:
+                Observation.Pongs.Add(payload[5..]);
+                return;
+
+            case SshMessageNumber.Ping:
+                Observation.PingsReceived++;
+                if (_script.AnswerPings)
+                {
+                    byte[] pong = [.. payload];
+                    pong[0] = (byte)SshMessageNumber.Pong;
+                    await SendAsync(pong, cancellationToken);
+                }
+                return;
+
             case SshMessageNumber.ChannelOpenConfirmation:
                 OnServerOpenAnswered(payload, accepted: true);
+                if (_script.CloseServerOpenedChannelOnConfirm && _peerIds.TryGetValue(ReadRecipient(payload), out uint confirmedClient))
+                {
+                    await SendSimpleAsync(SshMessageNumber.ChannelEof, confirmedClient, cancellationToken);
+                    await SendSimpleAsync(SshMessageNumber.ChannelClose, confirmedClient, cancellationToken);
+                }
                 return;
 
             case SshMessageNumber.ChannelOpenFailure:
@@ -562,6 +723,7 @@ internal sealed class TestChannelServer : IDisposable
         uint clientChannel = reader.ReadUInt32();
         uint clientWindow = reader.ReadUInt32();
         uint clientMaxPacket = reader.ReadUInt32();
+        Observation.CountReceivedOpen();
 
         Observation.ClientAnnounced = (clientWindow, clientMaxPacket);
 
@@ -571,6 +733,18 @@ internal sealed class TestChannelServer : IDisposable
         // 目标要在**任何 await 之前**读出来 —— SshDataReader 是 ref struct，
         // 跨不过 await 边界。
         string tunnelTarget = isTunnel ? ReadTunnelTarget(channelType, ref reader) : "";
+
+        if (isTunnel && _script.DropConnectionOnTunnelOpen)
+        {
+            _dropped = true;
+            await _transport.DisposeAsync();
+            return;
+        }
+
+        if (isTunnel && _script.IgnoreTunnelOpens)
+        {
+            return;
+        }
 
         if (isTunnel && _script.TunnelHandler is null && _script.RejectOpenWith is null)
         {
@@ -671,6 +845,10 @@ internal sealed class TestChannelServer : IDisposable
     {
         uint serverChannel = ReadRecipient(payload);
         Observation.ReceivedClose = true;
+        lock (Observation.ClosedServerChannels)
+        {
+            Observation.ClosedServerChannels.Add(serverChannel);
+        }
 
         // 客户端关了通道：处理器那一侧也该读到结尾（CLOSE 蕴含不会再有数据），否则它会一直等。
         if (_channelInput.TryGetValue(serverChannel, out Pipe? handlerInput))
@@ -737,7 +915,7 @@ internal sealed class TestChannelServer : IDisposable
 
             case SshProtocolNames.RequestX11:
                 Observation.X11Requests.Add(new TestX11Request(
-                    SingleConnection: reader.ReadBoolean(),
+                    IsSingleConnection: reader.ReadBoolean(),
                     AuthProtocol: reader.ReadUtf8String(MaxField),
                     AuthCookieHex: reader.ReadUtf8String(MaxField),
                     ScreenNumber: (int)reader.ReadUInt32()));
@@ -768,6 +946,11 @@ internal sealed class TestChannelServer : IDisposable
                 Observation.Signals.Add(reader.ReadUtf8String(MaxField));
                 return;   // want_reply 必为假，不回
 
+            case SshProtocolNames.RequestBreak:
+                Observation.BreakLengths.Add(reader.ReadUInt32());
+                success = !_script.RejectBreak;
+                break;
+
             case SshProtocolNames.RequestAuthAgent:
                 Observation.AgentForwardRequests++;
                 success = !_script.RejectAgentForward;
@@ -780,6 +963,11 @@ internal sealed class TestChannelServer : IDisposable
 
         if (wantReply)
         {
+            if (_script.DelayFirstRequestReply > TimeSpan.Zero && Interlocked.Increment(ref _repliedRequests) == 1)
+            {
+                await Task.Delay(_script.DelayFirstRequestReply, cancellationToken);
+            }
+
             uint clientChannel = _peerIds.GetValueOrDefault(serverChannel);
             await SendSimpleAsync(
                 success ? SshMessageNumber.ChannelSuccess : SshMessageNumber.ChannelFailure,
@@ -817,12 +1005,21 @@ internal sealed class TestChannelServer : IDisposable
         string requestType = reader.ReadUtf8String(MaxField);
         Observation.GlobalRequests.Add(requestType);
         bool wantReply = reader.ReadBoolean();
+        if (_script.BeforeGlobalReply is { } beforeReply)
+        {
+            await beforeReply(requestType);
+        }
 
         if (requestType == "tcpip-forward" && _script.GrantRemoteForwardPort > 0)
         {
             string bindAddress = reader.ReadUtf8String(MaxField);
             uint requestedPort = reader.ReadUInt32();
             Observation.RemoteForwardBinds.Add((bindAddress, (int)requestedPort));
+
+            if (_script.DelayRemoteForwardReply > TimeSpan.Zero)
+            {
+                await Task.Delay(_script.DelayRemoteForwardReply, cancellationToken);
+            }
 
             // 请求端口 0 时，**实际端口在 REQUEST_SUCCESS 的载荷里**。
             ArrayBufferWriter<byte> success = new();
@@ -874,10 +1071,37 @@ internal sealed class TestChannelServer : IDisposable
             return;
         }
 
+        if (requestType == SshProtocolNames.RequestHostKeysProve && _script.AnnouncedHostKeys is { } keys && _script.HostKeySessionId is { } sessionId)
+        {
+            ArrayBufferWriter<byte> proof = new();
+            SshDataWriter proofWriter = new(proof);
+            proofWriter.WriteMessageNumber(SshMessageNumber.RequestSuccess);
+            bool first = true;
+            while (!reader.IsEmpty)
+            {
+                byte[] blob = reader.ReadStringAsArray(MaxField);
+                TestHostKey key = keys.First(k => k.PublicKeyBlob.AsSpan().SequenceEqual(blob));
+                ArrayBufferWriter<byte> signed = new();
+                SshDataWriter signedWriter = new(signed);
+                signedWriter.WriteUtf8String(SshProtocolNames.RequestHostKeysProve);
+                signedWriter.WriteString(sessionId);
+                signedWriter.WriteString(blob);
+                byte[] signature = key.Sign(signed.WrittenSpan, key.SignatureAlgorithms[0]);
+                if (first && _script.CorruptHostKeyProof)
+                {
+                    signature[^1] ^= 0xFF;
+                }
+                first = false;
+                proofWriter.WriteString(signature);
+            }
+            await SendAsync(proof.WrittenMemory, cancellationToken);
+            return;
+        }
+
         if (requestType is "cancel-tcpip-forward"
             or SshProtocolNames.RequestCancelStreamLocalForward)
         {
-            if (wantReply)
+            if (wantReply && !_script.IgnoreCancelForward)
             {
                 byte[] success = [(byte)SshMessageNumber.RequestSuccess];
                 await SendAsync(success, cancellationToken);
@@ -1058,6 +1282,10 @@ internal sealed class TestChannelServer : IDisposable
             }
             Observation.ClientAnnounced = (clientWindow, clientMaxPacket);
         }
+        else
+        {
+            Observation.LastClientOpenFailure = (SshChannelOpenFailureReason)reader.ReadUInt32();
+        }
 
         completion.TrySetResult(accepted);
     }
@@ -1120,6 +1348,11 @@ internal sealed class TestChannelServer : IDisposable
                 await SendChannelRequestAsync(serverChannel, "flood@velashell.test", new byte[1024], cancellationToken);
             }
 
+            foreach (bool clientCanDo in _script.XonXoffBeforeExit)
+            {
+                await SendChannelRequestAsync(serverChannel, SshProtocolNames.RequestXonXoff, new[] { clientCanDo ? (byte)1 : (byte)0 }, cancellationToken);
+            }
+
             if (_script.ExitSignal is { } signal)
             {
                 ArrayBufferWriter<byte> buffer = new();
@@ -1128,19 +1361,28 @@ internal sealed class TestChannelServer : IDisposable
                 writer.WriteBoolean(true);            // core dumped
                 writer.WriteUtf8String("测试服务端按剧本发出的退出信号。");
                 writer.WriteUtf8String("");
-                await SendChannelRequestAsync(serverChannel, "exit-signal", buffer.WrittenMemory, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendChannelRequestAsync(serverChannel, "exit-signal", buffer.WrittenMemory, cancellationToken);
+                }
             }
             else if (_script.ExitCode is { } code)
             {
                 ArrayBufferWriter<byte> buffer = new();
                 SshDataWriter writer = new(buffer);
                 writer.WriteUInt32((uint)code);
-                await SendChannelRequestAsync(serverChannel, "exit-status", buffer.WrittenMemory, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendChannelRequestAsync(serverChannel, "exit-status", buffer.WrittenMemory, cancellationToken);
+                }
             }
 
             if (_script.CloseAfterScript && _peerIds.TryGetValue(serverChannel, out uint clientChannel))
             {
-                await SendSimpleAsync(SshMessageNumber.ChannelEof, clientChannel, cancellationToken);
+                for (int i = 0; i < _script.RepeatExitReport; i++)
+                {
+                    await SendSimpleAsync(SshMessageNumber.ChannelEof, clientChannel, cancellationToken);
+                }
                 await SendSimpleAsync(SshMessageNumber.ChannelClose, clientChannel, cancellationToken);
             }
         }

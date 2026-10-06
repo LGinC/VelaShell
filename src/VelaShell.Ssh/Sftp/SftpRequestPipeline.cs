@@ -12,73 +12,6 @@ using VelaShell.Ssh.Diagnostics;
 
 namespace VelaShell.Ssh.Sftp;
 
-/// <summary>一个已经收下来的 SFTP 应答。</summary>
-/// <remarks>用完要 <see cref="Dispose"/> —— 载荷是从池里租的。</remarks>
-internal sealed class SftpResponse : IDisposable
-{
-    private byte[]? _rented;
-    private readonly int _length;
-
-    internal SftpResponse(SftpMessageType type, uint requestId, byte[] rented, int length)
-    {
-        Type = type;
-        RequestId = requestId;
-        _rented = rented;
-        _length = length;
-    }
-
-    /// <summary>应答类型。</summary>
-    public SftpMessageType Type { get; }
-
-    /// <summary>对应的请求编号。</summary>
-    public uint RequestId { get; }
-
-    /// <summary><b>request-id 之后</b>的内容。</summary>
-    public ReadOnlySequence<byte> Payload =>
-        _rented is null
-            ? throw new ObjectDisposedException(nameof(SftpResponse))
-            : new ReadOnlySequence<byte>(_rented, 0, _length);
-
-    /// <summary>这条应答是不是一个状态码，是的话解出来。</summary>
-    public bool TryGetStatus(out SftpStatusCode code, out string message)
-    {
-        if (Type != SftpMessageType.Status)
-        {
-            code = SftpStatusCode.Ok;
-            message = "";
-            return false;
-        }
-
-        (code, message) = SftpWire.ReadStatus(Payload);
-        return true;
-    }
-
-    /// <summary>把状态类应答翻成异常；<c>OK</c> 或者不是状态应答时什么都不做。</summary>
-    /// <param name="path">出问题的路径，进异常。</param>
-    /// <param name="operation">出问题的操作，进异常。</param>
-    /// <remarks>
-    /// <c>EOF</c> 在这里也算错误 —— 走到这里的调用都期待一个数据应答或者 <c>OK</c>。
-    /// 「读到末尾」「目录读完」这两处正常的 <c>EOF</c> 由读文件、读目录的代码自己先认出来，不经过这里。
-    /// </remarks>
-    public void ThrowIfError(string? path, SftpOperation operation)
-    {
-        if (TryGetStatus(out SftpStatusCode code, out string message) && code != SftpStatusCode.Ok)
-        {
-            throw new SftpException(code, message, path, operation);
-        }
-    }
-
-    /// <inheritdoc />
-    public void Dispose()
-    {
-        byte[]? rented = Interlocked.Exchange(ref _rented, null);
-        if (rented is not null)
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
-    }
-}
-
 /// <summary>SFTP 请求的流水线。</summary>
 /// <remarks>
 /// <para>
@@ -112,6 +45,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
     private int _windowRequests;
     private Exception? _fault;
     private bool _disposed;
+
+    /// <summary>流水线坏掉（或释放）的那一刻完成，结果是原因。不以异常完成 —— 没人等它时也不会变成未观察的任务异常。</summary>
+    private readonly TaskCompletionSource<Exception> _closed = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     /// <summary>在一条已经起好 sftp 子系统的通道上建立流水线。</summary>
     /// <param name="channel">通道。</param>
@@ -152,6 +88,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
 
     /// <summary>流水线已经坏了（通道断了、收到了畸形报文）：之后的请求都会失败。</summary>
     internal bool IsFaulted => Volatile.Read(ref _fault) is not null;
+
+    /// <summary>流水线坏掉或释放时完成，结果是原因（见 <see cref="SftpFileSystem.Closed"/>）。</summary>
+    internal Task<Exception> Closed => _closed.Task;
 
     /// <summary>深度被调大过几次（诊断用）。</summary>
     public int DepthIncreases { get; private set; }
@@ -210,12 +149,20 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
 
         uint requestId;
         PendingRequest pending;
+        int inFlight;
         lock (_stateLock)
         {
             ThrowIfFaulted();
             requestId = AllocateRequestId();
             pending = new PendingRequest(onLateResponse);
             _pending[requestId] = pending;
+            inFlight = _pending.Count;
+        }
+
+        // 〔velashell-docs/zh/ssh/spec/08 §7〕管线深度的实际取值（velashell.ssh.sftp.inflight）。
+        if (_channel.MetricsHost is { } metricsHost && Diagnostics.SshMetrics.SftpInFlight.Enabled)
+        {
+            Diagnostics.SshMetrics.SftpInFlight.Record(inFlight, Diagnostics.SshMetrics.HostTag(metricsHost));
         }
 
         bool sent = false;
@@ -248,8 +195,8 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         {
             // 已经发出去了，取消或失败：**请求仍然留在账本里**。
             // 摘掉它的话，迟到的应答会被当成「未知 id」丢弃，
-            // 而它可能带着一个需要关闭的句柄。
-            pending.MarkAbandoned();
+            // 而它可能带着一个需要关闭的句柄。应答若恰好已经交付，Abandon 接手善后。
+            pending.Abandon();
             throw;
         }
         catch (Exception)
@@ -258,6 +205,10 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
             // 留在账本里的话，它占着的在途额度只有应答才还得回来 —— 也就是永远还不回来。
             // 曾经就是这样：取消一次上传漏掉几十个额度，漏满之后所有 SFTP 操作一起挂住。
             Withdraw(requestId);
+
+            // 排在发送锁上时流水线收工了：Fault 已经把它从账本里摘走、把故障设在了 Completion 上，而那个任务没人会再看 ——
+            // 断线时几个排队的写一起变成未观察的任务异常（velashell-docs/zh/ssh/spec/06 §5.4）。放弃它：故障在那里看一眼。
+            pending.Abandon();
             throw;
         }
     }
@@ -433,7 +384,8 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         }
         catch (OperationCanceledException)
         {
-            Fault(new SftpUnavailableException("SFTP 流水线已收工。"));
+            // 本端在收工（关闭文件系统、连接释放）：那是中止，不是「服务端不支持 SFTP」。
+            Fault(new SftpUnavailableException(SshFailureReason.Aborted, "SFTP 流水线已收工。"));
         }
         catch (Exception ex)
         {
@@ -471,31 +423,9 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         }
 
         _inFlight.Release();
-        SftpResponse response = Materialize(frame.Type, requestId, payload);
 
-        if (pending.IsAbandoned)
-        {
-            // 请求已经被取消了，但应答还是来了。**必须善后** ——
-            // OPEN 被取消而服务端已经打开了文件的话，那个句柄不关就泄漏在服务端。
-            try
-            {
-                pending.OnLateResponse?.Invoke(response);
-            }
-            catch (Exception)
-            {
-                // 善后失败没有进一步的补救动作可做。
-            }
-            finally
-            {
-                response.Dispose();
-            }
-            return;
-        }
-
-        if (!pending.Completion.TrySetResult(response))
-        {
-            response.Dispose();
-        }
+        // 交给等的人；请求已经被取消了的话就地善后（见 PendingRequest）。
+        pending.Deliver(Materialize(frame.Type, requestId, payload));
     }
 
     private static SftpResponse Materialize(SftpMessageType type, uint requestId, ReadOnlySequence<byte> payload)
@@ -590,24 +520,32 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
     private void Fault(Exception exception)
     {
         PendingRequest[] pending;
+        Exception reason;
         lock (_stateLock)
         {
             _fault ??= exception;
+            reason = _fault;
             pending = [.. _pending.Values];
             _pending.Clear();
         }
+        _closed.TrySetResult(reason);
 
         // **一次性**把所有在途请求以同一个异常收尾。
         // 不这么做的话，通道断开时每个在途请求都会各自挂到取消或超时上 ——
         // 而挂死没有堆栈也没有日志。
         foreach (PendingRequest item in pending)
         {
-            item.Completion.TrySetException(exception);
+            item.Fail(exception);
         }
 
         lock (_stateLock)
         {
-            _versionCompletion?.TrySetException(exception);
+            if (_versionCompletion is { } version && version.TrySetException(exception))
+            {
+                // 等 VERSION 的人可能已经走了：握手超时（WaitAsync 到点）之后流水线才收工，故障落在一个没人再看的任务上，
+                // GC 时成了未观察的任务异常。这里看一眼；还在等的人照样拿到它。
+                _ = version.Task.Exception;
+            }
         }
 
         // 还排在在途额度或发送锁上的调用方也要放出来（见 WaitOrStopAsync）。
@@ -615,16 +553,105 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
         Session.Lifecycle.CancelInBackground(_lifetime);
     }
 
-    private sealed class PendingRequest(Action<SftpResponse>? onLateResponse)
+    /// <summary>一个在途请求：等应答的人与收应答的循环之间，谁拿到应答由一个原子状态说了算。</summary>
+    /// <remarks>
+    /// <para>
+    /// 曾经是一个普通的布尔「已放弃」：收包循环先看它、再把应答交给 <see cref="Completion"/>；
+    /// 等应答的一方 <c>WaitAsync</c> 被取消之后才把它设上。取消与应答同时到达时，收包循环看到的还是「没放弃」，
+    /// 应答（带着服务端已经打开的句柄）就留在一个再也没人读的任务里 —— 句柄泄漏在服务端，租来的缓冲也不还池。
+    /// </para>
+    /// <para>
+    /// 现在两边用比较并交换抢同一个状态：收包循环抢到「已交付」就交给等的人；
+    /// 放弃的一方抢到「已放弃」，收包循环就去善后；放弃的一方晚了一步（应答已经交付），由它接手善后。
+    /// </para>
+    /// </remarks>
+    internal sealed class PendingRequest(Action<SftpResponse>? onLateResponse)
     {
+        private const int Waiting = 0;
+        private const int Delivered = 1;
+        private const int Abandoned = 2;
+
+        private int _state;
+
         public TaskCompletionSource<SftpResponse> Completion { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public Action<SftpResponse>? OnLateResponse { get; } = onLateResponse;
+        /// <summary>已经被放弃（等的人走了，应答到了要善后）。</summary>
+        public bool IsAbandoned => Volatile.Read(ref _state) == Abandoned;
 
-        public bool IsAbandoned { get; private set; }
+        /// <summary>收包循环：把应答交给等的人。等的人已经走了就由这里善后。</summary>
+        public void Deliver(SftpResponse response)
+        {
+            if (Interlocked.CompareExchange(ref _state, Delivered, Waiting) == Waiting)
+            {
+                if (!Completion.TrySetResult(response))
+                {
+                    response.Dispose();
+                }
+                return;
+            }
 
-        public void MarkAbandoned() => IsAbandoned = true;
+            HandleLate(response);
+        }
+
+        /// <summary>流水线收工：把故障交给还在等的人。</summary>
+        /// <remarks>
+        /// 〔velashell-docs/zh/ssh/spec/06 §5.4〕<b>已经放弃的不设异常。</b>等它的人已经走了，没人会看这个任务 ——
+        /// 设了就是一个未观察的任务异常，GC 时触发 <c>UnobservedTaskException</c>，宿主据此写进崩溃日志：
+        /// 一次断线让几十个被取消过的请求同时「崩溃」，崩溃日志里全是其实不是崩溃的记录。
+        /// </remarks>
+        public void Fail(Exception exception)
+        {
+            if (Interlocked.CompareExchange(ref _state, Delivered, Waiting) == Waiting)
+            {
+                Completion.TrySetException(exception);
+            }
+        }
+
+        /// <summary>等的人不等了（取消或失败）。应答要是已经交付了，就在这里接手善后。</summary>
+        public void Abandon()
+        {
+            if (Interlocked.CompareExchange(ref _state, Abandoned, Waiting) == Waiting)
+            {
+                return;   // 应答还没到，收包循环会善后
+            }
+
+            // 应答（或收工时的故障）已经、或马上就会落在 Completion 上，而等它的人已经走了：
+            // 应答由这里善后；故障在这里看一眼，免得变成未观察的任务异常。
+            _ = Completion.Task.ContinueWith(
+                static (task, state) =>
+                {
+                    if (task.IsCompletedSuccessfully)
+                    {
+                        ((PendingRequest)state!).HandleLate(task.Result);
+                    }
+                    else
+                    {
+                        _ = task.Exception;
+                    }
+                },
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        /// <summary>请求已经被取消了，但应答还是来了。<b>必须善后</b>：OPEN 的句柄不关就泄漏在服务端。</summary>
+        private void HandleLate(SftpResponse response)
+        {
+            try
+            {
+                onLateResponse?.Invoke(response);
+            }
+            catch (Exception)
+            {
+                // 善后失败没有进一步的补救动作可做。
+            }
+            finally
+            {
+                response.Dispose();
+            }
+        }
     }
 
     /// <inheritdoc />

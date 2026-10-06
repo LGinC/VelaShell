@@ -43,6 +43,12 @@ internal static class SshProtocolNames
     /// <summary>公钥认证（含证书）。</summary>
     public const string AuthPublicKey = "publickey";
 
+    /// <summary>
+    /// 绑定主机密钥的公钥认证（OpenSSH PROTOCOL）：签名输入末尾多一个服务端的主机密钥。
+    /// 我们自己登录不用它；agent 转发时认得它，好从远端要签的数据里读出目的主机。
+    /// </summary>
+    public const string AuthPublicKeyHostBound = "publickey-hostbound-v00@openssh.com";
+
     /// <summary>键盘交互认证（2FA / OTP 走这条）。</summary>
     public const string AuthKeyboardInteractive = "keyboard-interactive";
 
@@ -56,6 +62,9 @@ internal static class SshProtocolNames
 
     /// <summary>RFC 8308 §3.1：服务端接受的公钥签名算法。</summary>
     public const string ExtServerSigAlgs = "server-sig-algs";
+
+    /// <summary><c>EXT_INFO</c> 里的 <c>ping@openssh.com</c>：对端认传输层的 PING / PONG（velashell-docs/zh/ssh/spec/05 §6.5）。</summary>
+    public const string ExtPing = "ping@openssh.com";
 
     // ------------------------------------------------------------------ 通道
 
@@ -79,6 +88,12 @@ internal static class SshProtocolNames
 
     /// <summary>取消远程 Unix 套接字转发。</summary>
     public const string RequestCancelStreamLocalForward = "cancel-streamlocal-forward@openssh.com";
+
+    /// <summary>服务端宣告它的全部主机密钥（OpenSSH PROTOCOL 的 UpdateHostKeys 一节；velashell-docs/zh/ssh/spec/05 §6.4）。</summary>
+    public const string RequestHostKeys = "hostkeys-00@openssh.com";
+
+    /// <summary>请服务端证明持有给定的主机密钥（同上）。</summary>
+    public const string RequestHostKeysProve = "hostkeys-prove-00@openssh.com";
 
     /// <summary>服务端为 X11 转发发起的通道（RFC 4254 §6.3.2）。</summary>
     public const string ChannelX11 = "x11";
@@ -111,6 +126,15 @@ internal static class SshProtocolNames
 
     /// <summary>给远端进程发信号。<b>RFC 要求 want_reply 为假。</b></summary>
     public const string RequestSignal = "signal";
+
+    /// <summary>服务端告诉客户端能不能在本地做 ^S / ^Q 流控（RFC 4254 §6.8）。<b>want_reply 为假。</b></summary>
+    public const string RequestXonXoff = "xon-xoff";
+
+    /// <summary>发 BREAK（RFC 4335）。</summary>
+    public const string RequestBreak = "break";
+
+    /// <summary>「这边不再要数据了」（OpenSSH <c>PROTOCOL</c> 的 channel write close 扩展）。<b>want_reply 为假。</b></summary>
+    public const string RequestEndOfWrite = "eow@openssh.com";
 
     /// <summary>远端进程的退出码。</summary>
     public const string RequestExitStatus = "exit-status";

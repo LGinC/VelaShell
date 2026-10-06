@@ -3,8 +3,9 @@
 //
 // 被测规格: PuTTY .ppk 格式;RFC 9106（Argon2）
 //
-// 这里的 .ppk 也是**按格式现拼出来的** —— 拼的过程本身在验证我们对格式的理解，
-// 而且能覆盖加密与不加密、v2 与 v3。
+// 这里的 .ppk 大多是**按格式现拼出来的** —— 拼的过程本身在验证我们对格式的理解，
+// 而且能覆盖加密与不加密、v2 与 v3。但现拼的与读取方按同一个理解写，一起错也测不出来，
+// 所以文件末尾另有一组真 puttygen 的产物（Ed25519，见 Fixtures/README.md），标准答案来自外部。
 
 using System.Buffers;
 using System.Security.Cryptography;
@@ -464,6 +465,50 @@ public sealed class PuttyKeyTests
         }
     }
 
+    /// <summary>
+    /// v2 / v3 的 Private-MAC 是必填的。曾经缺了就跳过整段校验：删掉这一行就能改公钥段而不被发现。
+    /// </summary>
+    [TestMethod]
+    [DataRow(2)]
+    [DataRow(3)]
+    public void 缺少MAC的ppk被拒(int version)
+    {
+        (byte[] pub, byte[] priv, InMemorySshSigner expected) = MakeEd25519();
+        using (expected)
+        {
+            string ppk = BuildPpk(version, SshAlgorithmNames.SshEd25519, pub, priv);
+            string stripped = string.Join('\n', ppk.Split('\n').Where(l => !l.StartsWith("Private-MAC:", StringComparison.Ordinal)));
+
+            SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(
+                () => SshPrivateKeyFile.Parse(stripped));
+
+            Assert.AreEqual(Diagnostics.SshFailureReason.KeyFormatInvalid, error.Reason);
+            Assert.Contains("Private-MAC", error.Message);
+        }
+    }
+
+    /// <summary>
+    /// 未加密 .ppk 的 MAC 键是公开的：改了公钥段、再把 MAC 重算一遍，MAC 照样对得上。
+    /// 私钥派生出的公钥必须与 Public-Lines 是同一把，不然拿到的是「不是你以为的那把」钥。
+    /// </summary>
+    [TestMethod]
+    public void 私钥与公钥段不是一对时被拒()
+    {
+        (_, byte[] priv, InMemorySshSigner first) = MakeEd25519();
+        (byte[] otherPub, _, InMemorySshSigner second) = MakeEd25519();
+        using (first)
+        using (second)
+        {
+            string ppk = BuildPpk(3, SshAlgorithmNames.SshEd25519, otherPub, priv);
+
+            SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(
+                () => SshPrivateKeyFile.Parse(ppk));
+
+            Assert.AreEqual(Diagnostics.SshFailureReason.KeyFormatInvalid, error.Reason);
+            Assert.Contains("不是一对", error.Message);
+        }
+    }
+
     [TestMethod]
     public void 不支持的版本被拒()
     {
@@ -493,5 +538,40 @@ public sealed class PuttyKeyTests
                 File.Delete(path);
             }
         }
+    }
+
+    // ------------------------------------------------------------ 真 puttygen 的产物
+
+    private static string FixturePath(string name) =>
+        Path.Combine(AppContext.BaseDirectory, "Keys", "Fixtures", name);
+
+    /// <summary>从 <c>.pub</c> 里取出公钥 blob —— 它是 <c>ssh-keygen -y</c> 写的，这组用例的标准答案。</summary>
+    private static byte[] ReadPublicBlob(string name)
+    {
+        string[] parts = File.ReadAllText(FixturePath(name + ".pub")).Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        Assert.IsGreaterThanOrEqualTo(2, parts.Length, $"{name}.pub 的格式不对。");
+        return Convert.FromBase64String(parts[1]);
+    }
+
+    /// <summary>
+    /// 〔AU-E2〕真 puttygen 生成的 Ed25519 .ppk：解出的公钥与 ssh-keygen 从同一把钥导出的公钥逐字节相同。
+    /// 上面那些现拼的 .ppk 与读取方按同一个理解写、一起错也测不出来；这一组的标准答案来自外部。
+    /// </summary>
+    /// <remarks>
+    /// PuTTY 把 Ed25519 私钥写成定长的 32 字节，不是 mpint：首字节 ≥ 0x80 时也不补前导零。
+    /// 曾经按 mpint 读，这样的文件（约一半）被判「mpint 为负」、根本读不进来。样本怎么来的见 Fixtures/README.md。
+    /// </remarks>
+    [TestMethod]
+    [DataRow("putty-ed25519-v2-hi", null, DisplayName = "v2 · 私钥首字节 ≥ 0x80")]
+    [DataRow("putty-ed25519-v2-lo", null, DisplayName = "v2 · 私钥首字节 < 0x80")]
+    [DataRow("putty-ed25519-v3-hi", null, DisplayName = "v3 · 私钥首字节 ≥ 0x80")]
+    [DataRow("putty-ed25519-v3-lo", null, DisplayName = "v3 · 私钥首字节 < 0x80")]
+    [DataRow("putty-ed25519-v2-hi-enc", "correct horse battery staple", DisplayName = "v2 · aes256-cbc 加密")]
+    [DataRow("putty-ed25519-v3-hi-enc", "correct horse battery staple", DisplayName = "v3 · aes256-cbc + Argon2id 加密")]
+    public void 真puttygen生成的Ed25519私钥解出的公钥与ssh_keygen的一致(string name, string? passphrase)
+    {
+        InMemorySshSigner signer = SshPrivateKeyFile.Parse(File.ReadAllText(FixturePath(name + ".ppk")), passphrase);
+
+        Assert.AreSequenceEqual(ReadPublicBlob(name), signer.PublicKey.Blob.ToArray(), $"{name}：解出来的公钥与 ssh-keygen 导出的不一致。");
     }
 }

@@ -6,7 +6,30 @@ namespace VelaShell.Core.Ssh;
 /// <param name="Fingerprint">密钥指纹(<c>SHA256:…</c>)。</param>
 /// <param name="Comment">这把钥在 agent 里的注释,通常是私钥文件路径;agent 没给时为空串。</param>
 /// <param name="Timeout">多久没人应答就按拒绝处理;弹窗据此告诉用户还剩多久。</param>
-public sealed record AgentSignRequest(string Target, string KeyType, string Fingerprint, string Comment, TimeSpan Timeout);
+/// <remarks>
+/// 只有钥和注释的话,用户分不出这是自己刚在远端敲的 <c>git pull</c>,还是那台机器上有人在拿这把钥登录别处。
+/// 所以被签的数据认得出来时,下面几项说明「签来做什么」;它们都由签名本身绑死,远端编不出别的值,
+/// 文本已经清掉了控制字符。
+/// </remarks>
+public sealed record AgentSignRequest(string Target, string KeyType, string Fingerprint, string Comment, TimeSpan Timeout)
+{
+    /// <summary>被签的是一次 SSH 登录时,要以哪个用户登录;不是登录时为 <see langword="null" />。</summary>
+    public string? LoginUser { get; init; }
+
+    /// <summary>这次登录的目的主机的主机密钥指纹(<c>SHA256:…</c>);核实不了时为 <see langword="null" />。</summary>
+    public string? DestinationFingerprint { get; init; }
+
+    /// <summary>
+    /// 已知主机里与 <see cref="DestinationFingerprint" /> 对得上的条目(<c>主机</c>,非 22 端口为 <c>主机:端口</c>);
+    /// 对不上或核实不了时为空。
+    /// </summary>
+    public IReadOnlyList<string> DestinationHosts { get; init; } = [];
+
+    /// <summary>
+    /// 被签的是 SSHSIG 签名(<c>ssh-keygen -Y sign</c>、git 的 SSH 提交签名)时的命名空间,如 <c>git</c>;否则为 <see langword="null" />。
+    /// </summary>
+    public string? SignatureNamespace { get; init; }
+}
 
 /// <summary>用户对一次 agent 签名请求的裁决。</summary>
 public enum AgentSignDecision

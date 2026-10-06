@@ -5,6 +5,7 @@
 //   OpenSSH ssh_config(5)
 //   行为规格: velashell-docs/zh/ssh/design/architecture.md §8 第 12 项
 
+using System.Diagnostics;
 using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Config;
@@ -23,7 +24,8 @@ namespace VelaShell.Ssh.Config;
 ///   <item><description>
 ///   <c>Include</c> 只在 <see cref="LoadAsync"/> 里展开（<see cref="Parse"/> 是
 ///   纯文本解析，没有基准目录也不该碰文件系统）。展开时有<b>深度上限与环检测</b> ——
-///   两个文件互相 include 是很容易写出来的，而那会把解析变成死循环。
+///   两个文件互相 include 是很容易写出来的，而那会把解析变成死循环；还有<b>总量上限</b>
+///   （<see cref="MaxIncludedFiles"/>），并且只读不超过 <see cref="MaxConfigFileBytes"/> 的普通文件。
 ///   </description></item>
 ///   <item><description>
 ///   <c>Match exec</c> <b>默认不执行</b>。它意味着「解析一份配置文件就能在本机跑任意程序」，
@@ -252,6 +254,17 @@ public static partial class SshConfigFile
     /// </remarks>
     public const int MaxIncludeDepth = 16;
 
+    /// <summary>一次 <see cref="LoadAsync"/> 最多读多少个文件（含最外层那一份）；用完之后的 <c>Include</c> 不再展开。</summary>
+    /// <remarks>
+    /// 环检测只看当前这条包含链（同一个文件在两个块里各被包含一次是正常写法），深度上限只管「深」不管「宽」：
+    /// N 个文件互相 <c>Include dir/*</c> 时，每一条不成环的链都要走一遍，展开次数是 N!/(N−k)! 的量级 ——
+    /// 10 个文件约一千万次，读配置就成了挂死。真实的配置远用不到这么多文件。
+    /// </remarks>
+    public const int MaxIncludedFiles = 256;
+
+    /// <summary>单个配置文件的大小上限；超过的整个跳过。</summary>
+    public const int MaxConfigFileBytes = 1024 * 1024;
+
     /// <summary>读一份 <c>ssh_config</c>，并展开其中的 <c>Include</c>。</summary>
     /// <param name="path">路径；<see langword="null"/> 取 <see cref="DefaultPath"/>。</param>
     /// <param name="includeDirectory">
@@ -283,7 +296,8 @@ public static partial class SshConfigFile
         HashSet<string> visited = new(StringComparer.OrdinalIgnoreCase);
 #pragma warning restore IDE0028
 
-        await LoadIntoAsync(actual, includeDirectory, blocks, state, visited, depth: 0, cancellationToken)
+        IncludeBudget budget = new();
+        await LoadIntoAsync(actual, includeDirectory, blocks, state, visited, budget, depth: 0, cancellationToken)
             .ConfigureAwait(false);
 
         state.Flush(blocks);
@@ -296,6 +310,7 @@ public static partial class SshConfigFile
         List<SshConfigBlock> blocks,
         ParserState state,
         HashSet<string> visited,
+        IncludeBudget budget,
         int depth,
         CancellationToken cancellationToken)
     {
@@ -314,14 +329,19 @@ public static partial class SshConfigFile
         //    没有这一步就是死循环 —— 而那表现为「读配置的时候整个进程不动了」。
         //    只看**当前这条 include 链**：同一个文件在两个 Host 块里各被 include 一次是正常写法，
         //    按「读过就不再读」算的话，第二次会被当成环悄悄跳过。
-        if (!File.Exists(full) || !visited.Add(full))
+        if (!File.Exists(full) || budget.FilesLeft <= 0 || !visited.Add(full))
         {
             return;
         }
+        budget.FilesLeft--;
 
         try
         {
-            string content = await File.ReadAllTextAsync(full, cancellationToken).ConfigureAwait(false);
+            if (await ReadConfigFileAsync(full, cancellationToken).ConfigureAwait(false) is not { } content)
+            {
+                return;
+            }
+
             string baseDirectory = includeDirectory ?? Path.GetDirectoryName(full) ?? ".";
 
             // Include 是**就地展开**的：被包含文件里的设置排在 Include 那一行的位置上，
@@ -331,7 +351,9 @@ public static partial class SshConfigFile
             foreach (string raw in content.Split('\n'))
             {
                 string line = StripComment(raw);
-                (string key, string value) = line.Length == 0 ? ("", "") : SplitKeyValue(line);
+
+                // 引号留着：Include 的参数要按引号切词（带空格的路径写成 "~/my dir/x"）。
+                (string key, string value) = line.Length == 0 ? ("", "") : SplitKeyValue(line, unquote: false);
 
                 if (!string.Equals(key, "Include", StringComparison.OrdinalIgnoreCase))
                 {
@@ -357,7 +379,7 @@ public static partial class SshConfigFile
 
                 foreach (string included in ExpandIncludePaths(value, baseDirectory))
                 {
-                    await LoadIntoAsync(included, includeDirectory, blocks, state, visited, depth + 1, cancellationToken)
+                    await LoadIntoAsync(included, includeDirectory, blocks, state, visited, budget, depth + 1, cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -374,19 +396,85 @@ public static partial class SshConfigFile
         }
     }
 
+    /// <summary>一次 <see cref="LoadAsync"/> 还能读几个文件（见 <see cref="MaxIncludedFiles"/>）。</summary>
+    private sealed class IncludeBudget
+    {
+        public int FilesLeft { get; set; } = MaxIncludedFiles;
+    }
+
+    /// <summary>读一个配置文件：只读普通文件，超过 <see cref="MaxConfigFileBytes"/> 的不读。</summary>
+    /// <returns>文本；空文件、不是普通文件、太大时为 <see langword="null"/>。</returns>
+    /// <remarks>
+    /// <para>
+    /// ⚠️ <b>先看大小、再打开。</b>设备文件与 FIFO 报的大小是 0：<c>Include /dev/zero</c> 会无上限地读下去，
+    /// 打开一个 FIFO 则一直阻塞到有人往里写 —— 两种情形取消令牌都管不到。按大小为 0 一律不打开，
+    /// 真正的空文件本来也没有设置，跳过没有损失。
+    /// </para>
+    /// <para>
+    /// 读的时候仍然按上限截住：大小是打开之前看的，文件在这中间变大或被换掉也不会无上限地读。
+    /// 编码与 <see cref="File.ReadAllTextAsync(string, CancellationToken)"/> 一致：认 BOM，默认 UTF-8。
+    /// </para>
+    /// </remarks>
+    private static async ValueTask<string?> ReadConfigFileAsync(string path, CancellationToken cancellationToken)
+    {
+        FileInfo info = new(path);
+        if (!info.Exists || info.Length is 0 or > MaxConfigFileBytes)
+        {
+            return null;
+        }
+
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(MaxConfigFileBytes + 1);
+        try
+        {
+            int total = 0;
+            await using (FileStream stream = new(path, new FileStreamOptions
+            {
+                Mode = FileMode.Open,
+                Access = FileAccess.Read,
+                Share = FileShare.ReadWrite | FileShare.Delete,
+                Options = FileOptions.Asynchronous,
+            }))
+            {
+                int read;
+                while (total <= MaxConfigFileBytes
+                       && (read = await stream.ReadAsync(buffer.AsMemory(total, MaxConfigFileBytes + 1 - total), cancellationToken)
+                           .ConfigureAwait(false)) > 0)
+                {
+                    total += read;
+                }
+            }
+
+            if (total > MaxConfigFileBytes)
+            {
+                return null;
+            }
+
+            using StreamReader reader = new(
+                new MemoryStream(buffer, 0, total, writable: false),
+                System.Text.Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true);
+            return await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
     /// <summary>把一条 <c>Include</c> 的参数展开成实际的文件列表。</summary>
     /// <remarks>
-    /// 支持三件事：一行里写多个路径（空格分隔）、<c>~</c> 展开、
+    /// 支持三件事：一行里写多个路径（空格分隔，引号里的空格不算 —— <c>"~/my dir/x"</c> 是一个路径）、<c>~</c> 展开、
     /// 以及最后一段里的 <c>*</c> / <c>?</c> 通配。
     /// 相对路径按<b>包含它的那个文件所在的目录</b>解析。
+    /// 〔FW-E15〕曾经先去掉整行的引号再按空格切：带空格的路径被切成了两个。
     /// </remarks>
     internal static IReadOnlyList<string> ExpandIncludePaths(string spec, string baseDirectory)
     {
         List<string> result = [];
 
-        foreach (string one in spec.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+        foreach (string one in TokenizeRespectingQuotes(spec))
         {
-            string candidate = one.Trim('"');
+            string candidate = one;
 
             if (candidate.StartsWith('~'))
             {
@@ -446,18 +534,44 @@ public static partial class SshConfigFile
     /// 按块的出现顺序合并，<b>先出现的值赢</b> —— 这是 <c>ssh_config</c> 的规则，
     /// 与大多数配置格式相反。所以 <c>Host *</c> 要放在文件末尾才起「兜底」的作用。
     /// </remarks>
+    /// <exception cref="ArgumentException">上下文带着 <see cref="SshConfigMatchContext.ExecEvaluator"/>：它是异步的，用 <see cref="ResolveAsync"/>。</exception>
     public static SshHostConfig Resolve(
         IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context)
     {
         ArgumentNullException.ThrowIfNull(blocks);
         ArgumentNullException.ThrowIfNull(context);
+        if (context.ExecEvaluator is not null)
+        {
+            throw new ArgumentException("带 ExecEvaluator 的上下文要用 ResolveAsync —— 求值器是异步的。", nameof(context));
+        }
 
-        SshHostConfig config = new(context.Host);
+        // 没有求值器时整个求值同步完成（不碰任何 await 点）。
+        ValueTask<SshHostConfig> resolved = ResolveCoreAsync(blocks, context, CancellationToken.None);
+        Debug.Assert(resolved.IsCompleted, "没有 exec 求值器时求值应当同步完成");
+        return resolved.Result;
+    }
+
+    /// <summary>算出某台主机最终生效的设置；<c>Match exec</c> 交给上下文里的异步求值器。</summary>
+    /// <param name="blocks">解出来的块。</param>
+    /// <param name="context">主机、用户、本机用户、<c>exec</c> 求值器……</param>
+    /// <param name="cancellationToken">取消令牌，交给 <see cref="SshConfigMatchContext.ExecEvaluator"/>。</param>
+    public static ValueTask<SshHostConfig> ResolveAsync(
+        IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(blocks);
+        ArgumentNullException.ThrowIfNull(context);
+        return ResolveCoreAsync(blocks, context, cancellationToken);
+    }
+
+    private static async ValueTask<SshHostConfig> ResolveCoreAsync(
+        IReadOnlyList<SshConfigBlock> blocks, SshConfigMatchContext context, CancellationToken cancellationToken)
+    {
         string originalHost = context.OriginalHost ?? context.Host;
+        SshHostConfig config = new(context.Host, originalHost);
 
         foreach (SshConfigBlock block in blocks)
         {
-            if (!Applies(block, config, context, originalHost))
+            if (!await AppliesAsync(block, config, context, originalHost, cancellationToken).ConfigureAwait(false))
             {
                 continue;
             }
@@ -475,8 +589,9 @@ public static partial class SshConfigFile
     }
 
     /// <summary>一个块此刻生效吗：它自己的条件，加上外层（带条件的 Include）的条件，都要满足。</summary>
-    private static bool Applies(
-        SshConfigBlock block, SshHostConfig config, SshConfigMatchContext context, string originalHost)
+    private static async ValueTask<bool> AppliesAsync(
+        SshConfigBlock block, SshHostConfig config, SshConfigMatchContext context, string originalHost,
+        CancellationToken cancellationToken)
     {
         for (SshConfigBlock? current = block; current is not null; current = current.Enclosing)
         {
@@ -484,11 +599,11 @@ public static partial class SshConfigFile
             // Match originalhost 与 Host 块比的才是使用者输入的那个名字。
             // 曾经 Match host 一律拿输入的别名去比：为真实主机名写的 Match 块永远对不上。
             bool applies = current.Match is { } criteria
-                ? MatchesCriteria(criteria, context with
+                ? await MatchesCriteriaAsync(criteria, context with
                 {
-                    Host = CurrentHostName(config, originalHost),
+                    Host = config.HostName,   // 前面的块给了 HostName 就用它（其中的 %h 已换成输入的名字）
                     OriginalHost = originalHost,
-                })
+                }, cancellationToken).ConfigureAwait(false)
                 : HostPatterns.MatchesList(current.Patterns, context.Host);
 
             if (!applies)
@@ -500,9 +615,6 @@ public static partial class SshConfigFile
         return true;
     }
 
-    /// <summary>此刻生效的真实主机名：前面的块给了 <c>HostName</c> 就用它（<c>%h</c> 换成输入的名字）。</summary>
-    private static string CurrentHostName(SshHostConfig config, string originalHost) =>
-        config.HostName.Replace("%h", originalHost, StringComparison.Ordinal);
 
     /// <summary><c>Match</c> 块的条件都满足吗（条件之间是与）。</summary>
     /// <remarks>
@@ -510,8 +622,8 @@ public static partial class SshConfigFile
     /// 前面加个 <c>!</c> 就成了「满足」：<c>Match !exec "…"</c> 在我们不执行命令时对所有主机生效，
     /// 那正是写配置的人想排除的情形。判不了就是判不了，不因为一个 <c>!</c> 变成真的。
     /// </remarks>
-    private static bool MatchesCriteria(
-        SshConfigMatchCriteria criteria, SshConfigMatchContext context)
+    private static async ValueTask<bool> MatchesCriteriaAsync(
+        SshConfigMatchCriteria criteria, SshConfigMatchContext context, CancellationToken cancellationToken)
     {
         if (criteria.Conditions.Count == 0)
         {
@@ -520,7 +632,7 @@ public static partial class SshConfigFile
 
         foreach (SshConfigMatchCondition condition in criteria.Conditions)
         {
-            if (EvaluateCondition(condition, context) is not { } result)
+            if (await EvaluateConditionAsync(condition, context, cancellationToken).ConfigureAwait(false) is not { } result)
             {
                 return false;
             }
@@ -535,9 +647,14 @@ public static partial class SshConfigFile
     }
 
     /// <returns>满足 / 不满足；<see langword="null"/> 表示判不了（信息不足、不支持、不执行）。</returns>
-    private static bool? EvaluateCondition(
-        SshConfigMatchCondition condition, SshConfigMatchContext context)
+    private static async ValueTask<bool?> EvaluateConditionAsync(
+        SshConfigMatchCondition condition, SshConfigMatchContext context, CancellationToken cancellationToken)
     {
+        if (condition.Keyword == "exec")
+        {
+            return await EvaluateExecAsync(condition, context, cancellationToken).ConfigureAwait(false);
+        }
+
         return condition.Keyword switch
         {
             "all" => true,
@@ -548,22 +665,95 @@ public static partial class SshConfigFile
             "originalhost" => HostPatterns.MatchesList(condition.Patterns, context.OriginalHost ?? context.Host),
             "user" => context.User is { } user ? HostPatterns.MatchesList(condition.Patterns, user) : null,
             "localuser" => context.LocalUser is { } local ? HostPatterns.MatchesList(condition.Patterns, local) : null,
-            // ⚠️ 默认不执行。没有求值器就判不了 —— 见 SshConfigMatchContext.ExecEvaluator 上的说明。
-            "exec" => context.ExecEvaluator is { } evaluator
-                                ? evaluator(string.Join(',', condition.Patterns))
-                                : null,
             // 不认识的条件判不了。认识错了比不认识更糟：那会让一个本不该生效的块生效。
             _ => null,
         };
     }
 
-    private static string StripComment(string line)
+    /// <summary><c>Match exec</c>：交给调用方的求值器（见 <see cref="SshConfigMatchContext.ExecEvaluator"/>）。</summary>
+    /// <returns>满足 / 不满足；没有求值器、或者命令里的记号不能安全地代入时 <see langword="null"/>（判不了）。</returns>
+    /// <remarks>
+    /// 〔FW-D5〕命令里的 <c>%h %n %r %u %%</c> 由库按 <c>ProxyCommand</c> 同一套白名单展开好再交出去（CVE-2023-51385 那一类：
+    /// 主机名、用户名常常不是写配置的人给的）。值不安全、或者有不认识的记号，这一条就判不了、不去问求值器。
+    /// 曾经只交出原样的命令（同步、没有令牌、没有主机与用户）：调用方自己去代入 <c>%h</c>，就回到了那一类问题上。
+    /// </remarks>
+    private static async ValueTask<bool?> EvaluateExecAsync(
+        SshConfigMatchCondition condition, SshConfigMatchContext context, CancellationToken cancellationToken)
     {
-        int hash = line.IndexOf('#', StringComparison.Ordinal);
-        return (hash >= 0 ? line[..hash] : line).Trim();
+        if (context.ExecEvaluator is not { } evaluator)
+        {
+            return null;   // ⚠️ 默认不执行。没有求值器就判不了 —— 见 SshConfigMatchContext.ExecEvaluator 上的说明。
+        }
+
+        string command = string.Join(',', condition.Patterns);
+        if (ExpandExecCommand(command, context) is not { } expanded)
+        {
+            return null;
+        }
+
+        SshMatchExecRequest request = new(
+            command, expanded, context.Host, context.OriginalHost ?? context.Host, context.User, context.LocalUser);
+        return await evaluator(request, cancellationToken).ConfigureAwait(false);
     }
 
-    private static (string Key, string Value) SplitKeyValue(string line)
+    /// <summary>展开 <c>Match exec</c> 命令里的记号；有不认识的、或者值不能安全地交给 shell 时为 <see langword="null"/>。</summary>
+    private static string? ExpandExecCommand(string command, SshConfigMatchContext context)
+    {
+        System.Text.StringBuilder result = new(command.Length + 32);
+        for (int i = 0; i < command.Length; i++)
+        {
+            char c = command[i];
+            if (c != '%' || i + 1 >= command.Length)
+            {
+                result.Append(c);
+                continue;
+            }
+
+            (string? value, bool allowAt) = command[++i] switch
+            {
+                'h' => (context.Host, false),
+                'n' => (context.OriginalHost ?? context.Host, false),
+                'r' => (context.User, true),
+                'u' => (context.LocalUser, true),
+                '%' => ("%", false),
+                _ => (null, false),
+            };
+
+            if (value is null || (value != "%" && !Transport.ProxyCommandDialer.IsShellSafe(value, allowAt)))
+            {
+                return null;
+            }
+            result.Append(value);
+        }
+        return result.ToString();
+    }
+
+    /// <summary>去掉注释：<c>#</c> 在行首、或者前面是空白且不在引号里，才开始一段注释。</summary>
+    /// <remarks>
+    /// 〔FW-E15〕曾经一行里任何位置的 <c>#</c> 都当注释：<c>IdentityFile ~/.ssh/id_#work</c> 被截成 <c>~/.ssh/id_</c>。
+    /// 词中间的 <c>#</c> 是值的一部分；<c>Port 22 # 说明</c> 这种行尾注释照旧去掉。
+    /// </remarks>
+    private static string StripComment(string line)
+    {
+        bool quoted = false;
+        for (int i = 0; i < line.Length; i++)
+        {
+            char c = line[i];
+            if (c == '"')
+            {
+                quoted = !quoted;
+            }
+            else if (c == '#' && !quoted && (i == 0 || char.IsWhiteSpace(line[i - 1])))
+            {
+                return line[..i].Trim();
+            }
+        }
+        return line.Trim();
+    }
+
+    /// <param name="line">去掉注释之后的一行。</param>
+    /// <param name="unquote">值整个用引号括着时去掉引号。<c>Include</c> 要留着，自己按引号切词。</param>
+    private static (string Key, string Value) SplitKeyValue(string line, bool unquote = true)
     {
         // ssh_config 允许 `Key Value`、`Key=Value`、以及 `Key = Value`。
         int separator = line.IndexOfAny([' ', '\t', '=']);
@@ -576,7 +766,7 @@ public static partial class SshConfigFile
         string value = line[(separator + 1)..].TrimStart(' ', '\t', '=').Trim();
 
         // 带引号的值去掉引号（路径里有空格时会这么写）。
-        if (value.Length >= 2 && value[0] == '"' && value[^1] == '"')
+        if (unquote && value.Length >= 2 && value[0] == '"' && value[^1] == '"')
         {
             value = value[1..^1];
         }

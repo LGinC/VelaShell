@@ -48,4 +48,11 @@ public enum SftpStatusCode : uint
 
     /// <summary>服务端不支持这个操作。</summary>
     OperationUnsupported = 8,
+
+    /// <summary>路径里有一段不存在（通常是父目录）。</summary>
+    /// <remarks>
+    /// v4 起才有的码（draft-ietf-secsh-filexfer-04）。同时支持多个版本的服务端在 v3 会话里也可能回它 ——
+    /// 当作「不存在」处理（<see cref="SftpException.IsNotFound"/>），而不是一个认不出的错误。
+    /// </remarks>
+    NoSuchPath = 10,
 }

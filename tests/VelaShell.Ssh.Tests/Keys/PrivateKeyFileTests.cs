@@ -7,11 +7,13 @@
 // 拼的过程本身就在验证我们对格式的理解，而且能覆盖所有密钥类型。
 
 using System.Buffers;
+using System.Formats.Asn1;
 using System.Security.Cryptography;
 using System.Text;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Security;
 using VelaShell.Ssh.Auth;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
 
@@ -96,6 +98,60 @@ public sealed class PrivateKeyFileTests
 
     // ------------------------------------------------------------ 格式识别
 
+    /// <summary>造一把 brainpoolP256r1 的钥；平台不支持这条曲线时（macOS）判为不确定。</summary>
+    private static ECDsa CreateBrainpoolKey()
+    {
+        try
+        {
+            return ECDsa.Create(ECCurve.NamedCurves.brainpoolP256r1);
+        }
+        catch (Exception ex) when (ex is PlatformNotSupportedException or CryptographicException)
+        {
+            Assert.Inconclusive($"这个平台不支持 brainpoolP256r1：{ex.Message}");
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 256 位但不是 NIST P-256 的曲线不许冒充 nistp256。曾经按位数认曲线：brainpoolP256r1 被标成 nistp256 交给服务端，
+    /// 签名验不过，症状是一句看不出原因的「服务端不接受这把公钥」。
+    /// </summary>
+    [TestMethod]
+    public void 非NIST曲线的ECDSA钥不冒充nistp256()
+    {
+        using ECDsa brainpool = CreateBrainpoolKey();
+
+        Assert.ThrowsExactly<ArgumentException>(() => InMemorySshSigner.FromEcdsa(brainpool));
+    }
+
+    [TestMethod]
+    public void 非NIST曲线的PKCS8私钥报不支持()
+    {
+        using ECDsa brainpool = CreateBrainpoolKey();
+        string pem = brainpool.ExportPkcs8PrivateKeyPem();
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+
+        Assert.AreEqual(SshFailureReason.Unsupported, error.Reason, "曲线 SSH 不认识是「不支持」，不是「格式不对」");
+    }
+
+    [TestMethod]
+    [DataRow(256, SshAlgorithmNames.EcdsaSha2Nistp256)]
+    [DataRow(384, SshAlgorithmNames.EcdsaSha2Nistp384)]
+    [DataRow(521, SshAlgorithmNames.EcdsaSha2Nistp521)]
+    public void NIST曲线照常认出(int bits, string algorithm)
+    {
+        using ECDsa key = ECDsa.Create(bits switch
+        {
+            256 => ECCurve.NamedCurves.nistP256,
+            384 => ECCurve.NamedCurves.nistP384,
+            _ => ECCurve.NamedCurves.nistP521,
+        });
+
+        using InMemorySshSigner signer = SshPrivateKeyFile.Parse(key.ExportPkcs8PrivateKeyPem());
+
+        Assert.AreEqual(algorithm, signer.PublicKey.KeyType);
+    }
     [TestMethod]
     public void 认得出各种PEM头()
     {
@@ -128,6 +184,109 @@ public sealed class PrivateKeyFileTests
             () => SshPrivateKeyFile.Parse("PuTTY-User-Key-File-9: ssh-ed25519\nEncryption: none\n"));
 
         Assert.Contains("不支持的 .ppk 版本", error.Message);
+    }
+
+    // ------------------------------------------------------------ OpenSSH 格式：内部一致性
+
+    private static byte[] Ed25519Blob(byte[] publicKey)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriterBox box = new(buffer);
+        box.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+        box.WriteString(publicKey);
+        return buffer.WrittenSpan.ToArray();
+    }
+
+    /// <summary>
+    /// 〔spec/04 §4.6〕公钥段必须与私钥是一对。曾经直接丢掉不看：被改过或拼错的文件拿到「不是你以为的那把」钥，
+    /// 症状只是「服务端不接受这把公钥」。
+    /// </summary>
+    [TestMethod]
+    public void OpenSSH私钥的公钥段与私钥不是一对时拒绝()
+    {
+        Ed25519PrivateKeyParameters key = new(new SecureRandom());
+        byte[] publicKey = key.GeneratePublicKey().GetEncoded();
+        byte[] otherPublic = new Ed25519PrivateKeyParameters(new SecureRandom()).GeneratePublicKey().GetEncoded();
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                w.WriteString(publicKey);
+                w.WriteString([.. key.GetEncoded(), .. publicKey]);
+            },
+            Ed25519Blob(otherPublic));
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void Ed25519私钥区里的两份公钥对不上时拒绝()
+    {
+        Ed25519PrivateKeyParameters key = new(new SecureRandom());
+        byte[] publicKey = key.GeneratePublicKey().GetEncoded();
+        byte[] otherPublic = new Ed25519PrivateKeyParameters(new SecureRandom()).GeneratePublicKey().GetEncoded();
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+                w.WriteString(otherPublic);                           // 单独的那份写错了
+                w.WriteString([.. key.GetEncoded(), .. publicKey]);
+            },
+            Ed25519Blob(publicKey));
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void ECDSA的密钥类型与曲线名对不上时拒绝()
+    {
+        using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        ECParameters p = ecdsa.ExportParameters(true);
+        byte[] point = [0x04, .. p.Q.X!, .. p.Q.Y!];
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.EcdsaSha2Nistp256);   // 类型说 P-256
+                w.WriteUtf8String("nistp384");                            // 曲线却是 P-384
+                w.WriteString(point);
+                w.WriteMpint(p.D!);
+            },
+            []);
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("对不上", error.Message);
+    }
+
+    [TestMethod]
+    public void RSA的p乘q不等于n时拒绝()
+    {
+        using RSA rsa = RSA.Create(2048);
+        using RSA other = RSA.Create(2048);
+        RSAParameters p = rsa.ExportParameters(true);
+        RSAParameters o = other.ExportParameters(true);
+
+        string pem = BuildOpenSshKey(
+            w =>
+            {
+                w.WriteUtf8String(SshAlgorithmNames.SshRsa);
+                w.WriteMpint(p.Modulus!);
+                w.WriteMpint(p.Exponent!);
+                w.WriteMpint(p.D!);
+                w.WriteMpint(p.InverseQ!);
+                w.WriteMpint(p.P!);
+                w.WriteMpint(o.Q!);                                       // 另一把钥的 q
+            },
+            []);
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("p·q", error.Message);
     }
 
     // ------------------------------------------------------------ OpenSSH 格式
@@ -366,6 +525,101 @@ public sealed class PrivateKeyFileTests
         byte[] data = Encoding.UTF8.GetBytes("x");
         byte[] signature = await signer.SignAsync(data, SshAlgorithmNames.RsaSha256);
         Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, SshAlgorithmNames.RsaSha256));
+    }
+
+    [TestMethod]
+    public async Task 读出带口令的PKCS8椭圆曲线私钥_只算一遍KDF()
+    {
+        // 加密 PKCS#8 里看不出钥的类型，只能逐个试，而每试一次都要把 KDF 整个跑一遍；
+        // 按密文大小排先后之后，椭圆曲线钥先按 ECDSA 试，读得出来，签名也对。
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP521);
+        PbeParameters pbe = new(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 10_000);
+        string pem = ecdsa.ExportEncryptedPkcs8PrivateKeyPem("口令", pbe);
+
+        byte[] der = Convert.FromBase64String(string.Concat(
+            pem.Split('\n').Where(line => !line.StartsWith("-----", StringComparison.Ordinal)).Select(line => line.Trim())));
+        Assert.IsLessThanOrEqualTo(320, SshPrivateKeyFile.ReadPkcs8Encryption(der)!.Value.EncryptedBytes, "P-521 的密文也该落在「先按 ECDSA 试」那一档");
+
+        InMemorySshSigner signer = SshPrivateKeyFile.Parse(pem, "口令");
+        byte[] data = Encoding.UTF8.GetBytes("x");
+        byte[] signature = await signer.SignAsync(data, SshAlgorithmNames.EcdsaSha2Nistp521);
+        Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, SshAlgorithmNames.EcdsaSha2Nistp521));
+    }
+
+    [TestMethod]
+    public async Task 加密PKCS8的迭代数大得离谱时不去算()
+    {
+        // .NET 导入加密 PKCS#8 不设迭代数上限：一个被改成 int.MaxValue 的文件同步地跑上好几分钟、停不下来。
+        AsnWriter writer = new(AsnEncodingRules.DER);
+        using (writer.PushSequence())
+        {
+            using (writer.PushSequence())
+            {
+                writer.WriteObjectIdentifier("1.2.840.113549.1.5.13");   // PBES2
+                using (writer.PushSequence())
+                {
+                    using (writer.PushSequence())
+                    {
+                        writer.WriteObjectIdentifier("1.2.840.113549.1.5.12");   // PBKDF2
+                        using (writer.PushSequence())
+                        {
+                            writer.WriteOctetString(new byte[16]);
+                            writer.WriteInteger(int.MaxValue);
+                            using (writer.PushSequence())
+                            {
+                                writer.WriteObjectIdentifier("1.2.840.113549.2.9");   // hmacWithSHA256
+                                writer.WriteNull();
+                            }
+                        }
+                    }
+                    using (writer.PushSequence())
+                    {
+                        writer.WriteObjectIdentifier("2.16.840.1.101.3.4.1.42");   // aes256-CBC
+                        writer.WriteOctetString(new byte[16]);
+                    }
+                }
+            }
+            writer.WriteOctetString(new byte[1232]);
+        }
+        string pem = PemEncoding.WriteString("ENCRYPTED PRIVATE KEY", writer.Encode());
+
+        SshPrivateKeyException error = await Assert.ThrowsExactlyAsync<SshPrivateKeyException>(
+            async () => await Task.Run(() => SshPrivateKeyFile.Parse(pem, "口令")).WaitAsync(TimeSpan.FromSeconds(10)));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+        Assert.Contains("迭代数", error.Message);
+    }
+
+    [TestMethod]
+    public void 截断的OpenSSH私钥报格式不对_不漏出内部异常()
+    {
+        // 复制粘贴丢了尾行，base64 恰好在 4 字符边界断开：曾经漏出解析层 internal 的 SshWireFormatException。
+        ArrayBufferWriter<byte> body = new();
+        body.Write("openssh-key-v1\0"u8);
+        SshDataWriter writer = new(body);
+        writer.WriteUtf8String("none");   // ciphername，后面全没了
+        string pem = "-----BEGIN OPENSSH PRIVATE KEY-----\n" +
+                     Convert.ToBase64String(body.WrittenSpan) +
+                     "\n-----END OPENSSH PRIVATE KEY-----\n";
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(pem));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
+    }
+
+    [TestMethod]
+    public void 行数字段不是数字的ppk报格式不对_不漏出BCL异常()
+    {
+        const string ppk =
+            "PuTTY-User-Key-File-3: ssh-ed25519\n" +
+            "Encryption: none\n" +
+            "Comment: broken\n" +
+            "Public-Lines: abc\n" +
+            "AAAA\n";
+
+        SshPrivateKeyException error = Assert.ThrowsExactly<SshPrivateKeyException>(() => SshPrivateKeyFile.Parse(ppk));
+
+        Assert.AreEqual(SshFailureReason.KeyFormatInvalid, error.Reason);
     }
 
     [TestMethod]

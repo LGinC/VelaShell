@@ -38,8 +38,14 @@ internal static class SshAlgorithmNames
 {
     // ---------------------------------------------------------------- 密钥交换
 
-    /// <summary>ML-KEM-768 与 X25519 的混合，SHA-256。后量子。</summary>
+    /// <summary>ML-KEM-768 与 X25519 的混合，SHA-256。后量子。RFC 10042。</summary>
     public const string MlKem768X25519Sha256 = "mlkem768x25519-sha256";
+
+    /// <summary>ML-KEM-768 与 P-256 ECDH 的混合，SHA-256。后量子，只用 FIPS 认可的原语。RFC 10042。</summary>
+    public const string MlKem768Nistp256Sha256 = "mlkem768nistp256-sha256";
+
+    /// <summary>ML-KEM-1024 与 P-384 ECDH 的混合，SHA-384。后量子，只用 FIPS 认可的原语。RFC 10042。</summary>
+    public const string MlKem1024Nistp384Sha384 = "mlkem1024nistp384-sha384";
 
     /// <summary>sntrup761 与 X25519 的混合，SHA-512。后量子。</summary>
     public const string Sntrup761X25519Sha512 = "sntrup761x25519-sha512";
@@ -68,6 +74,9 @@ internal static class SshAlgorithmNames
     /// <summary>MODP 4096 位群 + SHA-512。RFC 8268。</summary>
     public const string DiffieHellmanGroup16Sha512 = "diffie-hellman-group16-sha512";
 
+    /// <summary>群由服务端现给（2048–8192 位）+ SHA-256。RFC 4419；一些老设备与加固过的服务端只开它。</summary>
+    public const string DiffieHellmanGroupExchangeSha256 = "diffie-hellman-group-exchange-sha256";
+
     /// <summary>MODP 2048 位群 + SHA-1。<b>默认关闭</b>，只为老网络设备保留。</summary>
     public const string DiffieHellmanGroup14Sha1 = "diffie-hellman-group14-sha1";
 
@@ -95,6 +104,12 @@ internal static class SshAlgorithmNames
 
     /// <summary>Ed25519。RFC 8709。</summary>
     public const string SshEd25519 = "ssh-ed25519";
+
+    /// <summary>FIDO / U2F 安全密钥上的 Ed25519（OpenSSH <c>PROTOCOL.u2f</c>，<c>ssh-keygen -t ed25519-sk</c>）。</summary>
+    public const string SkSshEd25519 = "sk-ssh-ed25519@openssh.com";
+
+    /// <summary>FIDO / U2F 安全密钥上的 ECDSA P-256（<c>ssh-keygen -t ecdsa-sk</c>）。</summary>
+    public const string SkEcdsaSha2Nistp256 = "sk-ecdsa-sha2-nistp256@openssh.com";
 
     /// <summary>NIST P-256 上的 ECDSA。</summary>
     public const string EcdsaSha2Nistp256 = "ecdsa-sha2-nistp256";

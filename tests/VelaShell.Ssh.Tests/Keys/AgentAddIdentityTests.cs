@@ -110,12 +110,25 @@ public sealed class AgentAddIdentityTests
         await rig.Client.AddIdentityAsync(
             key,
             "k",
-            new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(90.2), ConfirmEachUse = true },
+            new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(90.2), IsConfirmationRequired = true },
             rig.Token);
 
         Assert.AreEqual((byte)25, rig.Agent.LastAddMessageType);
         Assert.AreSequenceEqual(new byte[] { 1, 2 }, rig.Agent.LastConstraints.ToArray());
         Assert.AreEqual(91u, rig.Agent.LastLifetimeSeconds, "不足一秒向上取整，不能把有效期截短");
+    }
+
+    /// <summary>〔AU-D2〕有效期为 0 或负数时设值就抛 —— 曾经被静默钳成 1 秒，加进去的钥一秒后就没了。</summary>
+    [TestMethod]
+    public void 有效期不为正时设值就抛()
+    {
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new SshAgentKeyConstraints { Lifetime = TimeSpan.Zero });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(-5) });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(
+            () => new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(uint.MaxValue) + TimeSpan.FromSeconds(1) });
+
+        Assert.IsNull(new SshAgentKeyConstraints { Lifetime = null }.Lifetime);
+        Assert.AreEqual(TimeSpan.FromMilliseconds(1), new SshAgentKeyConstraints { Lifetime = TimeSpan.FromMilliseconds(1) }.Lifetime);
     }
 
     [TestMethod]

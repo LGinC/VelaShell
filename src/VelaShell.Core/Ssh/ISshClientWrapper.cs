@@ -83,6 +83,11 @@ public interface ISshClientWrapper : IAsyncDisposable
         CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 量一次到服务端的往返时间(SSH 层的保活请求,经代理、跳板也量得到);没连上或量不到时为 <see langword="null" />(不抛)。
+    /// </summary>
+    Task<TimeSpan?> MeasureRoundTripAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 异步建立并启动一条端口转发;返回的句柄负责其停止与清理。
     /// 启动失败时抛出且不留下半挂的监听。
     /// </summary>

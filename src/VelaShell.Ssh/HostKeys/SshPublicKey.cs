@@ -38,18 +38,25 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     private const int MaxFieldBytes = 8 * 1024;
 
     private readonly byte[] _blob;
-    private readonly RSA? _rsa;
-    private readonly ECDsa? _ecdsa;
+
+    // 〔AU-P1〕验签用的原生钥第一次验签时才建（证书身份与原钥共用同一个）。绝大多数公钥实例（known_hosts 的每一行、
+    // agent 列出的每一把、认证时出示的那把）从来不用来验签；曾经每个实例解析时就建一把原生 RSA / ECDsa ——
+    // Windows 上是 CNG 句柄，而这个类型不可释放，只能等终结器回收。
+    private readonly LazyNativeKey<RSA>? _rsa;
+    private readonly LazyNativeKey<ECDsa>? _ecdsa;
     private readonly byte[]? _ed25519;
 
-    private SshPublicKey(string keyType, byte[] blob, RSA? rsa, ECDsa? ecdsa, byte[]? ed25519, int keyBits)
+    /// <summary>验签用的原生钥建出来了没有（测试用：只解析、不验签的实例不该有）。</summary>
+    internal bool HasNativeKey => _rsa?.IsCreated == true || _ecdsa?.IsCreated == true;
+
+    private SshPublicKey(string keyType, byte[] blob, LazyNativeKey<RSA>? rsa, LazyNativeKey<ECDsa>? ecdsa, byte[]? ed25519, int keyBits)
         : this(keyType, keyType, blob, rsa, ecdsa, ed25519, keyBits, plain: null, certificate: null)
     {
     }
 
     private SshPublicKey(
         string keyType, string plainKeyType, byte[] blob,
-        RSA? rsa, ECDsa? ecdsa, byte[]? ed25519, int keyBits,
+        LazyNativeKey<RSA>? rsa, LazyNativeKey<ECDsa>? ecdsa, byte[]? ed25519, int keyBits,
         SshPublicKey? plain, OpenSshCertificate? certificate)
     {
         KeyType = keyType;
@@ -111,6 +118,18 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     public ReadOnlyMemory<byte> Blob => _blob;
 
     /// <summary>
+    /// FIDO / U2F 安全密钥（<c>sk-*@openssh.com</c>）的 application 字段（通常是 <c>ssh:</c>）；别的钥为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.7〕这类钥的私钥永远在硬件里，本库经 agent 用它们（列身份、认证、转发）：
+    /// 认得、出示、转交 agent 签的名。<b>不验它们的签名</b> —— 客户端用不上（签名由服务端验），而手头没有能对照的硬件实现。
+    /// </remarks>
+    public string? SecurityKeyApplication { get; private init; }
+
+    /// <summary>这是不是 FIDO / U2F 安全密钥（<c>sk-*@openssh.com</c>）。</summary>
+    public bool IsSecurityKey => SecurityKeyApplication is not null;
+
+    /// <summary>
     /// OpenSSH 风格的 SHA-256 指纹：<c>SHA256:</c> 前缀 + base64（<b>去掉末尾的 <c>=</c> 填充</b>）。
     /// </summary>
     /// <remarks>
@@ -123,8 +142,46 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     /// 按证书 blob 算的话，每次重签指纹都变，而用户拿来对照的永远是那把钥。
     /// </para>
     /// </remarks>
-    public string Sha256Fingerprint =>
-        "SHA256:" + Convert.ToBase64String(SHA256.HashData(PlainKey._blob)).TrimEnd('=');
+    public string Sha256Fingerprint => Sha256FingerprintOf(PlainKey._blob);
+
+    /// <summary>一段公钥 blob 的 SHA-256 指纹（<see cref="Sha256Fingerprint"/> 的样子）；本库认不得的类型也算得出来。</summary>
+    internal static string Sha256FingerprintOf(ReadOnlySpan<byte> blob) =>
+        "SHA256:" + Convert.ToBase64String(SHA256.HashData(blob)).TrimEnd('=');
+
+    /// <summary>归一成 <see cref="Sha256Fingerprint"/> 的样子：<c>SHA256:</c> + 不带填充的 base64。</summary>
+    /// <remarks>
+    /// 〔AU-D3〕从别处复制来、或者从别的存储里读回来的指纹常带 <c>=</c> 填充、前后带空白、前缀大小写不一，或者干脆没有前缀。
+    /// 钉住的指纹与主机密钥轮换都按它比。
+    /// </remarks>
+    internal static string NormalizeFingerprint(string fingerprint)
+    {
+        string text = fingerprint.Trim();
+        if (text.StartsWith("SHA256:", StringComparison.OrdinalIgnoreCase))
+        {
+            text = text["SHA256:".Length..];
+        }
+        return "SHA256:" + text.TrimEnd('=');
+    }
+
+    /// <summary>
+    /// OpenSSH 风格的指纹图（<c>ssh-keygen -lv</c> 画的那种）：17×9 的画布，按 SHA-256 指纹的摘要随机游走。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/03 §5.4〕人眼比对一张图比比对 43 个 base64 字符可靠得多 —— 首次连接的确认框里放它。
+    /// 与 <see cref="Sha256Fingerprint"/> 同一个摘要：证书画的是证书里那把钥，标题也写那把钥的类型。
+    /// 行与行之间用 <c>\n</c>，要等宽字体才对得齐。
+    /// </remarks>
+    public string RandomArt =>
+        FingerprintArt.Render(SHA256.HashData(PlainKey._blob), $"{ArtLabel} {KeyBits}", "SHA256");
+
+    /// <summary>指纹图标题里的类型名，与 <c>ssh-keygen -lv</c> 一致。</summary>
+    private string ArtLabel => PlainKeyType switch
+    {
+        SshAlgorithmNames.SshEd25519 => "ED25519",
+        SshAlgorithmNames.SshRsa => "RSA",
+        _ when PlainKeyType.StartsWith("ecdsa-", StringComparison.Ordinal) => "ECDSA",
+        _ => PlainKeyType.ToUpperInvariant(),
+    };
 
     /// <summary>
     /// OpenSSH 风格的 MD5 指纹：<c>MD5:</c> 前缀 + 冒号分隔的十六进制。
@@ -308,6 +365,8 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
                 SshAlgorithmNames.EcdsaSha2Nistp384 => ParseEcdsa(ref reader, keyType, copy, ECCurve.NamedCurves.nistP384, "nistp384", 384),
                 SshAlgorithmNames.EcdsaSha2Nistp521 => ParseEcdsa(ref reader, keyType, copy, ECCurve.NamedCurves.nistP521, "nistp521", 521),
                 SshAlgorithmNames.SshRsa => ParseRsa(ref reader, keyType, copy),
+                SshAlgorithmNames.SkSshEd25519 => ParseSecurityKeyEd25519(ref reader, keyType, copy),
+                SshAlgorithmNames.SkEcdsaSha2Nistp256 => ParseSecurityKeyEcdsa(ref reader, keyType, copy),
                 _ => throw new SshPublicKeyException(SshFailureReason.Unsupported, $"不支持的公钥类型：{keyType}。"),
             };
         }
@@ -327,7 +386,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     /// 不比对就等于让对端自选签名算法，那是一条降级攻击路径。
     /// </param>
     /// <returns>验证是否通过。</returns>
-    public bool VerifySignature(
+    internal bool VerifySignature(
         ReadOnlySpan<byte> signatureBlob, ReadOnlySpan<byte> signedData, string expectedAlgorithm)
     {
         SshDataReader reader = new(new ReadOnlySequence<byte>(signatureBlob.ToArray()));
@@ -338,6 +397,9 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         {
             algorithm = reader.ReadUtf8String(MaxFieldBytes, strict: true);
             signature = reader.ReadString(MaxFieldBytes);
+
+            // 〔AU-D1〕签名 blob 后面不许还有东西：同一个签名有两种编码，就有两种「都验得过」的字节串。曾经不看。
+            reader.ExpectEnd("签名 blob");
         }
         catch (SshWireFormatException)
         {
@@ -351,6 +413,13 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         if (!string.Equals(algorithm, expectedPlain, StringComparison.Ordinal))
         {
             // 签名算法名与协商结果不符。放过它 = 允许对端把 rsa-sha2-512 降级成 ssh-rsa。
+            return false;
+        }
+
+        // 签名算法必须是这把钥能出的那一类（P-256 的钥不验 nistp384 的签名，RSA 的钥不验 Ed25519 的）。
+        // 曾经只靠下面各分支里「这把钥有没有对应的原生对象」间接成立。
+        if (!SupportsSignatureAlgorithm(algorithm))
+        {
             return false;
         }
 
@@ -424,6 +493,45 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         return new SshPublicKey(keyType, blob, null, null, key, 256);
     }
 
+    /// <summary><c>sk-ssh-ed25519@openssh.com</c>：<c>string</c> 公钥（32 字节）‖ <c>string</c> application。</summary>
+    private static SshPublicKey ParseSecurityKeyEd25519(ref SshDataReader reader, string keyType, byte[] blob)
+    {
+        byte[] key = reader.ReadStringAsArray(MaxFieldBytes);
+        string application = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        reader.ExpectEnd($"{keyType} 公钥");
+        if (key.Length != 32)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥必须是 32 字节，收到 {key.Length} 字节。");
+        }
+        return new SshPublicKey(keyType, blob, null, null, null, 256) { SecurityKeyApplication = application };
+    }
+
+    /// <summary><c>sk-ecdsa-sha2-nistp256@openssh.com</c>：<c>string</c> 曲线名 ‖ <c>string</c> 公钥点 ‖ <c>string</c> application。</summary>
+    private static SshPublicKey ParseSecurityKeyEcdsa(ref SshDataReader reader, string keyType, byte[] blob)
+    {
+        string curveName = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        byte[] point = reader.ReadStringAsArray(MaxFieldBytes);
+        string application = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        reader.ExpectEnd($"{keyType} 公钥");
+        if (curveName != "nistp256" || point.Length != 65 || point[0] != 0x04)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的曲线或公钥点不对（应为 nistp256 的 65 字节未压缩点）。");
+        }
+        try
+        {
+            ECDsa.Create(new ECParameters
+            {
+                Curve = ECCurve.NamedCurves.nistP256,
+                Q = new ECPoint { X = point[1..33], Y = point[33..] },
+            }).Dispose();
+        }
+        catch (Exception ex) when (ex is not SshPublicKeyException)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥点不在曲线上。", ex);
+        }
+        return new SshPublicKey(keyType, blob, null, null, null, 256) { SecurityKeyApplication = application };
+    }
+
     private static SshPublicKey ParseEcdsa(
         ref SshDataReader reader, string keyType, byte[] blob, ECCurve curve, string expectedCurveName, int bits)
     {
@@ -446,23 +554,71 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
                 $"{keyType} 的公钥点必须是 {1 + (coordinate * 2)} 字节的未压缩点。");
         }
 
+        ECParameters parameters = new()
+        {
+            Curve = curve,
+            Q = new ECPoint
+            {
+                X = point[1..(1 + coordinate)],
+                Y = point[(1 + coordinate)..],
+            },
+        };
+
         try
         {
-            var ecdsa = ECDsa.Create(new ECParameters
-            {
-                Curve = curve,
-                Q = new ECPoint
-                {
-                    X = point[1..(1 + coordinate)],
-                    Y = point[(1 + coordinate)..],
-                },
-            });
-            return new SshPublicKey(keyType, blob, null, ecdsa, null, bits);
+            // 「点在不在曲线上」解析时就判：建一把试过就释放，留着的只是参数（见 _ecdsa）。
+            ECDsa.Create(parameters).Dispose();
+            return new SshPublicKey(keyType, blob, null, new LazyNativeKey<ECDsa>(() => ECDsa.Create(parameters)), null, bits);
         }
         catch (Exception ex) when (ex is not SshPublicKeyException)
         {
             // 各平台抛的类型不同（OpenSSL vs CNG），含义都是「这个点用不了」。
             throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥点不在曲线上。", ex);
+        }
+    }
+
+    private static RSA CreateRsa(RSAParameters parameters)
+    {
+        var rsa = RSA.Create();
+        try
+        {
+            rsa.ImportParameters(parameters);
+            return rsa;
+        }
+        catch
+        {
+            rsa.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>第一次用到时才建的原生钥；并发时只留一个，多建的当场释放。</summary>
+    private sealed class LazyNativeKey<T>(Func<T> create)
+        where T : AsymmetricAlgorithm
+    {
+        private T? _value;
+
+        public bool IsCreated => Volatile.Read(ref _value) is not null;
+
+        public T Value
+        {
+            get
+            {
+                if (Volatile.Read(ref _value) is { } existing)
+                {
+                    return existing;
+                }
+
+                T created = create();
+                T? raced = Interlocked.CompareExchange(ref _value, created, null);
+                if (raced is null)
+                {
+                    return created;
+                }
+
+                created.Dispose();
+                return raced;
+            }
         }
     }
 
@@ -479,13 +635,15 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
 
         try
         {
-            var rsa = RSA.Create();
-            rsa.ImportParameters(new RSAParameters { Modulus = modulus, Exponent = exponent });
+            RSAParameters parameters = new() { Modulus = modulus, Exponent = exponent };
+
+            // 参数能不能用解析时就判：建一把试过就释放，留着的只是参数（见 _rsa）。
+            CreateRsa(parameters).Dispose();
 
             // 真实位数，不是「字节数 × 8」：2047 位的模数也占 256 字节，按字节算就成了 2048 位，
             // 混过「主机密钥至少 2048 位」那道检查；多带一个前导零字节（非规范编码，容忍读入）又会多算 8 位。
             long bits = new System.Numerics.BigInteger(modulus, isUnsigned: true, isBigEndian: true).GetBitLength();
-            return new SshPublicKey(keyType, blob, rsa, null, null, (int)bits);
+            return new SshPublicKey(keyType, blob, new LazyNativeKey<RSA>(() => CreateRsa(parameters)), null, null, (int)bits);
         }
         catch (Exception ex) when (ex is not SshPublicKeyException)
         {
@@ -550,7 +708,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         try
         {
             byte[] digest = HashData(hash, data);
-            return _ecdsa.VerifyHash(digest, ieee);
+            return _ecdsa.Value.VerifyHash(digest, ieee);
         }
         catch (Exception)
         {
@@ -568,7 +726,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         try
         {
             // PKCS#1 v1.5，**不是 PSS**（RFC 8332 §3）。
-            return _rsa.VerifyData(data, signature, hash, RSASignaturePadding.Pkcs1);
+            return _rsa.Value.VerifyData(data, signature, hash, RSASignaturePadding.Pkcs1);
         }
         catch (Exception)
         {
@@ -610,7 +768,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
             // CA5350「弱加密算法」—— 这是 ssh-rsa 的定义（RFC 4253 §6.6），
             // 而 ssh-rsa 只在使用者显式放开老算法时才会被协商出来。
 #pragma warning disable CA5350 // Do Not Use Weak Cryptographic Algorithms
-            return _rsa.VerifyData(data, signature, HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
+            return _rsa.Value.VerifyData(data, signature, HashAlgorithmName.SHA1, RSASignaturePadding.Pkcs1);
 #pragma warning restore CA5350
         }
         catch (Exception)

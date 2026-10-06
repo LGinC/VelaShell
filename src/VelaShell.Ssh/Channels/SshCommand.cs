@@ -6,6 +6,7 @@
 //   RFC 4254 §6.10  exit-status / exit-signal
 //   行为规格:       velashell-docs/zh/ssh/spec/05-connection.md §5.2、§5.4、§7.1
 
+using System.Buffers;
 using System.IO.Pipelines;
 using System.Text;
 using VelaShell.Ssh.Forwarding;
@@ -87,6 +88,14 @@ public sealed class SshCommand : IAsyncDisposable
     public ValueTask CompleteStandardInputAsync(CancellationToken cancellationToken = default) =>
         Channel.SendEofAsync(cancellationToken);
 
+    /// <summary>
+    /// 输出读够了、不再要了：本端丢弃之后的标准输出，并告诉 OpenSSH 服务端，远端进程再写就收到 <c>SIGPIPE</c> 提前结束。
+    /// </summary>
+    /// <returns>告诉服务端的请求有没有发出去（对端不是 OpenSSH 时只在本端丢弃）。</returns>
+    /// <remarks>细节见 <see cref="SshChannel.StopStandardOutputAsync"/>。退出状态照常取：被 SIGPIPE 结束的进程报的是信号 <c>PIPE</c>。</remarks>
+    public ValueTask<bool> StopStandardOutputAsync(CancellationToken cancellationToken = default) =>
+        Channel.StopStandardOutputAsync(cancellationToken);
+
     /// <summary>给远端进程发信号。</summary>
     /// <param name="signalName">信号名，<b>不带 <c>SIG</c> 前缀</b>（<c>"TERM"</c> 而非 <c>"SIGTERM"</c>）。</param>
     /// <param name="cancellationToken">取消令牌。</param>
@@ -97,19 +106,25 @@ public sealed class SshCommand : IAsyncDisposable
     /// <remarks>
     /// <b>只调用这个而不读 <see cref="StandardOutput"/> 会在输出较多时卡住。</b>
     /// 那不是 bug：接收窗口挂在消费上，没人读就不回补，远端自然停下来 ——
-    /// 这正是背压在起作用。要么读输出，要么用
-    /// <see cref="ReadToEndAsync"/>，要么把 stderr 设成
+    /// 这正是背压在起作用。要么读输出（两条流并发读），要么用
+    /// <see cref="Session.SshConnectionExtensions.RunAsync"/> 一次拿全，要么把 stderr 设成
     /// <see cref="SshStderrMode.Discard"/>。
     /// </remarks>
     public ValueTask<SshExitStatus> WaitAsync(CancellationToken cancellationToken = default) =>
         Channel.WaitForExitAsync(cancellationToken);
 
-    /// <summary>把 stdout 与 stderr 都读完，再等命令结束。</summary>
+    /// <summary>把 stdout 与 stderr 都读完，再等命令结束（<see cref="Session.SshConnectionExtensions.RunAsync"/> 的后半段）。</summary>
     /// <remarks>
+    /// <para>
     /// <b>两条流是并发读的。</b>先读完一条再读另一条会死锁：
     /// 先读的那条可能一直没数据，而远端正因为另一条的窗口被吃空而停住。
+    /// </para>
+    /// <para>
+    /// 〔AGENTS 4.3〕「跑命令拿全部输出」只有 <c>RunAsync</c> 一个公开入口；这里曾经也是公开的，与它重叠，
+    /// 宿主与 getting-started 都只用 <c>RunAsync</c>（4.1）。
+    /// </para>
     /// </remarks>
-    public async ValueTask<SshCommandResult> ReadToEndAsync(CancellationToken cancellationToken = default)
+    internal async ValueTask<SshCommandResult> ReadToEndAsync(CancellationToken cancellationToken = default)
     {
         Task<string> stdout = ReadAllTextAsync(StandardOutput, cancellationToken);
         Task<string> stderr = ReadAllTextAsync(StandardError, cancellationToken);
@@ -125,26 +140,46 @@ public sealed class SshCommand : IAsyncDisposable
         StringBuilder text = new();
         Decoder decoder = Encoding.UTF8.GetDecoder();
 
-        while (true)
+        // 解码用的字符缓冲租一块、按需换大的，不再每个段新分配一个 char[]（输出多、段碎的时候那是一串小垃圾）。
+        char[] chars = ArrayPool<char>.Shared.Rent(4096);
+        try
         {
-            ReadResult read = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
-
-            foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+            while (true)
             {
-                // 逐段解码并保留状态 —— 一个多字节字符可能横跨两个段，
-                // 每段各自 GetString 会把它切成两个乱码字符。
-                char[] chars = new char[segment.Length];
-                int count = decoder.GetChars(segment.Span, chars, flush: false);
-                text.Append(chars, 0, count);
-            }
+                ReadResult read = await reader.ReadAsync(cancellationToken).ConfigureAwait(false);
 
-            reader.AdvanceTo(read.Buffer.End);
+                foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+                {
+                    // 逐段解码并保留状态 —— 一个多字节字符可能横跨两个段，
+                    // 每段各自 GetString 会把它切成两个乱码字符。
+                    // 一个字节至多解出一个 char，再加上解码器里攒着的几个字节可能吐出的那两个。
+                    int needed = segment.Length + 2;
+                    if (chars.Length < needed)
+                    {
+                        ArrayPool<char>.Shared.Return(chars);
+                        chars = ArrayPool<char>.Shared.Rent(needed);
+                    }
+                    int count = decoder.GetChars(segment.Span, chars, flush: false);
+                    text.Append(chars, 0, count);
+                }
 
-            if (read.IsCompleted)
-            {
-                break;
+                reader.AdvanceTo(read.Buffer.End);
+
+                if (read.IsCompleted)
+                {
+                    break;
+                }
             }
         }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(chars);
+        }
+
+        // 流读完了：把解码器里攒着的不完整序列冲出来（成为 U+FFFD）。曾经不冲 ——
+        // 输出末尾被截断的多字节字符（命令被杀、输出被 head -c 截断）静默消失，看不出输出不完整。
+        char[] tail = new char[decoder.GetCharCount([], flush: true)];
+        text.Append(tail, 0, decoder.GetChars([], tail, flush: true));
 
         await reader.CompleteAsync().ConfigureAwait(false);
         return text.ToString();

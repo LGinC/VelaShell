@@ -1,6 +1,6 @@
 using System.Net;
-using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.Session;
 
@@ -30,25 +30,31 @@ namespace VelaShell.Infrastructure.Ssh;
 internal sealed class LibraryPortForwardHandle : IPortForwardHandle
 {
     private readonly PortForwarder _forwarder;
-    private readonly CancellationTokenRegistration _disconnected;
     private bool _stopped;
 
-    private LibraryPortForwardHandle(SshConnection connection, PortForwarder forwarder)
+    private LibraryPortForwardHandle(PortForwarder forwarder)
     {
         _forwarder = forwarder;
         _forwarder.Error += OnError;
 
-        // 连接断了,转发也就没了 —— 但转发器自己不会为此发 Error(它只报单条连接的失败)。
-        // 上一版的计量句柄在这里会上报一条通道错误,隧道面板靠它把「运行中」换成带原因的状态;
-        // 不补上的话,远程转发在掉线之后会一直显示得好好的。
-        _disconnected = connection.Disconnected.Register(static state =>
-        {
-            var self = (LibraryPortForwardHandle)state!;
-            if (!self._stopped)
+        // 转发器停了(连接断了,或者本端释放)—— 它不会为此发 Error(那只报单条连接的失败)。
+        // 隧道面板靠这一条把「运行中」换成带原因的状态;不报的话,远程转发在掉线之后会一直显示得好好的。
+        // 报的是真实的停止原因(保活超时、服务端 DISCONNECT 带的原话……),按原因码本地化;本端释放(Aborted)不当成错误报。
+        // 曾经挂 Disconnected 一律报「对端关闭」,后来改挂连接的 Completion;现在用转发器自己的 Completion(F41)。
+        _ = forwarder.Completion.ContinueWith(
+            static (ended, state) =>
             {
-                self.ChannelError?.Invoke(new VelaSshConnectionException(Strings.Get("SshErr_ClosedByPeer")));
-            }
-        }, this);
+                var self = (LibraryPortForwardHandle)state!;
+                SshException reason = ended.Result;
+                if (!self._stopped && reason.Reason != SshFailureReason.Aborted)
+                {
+                    self.ChannelError?.Invoke(SshInterop.Translate(reason) ?? new VelaSshConnectionException(reason.Message, reason));
+                }
+            },
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     /// <inheritdoc />
@@ -91,7 +97,7 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
                 nameof(request), request.Kind, @"Unknown port forward kind."),
         };
 
-        return new(connection, forwarder);
+        return new(forwarder);
     }
 
     private static LocalPortForwardOptions LocalOptions(PortForwardRequest request) => new()
@@ -105,10 +111,12 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
     /// 只有本地转发要这一步:它绑的是本机套接字。远程转发的地址原样交给服务端 ——
     /// <c>""</c>、<c>"*"</c>、<c>"localhost"</c> 在服务端是不同的语义。
     /// </remarks>
-    internal static IPAddress ParseBindAddress(string host) =>
+    /// <remarks><c>localhost</c> 给 <see langword="null"/>:库同时听 <c>127.0.0.1</c> 与 <c>::1</c>(Q5);写 <c>127.0.0.1</c> 的只听 IPv4。</remarks>
+    internal static IPAddress? ParseBindAddress(string host) =>
         host is "0.0.0.0" or "*" ? IPAddress.Any :
         host == "::" ? IPAddress.IPv6Any :
-        host is "localhost" or "127.0.0.1" ? IPAddress.Loopback :
+        host == "localhost" ? null :
+        host == "127.0.0.1" ? IPAddress.Loopback :
         IPAddress.Parse(host);
 
     /// <summary>
@@ -144,7 +152,6 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
         }
         _stopped = true;
 
-        await _disconnected.DisposeAsync().ConfigureAwait(false);
         _forwarder.Error -= OnError;
 
         // 停止路径上的 catch 一律吞掉:要停的东西本来就在停,重复停止与已断连接抛的

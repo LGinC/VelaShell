@@ -58,6 +58,12 @@ public sealed class SessionMetricsService : ISessionMetricsService, IDisposable
     public Task<SessionMetrics?> GetMetricsAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
         GetMetricsAsync(sessionId, MetricsScope.Basic, cancellationToken);
 
+    /// <inheritdoc />
+    public Task<TimeSpan?> MeasureRoundTripAsync(Guid sessionId, CancellationToken cancellationToken = default) =>
+        _connectionService.GetClient(sessionId) is { IsConnected: true } client
+            ? client.MeasureRoundTripAsync(cancellationToken)
+            : Task.FromResult<TimeSpan?>(null);
+
     /// <summary>
     /// 采集指定会话的一次实时指标:在其现有 SSH 连接上跑探测命令,解析后与上一采样做差分
     /// 得到瞬时 CPU%/网速。连接不存在或已断开、对端不是 POSIX shell、以及探测失败(超时、

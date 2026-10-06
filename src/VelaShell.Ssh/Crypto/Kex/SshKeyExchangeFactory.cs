@@ -20,6 +20,8 @@ internal static class SshKeyExchangeFactory
         new Dictionary<string, Func<string, ISshKeyExchange>>(StringComparer.Ordinal)
         {
             [SshAlgorithmNames.MlKem768X25519Sha256] = static n => new HybridKeyExchange(n),
+            [SshAlgorithmNames.MlKem768Nistp256Sha256] = static n => new HybridKeyExchange(n),
+            [SshAlgorithmNames.MlKem1024Nistp384Sha384] = static n => new HybridKeyExchange(n),
             [SshAlgorithmNames.Sntrup761X25519Sha512] = static n => new HybridKeyExchange(n),
             [SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh] = static n => new HybridKeyExchange(n),
             [SshAlgorithmNames.Curve25519Sha256] = static n => new Curve25519KeyExchange(n),
@@ -28,6 +30,7 @@ internal static class SshKeyExchangeFactory
             [SshAlgorithmNames.EcdhSha2Nistp384] = static n => new EcdhKeyExchange(n),
             [SshAlgorithmNames.EcdhSha2Nistp521] = static n => new EcdhKeyExchange(n),
             [SshAlgorithmNames.DiffieHellmanGroup14Sha256] = static n => new DiffieHellmanGroupKeyExchange(n),
+            [SshAlgorithmNames.DiffieHellmanGroupExchangeSha256] = static n => new DiffieHellmanGroupExchange(n),
             [SshAlgorithmNames.DiffieHellmanGroup16Sha512] = static n => new DiffieHellmanGroupKeyExchange(n),
             [SshAlgorithmNames.DiffieHellmanGroup14Sha1] = static n => new DiffieHellmanGroupKeyExchange(n),
         }.ToFrozenDictionary(StringComparer.Ordinal);

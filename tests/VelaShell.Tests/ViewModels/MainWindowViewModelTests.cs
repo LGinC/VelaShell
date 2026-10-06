@@ -6,6 +6,7 @@ using ReactiveUI.Primitives.Concurrency;
 using VelaShell.Core.Data;
 using VelaShell.Core.Localization;
 using VelaShell.Core.Models;
+using VelaShell.Core.Resources;
 using VelaShell.Core.Sftp;
 using VelaShell.Core.Sync;
 using VelaShell.Core.Tunnels;
@@ -90,6 +91,20 @@ public class MainWindowViewModelTests
         );
         // 键位归键位表管(设置里可改):命令面板显示的是键位表当前生效的那一个。
         Assert.AreEqual("Ctrl+Shift+F", VelaShell.Services.ShortcutKeymap.Default.HintFor(command.Id, command.Shortcut));
+    }
+
+    /// <summary>「发送 Break」登记在命令面板里;没有活动的 SSH 会话时点不动(本地终端、插件终端的流不支持它)。</summary>
+    [TestMethod]
+    [TestCategory("UI")]
+    public void SendBreakCommand_IsRegistered_AndNeedsAnSshSession()
+    {
+        var vm = new MainWindowViewModel();
+
+        CommandDescriptor? command = vm.Commands.Find("session.break");
+
+        Assert.IsNotNull(command);
+        Assert.AreEqual(Strings.Get("Cmd_SendBreak"), command.Title);
+        Assert.IsFalse(command.IsEnabled, "没有活动会话时不该能点");
     }
 
     [TestMethod]

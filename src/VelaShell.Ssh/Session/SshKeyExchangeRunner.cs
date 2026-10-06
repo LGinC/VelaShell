@@ -29,13 +29,15 @@ namespace VelaShell.Ssh.Session;
 /// <param name="HostKey">服务端出示并已通过验证的主机公钥。</param>
 /// <param name="StrictKeyExchange">本次连接是否启用了严格 KEX。</param>
 /// <param name="HostKeySignature">服务端在本次交换的应答里对 <c>H</c> 的签名 blob（已验过）。</param>
+/// <param name="ServerVersion">服务端的版本标识串（如 <c>SSH-2.0-OpenSSH_10.0</c>）。</param>
 internal sealed record SshKeyExchangeResult(
     SshNegotiatedAlgorithms Algorithms,
     byte[] ExchangeHash,
     byte[] SessionId,
     SshPublicKey HostKey,
     bool StrictKeyExchange,
-    byte[] HostKeySignature)
+    byte[] HostKeySignature,
+    string ServerVersion = "")
 {
     /// <summary>给 ssh-agent 的会话声明用的身份证明（spec/07 §7.4）。</summary>
     /// <exception cref="InvalidOperationException">这不是首次交换的结果。</exception>
@@ -73,10 +75,19 @@ internal sealed class SshKeyExchangeRunner
     private const byte KexMethodInit = 30;
     private const byte KexMethodReply = 31;
 
+    // 群交换（RFC 4419 §5）：31 在这里是 GEX_GROUP，与上面的 KEX_*_REPLY 撞号 —— 30–49 只能按协商出的方法解释。
+    private const byte GexGroup = 31;
+    private const byte GexInit = 32;
+    private const byte GexReply = 33;
+    private const byte GexRequest = 34;
+
     private readonly ISshKexTransport _transport;
     private readonly SshAlgorithmSet _algorithms;
     private readonly IHostKeyPolicy _hostKeyPolicy;
     private readonly int _minimumRsaKeyBits;
+
+    /// <summary>密钥交换期间照 RFC 跳过的 IGNORE / DEBUG / UNIMPLEMENTED 一共几个（严格 KEX 的追究要看它）。</summary>
+    private int _skippedKexPackets;
 
     /// <summary>创建一个密钥交换执行器。</summary>
     /// <param name="transport">传输。</param>
@@ -135,6 +146,9 @@ internal sealed class SshKeyExchangeRunner
     /// 那一次写 known_hosts 不该因为弹窗摆得久而拿到一个已取消的令牌。
     /// </remarks>
     internal CancellationToken? DecisionCancellationToken { get; init; }
+
+    /// <summary>「信任并记住」时没记下来的原因（见 <see cref="SshConnection.HostKeyPersistFailure"/>）。</summary>
+    internal Exception? HostKeyPersistFailure { get; private set; }
 
     /// <summary>
     /// 重协商时：首次交换验明、并经策略裁决过的主机密钥。设了就<b>钉住它</b>，不再走主机密钥策略。
@@ -206,9 +220,13 @@ internal sealed class SshKeyExchangeRunner
             await _transport.SendAsync(clientKexInitPayload, cancellationToken).ConfigureAwait(false);
         }
 
+        // 读对端 KEXINIT 时还不知道会不会协商出严格 KEX，只能先按 RFC 跳过它前面的 IGNORE / DEBUG ——
+        // 记下跳过了几个，协商完再回头追究（见下面的 ②）。
+        int skippedBefore = _skippedKexPackets;
         byte[] serverKexInitPayload = peerKexInit ?? (await ReadKexPacketAsync(
                 SshMessageNumber.KexInit, strictKex: false, cancellationToken).ConfigureAwait(false))
             .Payload.ToArray();
+        int skippedBeforeKexInit = _skippedKexPackets - skippedBefore;
         var serverKexInit = SshKexInitMessage.Decode(serverKexInitPayload);
 
         // ② 协商。任一类没有交集就抛 SshNegotiationException（带双方名单）。
@@ -233,27 +251,75 @@ internal sealed class SshKeyExchangeRunner
         // 重协商期间它们是合法的普通报文。
         bool strictReads = isInitial && negotiated.StrictKeyExchange;
 
+        // 〔velashell-docs/zh/ssh/spec/03 §六〕严格 KEX 下，首次交换里对端的**第一个报文**必须就是 KEXINIT。
+        // 读 KEXINIT 时还不知道会协商出严格 KEX，前面的 IGNORE / DEBUG 被照 RFC 跳过了 —— 这里补上追究：
+        // （KEXINIT 之前能出现、又不会当场报错的只有被跳过的那几种。）序号会在 NEWKEYS 处归零，
+        // Terrapin 的截断本来做不成，这一条是规范符合性与纵深防御。
+        if (strictReads && skippedBeforeKexInit > 0)
+        {
+            throw new SshProtocolException(
+                SshPhase.KeyExchange,
+                $"启用严格 KEX 时，对端的第一个报文必须是 KEXINIT，而它之前还有 {skippedBeforeKexInit} 个报文 —— " +
+                "这正是 Terrapin 攻击（CVE-2023-48795）利用的报文位置。");
+        }
+
         // ③ 交换公开值。
         using ISshKeyExchange kex = SshKeyExchangeFactory.Create(negotiated.KeyExchange);
+
+        // 对端若在它的 KEXINIT 里设了 first_kex_packet_follows，且猜错了，
+        // 它会先发一个要被丢弃的报文（RFC 4253 §7.1）—— 丢在我们读的第一个报文之前。
+        bool discardGuess = serverKexInit.FirstKexPacketFollows && !GuessedCorrectly(serverKexInit, negotiated);
+
+        // 群交换先多一轮：说要多大的群，收下服务端给的（spec/03 §3.5）。
+        ISshGroupExchange? groupExchange = kex as ISshGroupExchange;
+        SshGroupExchangeHashInput? groupHashInput = null;
+        if (groupExchange is not null)
+        {
+            ArrayBufferWriter<byte> request = new();
+            SshDataWriter requestWriter = new(request);
+            requestWriter.WriteByte(GexRequest);
+            requestWriter.WriteUInt32(groupExchange.MinimumBits);
+            requestWriter.WriteUInt32(groupExchange.PreferredBits);
+            requestWriter.WriteUInt32(groupExchange.MaximumBits);
+            await _transport.SendAsync(request.WrittenMemory, cancellationToken).ConfigureAwait(false);
+
+            if (discardGuess)
+            {
+                _ = await ReadAnyKexPacketAsync(strictReads, cancellationToken).ConfigureAwait(false);
+                discardGuess = false;
+            }
+
+            SshInboundPacket group = await ReadKexPacketAsync(
+                (SshMessageNumber)GexGroup, strictReads, cancellationToken).ConfigureAwait(false);
+            AcceptGroup(groupExchange, group.Payload);
+            groupHashInput = new SshGroupExchangeHashInput(
+                groupExchange.MinimumBits, groupExchange.PreferredBits, groupExchange.MaximumBits,
+                groupExchange.Prime, groupExchange.Generator);
+        }
+
         byte[] clientPublic = kex.CreateClientPublicValue();
 
         ArrayBufferWriter<byte> initMessage = new();
         SshDataWriter initWriter = new(initMessage);
-        initWriter.WriteByte(KexMethodInit);
+        initWriter.WriteByte(groupExchange is null ? KexMethodInit : GexInit);
         WriteKexValue(ref initWriter, clientPublic, kex.PublicValueEncoding);
         await _transport.SendAsync(initMessage.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
-        // 对端若在它的 KEXINIT 里设了 first_kex_packet_follows，且猜错了，
-        // 它会先发一个要被丢弃的报文（RFC 4253 §7.1）。
-        if (serverKexInit.FirstKexPacketFollows && !GuessedCorrectly(serverKexInit, negotiated))
+        if (discardGuess)
         {
             _ = await ReadAnyKexPacketAsync(strictReads, cancellationToken).ConfigureAwait(false);
         }
 
         SshInboundPacket reply = await ReadKexPacketAsync(
-            (SshMessageNumber)KexMethodReply, strictReads, cancellationToken).ConfigureAwait(false);
+            (SshMessageNumber)(groupExchange is null ? KexMethodReply : GexReply), strictReads, cancellationToken).ConfigureAwait(false);
 
         (byte[] hostKeyBlob, byte[] serverPublic, byte[] signature) = ParseReply(reply.Payload, kex);
+
+        // 群交换：素性检验在收到群时就在后台起跑了，与上面那一轮往返重叠；用这个群算出的东西被信任之前等它的结论。
+        if (groupExchange is not null)
+        {
+            await groupExchange.EnsureGroupValidAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         // ④ 算共享密钥与交换哈希。
         byte[] sharedSecret = kex.ComputeSharedSecret(serverPublic);
@@ -272,6 +338,7 @@ internal sealed class SshKeyExchangeRunner
                 SharedSecret = sharedSecret,
                 PublicValueEncoding = kex.PublicValueEncoding,
                 SharedSecretEncoding = kex.SharedSecretEncoding,
+                GroupExchange = groupHashInput,
             });
 
             // ⑤ 验主机密钥。**顺序本身是安全属性**（velashell-docs/zh/ssh/spec/03 §5.3）：
@@ -305,7 +372,8 @@ internal sealed class SshKeyExchangeRunner
                 .ConfigureAwait(false);
 
             return new SshKeyExchangeResult(
-                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange, signature);
+                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange, signature,
+                versions.ServerVersion);
         }
         finally
         {
@@ -321,13 +389,32 @@ internal sealed class SshKeyExchangeRunner
         && string.Equals(peer.KeyExchangeAlgorithms[0], negotiated.KeyExchange, StringComparison.Ordinal)
         && string.Equals(peer.ServerHostKeyAlgorithms[0], negotiated.HostKey, StringComparison.Ordinal);
 
+    /// <summary>解 <c>GEX_GROUP</c>（<c>mpint p</c> ‖ <c>mpint g</c>）并交给群交换去查。</summary>
+    private static void AcceptGroup(ISshGroupExchange groupExchange, ReadOnlyMemory<byte> payload)
+    {
+        byte[] prime;
+        byte[] generator;
+        try
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+            reader.ReadByte();   // 31
+            prime = reader.ReadMpint(MaxFieldBytes).ToArray();
+            generator = reader.ReadMpint(MaxFieldBytes).ToArray();
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw new SshProtocolException(SshPhase.KeyExchange, $"群交换的 GEX_GROUP 格式非法：{ex.Message}", ex);
+        }
+        groupExchange.AcceptGroup(prime, generator);
+    }
+
     private static (byte[] HostKey, byte[] ServerPublic, byte[] Signature) ParseReply(
         ReadOnlyMemory<byte> payload, ISshKeyExchange kex)
     {
         try
         {
             SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
-            reader.ReadByte();   // 31
+            reader.ReadByte();   // 31（群交换是 33）
             byte[] hostKey = reader.ReadStringAsArray(MaxFieldBytes);
             byte[] serverPublic = kex.PublicValueEncoding == SshKexValueEncoding.Mpint
                 ? reader.ReadMpint(MaxFieldBytes).ToArray()
@@ -424,13 +511,21 @@ internal sealed class SshKeyExchangeRunner
             SshHostKeyVerdict verdict;
             try
             {
-                verdict = await _hostKeyPolicy.EvaluateAsync(context, decisionCts.Token).ConfigureAwait(false);
+                // 〔velashell-docs/zh/ssh/spec/08 §2.1〕策略是调用方的代码：它自己抛的异常原样交还，不归成「对端断开」。
+                verdict = await SshCallbackFaultException.InvokeAsync(
+                    () => _hostKeyPolicy.EvaluateAsync(context, decisionCts.Token)).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (!outer.IsCancellationRequested)
+            catch (OperationCanceledException ex) when (!outer.IsCancellationRequested)
             {
-                throw new SshConnectException(
-                    SshFailureReason.Timeout, SshPhase.KeyExchange,
-                    $"主机密钥裁决超时（{HostKeyDecisionTimeout}）。");
+                // 判超时只看裁决自己的那把计时器（velashell-docs/zh/ssh/spec/08 §2.1）：没到点却抛了取消，
+                // 是策略自己不连了（用户关掉了询问框）。曾经一律报超时，不限时的时候报的是「裁决超时（-00:00:00.001）」。
+                throw decisionCts.IsCancellationRequested
+                    ? new SshConnectException(
+                        SshFailureReason.Timeout, SshPhase.KeyExchange,
+                        $"主机密钥裁决超时（{HostKeyDecisionTimeout}）。", ex)
+                    : new SshConnectException(
+                        SshFailureReason.Aborted, SshPhase.KeyExchange,
+                        $"{context.Target} 的主机密钥裁决被使用者取消了（策略抛出了取消）。", ex);
             }
 
             switch (verdict.Decision)
@@ -440,7 +535,16 @@ internal sealed class SshKeyExchangeRunner
 
                 case SshHostKeyDecision.AcceptAndPersist:
                     // 用调用方的令牌，不用连接计时器的 —— 见 DecisionCancellationToken 的说明。
-                    await _hostKeyPolicy.PersistAsync(context, outer).ConfigureAwait(false);
+                    try
+                    {
+                        await _hostKeyPolicy.PersistAsync(context, outer).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (IsStoreFailure(ex))
+                    {
+                        // 〔velashell-docs/zh/ssh/spec/03 §5.4〕信任已经给了，只是没记下来：这次连接照常进行，失败记在连接上。
+                        // 曾经整条连接因此失败 —— 用户点了「信任」，换来一句「对端关闭了连接」。
+                        HostKeyPersistFailure = ex;
+                    }
                     break;
 
                 default:
@@ -460,6 +564,17 @@ internal sealed class SshKeyExchangeRunner
             ConnectDeadline?.Resume();
         }
     }
+
+    /// <summary>
+    /// 持久化抛的异常里，哪些只是「没记下来」：本库报的存储失败，以及调用方策略自己的异常。
+    /// 取消照实抛出；本库别的原因（主机名不能写进 known_hosts，<c>InvalidConfiguration</c>）是策略有意不放行。
+    /// </summary>
+    private static bool IsStoreFailure(Exception ex) => ex switch
+    {
+        OperationCanceledException => false,
+        SshException ssh => ssh.Reason == SshFailureReason.HostKeyStoreFailed,
+        _ => true,
+    };
 
     private async ValueTask ExchangeNewKeysAsync(
         SshNegotiatedAlgorithms negotiated,
@@ -573,6 +688,7 @@ internal sealed class SshKeyExchangeRunner
                             $"启用严格 KEX 时，密钥交换期间不允许出现 {packet.MessageNumber} —— " +
                             "这正是 Terrapin 攻击（CVE-2023-48795）利用的报文。");
                     }
+                    _skippedKexPackets++;
                     continue;
 
                 default:

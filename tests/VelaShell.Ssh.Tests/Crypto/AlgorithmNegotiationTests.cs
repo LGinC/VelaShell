@@ -104,6 +104,27 @@ public sealed class AlgorithmNegotiationTests
         Assert.DoesNotContain(SshAlgorithmNames.StrictKexClient, [.. rekeyMsg.KeyExchangeAlgorithms]);
     }
 
+    /// <summary>
+    /// 指示符写进自定义清单：校验时拒绝；万一绕过了校验，编码重协商的 KEXINIT 时也滤掉。
+    /// 曾经校验放行，它就出现在每一个 KEXINIT 里，包括重协商（ext-info-c 在那里是协议违规）。
+    /// </summary>
+    [TestMethod]
+    public void 自定义清单里的指示符校验时拒绝编码时滤掉()
+    {
+        SshAlgorithmSet custom = SshAlgorithmSet.Default with
+        {
+            KeyExchange = [SshAlgorithmNames.Curve25519Sha256, SshAlgorithmNames.ExtInfoClient],
+        };
+
+        ArgumentException error = Assert.ThrowsExactly<ArgumentException>(custom.Validate);
+        Assert.Contains(SshAlgorithmNames.ExtInfoClient, error.Message);
+
+        ArrayBufferWriter<byte> rekey = new();
+        SshKexInitMessage.Encode(custom, includeIndicators: false, rekey);
+        Assert.AreSequenceEqual(
+            [SshAlgorithmNames.Curve25519Sha256], SshKexInitMessage.Decode(rekey.WrittenMemory).KeyExchangeAlgorithms.ToArray());
+    }
+
     // ------------------------------------------------------------ 协商规则
 
     [TestMethod]
@@ -315,8 +336,6 @@ public sealed class AlgorithmNegotiationTests
 
     private sealed class RecordingDialer(Action onDial) : ISshTransportDialer
     {
-        public SshDialKind Kind => SshDialKind.Tcp;
-
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
         {
             onDial();

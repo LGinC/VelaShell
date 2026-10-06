@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Transport;
 
 namespace VelaShell.Ssh.Tests.Transport;
@@ -19,12 +20,67 @@ public sealed class TcpDialerTests
     private static readonly IPAddress V4 = IPAddress.Parse("192.0.2.1");
     private static readonly IPAddress V4b = IPAddress.Parse("192.0.2.2");
 
+    /// <summary>〔F22〕AddressFamily 只连那一族的目标地址；BindAddress 从指定的本机地址发起。</summary>
+    [TestMethod]
+    public async Task 只连限定的地址族_从指定的本机地址发起()
+    {
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        SshDialTarget target = SshDialTarget.Direct("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
+
+        // 目标只有 IPv4 地址，却只许 IPv6：没有能连的地址，不去试。
+        SshConnectException none = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await new TcpTransportDialer { AddressFamily = AddressFamily.InterNetworkV6 }.DialAsync(target));
+        Assert.AreEqual(SshFailureReason.DnsFailure, none.Reason);
+        Assert.Contains("地址族", none.Message);
+
+        // 本机只绑了 IPv6 地址：IPv4 的目标同样不连。
+        await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await new TcpTransportDialer { LocalAddresses = [IPAddress.IPv6Loopback] }.DialAsync(target));
+
+        // 从 127.0.0.2 发起（整个 127/8 都是环回）：对面看到的来源就是它。
+        Task<Socket> accepting = listener.AcceptSocketAsync();
+        await using Stream stream = await new TcpTransportDialer
+        {
+            AddressFamily = AddressFamily.InterNetwork,
+            LocalAddresses = [IPAddress.Parse("127.0.0.2")],
+        }.DialAsync(target);
+        using Socket accepted = await accepting;
+        Assert.AreEqual(IPAddress.Parse("127.0.0.2"), ((IPEndPoint)accepted.RemoteEndPoint!).Address);
+    }
+
     /// <summary>一条真连上的套接字（连到本机的一个监听上）。</summary>
     private static async Task<Socket> ConnectedSocketAsync(TcpListener listener)
     {
         Socket socket = new(SocketType.Stream, ProtocolType.Tcp);
         await socket.ConnectAsync((IPEndPoint)listener.LocalEndpoint);
         return socket;
+    }
+
+    /// <summary>
+    /// 原因码要说真话：宿主按它本地化、按它决定要不要重试。
+    /// 曾经认不出的错误一律报成「拒绝连接」—— 断网时的 DNS 暂时失败也在其中。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SocketError.HostNotFound, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.NoData, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.TryAgain, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.NoRecovery, SshFailureReason.DnsFailure)]
+    [DataRow(SocketError.ConnectionRefused, SshFailureReason.TcpRefused)]
+    [DataRow(SocketError.TimedOut, SshFailureReason.TcpTimeout)]
+    [DataRow(SocketError.NetworkUnreachable, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.HostUnreachable, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.NetworkDown, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.HostDown, SshFailureReason.TcpUnreachable)]
+    [DataRow(SocketError.AccessDenied, SshFailureReason.Unknown)]
+    [DataRow(SocketError.AddressNotAvailable, SshFailureReason.Unknown)]
+    public void 套接字错误翻成说真话的原因码(SocketError error, SshFailureReason expected)
+    {
+        SshConnectException translated = TcpTransportDialer.Translate(
+            new SocketException((int)error), new SshEndPoint("host.example", 22));
+
+        Assert.AreEqual(expected, translated.Reason);
+        Assert.AreEqual(SshPhase.Dialing, translated.Phase);
     }
 
     [TestMethod]

@@ -44,6 +44,9 @@ public sealed class OpenSshCertificate
 
     private readonly byte[] _blob;
 
+    /// <summary><see cref="DateTimeOffset"/> 表示得了的最大 Unix 秒(9999 年末)。</summary>
+    private static readonly ulong MaxRepresentableSeconds = (ulong)DateTimeOffset.MaxValue.ToUnixTimeSeconds();
+
     /// <summary>CA 签名覆盖的前缀长度:从类型串到签发 CA 公钥(含)。</summary>
     private readonly int _signedLength;
 
@@ -115,12 +118,21 @@ public sealed class OpenSshCertificate
     public SshPublicKey? SignatureKey { get; }
 
     /// <summary>生效时间,已换算成本地可读的时刻;不限时为 <see langword="null" />。</summary>
+    /// <remarks>
+    /// 字段是任意的 uint64,而 <see cref="DateTimeOffset"/> 只到 9999 年末。〔velashell-docs/zh/ssh/spec/03 §5.5〕
+    /// 晚于它的生效时间取 <see cref="DateTimeOffset.MaxValue"/>(「在可表示的时间里永远不生效」),
+    /// 有效期判定本身照原始秒数比,不经过这里的换算。曾经直接换算,遇到这样的值抛
+    /// <see cref="ArgumentOutOfRangeException"/>,从主机证书的验证一路漏出 <c>ConnectAsync</c>。
+    /// </remarks>
     public DateTimeOffset? ValidAfterTime =>
-        ValidAfter is 0 ? null : DateTimeOffset.FromUnixTimeSeconds((long)ValidAfter);
+        ValidAfter is 0 ? null
+        : ValidAfter > MaxRepresentableSeconds ? DateTimeOffset.MaxValue
+        : DateTimeOffset.FromUnixTimeSeconds((long)ValidAfter);
 
     /// <summary>失效时间,已换算成本地可读的时刻;不限时为 <see langword="null" />。</summary>
+    /// <remarks>晚于 9999 年末的失效时间当作不限:没有哪个可表示的时刻到得了它(见 <see cref="ValidAfterTime"/>)。</remarks>
     public DateTimeOffset? ValidBeforeTime =>
-        ValidBefore >= long.MaxValue ? null : DateTimeOffset.FromUnixTimeSeconds((long)ValidBefore);
+        ValidBefore > MaxRepresentableSeconds ? null : DateTimeOffset.FromUnixTimeSeconds((long)ValidBefore);
 
     /// <summary>
     /// 在给定时刻是不是还在有效期内。

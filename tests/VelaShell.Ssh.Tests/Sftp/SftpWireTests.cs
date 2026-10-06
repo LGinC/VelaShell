@@ -61,9 +61,9 @@ public sealed class SftpWireTests
     public void 一次能连着解出多个帧()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 1, "/a");
-        SftpWire.WritePathRequest(buffer, SftpMessageType.LStat, 2, "/b");
-        SftpWire.WritePathRequest(buffer, SftpMessageType.RealPath, 3, "/c");
+        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 1, "/a", SftpNameCodec.Utf8);
+        SftpWire.WritePathRequest(buffer, SftpMessageType.LStat, 2, "/b", SftpNameCodec.Utf8);
+        SftpWire.WritePathRequest(buffer, SftpMessageType.RealPath, 3, "/c", SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         List<SftpMessageType> types = [];
@@ -106,7 +106,7 @@ public sealed class SftpWireTests
     public void 跨段的帧也能解出来()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 7, "/some/long/path/name");
+        SftpWire.WritePathRequest(buffer, SftpMessageType.Stat, 7, "/some/long/path/name", SftpNameCodec.Utf8);
         byte[] full = buffer.WrittenSpan.ToArray();
 
         // 真实的 PipeReader 给的就是分段的 ReadOnlySequence，
@@ -131,7 +131,7 @@ public sealed class SftpWireTests
         // 「顺手按 RFC 修正」它的后果：链接被建在你本想指向的位置上，
         // **而且不报错**。这条用例就是拦住那次「修正」的。
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSymLink(buffer, 42, targetPath: "/real/file", linkPath: "/the/link");
+        SftpWire.WriteSymLink(buffer, 42, targetPath: "/real/file", linkPath: "/the/link", SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         Assert.IsTrue(SftpWire.TryReadFrame(ref input, out SftpFrame frame));
@@ -149,7 +149,7 @@ public sealed class SftpWireTests
     public void 空属性只写一个标志字段()
     {
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteOpen(buffer, 1, "/f", SftpOpenModes.Read, SftpFileAttributes.Empty);
+        SftpWire.WriteOpen(buffer, 1, "/f", SftpOpenModes.Read, SftpFileAttributes.Empty, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -180,7 +180,7 @@ public sealed class SftpWireTests
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 9, "/f", original);
+        SftpWire.WriteSetStat(buffer, 9, "/f", original, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -201,6 +201,50 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
+    public void 不认识的标志位不写回_SETSTAT照样完整()
+    {
+        // stat 回来的属性带着 v4 起的位（0x40 之类）：原样写回而不写对应字段，发出去的就是一个畸形的 SETSTAT。
+        SftpFileAttributes fromServer = new()
+        {
+            Flags = SftpAttributeFields.Size | (SftpAttributeFields)0x40 | SftpAttributeFields.Permissions,
+            Size = 7,
+            Permissions = 0x81A4,
+            Extended = [],
+        };
+
+        ArrayBufferWriter<byte> buffer = new();
+        SftpWire.WriteSetStat(buffer, 9, "/f", fromServer, SftpNameCodec.Utf8);
+
+        ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
+        SftpWire.TryReadFrame(ref input, out SftpFrame frame);
+        Ssh.Protocol.SshDataReader reader = new(frame.Payload);
+        reader.ReadUInt32();
+        reader.ReadUtf8String(1024);
+        uint flags = reader.ReadUInt32();
+
+        Assert.AreEqual((uint)(SftpAttributeFields.Size | SftpAttributeFields.Permissions), flags);
+        Assert.AreEqual(7UL, reader.ReadUInt64());
+        Assert.AreEqual(0x81A4U, reader.ReadUInt32());
+        Assert.IsTrue(reader.IsEmpty, "后面不该再有东西");
+    }
+
+    [TestMethod]
+    public void 时间装不下无符号32位秒时报错_2038年之后照常表示()
+    {
+        DateTimeOffset now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+
+        // 〔Q8〕无符号：2038 年之后照常表示（曾经按有符号算，一律报装不下）。
+        DateTimeOffset in2040 = new(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.AreEqual(2_208_988_800u, SftpFileAttributes.WithTimes(now, in2040).ModifyTime);
+        Assert.AreEqual(uint.MaxValue, SftpFileAttributes.WithTimes(now, DateTimeOffset.FromUnixTimeSeconds(uint.MaxValue)).ModifyTime, "边界上的那一秒照常表示");
+
+        DateTimeOffset after2106 = new(2107, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        DateTimeOffset before1970 = new(1960, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(now, after2106));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SftpFileAttributes.WithTimes(before1970, now));
+    }
+
+    [TestMethod]
     public void 属主与属组共用一个标志位()
     {
         // draft-02 §5：两者共用 0x02。只写一个会让后面所有字段错位。
@@ -214,7 +258,7 @@ public sealed class SftpWireTests
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -238,7 +282,7 @@ public sealed class SftpWireTests
                 DateTimeOffset.FromUnixTimeSeconds(222));
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -291,20 +335,20 @@ public sealed class SftpWireTests
     }
 
     [TestMethod]
-    public void 时间按有符号读()
+    public void 时间按无符号读()
     {
-        // 2038 之后 OpenSSH 发的是负数（有符号溢出）。
-        // 按无符号读能撑到 2106 年，但那会与对端对不上账。
+        // 〔Q8〕OpenSSH 的 sftp-server 对 2038 年之后的时间发的是无符号的秒数（黑盒核对过），自带的 sftp 也按无符号显示。
+        // 曾经按有符号读：2040 年的文件读成 1903 年。
         SftpFileAttributes attributes = new()
         {
             Flags = SftpAttributeFields.Times,
-            AccessTime = -1,
-            ModifyTime = -2,
+            AccessTime = uint.MaxValue,
+            ModifyTime = 2_208_988_800,
             Extended = [],
         };
 
         ArrayBufferWriter<byte> buffer = new();
-        SftpWire.WriteSetStat(buffer, 1, "/f", attributes);
+        SftpWire.WriteSetStat(buffer, 1, "/f", attributes, SftpNameCodec.Utf8);
 
         ReadOnlySequence<byte> input = new(buffer.WrittenSpan.ToArray());
         SftpWire.TryReadFrame(ref input, out SftpFrame frame);
@@ -314,8 +358,10 @@ public sealed class SftpWireTests
         reader.ReadUtf8String(1024);
 
         SftpFileAttributes back = SftpWire.ReadAttrs(frame.Payload.Slice(reader.Consumed));
-        Assert.AreEqual(-1, back.AccessTime);
-        Assert.AreEqual(-2, back.ModifyTime);
+        Assert.AreEqual(uint.MaxValue, back.AccessTime);
+        Assert.AreEqual(2_208_988_800u, back.ModifyTime);
+        Assert.AreEqual(2040, back.LastWriteTime.Year);
+        Assert.AreEqual(2106, back.LastAccessTime.Year);
     }
 
     // ------------------------------------------------------------ 应答
@@ -359,9 +405,96 @@ public sealed class SftpWireTests
         writer.WriteUInt32(0);                // 空 ATTRS
 
         SshProtocolException error = Assert.ThrowsExactly<SshProtocolException>(
-            () => SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray())));
+            () => SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()), SftpNameCodec.Utf8));
 
         Assert.Contains("声称有 3 项", error.Message);
+    }
+
+    [TestMethod]
+    public void READ请求直接写进输出_与按字段拼的一字节不差()
+    {
+        byte[] handle = [1, 2, 3, 4, 5, 6, 7];
+
+        ArrayBufferWriter<byte> expected = new();
+        Ssh.Protocol.SshDataWriter fields = new(expected);
+        fields.WriteUInt32(77);
+        fields.WriteString(handle);
+        fields.WriteUInt64(0x0102_0304_0506_0708);
+        fields.WriteUInt32(32_768);
+        ArrayBufferWriter<byte> reference = new();
+        SftpWire.WriteFrame(reference, SftpMessageType.Read, expected.WrittenSpan);
+
+        ArrayBufferWriter<byte> actual = new();
+        SftpWire.WriteRead(actual, 77, handle, 0x0102_0304_0506_0708, 32_768);
+
+        Assert.AreSequenceEqual(reference.WrittenSpan.ToArray(), actual.WrittenSpan.ToArray());
+    }
+
+    [TestMethod]
+    public void 扩展属性的数据按字节原样往返_交出去的是只读视图()
+    {
+        // extended_data 在 draft-02 里是二进制：曾经按 UTF-8 解成字符串，非法的字节解出来就变了。
+        byte[] binary = [0xFF, 0x00, 0xC3, 0x28];
+        ArrayBufferWriter<byte> payload = new();
+        Ssh.Protocol.SshDataWriter writer = new(payload);
+        writer.WriteUInt32((uint)SftpAttributeFields.Extended);
+        writer.WriteUInt32(1);
+        writer.WriteUtf8String("acl@example.com");
+        writer.WriteString(binary);
+
+        SftpFileAttributes attributes = SftpWire.ReadAttrs(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()));
+
+        SftpExtendedField field = Assert.ContainsSingle(attributes.Extended);
+        Assert.AreSequenceEqual(binary, field.Data.ToArray());
+        Assert.IsNotInstanceOfType<List<SftpExtendedField>>(attributes.Extended, "下转型就能改一个「只读」属性背后的内容");
+
+        ArrayBufferWriter<byte> written = new();
+        Ssh.Protocol.SshDataWriter back = new(written);
+        attributes.Write(ref back);
+        Assert.AreSequenceEqual(payload.WrittenSpan.ToArray(), written.WrittenSpan.ToArray(), "写回去还是原来那串字节");
+    }
+
+    [TestMethod]
+    public void 服务端宣告的扩展是只读的_改不动能力位()
+    {
+        SftpCapabilities capabilities = new(3, new Dictionary<string, byte[]> { [SftpExtensionNames.PosixRename] = [0x31] });
+
+        Assert.IsTrue(capabilities.HasPosixRename);
+
+        // 曾经交出去的是 Dictionary：下转型一改，HasPosixRename 就跟着变。
+        var asMutable = (IDictionary<string, ReadOnlyMemory<byte>>)capabilities.RawExtensions;
+        Assert.ThrowsExactly<NotSupportedException>(() => asMutable.Remove(SftpExtensionNames.PosixRename));
+        Assert.IsTrue(capabilities.HasPosixRename);
+    }
+
+    [TestMethod]
+    public void 扩展属性超过上限时多出来的读掉_下一项照常解析()
+    {
+        // 曾经读到 1024 对就停，剩下的字节留在原地 —— NAME 应答里的下一项从它们中间开始解析。
+        ArrayBufferWriter<byte> payload = new();
+        Ssh.Protocol.SshDataWriter writer = new(payload);
+        writer.WriteUInt32(2);
+        writer.WriteUtf8String("first");
+        writer.WriteUtf8String("longname-1");
+        writer.WriteUInt32((uint)SftpAttributeFields.Extended);
+        writer.WriteUInt32(SftpFileAttributes.MaxExtendedFields + 100);
+        for (int i = 0; i < SftpFileAttributes.MaxExtendedFields + 100; i++)
+        {
+            writer.WriteUtf8String($"type{i}@example.com");
+            writer.WriteUtf8String("data");
+        }
+        writer.WriteUtf8String("second");
+        writer.WriteUtf8String("longname-2");
+        writer.WriteUInt32((uint)SftpAttributeFields.Size);
+        writer.WriteUInt64(42);
+
+        IReadOnlyList<SftpNameEntry> entries =
+            SftpWire.ReadName(new ReadOnlySequence<byte>(payload.WrittenSpan.ToArray()), SftpNameCodec.Utf8);
+
+        Assert.HasCount(2, entries);
+        Assert.HasCount(SftpFileAttributes.MaxExtendedFields, entries[0].Attributes.Extended, "只留上限那么多");
+        Assert.AreEqual("second", entries[1].Name);
+        Assert.AreEqual(42UL, entries[1].Attributes.Size);
     }
 
     [TestMethod]
@@ -432,6 +565,25 @@ public sealed class SftpWireTests
         Assert.AreEqual(100, probe.DurableLength, "只有 [0,100) 是连续可信的");
         Assert.AreEqual(500, probe.HighestAckedOffset, "而「服务端报告的文件长度」会是 500 —— 差的这 400 字节正是空洞");
         Assert.AreEqual(2, probe.RangeCount, "[0,100) 与 [300,500)");
+    }
+
+    [TestMethod]
+    public void 截短时之后的确认作废_跨过截断点的区间被剪短()
+    {
+        AckedRangeSet set = new();
+        set.Add(0, 100);
+        set.Add(150, 50);    // [150, 200)
+        set.Add(300, 10);    // [300, 310)
+
+        set.TruncateTo(170);
+
+        Assert.AreEqual(100, set.DurableLength);
+        Assert.AreEqual(2, set.RangeCount, "[300, 310) 整段作废");
+        Assert.AreEqual(170, set.HighestAckedOffset, "[150, 200) 剪成 [150, 170)");
+
+        set.TruncateTo(40);
+        Assert.AreEqual(40, set.DurableLength);
+        Assert.AreEqual(1, set.RangeCount);
     }
 
     [TestMethod]

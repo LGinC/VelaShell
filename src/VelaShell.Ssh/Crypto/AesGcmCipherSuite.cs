@@ -61,15 +61,11 @@ internal sealed class AesGcmCipherSuite : ISshCipherSuite
     /// <inheritdoc />
     public CipherSuiteShape Shape { get; } = new()
     {
-        LengthIsEncrypted = false,
-        AadBytes = SshPacketFormat.LengthFieldBytes,
         TagBytes = TagBytes,
         BlockBytes = BlockBytes,
         // RFC 5647 §7.2：对齐的是 padding_length + payload + padding，**不含**长度字段。
         LengthInAlignment = false,
-        EncryptThenMac = true,
         IsEncrypted = true,
-        LengthProbeBytes = SshPacketFormat.LengthFieldBytes,
     };
 
     /// <inheritdoc />
@@ -135,18 +131,38 @@ internal sealed class AesGcmCipherSuite : ISshCipherSuite
 
         // 长度是明文，但它被 tag 保护 —— 不过 tag 要等整帧收齐才能验。
         // 所以这里先做**范围检查**再按它去等数据：不检查就等于让对端指定我们等多少字节。
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || packetLength % BlockBytes != 0)
-        {
-            throw new SshFrameFormatException(
-                $"AES-GCM 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}，须为 {BlockBytes} 的倍数）。");
-        }
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, BlockBytes, lengthInAlignment: false, "AES-GCM");
 
         long total = SshPacketFormat.LengthFieldBytes + packetLength + TagBytes;
         if (input.Length < total)
         {
             return SshOpenStatus.NeedMoreData;
+        }
+
+        // 整帧在一段连续内存里（绝大多数时候如此）：密文与 tag 直接从输入里读，明文直接解进输出 ——
+        // 不拷密文、不租中转缓冲。曾经每帧拷一遍密文、租 2 × packet_length、再拷一遍载荷。
+        if (input.Slice(0, total).IsSingleSegment)
+        {
+            ReadOnlySpan<byte> frame = input.Slice(0, total).FirstSpan;
+            Span<byte> plain = payload.GetSpan((int)packetLength)[..(int)packetLength];
+            try
+            {
+                _aes.Decrypt(
+                    _nonce,
+                    frame.Slice(SshPacketFormat.LengthFieldBytes, (int)packetLength),
+                    frame.Slice(SshPacketFormat.LengthFieldBytes + (int)packetLength, TagBytes),
+                    plain,
+                    lengthField);
+            }
+            catch (AuthenticationTagMismatchException ex)
+            {
+                throw new SshFrameFormatException("报文完整性校验失败。", ex);
+            }
+
+            payload.Advance(SshPacketFormat.MoveDecryptedPayloadToFront(plain));
+            AdvanceNonce();
+            consumed = total;
+            return SshOpenStatus.Opened;
         }
 
         byte[] rented = ArrayPool<byte>.Shared.Rent((int)packetLength * 2);

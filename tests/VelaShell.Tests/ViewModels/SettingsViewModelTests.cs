@@ -378,6 +378,20 @@ public class SettingsViewModelTests
         Assert.AreEqual(HostKeyDecision.Reject, vm.Result);
     }
 
+    /// <summary>给了指纹图才显示那一行(等宽字体的 17×9 图);没给就不占位。</summary>
+    [TestMethod]
+    [TestCategory("Settings")]
+    public void HostKeyPrompt_RandomArt_ShownOnlyWhenGiven()
+    {
+        var without = new HostKeyPromptViewModel("example.com", 22, "ssh-ed25519", "SHA256:abc", HostKeyVerification.Unknown);
+        var with = new HostKeyPromptViewModel("example.com", 22, "ssh-ed25519", "SHA256:abc", HostKeyVerification.Unknown,
+            randomArt: "+--[ED25519 256]--+");
+
+        Assert.IsFalse(without.HasRandomArt);
+        Assert.IsTrue(with.HasRandomArt);
+        Assert.AreEqual("+--[ED25519 256]--+", with.RandomArt);
+    }
+
     [TestMethod]
     [TestCategory("Settings")]
     public void HostKeyPrompt_ChangedKey_ShowsWarning()

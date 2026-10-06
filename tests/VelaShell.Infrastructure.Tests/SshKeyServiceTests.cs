@@ -1,5 +1,7 @@
+using System.Security.Cryptography;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Ssh;
+using VelaShell.Ssh.HostKeys;
 
 namespace VelaShell.Infrastructure.Tests;
 
@@ -137,20 +139,60 @@ public sealed class SshKeyServiceTests : IDisposable
     }
 
     /// <summary>
-    /// 只有私钥、没有 .pub:明确拒绝。
+    /// 只有 OpenSSH 私钥、没有 .pub:从私钥文件的公钥段读出公钥、写一份,照样进列表。
     /// </summary>
     /// <remarks>
-    /// 列举是按 <c>*.pub</c> 走的,所以只导私钥会"导入成功 → 列表里没有" ——
-    /// 看上去就像程序把密钥弄丢了。当场说清比事后困惑好。
+    /// 列举是按 <c>*.pub</c> 走的,只抄私钥会"导入成功 → 列表里没有"。曾经因此一律拒绝没有 .pub 的导入。
     /// </remarks>
     [TestMethod]
-    public async Task Import_WithoutTheMatchingPublicKey_Throws()
+    public async Task Import_OpenSshKeyWithoutItsPub_WritesThePublicKey()
     {
         (string privatePath, string publicPath) = await CreateExternalKeyAsync("lonely");
+        string expected = (await new SshKeyService(_external).ListKeysAsync()).Single().Fingerprint;
         File.Delete(publicPath);
 
-        await Assert.ThrowsExactlyAsync<FileNotFoundException>(() => _service.ImportKeyAsync(privatePath));
-        Assert.IsFalse(File.Exists(Path.Combine(_sshDir, "lonely")), "拒绝之后不该留下私钥副本。");
+        SshKeyInfo? imported = await _service.ImportKeyAsync(privatePath);
+
+        Assert.IsNotNull(imported);
+        Assert.AreEqual(expected, imported.Fingerprint);
+        Assert.IsTrue(File.Exists(Path.Combine(_sshDir, "lonely.pub")));
+    }
+
+    /// <summary>
+    /// PuTTY 用户手里通常只有一个 .ppk(这一把还加了密):认得出是私钥,公钥从 Public-Lines 读出。
+    /// 曾经只认 <c>-----BEGIN … PRIVATE KEY</c> 的首行,.ppk 被当成「不是私钥」。
+    /// </summary>
+    [TestMethod]
+    public async Task Import_PuttyKeyWithoutPub_IsAccepted()
+    {
+        Directory.CreateDirectory(_external);
+        string ppk = Path.Combine(_external, "putty_key.ppk");
+        File.Copy(Path.Combine(AppContext.BaseDirectory, "Ssh", "Fixtures", "putty-ed25519-v3-hi-enc.ppk"), ppk);
+        Assert.IsTrue(SshPublicKey.TryParse(
+            await File.ReadAllTextAsync(Path.Combine(AppContext.BaseDirectory, "Ssh", "Fixtures", "putty-ed25519-v3-hi-enc.pub")),
+            out SshPublicKey? expected));
+
+        SshKeyInfo? imported = await _service.ImportKeyAsync(ppk);
+
+        Assert.IsNotNull(imported);
+        Assert.AreEqual("putty_key.ppk", imported.Name);
+        Assert.AreEqual(expected.Sha256Fingerprint, imported.Fingerprint);
+    }
+
+    /// <summary>加密的 PKCS#8 公钥也在密文里:没有 .pub 时仍然明确拒绝,不留下私钥副本。</summary>
+    [TestMethod]
+    public async Task Import_EncryptedPkcs8WithoutPub_Throws()
+    {
+        Directory.CreateDirectory(_external);
+        string path = Path.Combine(_external, "sealed");
+        using (RSA rsa = RSA.Create(2048))
+        {
+            await File.WriteAllTextAsync(path, rsa.ExportEncryptedPkcs8PrivateKeyPem(
+                "pw", new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 1000)));
+        }
+
+        await Assert.ThrowsExactlyAsync<FileNotFoundException>(() => _service.ImportKeyAsync(path));
+        Assert.IsFalse(File.Exists(Path.Combine(_sshDir, "sealed")), "拒绝之后不该留下私钥副本。");
     }
 
     /// <summary>挑中一个普通文本文件:不是私钥就不该被当成密钥收下。</summary>

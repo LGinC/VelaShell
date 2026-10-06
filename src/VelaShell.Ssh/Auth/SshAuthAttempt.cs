@@ -11,6 +11,9 @@ namespace VelaShell.Ssh.Auth;
 /// <param name="Outcome">结果。</param>
 /// <param name="ServerOfferedAfter">这一步之后服务端给出的可继续方法列表。</param>
 /// <param name="Detail">补充说明，例如跳过或失败的具体原因。</param>
+/// <param name="SignatureAlgorithm">
+/// <c>publickey</c> 这一步用的签名算法（降级重试过的是重试那一个），如 <c>rsa-sha2-512</c>；别的方法、还没签就跳过的为 <see langword="null"/>。
+/// </param>
 /// <remarks>
 /// 这张表会装进 <c>SshAuthenticationException</c>。它存在的理由很具体：
 /// <b>要让「这台机器需要动态码」和「密码打错了」在 UI 上能区分开</b>，
@@ -21,7 +24,8 @@ public readonly record struct SshAuthAttempt(
     string CredentialLabel,
     SshAuthOutcome Outcome,
     IReadOnlyList<string> ServerOfferedAfter,
-    string? Detail = null)
+    string? Detail = null,
+    string? SignatureAlgorithm = null)
 {
     /// <summary>一行人话，用于日志与诊断面板。</summary>
     public override string ToString()
@@ -35,8 +39,9 @@ public readonly record struct SshAuthAttempt(
             SshAuthOutcome.SkippedNoMaterial => "跳过（凭据取不到材料）",
             _ => Outcome.ToString(),
         };
+        string label = SignatureAlgorithm is null ? CredentialLabel : $"{CredentialLabel}（{SignatureAlgorithm}）";
         return string.IsNullOrEmpty(Detail)
-            ? $"{CredentialLabel}：{outcome}"
-            : $"{CredentialLabel}：{outcome} —— {Detail}";
+            ? $"{label}：{outcome}"
+            : $"{label}：{outcome} —— {Detail}";
     }
 }

@@ -31,9 +31,11 @@ namespace VelaShell.Infrastructure.Ssh;
 public sealed class VelaSshClientWrapper : ISshClientWrapper
 {
     private readonly Func<CancellationToken, ValueTask<SshConnection>> _connect;
+    private readonly SshServerBanners? _banners;
     private readonly SshSessionOptions? _features;
     private readonly ILocalXServer? _localXServer;
     private readonly IAgentSignPrompt? _agentPrompt;
+    private readonly IHostKeyService? _hostKeys;
     private readonly string _target;
     private SshConnection? _connection;
     private bool _disposed;
@@ -53,18 +55,24 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
     /// </param>
     /// <param name="agentPrompt">agent 转发开了「逐次确认」时用来问用户;<see langword="null" /> 时一律拒签。</param>
     /// <param name="target">确认框里给用户看的「哪条会话」,<c>用户@主机:端口</c>。</param>
+    /// <param name="hostKeys">已知主机;确认框拿它把远端要登录的目的主机认成主机名。</param>
+    /// <param name="banners">认证时服务端发来的横幅;第一个 shell 打开时作为提示写进终端。</param>
     public VelaSshClientWrapper(
         Func<CancellationToken, ValueTask<SshConnection>> connect,
         TimeSpan connectTimeout,
         SshSessionOptions? features = null,
         ILocalXServer? localXServer = null,
         IAgentSignPrompt? agentPrompt = null,
-        string target = "")
+        string target = "",
+        IHostKeyService? hostKeys = null,
+        SshServerBanners? banners = null)
     {
         _connect = connect ?? throw new ArgumentNullException(nameof(connect));
         _features = features;
         _localXServer = localXServer;
         _agentPrompt = agentPrompt;
+        _hostKeys = hostKeys;
+        _banners = banners;
         _target = target;
         ConnectionTimeout = connectTimeout;
     }
@@ -154,12 +162,12 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
                 Modes = BuildModes(terminalModeValues),
             };
 
-            List<ShellStreamNotice> notices = [];
+            // 服务端认证时发来的横幅排在最前面(法律声明、「密码将于 3 天后过期」);只在第一个 shell 上显示一次。
+            List<ShellStreamNotice> notices = [.. _banners?.TakeNotices() ?? []];
             XServerDisplayResolution? localServer = await ResolveLocalXServerAsync(notices, cancellationToken).ConfigureAwait(false);
             X11ForwardOptions? x11 = SshForwardingOptions.X11(_features, notices, localServer?.Display, localServer?.Connector);
-            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target) is { } agentOptions
-                ? agentOptions with { AgentEndpoint = SshConnectionAssembler.AgentEndpoint() }
-                : null;
+            // agent 的端点交给库的默认值(Windows 上指向命名管道的 SSH_AUTH_SOCK 也认),与认证时连 agent 是同一个。
+            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target, hostKeys: _hostKeys);
 
             // 转发是附带功能:两项都按「没开成就不开」请求(见 SshForwardingOptions),
             // 失败时库不抛、shell 照常一次开成,原因在结果对象上,这里转成提示。
@@ -234,7 +242,7 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
 
         foreach ((TerminalMode mode, uint argument) in values)
         {
-            modes = modes.With((byte)mode, argument);
+            modes = modes.With((SshTerminalModeOpcode)(byte)mode, argument);
         }
         return modes;
     }
@@ -429,6 +437,23 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
         catch (Exception)
         {
             // 通道可能已经塌了 —— 这只是尽力而为的礼貌收尾,失败不该盖住原来的取消异常。
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<TimeSpan?> MeasureRoundTripAsync(CancellationToken cancellationToken = default)
+    {
+        if (_connection is not { } connection)
+        {
+            return null;
+        }
+        try
+        {
+            return await connection.MeasureRoundTripAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is SshException or ObjectDisposedException)
+        {
+            return null;
         }
     }
 

@@ -30,10 +30,10 @@ internal sealed class TestSftpNode
     public uint Permissions { get; set; } = 0b110_100_100;
 
     /// <summary>最后修改时间。</summary>
-    public int ModifyTime { get; set; } = 1_700_000_000;
+    public uint ModifyTime { get; set; } = 1_700_000_000;
 
     /// <summary>最后访问时间。</summary>
-    public int AccessTime { get; set; } = 1_700_000_000;
+    public uint AccessTime { get; set; } = 1_700_000_000;
 
     /// <summary>带上类型位之后的完整权限字段。</summary>
     public uint FullPermissions =>
@@ -48,6 +48,15 @@ internal sealed record TestSftpOptions
     /// <summary>宣告的版本号。</summary>
     public uint Version { get; init; } = 3;
 
+    /// <summary>按 draft-02 的顺序解析 <c>SSH_FXP_SYMLINK</c>（先 linkpath、后 targetpath）—— 与 OpenSSH 相反的那种服务端。</summary>
+    public bool SymLinkInDraftOrder { get; init; }
+
+    /// <summary>
+    /// 本测试桩不认识的扩展怎么答（扩展名、请求载荷 → 应答载荷）：返回 <see langword="null"/> 回 <c>STATUS OK</c>，
+    /// 抛 <see cref="InvalidOperationException"/> 回 <c>FAILURE</c>。扩展名还得出现在 <see cref="Extensions"/> 里。
+    /// </summary>
+    public Func<string, byte[], byte[]?>? VendorExtension { get; init; }
+
     /// <summary>宣告哪些扩展。</summary>
     public IReadOnlyList<string> Extensions { get; init; } =
     [
@@ -59,6 +68,26 @@ internal sealed record TestSftpOptions
 
     /// <summary><c>limits@openssh.com</c> 宣告的读写上限。</summary>
     public SftpLimits Limits { get; init; } = new(262_144, 261_120, 261_120, 0);
+
+    /// <summary><c>users-groups-by-id@openssh.com</c> 认得的 uid → 用户名。</summary>
+    public IReadOnlyDictionary<uint, string> UserNames { get; init; } = new Dictionary<uint, string> { [0] = "root", [1000] = "joe" };
+
+    /// <summary><c>users-groups-by-id@openssh.com</c> 认得的 gid → 组名。</summary>
+    public IReadOnlyDictionary<uint, string> GroupNames { get; init; } = new Dictionary<uint, string> { [0] = "root", [100] = "users" };
+
+    /// <summary><c>users-groups-by-id@openssh.com</c> 的应答少回一个名字（坏服务端）。</summary>
+    public bool DropOneIdName { get; init; }
+
+    /// <summary><c>WRITE</c> 把文件的修改时间改成「现在」（真实文件系统就是这样）。</summary>
+    public bool WriteTouchesModifyTime { get; init; }
+
+    /// <summary>
+    /// 各用户的家目录（<c>home-directory</c> 与 <c>expand-path@openssh.com</c> 的 <c>~用户名</c> 查它；登录用户的是 <see cref="WorkingDirectory"/>）。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> HomeDirectories { get; init; } = new Dictionary<string, string> { ["alice"] = "/srv/alice" };
+
+    /// <summary><c>statvfs@openssh.com</c> 回的 11 个值（要在 <see cref="Extensions"/> 里列上它才回）。</summary>
+    public ulong[] StatVfs { get; init; } = [4096, 1024, 1_000_000, 400_000, 300_000, 65_536, 60_000, 59_000, 0xABCD, 0x1, 255];
 
     /// <summary>工作目录（<c>REALPATH "."</c> 的答案）。</summary>
     public string WorkingDirectory { get; init; } = "/home/joe";
@@ -72,8 +101,26 @@ internal sealed record TestSftpOptions
     /// </remarks>
     public int ShortReadLimit { get; init; }
 
+    /// <summary>这个偏移上的 <c>READ</c> 只回一半（只这一次）—— 预读队伍建起来之后中间冒出一个短读。</summary>
+    public long? ShortReadAtOffset { get; init; }
+
     /// <summary>每批 <c>READDIR</c> 最多回这么多项。</summary>
     public int ReadDirBatchSize { get; init; } = 2;
+
+    /// <summary>收到 <c>INIT</c> 不回 <c>VERSION</c> —— 模拟登录 shell 的启动文件卡住、sftp-server 一直没起来。</summary>
+    public bool NeverAnswerInit { get; init; }
+
+    /// <summary>在任何 SFTP 报文之前先往 stdout 写这段文字 —— 模拟启动文件（.bashrc 之类）往 stdout 输出了东西。</summary>
+    public string? StdoutBanner { get; init; }
+
+    /// <summary><c>READDIR</c> 永远回空的一批（count = 0），既不给项也不回 EOF。</summary>
+    public bool EmptyReadDirBatches { get; init; }
+
+    /// <summary><c>READDIR</c> 的属性里不带权限位（<c>STAT</c> / <c>LSTAT</c> 照常带）—— 模拟列目录图省事的服务端。</summary>
+    public bool OmitPermissionsInReadDir { get; init; }
+
+    /// <summary>每个目录的列表末尾再塞进这些名字（不对应任何节点）—— 模拟一个回 <c>../x</c>、<c>a/b</c>、空名字的服务端。</summary>
+    public IReadOnlyList<string> ExtraDirectoryEntryNames { get; init; } = [];
 
     /// <summary>
     /// 把应答<b>乱序</b>发出去（攒够两条再倒着发）。
@@ -87,6 +134,9 @@ internal sealed record TestSftpOptions
     /// <summary>从第几个 <c>WRITE</c> 起不再应答（模拟中途断开）。</summary>
     public int FailWritesAfter { get; init; } = int.MaxValue;
 
+    /// <summary>每个 <c>WRITE</c> 都以这个状态拒绝（模拟磁盘满、配额、权限），数据不写。</summary>
+    public SftpStatusCode? RejectWritesWith { get; init; }
+
     /// <summary>
     /// 这个偏移上的 <c>READ</c> 先不答，等收到一个偏移更靠后的 <c>READ</c> 才放行。
     /// </summary>
@@ -96,6 +146,22 @@ internal sealed record TestSftpOptions
     /// </remarks>
     public long? HoldReadReplyAtOffset { get; init; }
 
+    /// <summary><c>OPEN</c> / <c>OPENDIR</c> 的应答等这么久才发（句柄在收到请求时就已经打开）。</summary>
+    /// <remarks>模拟慢盘、网络文件系统：客户端在等句柄时取消了，句柄晚到。</remarks>
+    public TimeSpan DelayOpenReplies { get; init; }
+
+    /// <summary>对 <c>OPEN</c> 回一个 DATA —— 模拟一个应答类型对不上请求的服务端。</summary>
+    public bool WrongOpenReply { get; init; }
+
+    /// <summary>对 <c>WRITE</c> 回一个 HANDLE（数据照样写下）—— 模拟一个应答类型对不上请求的服务端。</summary>
+    public bool WrongWriteReply { get; init; }
+
+    /// <summary><c>CLOSE</c> 的应答等这么久才发（句柄在收到请求时就已经关掉）。</summary>
+    public TimeSpan DelayCloseReplies { get; init; }
+
+    /// <summary><c>WRITE</c> 的应答等这么久才发（数据在收到请求时就已经写下）—— 让一次写在 <c>WriteAsync</c> 返回之后还在路上。</summary>
+    public TimeSpan DelayWriteReplies { get; init; }
+
     /// <summary>设了就对每个 <c>CLOSE</c> 回这个失败码（句柄照样关掉）—— 模拟到关闭时才报出来的写入错误。</summary>
     public SftpStatusCode? FailCloseWith { get; init; }
 
@@ -104,6 +170,9 @@ internal sealed record TestSftpOptions
 
     /// <summary><c>READLINK</c> 回一个被截断的 NAME：宣告 1 项，却只有半个文件名。</summary>
     public bool MalformedReadLink { get; init; }
+
+    /// <summary><c>STAT</c> / <c>LSTAT</c> 原样回这个类型与 request-id 之后的这些字节（畸形应答的用例用）。</summary>
+    public (SftpMessageType Type, byte[] Body)? StatReplyOverride { get; init; }
 }
 
 /// <summary>在内存里说 SFTP v3 的测试服务端。</summary>
@@ -143,11 +212,19 @@ internal sealed class TestSftpServer
     /// <summary>收到的报文类型，按顺序。</summary>
     public List<SftpMessageType> ReceivedTypes { get; } = [];
 
+    /// <summary>收到过几个 <c>READDIR</c>（可以在服务端还在跑的时候读，不必枚举 <see cref="ReceivedTypes"/>）。</summary>
+    public int ReadDirRequests => Volatile.Read(ref _readDirRequests);
+
+    private int _readDirRequests;
+
     /// <summary>同时打开过的句柄峰值。</summary>
     public int PeakOpenHandles { get; private set; }
 
     /// <summary>当前还开着的句柄数 —— <b>泄漏检查看这个</b>。</summary>
     public int OpenHandleCount => _handles.Count;
+
+    /// <summary>收到过几个 <c>copy-data</c> 请求（验分段）。</summary>
+    public int CopyDataRequests { get; private set; }
 
     /// <summary>收到的 <c>WRITE</c> 次数。</summary>
     public int WriteCount { get; private set; }
@@ -157,6 +234,17 @@ internal sealed class TestSftpServer
 
     /// <summary>收到过的最长一个 <c>READ</c> 请求的长度。</summary>
     public long LargestReadRequest { get; private set; }
+
+    /// <summary>同一个文件里被 <c>READ</c> 回了不止一遍的字节数（预读作废后重读的浪费）。</summary>
+    public long RereadBytes { get; private set; }
+
+    /// <summary>每个文件已经回过的字节区间（算 <see cref="RereadBytes"/> 用）。</summary>
+    private readonly Dictionary<string, List<(long Start, long End)>> _servedReads = [];
+
+    private bool _shortReadAtOffsetUsed;
+
+    /// <summary>最近一次 <c>OPEN</c> 里带来的 ATTRS。</summary>
+    public SftpFileAttributes? LastOpenAttributes { get; private set; }
 
     /// <summary>倒着发出去过几批应答（每批至少两条）。</summary>
     public int ReversedBatches { get; private set; }
@@ -186,20 +274,48 @@ internal sealed class TestSftpServer
         return node;
     }
 
+    /// <summary>让这个 sftp-server 退出（模拟崩溃，或服务端按 <c>ChannelTimeout</c> 关掉闲置通道）：输出收尾，通道随之 EOF + CLOSE。</summary>
+    public void Exit()
+    {
+        Volatile.Write(ref _exited, true);
+        Volatile.Read(ref _input)?.CancelPendingRead();
+    }
+
+    private bool _exited;
+    private PipeReader? _input;
+
     /// <summary>跑服务端循环。</summary>
     public async Task RunAsync(PipeReader input, PipeWriter output, CancellationToken cancellationToken)
     {
+        Volatile.Write(ref _input, input);
         try
         {
+            if (_options.StdoutBanner is { } banner)
+            {
+                await output.WriteAsync(System.Text.Encoding.ASCII.GetBytes(banner), cancellationToken);
+                await output.FlushAsync(cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 ReadResult read = await input.ReadAsync(cancellationToken);
+                if (Volatile.Read(ref _exited))
+                {
+                    break;
+                }
+
                 ReadOnlySequence<byte> buffer = read.Buffer;
                 SequencePosition consumed = buffer.Start;
 
                 List<byte[]> replies = [];
+                bool delayReplies = false;
+                bool delayWriteReplies = false;
+                bool delayCloseReplies = false;
                 while (SftpWire.TryReadFrame(ref buffer, out SftpFrame frame))
                 {
+                    delayCloseReplies |= frame.Type is SftpMessageType.Close;
+                    delayReplies |= frame.Type is SftpMessageType.Open or SftpMessageType.OpenDir;
+                    delayWriteReplies |= frame.Type is SftpMessageType.Write;
                     byte[]? reply = Handle(frame);
                     replies.AddRange(_released);
                     _released.Clear();
@@ -211,6 +327,19 @@ internal sealed class TestSftpServer
                 }
 
                 input.AdvanceTo(consumed, buffer.End);
+
+                if (delayReplies && _options.DelayOpenReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayOpenReplies, cancellationToken);
+                }
+                if (delayWriteReplies && _options.DelayWriteReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayWriteReplies, cancellationToken);
+                }
+                if (delayCloseReplies && _options.DelayCloseReplies > TimeSpan.Zero)
+                {
+                    await Task.Delay(_options.DelayCloseReplies, cancellationToken);
+                }
 
                 foreach (byte[] reply in Order(replies))
                 {
@@ -274,11 +403,15 @@ internal sealed class TestSftpServer
     private byte[]? Handle(SftpFrame frame)
     {
         ReceivedTypes.Add(frame.Type);
+        if (frame.Type == SftpMessageType.ReadDir)
+        {
+            Interlocked.Increment(ref _readDirRequests);
+        }
         _receivedRequests++;
 
         if (frame.Type == SftpMessageType.Init)
         {
-            return BuildVersion();
+            return _options.NeverAnswerInit ? null : BuildVersion();
         }
 
         SshDataReader reader = new(frame.Payload);
@@ -288,8 +421,12 @@ internal sealed class TestSftpServer
         return frame.Type switch
         {
             SftpMessageType.RealPath => HandleRealPath(id, rest),
+            SftpMessageType.Stat or SftpMessageType.LStat when _options.StatReplyOverride is { } replaced =>
+                Frame(replaced.Type, [.. BigEndian(id), .. replaced.Body]),
             SftpMessageType.Stat => HandleStat(id, rest, follow: true),
             SftpMessageType.LStat => HandleStat(id, rest, follow: false),
+            SftpMessageType.Open when _options.WrongOpenReply => BuildData(id, [1, 2, 3, 4]),
+            SftpMessageType.Write when _options.WrongWriteReply => WrongWriteReply(id, rest),
             SftpMessageType.Open => HandleOpen(id, rest),
             SftpMessageType.Close => HandleClose(id, rest),
             SftpMessageType.Read => HandleRead(id, rest),
@@ -328,7 +465,7 @@ internal sealed class TestSftpServer
     private byte[] HandleRealPath(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         string resolved = path == "." ? _options.WorkingDirectory : path;
         return BuildName(id, [new SftpNameEntry(resolved, resolved, AttributesOf(_nodes.GetValueOrDefault(resolved)))]);
     }
@@ -336,7 +473,7 @@ internal sealed class TestSftpServer
     private byte[] HandleStat(uint id, ReadOnlySequence<byte> rest, bool follow)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         TestSftpNode? node = Resolve(path, follow);
         return node is null
@@ -347,9 +484,10 @@ internal sealed class TestSftpServer
     private byte[] HandleOpen(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         var mode = (SftpOpenModes)reader.ReadUInt32();
         SftpFileAttributes attributes = ReadAttributes(ref reader);
+        LastOpenAttributes = attributes;
 
         bool exists = _nodes.TryGetValue(path, out TestSftpNode? node);
 
@@ -381,7 +519,7 @@ internal sealed class TestSftpServer
     private byte[] HandleOpenDir(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node) || !node.IsDirectory)
         {
@@ -390,7 +528,7 @@ internal sealed class TestSftpServer
 
         HandleState state = new(path, isDirectory: true)
         {
-            Entries = [.. ChildrenOf(path)],
+            Entries = [.. ChildrenOf(path), .. _options.ExtraDirectoryEntryNames],
         };
         return BuildHandle(id, NewHandle(state));
     }
@@ -400,6 +538,11 @@ internal sealed class TestSftpServer
         if (!TryGetHandle(rest, out HandleState? state))
         {
             return BuildStatus(id, SftpStatusCode.Failure, "无效的句柄");
+        }
+
+        if (_options.EmptyReadDirBatches)
+        {
+            return BuildName(id, []);
         }
 
         if (state.DirectoryCursor >= state.Entries.Count)
@@ -415,7 +558,12 @@ internal sealed class TestSftpServer
             string name = state.Entries[state.DirectoryCursor + i];
             string full = state.Path == "/" ? "/" + name : $"{state.Path}/{name}";
             TestSftpNode? node = _nodes.GetValueOrDefault(full);
-            batch.Add(new SftpNameEntry(name, $"-rw-r--r-- 1 joe joe 0 Jan 1 00:00 {name}", AttributesOf(node)));
+            SftpFileAttributes listed = AttributesOf(node);
+            if (_options.OmitPermissionsInReadDir)
+            {
+                listed = listed with { Flags = listed.Flags & ~SftpAttributeFields.Permissions, Permissions = 0 };
+            }
+            batch.Add(new SftpNameEntry(name, $"-rw-r--r-- 1 joe joe 0 Jan 1 00:00 {name}", listed));
         }
 
         state.DirectoryCursor += take;
@@ -473,6 +621,18 @@ internal sealed class TestSftpServer
         {
             take = Math.Min(take, _options.ShortReadLimit);
         }
+        if (!_shortReadAtOffsetUsed && _options.ShortReadAtOffset == (long)offset)
+        {
+            _shortReadAtOffsetUsed = true;
+            take = Math.Max(1, take / 2);
+        }
+
+        List<(long Start, long End)> served = _servedReads.TryGetValue(state.Path, out List<(long Start, long End)>? list)
+            ? list
+            : _servedReads[state.Path] = [];
+        long start = (long)offset, end = start + take;
+        RereadBytes += served.Sum(range => Math.Max(0, Math.Min(end, range.End) - Math.Max(start, range.Start)));
+        served.Add((start, end));
 
         byte[] data = [.. node.Content.GetRange((int)offset, take)];
 
@@ -492,6 +652,11 @@ internal sealed class TestSftpServer
             return null;   // 干脆不应答 —— 模拟中途断开
         }
 
+        if (_options.RejectWritesWith is { } rejection)
+        {
+            return BuildStatus(id, rejection, "No space left on device");
+        }
+
         if (!TryGetHandle(rest, out HandleState? state))
         {
             return BuildStatus(id, SftpStatusCode.Failure, "无效的句柄");
@@ -504,6 +669,10 @@ internal sealed class TestSftpServer
         LargestWrite = Math.Max(LargestWrite, data.Length);
 
         TestSftpNode node = _nodes[state.Path];
+        if (_options.WriteTouchesModifyTime)
+        {
+            node.ModifyTime = (uint)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
         int end = (int)offset + data.Length;
 
         // 写到超出末尾就补 0 —— 与真实文件系统一样，中间会留空洞。
@@ -566,10 +735,11 @@ internal sealed class TestSftpServer
     private byte[] HandleSetStat(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         SftpFileAttributes attributes = ReadAttributes(ref reader);
 
-        if (!_nodes.TryGetValue(path, out TestSftpNode? node))
+        // SETSTAT 跟随符号链接（改到的是目标）；不跟随的是 lsetstat@openssh.com。
+        if (Resolve(path, followLinks: true) is not { } node)
         {
             return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
         }
@@ -581,7 +751,7 @@ internal sealed class TestSftpServer
     private byte[] HandleMkDir(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (_nodes.ContainsKey(path))
         {
@@ -595,7 +765,7 @@ internal sealed class TestSftpServer
     private byte[] HandleRemove(uint id, ReadOnlySequence<byte> rest, bool mustBeDirectory)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node))
         {
@@ -622,8 +792,8 @@ internal sealed class TestSftpServer
     private byte[] HandleRename(uint id, ReadOnlySequence<byte> rest, bool overwrite)
     {
         SshDataReader reader = new(rest);
-        string oldPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-        string newPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string oldPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        string newPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(oldPath, out TestSftpNode? node))
         {
@@ -644,7 +814,7 @@ internal sealed class TestSftpServer
     private byte[] HandleReadLink(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string path = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
         if (!_nodes.TryGetValue(path, out TestSftpNode? node) || node.LinkTarget is null)
         {
@@ -675,8 +845,12 @@ internal sealed class TestSftpServer
     private byte[] HandleSymLink(uint id, ReadOnlySequence<byte> rest)
     {
         SshDataReader reader = new(rest);
-        string targetPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-        string linkPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+        string targetPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        string linkPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+        if (_options.SymLinkInDraftOrder)
+        {
+            (targetPath, linkPath) = (linkPath, targetPath);
+        }
 
         if (_nodes.ContainsKey(linkPath))
         {
@@ -711,8 +885,8 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.PosixRename)
         {
-            string oldPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-            string newPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+            string oldPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            string newPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
             if (!_nodes.TryGetValue(oldPath, out TestSftpNode? node))
             {
@@ -727,8 +901,8 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.HardLink)
         {
-            string targetPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
-            string linkPath = reader.ReadUtf8String(SftpProtocol.MaxPathLength);
+            string targetPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            string linkPath = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
 
             if (!_nodes.TryGetValue(targetPath, out TestSftpNode? node))
             {
@@ -742,6 +916,140 @@ internal sealed class TestSftpServer
         if (name == SftpExtensionNames.Fsync)
         {
             return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.UsersGroupsById)
+        {
+            byte[] uids = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+            byte[] gids = reader.ReadStringAsArray(SftpProtocol.MaxMessageLength);
+
+            ArrayBufferWriter<byte> users = new();
+            SshDataWriter usersWriter = new(users);
+            for (int i = 0; i + 4 <= uids.Length - (_options.DropOneIdName ? 4 : 0); i += 4)
+            {
+                usersWriter.WriteUtf8String(_options.UserNames.GetValueOrDefault(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(uids.AsSpan(i))) ?? "");
+            }
+            ArrayBufferWriter<byte> groups = new();
+            SshDataWriter groupsWriter = new(groups);
+            for (int i = 0; i + 4 <= gids.Length; i += 4)
+            {
+                groupsWriter.WriteUtf8String(_options.GroupNames.GetValueOrDefault(System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(gids.AsSpan(i))) ?? "");
+            }
+
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            writer.WriteString(users.WrittenSpan);
+            writer.WriteString(groups.WrittenSpan);
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
+        }
+
+        if (name == SftpExtensionNames.CopyData)
+        {
+            CopyDataRequests++;
+            if (!TryGetHandle(rest.Slice(reader.Consumed), out HandleState? from))
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, "无效的读句柄");
+            }
+            _ = reader.ReadStringAsArray(SftpProtocol.MaxHandleLength);
+            ulong readOffset = reader.ReadUInt64();
+            ulong readLength = reader.ReadUInt64();
+            if (!TryGetHandle(rest.Slice(reader.Consumed), out HandleState? to))
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, "无效的写句柄");
+            }
+            _ = reader.ReadStringAsArray(SftpProtocol.MaxHandleLength);
+            ulong writeOffset = reader.ReadUInt64();
+
+            List<byte> source = _nodes[from.Path].Content;
+            List<byte> target = _nodes[to.Path].Content;
+            int start = (int)Math.Min(readOffset, (ulong)source.Count);
+            int count = readLength == 0 ? source.Count - start : (int)Math.Min(readLength, (ulong)(source.Count - start));
+            byte[] chunk = [.. source.GetRange(start, count)];
+            while (target.Count < (int)writeOffset + count)
+            {
+                target.Add(0);
+            }
+            for (int i = 0; i < count; i++)
+            {
+                target[(int)writeOffset + i] = chunk[i];
+            }
+            return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.LSetStat)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            SftpFileAttributes attributes = ReadAttributes(ref reader);
+            if (!_nodes.TryGetValue(path, out TestSftpNode? link))
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
+            }
+            ApplyAttributes(link, attributes);   // 链接自身，不跟随
+            return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.HomeDirectory)
+        {
+            string user = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            return _options.HomeDirectories.TryGetValue(user, out string? home)
+                ? BuildName(id, [new SftpNameEntry(home, home, AttributesOf(null))])
+                : BuildStatus(id, SftpStatusCode.Failure, $"没有用户 {user}");
+        }
+
+        if (name == SftpExtensionNames.ExpandPath)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            int slash = path.IndexOf('/', StringComparison.Ordinal);
+            string user = slash < 0 ? path[1..] : path[1..slash];
+            string? home = user.Length == 0 ? _options.WorkingDirectory : _options.HomeDirectories.GetValueOrDefault(user);
+            if (!path.StartsWith('~') || home is null)
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"展开不了 {path}");
+            }
+            string expanded = slash < 0 ? home : home.TrimEnd('/') + path[slash..];
+            return BuildName(id, [new SftpNameEntry(expanded, expanded, AttributesOf(_nodes.GetValueOrDefault(expanded)))]);
+        }
+
+        if (name == SftpExtensionNames.StatVfs)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            if (!_nodes.ContainsKey(path))
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
+            }
+
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            foreach (ulong value in _options.StatVfs)
+            {
+                writer.WriteUInt64(value);
+            }
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
+        }
+
+        if (_options.VendorExtension is { } vendor)
+        {
+            byte[] request = reader.ReadRemaining().ToArray();
+            byte[]? reply;
+            try
+            {
+                reply = vendor(name, request);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, ex.Message);
+            }
+            if (reply is null)
+            {
+                return BuildStatus(id, SftpStatusCode.Ok, "");
+            }
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            writer.WriteRaw(reply);
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
         }
 
         return BuildStatus(id, SftpStatusCode.OperationUnsupported, $"没实现 {name}");
@@ -860,8 +1168,8 @@ internal sealed class TestSftpServer
 
         ulong size = 0;
         uint permissions = 0;
-        int accessTime = 0;
-        int modifyTime = 0;
+        uint accessTime = 0;
+        uint modifyTime = 0;
 
         if ((flags & SftpAttributeFields.Size) != 0)
         {
@@ -878,8 +1186,8 @@ internal sealed class TestSftpServer
         }
         if ((flags & SftpAttributeFields.Times) != 0)
         {
-            accessTime = (int)reader.ReadUInt32();
-            modifyTime = (int)reader.ReadUInt32();
+            accessTime = reader.ReadUInt32();
+            modifyTime = reader.ReadUInt32();
         }
 
         return new SftpFileAttributes
@@ -891,6 +1199,13 @@ internal sealed class TestSftpServer
             ModifyTime = modifyTime,
             Extended = [],
         };
+    }
+
+    private static byte[] BigEndian(uint value)
+    {
+        byte[] bytes = new byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes, value);
+        return bytes;
     }
 
     private static byte[] Frame(SftpMessageType type, ReadOnlySpan<byte> payload)
@@ -909,6 +1224,21 @@ internal sealed class TestSftpServer
         writer.WriteUtf8String(message);
         writer.WriteUtf8String("");
         return Frame(SftpMessageType.Status, payload.WrittenSpan);
+    }
+
+    private byte[] WrongWriteReply(uint id, ReadOnlySequence<byte> rest)
+    {
+        _ = HandleWrite(id, rest);   // 数据照样写下，只是应答的类型不对
+        return BuildHandle(id, [9, 9, 9, 9]);
+    }
+
+    private static byte[] BuildData(uint id, byte[] data)
+    {
+        ArrayBufferWriter<byte> payload = new();
+        SshDataWriter writer = new(payload);
+        writer.WriteUInt32(id);
+        writer.WriteString(data);
+        return Frame(SftpMessageType.Data, payload.WrittenSpan);
     }
 
     private static byte[] BuildHandle(uint id, byte[] handle)
@@ -937,8 +1267,8 @@ internal sealed class TestSftpServer
         writer.WriteUInt32((uint)entries.Count);
         foreach (SftpNameEntry entry in entries)
         {
-            writer.WriteUtf8String(entry.Name);
-            writer.WriteUtf8String(entry.LongName);
+            SftpNameCodec.Utf8.Write(ref writer, entry.Name);
+            SftpNameCodec.Utf8.Write(ref writer, entry.LongName);
             WriteAttributes(ref writer, entry.Attributes);
         }
         return Frame(SftpMessageType.Name, payload.WrittenSpan);
@@ -962,8 +1292,8 @@ internal sealed class TestSftpServer
         }
         if (attributes.HasTimes)
         {
-            writer.WriteUInt32((uint)attributes.AccessTime);
-            writer.WriteUInt32((uint)attributes.ModifyTime);
+            writer.WriteUInt32(attributes.AccessTime);
+            writer.WriteUInt32(attributes.ModifyTime);
         }
     }
 }

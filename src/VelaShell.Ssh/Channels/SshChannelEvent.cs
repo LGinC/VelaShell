@@ -49,6 +49,14 @@ public abstract record SshChannelEvent
     /// <param name="Reason">为什么关的。</param>
     public sealed record Closed(SshChannelCloseReason Reason) : SshChannelEvent;
 
+    /// <summary>服务端告诉客户端能不能在本地做 ^S / ^Q 流控（<c>xon-xoff</c>，RFC 4254 §6.8）。</summary>
+    /// <param name="ClientCanDo">
+    /// <see langword="true"/>：客户端可以在本地处理 ^S / ^Q（暂停 / 继续显示），不必把它们发给远端；
+    /// <see langword="false"/>：照常当普通按键发出去。客户端也可以不理会这条消息（RFC 允许）。
+    /// </param>
+    /// <remarks>最近一次的值另见 <see cref="SshChannel.ClientMayDoFlowControl"/>。</remarks>
+    public sealed record FlowControl(bool ClientCanDo) : SshChannelEvent;
+
     /// <summary>对端发来一个我们没有专门处理的通道请求。</summary>
     /// <param name="RequestType">请求类型。</param>
     /// <param name="Payload">类型相关的数据（<b>未解析，不可信</b>）。</param>
@@ -62,8 +70,14 @@ public abstract record SshChannelEvent
 /// <summary>通道为什么关闭。</summary>
 public enum SshChannelCloseReason
 {
-    /// <summary>双向 <c>CHANNEL_CLOSE</c> 正常走完。</summary>
-    Normal,
+    /// <summary>
+    /// 零值，本库不产出 —— 只在 <c>default</c> 时出现，读到它说明这个值没被设置过。
+    /// </summary>
+    /// <remarks>
+    /// 〔AGENTS 4.3〕枚举的零值必须是安全的那个。曾经零值是 <c>Normal</c>（「双向 CLOSE 正常走完」），
+    /// 库却从不产出它：一个没赋值的 <c>default</c> 读起来就像「正常关闭」。
+    /// </remarks>
+    Unknown,
 
     /// <summary>对端先发的 <c>CHANNEL_CLOSE</c>。</summary>
     ClosedByPeer,

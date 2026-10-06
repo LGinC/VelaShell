@@ -112,7 +112,17 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
         // （NIST SP 800-38A §6.5），不是「用 ECB 加密数据」。
         // 走 BCL 而不是软件实现，是为了吃到 AES-NI / ARM Crypto 扩展的硬件加速。
         _aes = Aes.Create();
-        _aes.Key = key.ToArray();
+
+        // Key 只收数组，而它自己会再复制一份：中转的这份用完清零（velashell-docs/zh/ssh/spec/03 §7 第 4 条）。
+        byte[] keyCopy = key.ToArray();
+        try
+        {
+            _aes.Key = keyCopy;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(keyCopy);
+        }
         _aes.Mode = CipherMode.ECB;
         _aes.Padding = PaddingMode.None;
 
@@ -120,17 +130,11 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
 
         Shape = new CipherSuiteShape
         {
-            // EtM 下长度字段是明文；MtE 下它和其余部分一起被加密。
-            LengthIsEncrypted = !encryptThenMac,
-            AadBytes = 0,
             TagBytes = _macBytes,
             BlockBytes = AesBlockBytes,
             // 见 velashell-docs/zh/ssh/spec/01 §1.2：EtM 与 AEAD 一样，长度字段不进对齐计算。
             LengthInAlignment = !encryptThenMac,
-            EncryptThenMac = encryptThenMac,
             IsEncrypted = true,
-            // MtE 下长度被加密，要解一整个 AES 块才读得到它。
-            LengthProbeBytes = encryptThenMac ? SshPacketFormat.LengthFieldBytes : AesBlockBytes,
         };
     }
 
@@ -209,7 +213,7 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
 
         // 长度是明文但**还没被 MAC 认证**。先做范围检查再据它等数据 ——
         // 否则等于让一个未经认证的数字决定我们要等多少字节。
-        ValidateEncryptedRegion(packetLength, maxPacketLength, "EtM");
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, AesBlockBytes, lengthInAlignment: false, "EtM");
 
         long total = SshPacketFormat.LengthFieldBytes + packetLength + _macBytes;
         if (input.Length < total)
@@ -266,13 +270,7 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
         uint packetLength = BinaryPrimitives.ReadUInt32BigEndian(firstBlock);
 
         // MtE 下长度字段也在加密区里，所以整段(4 + packetLength)才是块的整数倍。
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || (packetLength + SshPacketFormat.LengthFieldBytes) % AesBlockBytes != 0)
-        {
-            throw new SshFrameFormatException(
-                $"MtE 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}）。");
-        }
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, AesBlockBytes, lengthInAlignment: true, "MtE");
 
         int encryptedBytes = SshPacketFormat.LengthFieldBytes + (int)packetLength;
         long total = encryptedBytes + _macBytes;
@@ -313,16 +311,6 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
         return SshOpenStatus.Opened;
     }
 
-    private static void ValidateEncryptedRegion(uint packetLength, int maxPacketLength, string label)
-    {
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || packetLength % AesBlockBytes != 0)
-        {
-            throw new SshFrameFormatException(
-                $"{label} 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}，须为 {AesBlockBytes} 的倍数）。");
-        }
-    }
 
     /// <summary>从已解密的 <c>padding_length ‖ payload ‖ padding</c> 区里取出载荷。</summary>
     private static void EmitPayload(ReadOnlySpan<byte> region, int packetLength, IBufferWriter<byte> payload)

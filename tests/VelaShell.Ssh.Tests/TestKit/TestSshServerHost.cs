@@ -68,6 +68,10 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     /// <param name="rekeyTimeout">重协商超时；验超时的用例要把它调小。</param>
     /// <param name="rekeyHostKeyType">设了就让服务端在重协商时换一把这种类型的新主机密钥。</param>
     /// <param name="hostKeyPolicy">客户端的主机密钥策略；缺省时全部接受。</param>
+    /// <param name="rekeyHardPacketLimit">报文数的硬线；验它的用例要把它调小。</param>
+    /// <param name="corruptRekeySignature">设了就让服务端在重协商时把签名弄坏。</param>
+    /// <param name="wrapClient">把客户端那一头的流包一层（模拟写被卡住之类）。</param>
+    /// <param name="timeProvider">客户端连接用的时钟；验时间阈值的用例传手动拨的那个。</param>
     public static async Task<TestSshServerHost> StartAsync(
         TestChannelScript? script = null,
         SshAlgorithmSet? algorithms = null,
@@ -75,7 +79,11 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         TimeSpan? rekeyCheckInterval = null,
         TimeSpan? rekeyTimeout = null,
         string? rekeyHostKeyType = null,
-        IHostKeyPolicy? hostKeyPolicy = null)
+        IHostKeyPolicy? hostKeyPolicy = null,
+        long? rekeyHardPacketLimit = null,
+        bool corruptRekeySignature = false,
+        Func<Stream, Stream>? wrapClient = null,
+        TimeProvider? timeProvider = null)
     {
         CancellationTokenSource cts = new(TimeSpan.FromSeconds(25));
 
@@ -93,6 +101,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
         {
             Algorithms = algorithms,
             RekeyHostKeyType = rekeyHostKeyType,
+            CorruptRekeySignature = corruptRekeySignature,
         });
 
         TestChannelServer channels = new(server.Transport, script);
@@ -134,7 +143,7 @@ internal sealed class TestSshServerHost : IAsyncDisposable
 
         SshConnectionOptions options = new("joe@test.invalid:22")
         {
-            Dialer = new FixedStreamDialer(clientStream),
+            Dialer = new FixedStreamDialer(wrapClient?.Invoke(clientStream) ?? clientStream),
             HostKeyPolicy = hostKeyPolicy ?? new DangerousAcceptAnyHostKeyPolicy(),
             Credentials = [new PasswordCredential("hunter2")],
             Algorithms = algorithms ?? SshAlgorithmSet.Default,
@@ -144,6 +153,8 @@ internal sealed class TestSshServerHost : IAsyncDisposable
             Rekey = rekey ?? SshRekeyPolicy.Disabled,
             RekeyCheckInterval = rekeyCheckInterval ?? TimeSpan.FromSeconds(5),
             RekeyTimeout = rekeyTimeout ?? TimeSpan.FromMinutes(2),
+            RekeyHardPacketLimit = rekeyHardPacketLimit ?? SshRekeyPolicy.MaximumPackets,
+            TimeProvider = timeProvider ?? TimeProvider.System,
         };
 
         SshConnection connection = await SshConnection.ConnectAsync(options, cts.Token);
@@ -195,8 +206,6 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     private sealed class FixedStreamDialer(Stream stream) : ISshTransportDialer
     {
         private Stream? _stream = stream;
-
-        public SshDialKind Kind => SshDialKind.Tcp;
 
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken)
         {

@@ -33,8 +33,15 @@ public sealed record AgentForwardOptions
     /// 〔决策 velashell-docs/zh/ssh/spec/07 §7.2〕<b>必须支持「只转发指定的密钥」。</b>
     /// 一台跳板机没有理由能用到你所有的密钥 —— 它只需要下一跳那一把。
     /// 空列表曾经表示「不限」，于是「用户勾掉了所有钥」会悄悄变成「全部暴露」—— 现在两者分开。
+    /// <para>
+    /// 设值时抄一份只读的存下来：曾经原样存下调用方的集合，转发开着的时候往那个 <c>List</c> 里加一把钥，远端就能用上它。
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<SshPublicKey>? AllowedKeys { get; init; }
+    public IReadOnlyList<SshPublicKey>? AllowedKeys
+    {
+        get;
+        init => field = value is null ? null : Array.AsReadOnly([.. value]);
+    }
 
     /// <summary>
     /// 每次远端请求签名时问一次使用者。
@@ -43,7 +50,7 @@ public sealed record AgentForwardOptions
     /// 返回 <see langword="false"/> 就拒签。对跳板场景这是唯一能让人安心的做法 ——
     /// 否则你根本不知道那台机器拿你的身份做了什么、做了几次。
     /// </remarks>
-    public Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>>? ConfirmEachSignature { get; init; }
+    public Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>>? ApproveSignature { get; init; }
 
     /// <summary>同时允许几条 agent 通道。</summary>
     public int MaxConnections { get; init; } = 8;
@@ -58,13 +65,27 @@ public sealed record AgentForwardOptions
     public ForwardFailureMode FailureMode { get; init; }
 
     /// <summary>本机 agent 的位置；<see langword="null"/> 取 <c>SSH_AUTH_SOCK</c> / Windows 的 OpenSSH agent 管道。</summary>
-    public string? AgentEndpoint { get; init; }
+    /// <exception cref="ArgumentException">已经给了 <see cref="LocalConnector"/>。</exception>
+    public string? AgentEndpoint
+    {
+        get;
+        init => field = value is not null && LocalConnector is not null ? throw EndpointConflict() : value;
+    }
 
     /// <summary>
-    /// 自己去连本机 agent。给了它就忽略 <see cref="AgentEndpoint"/> ——
-    /// agent 可能在一条隧道的另一头，或者由别的软件以自定义方式提供。
+    /// 自己去连本机 agent —— agent 可能在一条隧道的另一头，或者由别的软件以自定义方式提供。
+    /// 与 <see cref="AgentEndpoint"/> 只能给一个。
     /// </summary>
-    public Func<CancellationToken, ValueTask<SshAgentClient>>? LocalConnector { get; init; }
+    /// <exception cref="ArgumentException">已经给了 <see cref="AgentEndpoint"/>。</exception>
+    /// <remarks>曾经两个都给时静默忽略 <see cref="AgentEndpoint"/>：配了一个端点，连的却是另一个 agent。</remarks>
+    public Func<CancellationToken, ValueTask<SshAgentClient>>? LocalConnector
+    {
+        get;
+        init => field = value is not null && AgentEndpoint is not null ? throw EndpointConflict() : value;
+    }
+
+    private static ArgumentException EndpointConflict() =>
+        new("AgentEndpoint 与 LocalConnector 只能给一个：两个都给时连哪一个 agent 说不清。");
 
     /// <summary>默认参数：不限密钥、不逐次确认。</summary>
     /// <remarks>

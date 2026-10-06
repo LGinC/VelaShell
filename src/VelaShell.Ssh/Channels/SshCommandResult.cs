@@ -23,12 +23,20 @@ public readonly record struct SshCommandResult(
     /// <summary>是否以退出码 0 正常结束。</summary>
     public bool IsSuccess => ExitStatus.IsSuccess;
 
-    /// <summary>不是成功就抛，异常消息里带上 stderr。</summary>
+    /// <summary>消息里最多带 stderr 的多少个字符（取末尾）。</summary>
+    internal const int MaxStandardErrorInMessage = 1024;
+
+    /// <summary>不是成功就抛，异常消息里带上 stderr 的末尾。</summary>
     /// <param name="commandLine">写进异常消息的命令行；<see langword="null"/> 时只说「远端命令」。</param>
     /// <exception cref="SshCommandFailedException">命令没有以退出码 0 结束。</exception>
     /// <remarks>
-    /// stderr 要带上 —— 「命令失败了」而不说它抱怨了什么，
-    /// 等于让调用方再跑一遍去看。
+    /// <para>
+    /// stderr 要带上 —— 「命令失败了」而不说它抱怨了什么，等于让调用方再跑一遍去看。
+    /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/08 §一〕<b>只带清洗、截断过的末尾</b>：stderr 是对端的输出，可以有几 MB、
+    /// 带着终端转义序列，而消息最后会被打到终端、界面或日志里。原文完整地留在 <see cref="SshCommandFailedException.Result"/>。
+    /// </para>
     /// </remarks>
     public SshCommandResult EnsureSuccess(string? commandLine = null)
     {
@@ -37,11 +45,11 @@ public readonly record struct SshCommandResult(
             return this;
         }
 
-        string what = commandLine is null ? "远端命令" : $"远端命令 `{commandLine}`";
-        string detail = string.IsNullOrWhiteSpace(StandardError)
-            ? ""
-            : Environment.NewLine + StandardError.TrimEnd();
+        // 消息是纯文本，不带 Markdown 记号（曾经用反引号括命令行，到了界面上原样显示成两个反引号）。
+        string what = commandLine is null ? "远端命令" : $"远端命令「{commandLine}」";
+        string stderr = Diagnostics.PeerText.SanitizeTail(StandardError, MaxStandardErrorInMessage);
 
-        throw new SshCommandFailedException($"{what} {ExitStatus}。{detail}", this);
+        throw new SshCommandFailedException(
+            stderr.Length == 0 ? $"{what} {ExitStatus}。" : $"{what} {ExitStatus}：{stderr}", this);
     }
 }

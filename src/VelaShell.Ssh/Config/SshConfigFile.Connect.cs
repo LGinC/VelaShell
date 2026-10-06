@@ -5,6 +5,9 @@
 //   OpenSSH ssh_config(5)  各项的语义(只取行为描述)
 //   行为规格:              velashell-docs/zh/ssh/spec/09-dialing.md §7
 
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Diagnostics;
@@ -28,12 +31,16 @@ public static partial class SshConfigFile
     /// <param name="settings">配置文件里没有、要由调用方给的东西。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <returns>连接参数。<c>ProxyJump</c> 的跳板链、<c>ProxyCommand</c> 都已经装进 <see cref="SshConnectionOptions.Dialer"/>。</returns>
-    /// <exception cref="SshConnectException">跳板链有环或超过 <see cref="MaxJumpDepth"/>。</exception>
+    /// <exception cref="SshConnectException">
+    /// 跳板链有环或超过 <see cref="MaxJumpDepth"/>；配置里的 <c>ProxyCommand</c> 没有被批准执行
+    /// （<see cref="SshConfigConnectOptions.ApproveProxyCommand"/>），或者代入的值不安全。
+    /// </exception>
     /// <remarks>
     /// 映射规则见 <c>velashell-docs/zh/ssh/spec/09-dialing.md</c> §7。几个要点：
     /// <list type="bullet">
     ///   <item><c>ProxyJump</c> 上的每个跳板<b>按同一份配置解析</b>（有自己的 User / Port / IdentityFile）。</item>
     ///   <item><c>ProxyJump</c> 与 <c>ProxyCommand</c> 同时出现时 <c>ProxyJump</c> 优先。</item>
+    ///   <item><c>ProxyCommand</c> <b>要调用方批准才执行</b>（<see cref="SshConfigConnectOptions.ApproveProxyCommand"/>）。</item>
     ///   <item><c>ForwardAgent</c> / <c>ForwardX11</c> 是<b>会话</b>参数 —— 见 <see cref="SshHostConfig.ApplyToShell"/>。</item>
     /// </list>
     /// </remarks>
@@ -48,7 +55,48 @@ public static partial class SshConfigFile
 
         return CreateCoreAsync(
             blocks, host, settings ?? new SshConfigConnectOptions(), [], userOverride: null, portOverride: null,
-            isTarget: true, new IdentityCache(), cancellationToken);
+            isTarget: true, resolveDialer: true, new IdentityCache(), cancellationToken);
+    }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7.2〕<c>Ciphers</c> / <c>KexAlgorithms</c> / <c>MACs</c> / <c>HostKeyAlgorithms</c> 按 OpenSSH 的
+    /// <c>+ - ^</c> 写法作用到默认清单上；<c>PubkeyAcceptedAlgorithms</c> 里留着 <c>ssh-rsa</c> 时放开 SHA-1 的 RSA 签名
+    /// （老服务器最常见的那一行 <c>+ssh-rsa</c>）。写法不成立是配置错误：说清是哪台主机、哪一项。
+    /// </summary>
+    private static SshConnectionOptions ApplyAlgorithmLists(SshConnectionOptions options, SshHostConfig config, string host)
+    {
+        Crypto.SshAlgorithmSet algorithms = options.Algorithms;
+        try
+        {
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.KeyExchange, config.KexAlgorithms);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.HostKey, config.HostKeyAlgorithms);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.Encryption, config.Ciphers);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.Mac, config.Macs);
+
+            bool sha1Rsa = config.PubkeyAcceptedAlgorithms is { } accepted
+                && Crypto.SshAlgorithmSpec.Apply(Crypto.SshAlgorithmCategory.HostKey, accepted, SshAlgorithmSetDefaults.PublicKey)
+                    .Contains(Protocol.SshAlgorithmNames.SshRsa, StringComparer.Ordinal);
+            return options with { Algorithms = algorithms, AllowSha1RsaSignatures = options.AllowSha1RsaSignatures || sha1Rsa };
+        }
+        catch (Crypto.SshAlgorithmSpecException ex)
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里算法清单写得不对：{ex.Message}", ex);
+        }
+    }
+
+    /// <summary><c>PubkeyAcceptedAlgorithms</c> 的「默认」：本库公钥认证默认用的签名算法（不含 SHA-1 的 <c>ssh-rsa</c>）。</summary>
+    private static class SshAlgorithmSetDefaults
+    {
+        public static readonly IReadOnlyList<string> PublicKey =
+        [
+            Protocol.SshAlgorithmNames.SshEd25519,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp256,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp384,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp521,
+            Protocol.SshAlgorithmNames.RsaSha512,
+            Protocol.SshAlgorithmNames.RsaSha256,
+        ];
     }
 
     /// <summary>一次解析里已经读过的 <c>IdentityFile</c>（按完整路径）；<see langword="null"/> 表示读不出来、已跳过。</summary>
@@ -68,13 +116,28 @@ public static partial class SshConfigFile
         string? userOverride,
         int? portOverride,
         bool isTarget,
+        bool resolveDialer,
         IdentityCache identities,
         CancellationToken cancellationToken)
     {
-        SshHostConfig config = Resolve(blocks, host);
+        // 〔spec 09 §7.1〕本机用户名总是知道的，Match localuser 照常判；跳板规格里写明的用户（ProxyJump bob@jump）也交给 Match user。
+        // 目标的远端用户要等配置求完才知道（User 本身就在配置里），对目标判不了 —— 信息不足就不匹配。曾经只给主机名，localuser 永远判不了。
+        SshHostConfig config = Resolve(blocks, new SshConfigMatchContext { Host = host, User = userOverride, LocalUser = Environment.UserName });
 
         // 跳板规格里显式写的用户与端口（ProxyJump bob@jump:2222）优先于那台主机的配置。
         string user = userOverride ?? config.User ?? settings.DefaultUserName ?? Environment.UserName;
+
+        // 〔FW-E14〕端口配得不对是配置错误：说清是哪台主机、哪个值。曾经原样交给连接参数，抛的是 BCL 的参数异常。
+        if (portOverride is { } jumpPort && jumpPort is < 1 or > 65535)
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"ProxyJump 里 {host} 的端口 {jumpPort} 不在 1–65535 之间。");
+        }
+        if (portOverride is null && config.First("Port") is { } configuredPort && !SshHostConfig.TryParsePort(configuredPort, out _))
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里 Port 是「{PeerText.Sanitize(configuredPort, 32)}」，不是 1–65535 之间的整数。");
+        }
 
         SshConnectionOptions options = new(user, config.HostName, portOverride ?? config.Port)
         {
@@ -83,8 +146,10 @@ public static partial class SshConfigFile
                 .. await LoadIdentityFilesAsync(config, user, settings, identities, cancellationToken).ConfigureAwait(false),
                 .. CallerCredentialsFor(settings, isTarget),
             ],
-            HostKeyPolicy = MapHostKeyPolicy(config, settings),
+            HostKeyPolicy = MapHostKeyPolicy(config, user, settings),
         };
+
+        options = ApplyAlgorithmLists(options, config, host);
 
         if (config.Compression)
         {
@@ -105,8 +170,15 @@ public static partial class SshConfigFile
             options = options with { ConnectTimeout = TimeSpan.FromSeconds(timeout) };
         }
 
+        // 怎么到达这台主机由调用方定（ProxyJump 链里第一跳之后的那些经前一跳到达）：它自己的 ProxyJump / ProxyCommand 不看。
+        if (!resolveDialer)
+        {
+            return settings.Configure?.Invoke(options) ?? options;
+        }
+
         // 〔velashell-docs/zh/ssh/spec/09 §7〕ProxyJump 优先于 ProxyCommand。
-        if (IsSet(config.ProxyJump))
+        // 指向自己的 ProxyJump（Host *.corp 带出来、跳板忘了写 ProxyJump none）走不通，当成直连 —— 不报「链有环」。
+        if (IsSet(config.ProxyJump) && !IsJumpToSelf(config.ProxyJump!, host))
         {
             options = options with
             {
@@ -116,13 +188,57 @@ public static partial class SshConfigFile
         }
         else if (IsSet(config.ProxyCommand))
         {
+            ProxyCommandDialer dialer = new(config.ProxyCommand!) { UserName = user, OriginalHost = host };
+
+            // 拨号时它要连的就是这一跳自己的主机与端口：照那个展开，批准的就是将要执行的那一行。
+            string command = dialer.Expand(new SshEndPoint(options.Host, options.Port));
+            await ApproveProxyCommandAsync(settings, host, command, cancellationToken).ConfigureAwait(false);
+
+            options = options with { Dialer = dialer };
+        }
+        else if (config.AddressFamily != AddressFamily.Unspecified || IsSet(config.BindAddress) || IsSet(config.BindInterface))
+        {
+            // 〔velashell-docs/zh/ssh/spec/09 §7〕直连时才用得上：经跳板或代理命令时本机这一端不归这台主机的配置管。
             options = options with
             {
-                Dialer = new ProxyCommandDialer(config.ProxyCommand!) { UserName = user, OriginalHost = host },
+                Dialer = new TcpTransportDialer
+                {
+                    AddressFamily = config.AddressFamily,
+                    LocalAddresses = ResolveBindAddresses(config, host),
+                },
             };
         }
 
+        // ConnectionAttempts：拨号失败时再试（每次隔一秒）—— 包在最外层，跳板链与代理命令一起重来。
+        if (config.ConnectionAttempts > 1)
+        {
+            options = options with { Dialer = new RetryingDialer(options.Dialer, config.ConnectionAttempts) };
+        }
+
         return settings.Configure?.Invoke(options) ?? options;
+    }
+
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕配置里的 <c>ProxyCommand</c> 要调用方批准才执行
+    /// （见 <see cref="SshConfigConnectOptions.ApproveProxyCommand"/>）。
+    /// </summary>
+    private static async ValueTask ApproveProxyCommandAsync(
+        SshConfigConnectOptions settings, string host, string command, CancellationToken cancellationToken)
+    {
+        if (settings.ApproveProxyCommand is not { } approve)
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里写着 ProxyCommand（{PeerText.Sanitize(command)}），" +
+                "而调用方没有允许执行外部命令（SshConfigConnectOptions.ApproveProxyCommand）。");
+        }
+
+        if (!await approve(new SshProxyCommandRequest(host, command), cancellationToken).ConfigureAwait(false))
+        {
+            throw new SshConnectException(
+                SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"没有批准执行 {host} 的 ProxyCommand（{PeerText.Sanitize(command)}）。");
+        }
     }
 
     /// <summary>
@@ -160,11 +276,13 @@ public static partial class SshConfigFile
                     $"ProxyJump 链有环：{string.Join(" → ", visiting)} → {jumpHost}。");
             }
 
+            // 第一个跳板用它自己的拨号器（它自己的 ProxyJump / ProxyCommand 照常生效）；其后每一个都经前一个到达。
+            // 〔FW-E12〕后面那些的拨号设置根本不去解析：曾经先把它们自己的跳板链整个解析一遍（白问一次口令、
+            // 白批准一次 ProxyCommand）再丢掉，那条用不上的链里有环时还会报「链有环」。
             SshConnectionOptions resolved = await CreateCoreAsync(
-                blocks, jumpHost, settings, visiting, jumpUser, jumpPort, isTarget: false, identities, cancellationToken)
+                blocks, jumpHost, settings, visiting, jumpUser, jumpPort, isTarget: false, resolveDialer: i == 0, identities, cancellationToken)
                 .ConfigureAwait(false);
 
-            // 第一个跳板用它自己的拨号器；其后每一个都经前一个到达。
             if (i > 0)
             {
                 resolved = resolved with { Dialer = new SshJumpDialer(jumpOptions[i - 1]) };
@@ -181,6 +299,10 @@ public static partial class SshConfigFile
 
         return new SshJumpDialer(jumpOptions[^1]);
     }
+
+    /// <summary>这台主机的 <c>ProxyJump</c> 是不是只有它自己一跳。</summary>
+    private static bool IsJumpToSelf(string proxyJump, string host) =>
+        ParseProxyJump(proxyJump) is [{ Host: { } only }] && string.Equals(only, host, StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// 解析 <c>ProxyJump</c> 的值：逗号分隔的 <c>[user@]host[:port]</c>，按经过的先后排列
@@ -251,10 +373,44 @@ public static partial class SshConfigFile
     private static IEnumerable<SshCredential> CallerCredentialsFor(SshConfigConnectOptions settings, bool isTarget) =>
         isTarget ? settings.Credentials : settings.Credentials.OfType<PublicKeyCredential>();
 
+    /// <summary><c>BindAddress</c>（一个 IP 地址）或 <c>BindInterface</c>（网卡名，取它的全部地址）；都没写为空。</summary>
+    /// <exception cref="SshConnectException">写的不是 IP 地址、或者没有那块网卡（<see cref="SshFailureReason.InvalidConfiguration"/>）。</exception>
+    private static IReadOnlyList<IPAddress> ResolveBindAddresses(SshHostConfig config, string host)
+    {
+        if (IsSet(config.BindAddress))
+        {
+            return IPAddress.TryParse(config.BindAddress!.Trim(), out IPAddress? address)
+                ? [address]
+                : throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                    $"{host} 的配置里 BindAddress 是「{PeerText.Sanitize(config.BindAddress, 64)}」，不是一个 IP 地址。");
+        }
+
+        if (IsSet(config.BindInterface))
+        {
+            string name = config.BindInterface!.Trim();
+            NetworkInterface? nic = NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(candidate.Id, name, StringComparison.OrdinalIgnoreCase));
+            return nic is null
+                ? throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                    $"{host} 的配置里 BindInterface 是「{PeerText.Sanitize(name, 64)}」，本机没有这块网卡。")
+                : [.. nic.GetIPProperties().UnicastAddresses.Select(unicast => unicast.Address)];
+        }
+
+        return [];
+    }
+
     private static bool IsSet(string? value) =>
         !string.IsNullOrWhiteSpace(value) && !string.Equals(value, "none", StringComparison.OrdinalIgnoreCase);
 
-    private static IHostKeyPolicy MapHostKeyPolicy(SshHostConfig config, SshConfigConnectOptions settings)
+    /// <summary>主机密钥策略：按 <c>StrictHostKeyChecking</c> 与 known_hosts 定下来，<c>HostKeyAlias</c> 再把查、记的名字换成别名。</summary>
+    private static IHostKeyPolicy MapHostKeyPolicy(SshHostConfig config, string user, SshConfigConnectOptions settings)
+    {
+        IHostKeyPolicy policy = MapKnownHostsPolicy(config, user, settings);
+        return config.HostKeyAlias is { } alias ? new HostKeyAliasPolicy(policy, alias) : policy;
+    }
+
+    private static IHostKeyPolicy MapKnownHostsPolicy(SshHostConfig config, string user, SshConfigConnectOptions settings)
     {
         string? strict = config.StrictHostKeyChecking?.ToLowerInvariant();
         string? knownHosts = config.UserKnownHostsFile?
@@ -271,7 +427,7 @@ public static partial class SshConfigFile
 
         if (strict is null && knownHosts is null)
         {
-            return new KnownHostsPolicy { UnknownHost = UnknownHostBehavior.Reject };
+            return new KnownHostsPolicy { UnknownHost = UnknownHostBehavior.Reject, GlobalKnownHostsFiles = config.GlobalKnownHostsFiles };
         }
 
         // 〔velashell-docs/zh/ssh/spec/09 §7〕yes → 没见过就拒；accept-new / no → 接受并记下；ask / 缺省 → 问。
@@ -290,13 +446,20 @@ public static partial class SshConfigFile
             && (string.Equals(knownHosts, "none", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(knownHosts, "/dev/null", StringComparison.Ordinal)))
         {
-            return KnownHostsPolicy.WithoutFile(settings.AskUnknownHost, unknown);
+            return KnownHostsPolicy.WithoutFile(AskOnlyWhenAsking(), unknown);
         }
 
-        return new KnownHostsPolicy(ExpandPath(knownHosts, null, null), settings.AskUnknownHost)
+        // 〔FW-E13〕%h / %r 照这台主机与用户展开（每台主机一个 known_hosts 的写法要靠它）。曾经代入空串：
+        // ~/.ssh/kh_%h 成了 ~/.ssh/kh_，所有主机挤进同一个文件。
+        return new KnownHostsPolicy(config.Expand(knownHosts, user), AskOnlyWhenAsking())
         {
             UnknownHost = unknown,
+            GlobalKnownHostsFiles = config.GlobalKnownHostsFiles,
         };
+
+        // 询问回调只在「问」的时候交出去：yes / accept-new 下它不会被调用，策略会把「给了回调又不问」当成配置矛盾。
+        Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? AskOnlyWhenAsking() =>
+            unknown == UnknownHostBehavior.Ask ? settings.AskUnknownHost : null;
     }
 
     private static async ValueTask<IReadOnlyList<SshCredential>> LoadIdentityFilesAsync(
@@ -304,11 +467,11 @@ public static partial class SshConfigFile
         CancellationToken cancellationToken)
     {
         List<SshCredential> credentials = [];
+        List<(string Path, ISshSigner Signer)> loaded = [];
 
-        foreach (string raw in config.IdentityFiles)
+        foreach (string path in config.ExpandIdentityFiles(user))
         {
-            string? path = ExpandPath(raw, config.HostName, user);
-            if (path is null || !File.Exists(path))
+            if (!File.Exists(path))
             {
                 continue;   // ssh 同样静默跳过不存在的 IdentityFile（默认列表里的大多数都不存在）
             }
@@ -333,11 +496,71 @@ public static partial class SshConfigFile
 
             if (signer is not null)
             {
-                credentials.Add(new PublicKeyCredential(signer, $"publickey ({Path.GetFileName(path)})"));
+                loaded.Add((path, signer));
             }
         }
 
+        // 证书：CertificateFile 写的，加上每把钥旁边的「钥-cert.pub」（ssh 的默认行为）。按里面的公钥与读出来的私钥配对，
+        // 证书排在那把钥前面 —— 与 ssh 一样先出示证书，服务端不认 CA 时再退到裸钥。
+        Dictionary<ISshSigner, List<SshCredential>> certificates = await LoadCertificatesAsync(config, user, settings, loaded, cancellationToken)
+            .ConfigureAwait(false);
+        foreach ((string path, ISshSigner signer) in loaded)
+        {
+            if (certificates.TryGetValue(signer, out List<SshCredential>? forThisKey))
+            {
+                credentials.AddRange(forThisKey);
+            }
+            credentials.Add(new PublicKeyCredential(signer, $"publickey ({Path.GetFileName(path)})"));
+        }
+
         return credentials;
+    }
+
+    /// <summary>读证书并与私钥配对；读不出来、配不上的报给 <see cref="SshConfigConnectOptions.IdentityFileSkipped"/>。</summary>
+    private static async ValueTask<Dictionary<ISshSigner, List<SshCredential>>> LoadCertificatesAsync(
+        SshHostConfig config, string user, SshConfigConnectOptions settings,
+        List<(string Path, ISshSigner Signer)> loaded, CancellationToken cancellationToken)
+    {
+        Dictionary<ISshSigner, List<SshCredential>> result = new(ReferenceEqualityComparer.Instance);
+        List<(string Path, bool Explicit)> candidates =
+        [
+            .. config.ExpandCertificateFiles(user).Select(static p => (p, true)),
+            .. loaded.Select(static l => (l.Path + "-cert.pub", false)),
+        ];
+        HashSet<string> seen = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        foreach ((string path, bool isExplicit) in candidates)
+        {
+            if (!File.Exists(path) || !seen.Add(Path.GetFullPath(path)))
+            {
+                continue;
+            }
+            try
+            {
+                OpenSshCertificate certificate = await OpenSshCertificate.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+                ISshSigner? key = loaded.FirstOrDefault(l => l.Signer.PublicKey.Blob.Span.SequenceEqual(certificate.Key.Blob.Span)).Signer;
+                if (key is null)
+                {
+                    if (isExplicit)
+                    {
+                        settings.IdentityFileSkipped?.Invoke(path, new SshCertificateException(SshFailureReason.KeyMismatch,
+                            $"证书 {Path.GetFileName(path)} 证的钥不在读出来的 IdentityFile 里，没法用它签名。"));
+                    }
+                    continue;
+                }
+                if (!result.TryGetValue(key, out List<SshCredential>? list))
+                {
+                    list = [];
+                    result[key] = list;
+                }
+                list.Add(new PublicKeyCredential(SshCertificateSigner.Create(certificate, key), $"publickey ({Path.GetFileName(path)})"));
+            }
+            catch (Exception ex) when (ex is SshCertificateException or IOException or UnauthorizedAccessException or FormatException)
+            {
+                settings.IdentityFileSkipped?.Invoke(path, ex);
+            }
+        }
+        return result;
     }
 
     private static async ValueTask<ISshSigner?> TryLoadKeyAsync(
@@ -361,8 +584,14 @@ public static partial class SshConfigFile
         }
     }
 
-    /// <summary>展开 <c>~</c> 与 <c>%d %u %h %r %%</c>。</summary>
-    internal static string? ExpandPath(string? raw, string? host, string? remoteUser)
+    /// <summary>
+    /// 展开 <c>~</c> 与记号：<c>%d</c>（本机家目录）<c>%u</c>（本机用户）<c>%h</c>（主机）<c>%r</c>（登录用户）<c>%p</c>（端口）
+    /// <c>%n</c>（输入的名字）<c>%l</c> / <c>%L</c>（本机主机名，完整 / 第一段）<c>%C</c>（<c>%l%h%p%r</c> 的 SHA-1）
+    /// <c>%j</c>（<c>ProxyJump</c>）<c>%k</c>（<c>HostKeyAlias</c>，没有就是主机）<c>%%</c>。不认识的原样留着。
+    /// </summary>
+    internal static string? ExpandPath(
+        string? raw, string? host, string? remoteUser,
+        int? port = null, string? originalHost = null, string? proxyJump = null, string? hostKeyAlias = null)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -393,12 +622,42 @@ public static partial class SshConfigFile
                 'u' => Environment.UserName,
                 'h' => host ?? "",
                 'r' => remoteUser ?? "",
+                'p' => port is { } p ? p.ToString(System.Globalization.CultureInfo.InvariantCulture) : "%p",
+                'n' => originalHost ?? host ?? "",
+                'l' => LocalHostName(),
+                'L' => LocalHostName().Split('.')[0],
+                'C' => ConnectionHash(host, port, remoteUser),
+                'j' => proxyJump ?? "",
+                'k' => hostKeyAlias ?? host ?? "",
                 '%' => "%",
                 _ => "%" + token,
             });
         }
 
         return result.ToString();
+    }
+
+    /// <summary>本机主机名（<c>%l</c>）；取不到时为空。</summary>
+    private static string LocalHostName()
+    {
+        try
+        {
+            return System.Net.Dns.GetHostName();
+        }
+        catch (System.Net.Sockets.SocketException)
+        {
+            return "";
+        }
+    }
+
+    /// <summary><c>%C</c>：<c>%l%h%p%r</c> 的 SHA-1（十六进制小写）—— 给 ControlPath 之类一个不含特殊字符、又对得上这条连接的名字。</summary>
+    private static string ConnectionHash(string? host, int? port, string? remoteUser)
+    {
+        byte[] input = Encoding.UTF8.GetBytes(
+            LocalHostName() + (host ?? "") + (port?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "22") + (remoteUser ?? ""));
+#pragma warning disable CA5350 // %C 由 ssh_config(5) 规定就是 SHA-1；它只是给文件起名字，不承担任何安全职责
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA1.HashData(input));
+#pragma warning restore CA5350
     }
 }
 

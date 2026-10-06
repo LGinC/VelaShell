@@ -204,6 +204,20 @@ public sealed class OpenSshCertificateTests
         Assert.ThrowsExactly<SshPublicKeyException>(() => SshPublicKey.DecodePlain(cert.Blob));
     }
 
+    /// <summary>〔AGENTS 4.3〕同一把私钥还要接着用（或者配别的证书）时，证书签名器不能把它释放掉。</summary>
+    [TestMethod]
+    public async Task 证书签名器按ownsSigner决定释放不释放里面的私钥()
+    {
+        using InMemorySshSigner inner = await SshPrivateKeyFile.LoadAsync(FixturePath("cert-ed25519"));
+        OpenSshCertificate cert = await OpenSshCertificate.LoadAsync(FixturePath("cert-ed25519-cert.pub"), TestContext.CancellationToken);
+
+        SshCertificateSigner.Create(cert, inner, ownsSigner: false).Dispose();
+        Assert.IsFalse(inner.IsKeyMaterialCleared, "没交出所有权，私钥不该被清零");
+
+        SshCertificateSigner.Create(cert, inner).Dispose();
+        Assert.IsTrue(inner.IsKeyMaterialCleared, "默认交进来就归证书签名器");
+    }
+
     private static async Task<SshCertificateSigner> LoadCertificateSignerAsync(string name)
     {
         ISshSigner inner = await SshPrivateKeyFile.LoadAsync(FixturePath(name));

@@ -24,7 +24,7 @@ namespace VelaShell.Ssh.Transport;
 /// 到达代理本身走 <see cref="Inner"/>，默认直连 TCP；换成另一个代理或跳板就是嵌套。
 /// </para>
 /// </remarks>
-internal sealed record Socks5Dialer(SshEndPoint Proxy) : ISshTransportDialer
+internal sealed record Socks5Dialer(SshEndPoint Proxy) : ISshTransportDialer, ISshDialKindSource
 {
     private const byte Version = 5;
     private const byte MethodNoAuthentication = 0;
@@ -128,7 +128,7 @@ internal sealed record Socks5Dialer(SshEndPoint Proxy) : ISshTransportDialer
         // 截断之后发出去的是另一套凭据，失败原因会变得莫名其妙。
         if (user.Length is 0 or > 255 || password.Length is 0 or > 255)
         {
-            throw ProxyDialing.AuthRequired(
+            throw ProxyDialing.Misconfigured(
                 "SOCKS5 的用户名与口令编码后都必须在 1–255 字节之间（RFC 1929）。");
         }
 
@@ -146,7 +146,7 @@ internal sealed record Socks5Dialer(SshEndPoint Proxy) : ISshTransportDialer
         await stream.ReadExactlyAsync(reply, cancellationToken).ConfigureAwait(false);
         if (reply[1] != 0)
         {
-            throw ProxyDialing.AuthRequired($"SOCKS5 代理 {Proxy} 拒绝了用户名 {credentials.UserName} 的凭据。");
+            throw ProxyDialing.AuthFailed($"SOCKS5 代理 {Proxy} 拒绝了用户名 {credentials.UserName} 的凭据。");
         }
     }
 
@@ -172,13 +172,13 @@ internal sealed record Socks5Dialer(SshEndPoint Proxy) : ISshTransportDialer
             }
             catch (ArgumentException ex)
             {
-                throw ProxyDialing.Refused($"主机名 {target.Host} 不是合法的域名：{ex.Message}");
+                throw ProxyDialing.Misconfigured($"主机名 {target.Host} 不是合法的域名：{ex.Message}");
             }
 
             byte[] name = Encoding.ASCII.GetBytes(ascii);
             if (name.Length is 0 or > 255)
             {
-                throw ProxyDialing.Refused($"主机名 {target.Host} 超过了 SOCKS5 允许的 255 字节。");
+                throw ProxyDialing.Misconfigured($"主机名 {target.Host} 超过了 SOCKS5 允许的 255 字节。");
             }
 
             address = [(byte)name.Length, .. name];

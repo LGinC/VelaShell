@@ -8,6 +8,7 @@
 //    它按配置放行或拒绝，没有任何速率限制，还刻意保留了「可配置地做错事」的开关。
 
 using System.Buffers;
+using System.Buffers.Binary;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
@@ -57,16 +58,40 @@ internal sealed record TestAuthPolicy
     /// <summary>接受的公钥 blob。</summary>
     public IReadOnlyList<byte[]> AcceptedPublicKeys { get; init; } = [];
 
+    /// <summary>对认得的公钥的探测（不带签名）直接回 <c>SUCCESS</c> —— 不合规，个别实现会这样。</summary>
+    public bool SucceedOnPublicKeyProbe { get; init; }
+
+    /// <summary>设了就在 <c>PK_OK</c> 里回显这个公钥 blob，而不是请求里的那个。</summary>
+    public byte[]? PublicKeyOkEchoBlob { get; init; }
+
+    /// <summary>设了就在 <c>PK_OK</c> 里回显这个算法名，而不是请求里的那个。</summary>
+    public string? PublicKeyOkEchoAlgorithm { get; init; }
+
     /// <summary>keyboard-interactive 的剧本，按顺序发出。</summary>
     public IReadOnlyList<TestKeyboardRound> KeyboardRounds { get; init; } = [];
 
     /// <summary>认证开始前发出的横幅文本。</summary>
     public IReadOnlyList<string> Banners { get; init; } = [];
 
+    /// <summary>认证开始前发出的 <c>SSH_MSG_DEBUG</c>（是否 always_display、正文）。</summary>
+    public IReadOnlyList<(bool AlwaysDisplay, string Text)> DebugMessages { get; init; } = [];
+
     /// <summary>
     /// 紧挨着 <c>USERAUTH_SUCCESS</c> 之前发出的横幅 —— 此时客户端的请求已经发出、正在等应答。
     /// </summary>
     public IReadOnlyList<string> BannersBeforeSuccess { get; init; } = [];
+
+    /// <summary>紧挨着 <c>USERAUTH_SUCCESS</c> 之前再发一个 <c>EXT_INFO</c>（RFC 8308 §2.4 的第二个合法位置）。</summary>
+    public IReadOnlyList<string>? ExtInfoBeforeSuccess { get; init; }
+
+    /// <summary>第一次回 <c>USERAUTH_FAILURE</c> 之前插一个 <c>EXT_INFO</c>（不合法的位置）。</summary>
+    public IReadOnlyList<string>? ExtInfoBeforeFirstFailure { get; init; }
+
+    /// <summary>
+    /// 回 <c>USERAUTH_SUCCESS</c> 之前由服务端发起一次密钥重协商（模拟用户输动态码太久、服务端按时间 RekeyLimit 发起）。
+    /// 要求认证服务端拿得到 <see cref="TestAuthServer.SshServer"/>。
+    /// </summary>
+    public bool RekeyBeforeSuccess { get; init; }
 
     /// <summary>
     /// 通过 <c>EXT_INFO</c> 宣告的 <c>server-sig-algs</c>；
@@ -74,11 +99,23 @@ internal sealed record TestAuthPolicy
     /// </summary>
     public IReadOnlyList<string>? ServerSignatureAlgorithms { get; init; }
 
-    /// <summary>密码认证一律回 <c>PASSWD_CHANGEREQ</c>（60）。</summary>
+    /// <summary>密码认证（不是改密码请求时）一律回 <c>PASSWD_CHANGEREQ</c>（60）。</summary>
     public bool RequestPasswordChange { get; init; }
+
+    /// <summary>头几次改密码请求嫌新密码太简单，再回 <c>PASSWD_CHANGEREQ</c>（RFC 4252 §8）。</summary>
+    public int RejectNewPasswords { get; init; }
+
+    /// <summary>改密码请求一律回 <c>FAILURE</c>：不支持改密码（RFC 4252 §8，与「旧密码不对」同一个应答）。</summary>
+    public bool PasswordChangeUnsupported { get; init; }
 
     /// <summary>是否真的验签。</summary>
     public bool VerifyPublicKeySignature { get; init; } = true;
+
+    /// <summary>
+    /// 公钥认证只认这些签名算法（探测与签名请求都看）；<see langword="null"/> 表示都认。
+    /// </summary>
+    /// <remarks>模拟只认 <c>ssh-rsa</c>（SHA-1）的老服务器：它不认 rsa-sha2-*，也不发 server-sig-algs。</remarks>
+    public IReadOnlyList<string>? AcceptedPublicKeyAlgorithms { get; init; }
 }
 
 /// <summary>认证过程中服务端观察到的事实，供断言使用。</summary>
@@ -105,8 +142,17 @@ internal sealed class TestAuthObservation
     /// <summary>keyboard-interactive 收到的答案，按轮。</summary>
     public List<IReadOnlyList<string>> KeyboardAnswers { get; } = [];
 
+    /// <summary>收到的改密码请求（旧密码、新密码），按顺序。</summary>
+    public List<(string Old, string New)> PasswordChanges { get; } = [];
+
     /// <summary>收到的签名是否全部验证通过。</summary>
     public bool AllSignaturesValid { get; set; } = true;
+
+    /// <summary>认证期间客户端发来 <c>DISCONNECT</c> 时的原因码。</summary>
+    public uint? ClientDisconnectReason { get; set; }
+
+    /// <summary>认证期间服务端发起并做完的重协商次数。</summary>
+    public int RekeysDuringAuth { get; set; }
 }
 
 /// <summary>测试服务端的认证侧。</summary>
@@ -134,6 +180,9 @@ internal sealed class TestAuthServer
     /// <summary>服务端这一侧观察到的事实。</summary>
     public TestAuthObservation Observation { get; } = new();
 
+    /// <summary>做握手的那个服务端（<see cref="TestAuthPolicy.RekeyBeforeSuccess"/> 要用它发起重协商）。</summary>
+    public TestSshServer? SshServer { get; init; }
+
     /// <summary>跑完认证的服务端一侧。</summary>
     /// <returns>认证是否成功。</returns>
     public async Task<bool> RunAsync(CancellationToken cancellationToken = default)
@@ -147,6 +196,11 @@ internal sealed class TestAuthServer
 
         await ExpectServiceRequestAsync(cancellationToken);
 
+        foreach ((bool alwaysDisplay, string text) in _policy.DebugMessages)
+        {
+            await SendDebugAsync(_transport, alwaysDisplay, text, cancellationToken);
+        }
+
         foreach (string banner in _policy.Banners)
         {
             await SendBannerAsync(banner, cancellationToken);
@@ -157,6 +211,10 @@ internal sealed class TestAuthServer
             SshInboundPacket packet = await _transport.ReadPacketAsync(cancellationToken);
             if (packet.IsEndOfStream || packet.MessageNumber == SshMessageNumber.Disconnect)
             {
+                if (!packet.IsEndOfStream)
+                {
+                    Observation.ClientDisconnectReason = BinaryPrimitives.ReadUInt32BigEndian(packet.Payload.Span[1..]);
+                }
                 return false;   // 客户端放弃了
             }
 
@@ -238,6 +296,19 @@ internal sealed class TestAuthServer
             await SendBannerAsync(banner, cancellationToken);
         }
 
+        if (_policy.ExtInfoBeforeSuccess is { } lateExtInfo)
+        {
+            await SendExtensionInfoAsync(lateExtInfo, cancellationToken);
+        }
+
+        if (_policy.RekeyBeforeSuccess && SshServer is { } ssh)
+        {
+            byte[] ours = await ssh.BeginRekeyAsync(SendRawAsync, cancellationToken);
+            SshInboundPacket clientKexInit = await ReadSkippingNoiseAsync(cancellationToken);
+            _ = await ssh.CompleteRekeyAsync(ours, clientKexInit.Payload.ToArray(), SendRawAsync, ReadRawAsync, cancellationToken);
+            Observation.RekeysDuringAuth++;
+        }
+
         _transport.WritePacket([(byte)SshMessageNumber.UserAuthSuccess]);
         await _transport.FlushAsync(cancellationToken);
         return true;
@@ -258,6 +329,7 @@ internal sealed class TestAuthServer
 
         public bool PasswordIsChange { get; init; }
         public string Password { get; init; } = "";
+        public string NewPassword { get; init; } = "";
 
         public bool HasSignature { get; init; }
         public string Algorithm { get; init; } = "";
@@ -276,13 +348,15 @@ internal sealed class TestAuthServer
         if (method == SshProtocolNames.AuthPassword)
         {
             bool isChange = reader.ReadBoolean();
+            string password = reader.ReadUtf8String(MaxField);
             return new ParsedAuthRequest
             {
                 UserName = userName,
                 Service = service,
                 Method = method,
                 PasswordIsChange = isChange,
-                Password = reader.ReadUtf8String(MaxField),
+                Password = password,
+                NewPassword = isChange ? reader.ReadUtf8String(MaxField) : "",
             };
         }
 
@@ -310,26 +384,52 @@ internal sealed class TestAuthServer
 
     private async Task<bool> HandlePasswordAsync(ParsedAuthRequest request, CancellationToken cancellationToken)
     {
-        if (_policy.RequestPasswordChange && !request.PasswordIsChange)
+        if (request.PasswordIsChange)
         {
-            ArrayBufferWriter<byte> buffer = new();
-            SshDataWriter w = new(buffer);
-            w.WriteByte(60);                       // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ
-            w.WriteUtf8String("你的密码已过期。");
-            w.WriteUtf8String("");                 // 语言标记
-            _transport.WritePacket(buffer.WrittenSpan);
-            await _transport.FlushAsync(cancellationToken);
-            _alreadyAnswered = true;
+            // RFC 4252 §8：FAILURE（不带 partial）= 没改成（不支持，或旧密码不对）；PASSWD_CHANGEREQ = 新密码不行；放行 = 改成了。
+            Observation.PasswordChanges.Add((request.Password, request.NewPassword));
+            if (_policy.PasswordChangeUnsupported || _policy.AcceptPassword != request.Password)
+            {
+                return false;
+            }
+            if (_newPasswordsRejected < _policy.RejectNewPasswords)
+            {
+                _newPasswordsRejected++;
+                await SendPasswordChangeRequestAsync("新密码太简单。", cancellationToken);
+                return false;
+            }
+            return true;
+        }
+
+        if (_policy.RequestPasswordChange)
+        {
+            await SendPasswordChangeRequestAsync("你的密码已过期。", cancellationToken);
             return false;
         }
 
         return _policy.AcceptPassword is { } expected && request.Password == expected;
     }
 
+    private int _newPasswordsRejected;
+
+    private async Task SendPasswordChangeRequestAsync(string prompt, CancellationToken cancellationToken)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter w = new(buffer);
+        w.WriteByte(60);                       // SSH_MSG_USERAUTH_PASSWD_CHANGEREQ
+        w.WriteUtf8String(prompt);
+        w.WriteUtf8String("");                 // 语言标记
+        _transport.WritePacket(buffer.WrittenSpan);
+        await _transport.FlushAsync(cancellationToken);
+        _alreadyAnswered = true;
+    }
+
     private async Task<bool> HandlePublicKeyAsync(
         ParsedAuthRequest request, byte[] payload, CancellationToken cancellationToken)
     {
-        bool known = _policy.AcceptedPublicKeys.Any(k => k.AsSpan().SequenceEqual(request.KeyBlob));
+        bool known = _policy.AcceptedPublicKeys.Any(k => k.AsSpan().SequenceEqual(request.KeyBlob))
+            && (_policy.AcceptedPublicKeyAlgorithms is null
+                || _policy.AcceptedPublicKeyAlgorithms.Contains(request.Algorithm, StringComparer.Ordinal));
 
         if (!request.HasSignature)
         {
@@ -339,12 +439,17 @@ internal sealed class TestAuthServer
                 return false;
             }
 
+            if (_policy.SucceedOnPublicKeyProbe)
+            {
+                return true;   // 回 SUCCESS
+            }
+
             // SSH_MSG_USERAUTH_PK_OK：认这把钥，去签吧。
             ArrayBufferWriter<byte> buffer = new();
             SshDataWriter w = new(buffer);
             w.WriteByte(60);
-            w.WriteUtf8String(request.Algorithm);
-            w.WriteString(request.KeyBlob);
+            w.WriteUtf8String(_policy.PublicKeyOkEchoAlgorithm ?? request.Algorithm);
+            w.WriteString(_policy.PublicKeyOkEchoBlob ?? request.KeyBlob);
             _transport.WritePacket(buffer.WrittenSpan);
             await _transport.FlushAsync(cancellationToken);
 
@@ -494,6 +599,40 @@ internal sealed class TestAuthServer
         await _transport.FlushAsync(cancellationToken);
     }
 
+    private async ValueTask SendRawAsync(ReadOnlyMemory<byte> packet, CancellationToken cancellationToken)
+    {
+        _transport.WritePacket(packet.Span);
+        await _transport.FlushAsync(cancellationToken);
+    }
+
+    private ValueTask<SshInboundPacket> ReadRawAsync(CancellationToken cancellationToken) =>
+        _transport.ReadPacketAsync(cancellationToken);
+
+    private async ValueTask<SshInboundPacket> ReadSkippingNoiseAsync(CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            SshInboundPacket packet = await _transport.ReadPacketAsync(cancellationToken);
+            if (packet.MessageNumber is not (SshMessageNumber.Ignore or SshMessageNumber.Debug))
+            {
+                return packet;
+            }
+        }
+    }
+
+    /// <summary>发一条 <c>SSH_MSG_DEBUG</c>。</summary>
+    internal static async Task SendDebugAsync(SshPacketTransport transport, bool alwaysDisplay, string text, CancellationToken cancellationToken)
+    {
+        ArrayBufferWriter<byte> buffer = new();
+        SshDataWriter w = new(buffer);
+        w.WriteMessageNumber(SshMessageNumber.Debug);
+        w.WriteBoolean(alwaysDisplay);
+        w.WriteUtf8String(text);
+        w.WriteUtf8String("");   // 语言标记
+        transport.WritePacket(buffer.WrittenSpan);
+        await transport.FlushAsync(cancellationToken);
+    }
+
     private async Task SendBannerAsync(string text, CancellationToken cancellationToken)
     {
         ArrayBufferWriter<byte> buffer = new();
@@ -505,8 +644,16 @@ internal sealed class TestAuthServer
         await _transport.FlushAsync(cancellationToken);
     }
 
+    private bool _failureSent;
+
     private async Task SendFailureAsync(bool partialSuccess, CancellationToken cancellationToken)
     {
+        if (!_failureSent && _policy.ExtInfoBeforeFirstFailure is { } misplaced)
+        {
+            await SendExtensionInfoAsync(misplaced, cancellationToken);
+        }
+        _failureSent = true;
+
         // partial_success 为真时，只列还没过的那些 —— 客户端据此挑下一个方法。
         string[] remaining = partialSuccess
             ? [.. _policy.RequiredMethods.Where(m => !_passed.Contains(m))]

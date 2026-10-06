@@ -6,6 +6,7 @@
 using System.Globalization;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Transport;
 
@@ -73,7 +74,10 @@ public sealed record SshConnectionOptions
     /// <summary>外层连接的计时器（这条连接是另一条连接的跳板那一跳时）。</summary>
     internal SshConnectDeadline? OuterDeadline { get; init; }
 
-    /// <summary>连接计时器用的时钟。</summary>
+    /// <summary>度量的 <c>host</c> 标签；<see langword="null"/> 时用 <see cref="Host"/>。经跳板时是最终目标（见 <see cref="SshMetrics"/>）。</summary>
+    internal string? MetricsHost { get; init; }
+
+    /// <summary>连接计时器用的时钟；连上之后保活、重协商与通道号复用延迟也用它。</summary>
     /// <remarks>只有测试会换成手动拨的时钟 —— 「停表时预算刚好用完」这种时刻靠真实时钟摆不出来。</remarks>
     internal TimeProvider TimeProvider { get; init; } = TimeProvider.System;
 
@@ -109,9 +113,13 @@ public sealed record SshConnectionOptions
     /// <remarks>
     /// 与保活不同，<b>这一条默认是开着的</b> —— 它防的是 nonce 回绕那一类
     /// 灾难性后果，不是一个可选的优化。<see cref="SshRekeyPolicy.Disabled"/>
-    /// 能关掉主动发起，但接住对端发起的那一半永远开着。
+    /// 能关掉按字节与时长的主动发起，但关不掉报文数的硬线（<see cref="SshRekeyPolicy.MaximumPackets"/>），
+    /// 接住对端发起的那一半也永远开着。
     /// </remarks>
     public SshRekeyPolicy Rekey { get; init; } = SshRekeyPolicy.Default;
+
+    /// <summary>报文数的硬线（见 <c>SshConnection.RekeyHardPacketLimit</c>）。internal：只有用例需要把它调小。</summary>
+    internal long RekeyHardPacketLimit { get; init; } = SshRekeyPolicy.MaximumPackets;
 
     /// <summary>阈值多久看一眼。</summary>
     /// <remarks>
@@ -125,8 +133,44 @@ public sealed record SshConnectionOptions
     /// <remarks>internal：同上，只有用例需要把它调小。</remarks>
     internal TimeSpan RekeyTimeout { get; init; } = TimeSpan.FromMinutes(2);
 
+    /// <summary>报文旁路：每个收发的报文调一次（诊断面板、协议级排错）；<see langword="null"/>（默认）不启用。</summary>
+    /// <remarks>见 <see cref="IPacketTap"/>：回调跑在收发循环上，要快；抛的异常被吞掉。跳板各跳要看的话，各自的连接参数里各设一个。</remarks>
+    public IPacketTap? PacketTap { get; init; }
+
+    /// <summary>
+    /// 旁路拿不拿得到载荷。默认 <see langword="false"/>：只给方向、消息编号、长度、序号、通道号。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>打开之后，通道数据里有什么就带出什么</b>：终端里敲的口令（<c>sudo</c>）、私钥文件的内容（传输时）、转发的流量。
+    /// 认证报文（50–79）的载荷无论如何都不给（velashell-docs/zh/ssh/spec/08 §9）。
+    /// </remarks>
+    public bool AllowPacketTapPayload { get; init; }
+
     /// <summary>服务端横幅的回调。<b>文本来自未认证的对端，是注入面。</b></summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }
+
+    /// <summary>
+    /// 服务端标着「一定要给用户看」（<c>always_display</c>）的调试消息（<c>SSH_MSG_DEBUG</c>，RFC 4253 §11.3）的回调；
+    /// 文本已按对端文本清洗。<see langword="null"/>（默认）表示不交出。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §八〕认证期间收到的在认证流程里依次交出，回调自己抛的照实交还（与 <see cref="BannerHandler"/> 一样）；
+    /// 连上之后收到的在线程池上交出、不挡接收循环，回调抛的丢掉。不带 <c>always_display</c> 的不交出 —— 那是给排错用的。
+    /// 曾经一律丢掉，RFC 说的是「应当展示」。
+    /// </remarks>
+    public Func<string, CancellationToken, ValueTask>? DebugMessageHandler { get; init; }
+
+    /// <summary>
+    /// 服务端在标识串<b>之前</b>发的前导行（法律声明、公告，RFC 4253 §4.2）的回调；有前导行时在版本交换之后调一次。
+    /// <see langword="null"/>（默认）表示不交出。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/02 §三〕这些文本在企业环境里常有法律意义，库吞掉不合适；
+    /// 但它们来自<b>还没验明身份</b>的对端（主机密钥都还没交换），默认往界面上打就是一个注入面 —— 所以默认不交出，
+    /// 交出的是原文（行数与字节已经限过），展示之前由调用方清洗。回调自己抛的异常原样交还（spec/08 §2.1）。
+    /// 曾经收集了却从没有交出去的路：有的设备只在这里打印使用声明，用户看不到。
+    /// </remarks>
+    public Func<IReadOnlyList<string>, CancellationToken, ValueTask>? PreAuthBannerHandler { get; init; }
 
     /// <summary>是否允许 RSA 降级到 SHA-1 签名。默认<b>否</b>。</summary>
     public bool AllowSha1RsaSignatures { get; init; }

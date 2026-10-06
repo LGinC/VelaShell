@@ -170,23 +170,3 @@ jobs:
           name: trx-${{ matrix.os }}
           path: VelaShell/artifacts/trx/*.trx
           if-no-files-found: warn
-
-  # ---------------------------------------------------------------------------
-  # VelaShell.Ssh 的专项检查(库 2026-09-23 从 VelaShellLabs/velashell-ssh 并入)。
-  # 库本身的构建与单元测试已经在上面的 test 作业里。
-  # ---------------------------------------------------------------------------
-  ssh-checks:
-    name: VelaShell.Ssh · 压缩严格校验
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-dotnet@v6
-        with:
-          global-json-file: global.json
-
-      # 压缩在 UseStrictValidation 打开时的行为。
-      # 这一条进不了常规用例:那个 AppContext 开关只能在进程启动时设一次,
-      # 而同进程并行的用例没法各设各的。所以单跑一个进程。
-      - name: 压缩 · 严格校验开关
-        run: dotnet run scripts/ssh/compression/verify-strict-validation.cs

@@ -5,6 +5,7 @@
 //   RFC 4254 §7.2  direct-tcpip:经跳板主机到达目标
 //   行为规格:      velashell-docs/zh/ssh/spec/09-dialing.md §5
 
+using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Session;
@@ -28,10 +29,11 @@ namespace VelaShell.Ssh.Transport;
 /// </para>
 /// <para>
 /// 跳板连接有两种来法：给出它的连接参数（库来连，外层的连接计时器会传进去），
-/// 或者给一个回调（调用方要按跳逐个准备凭据时用，比如先连 ssh-agent）。
+/// 或者给一个回调（调用方要按跳逐个准备凭据时用，比如先连 ssh-agent）——
+/// 回调拿到的 <see cref="SshJumpContext"/> 带着外层的计时器，两种来法停表的行为一样。
 /// </para>
 /// </remarks>
-internal sealed class SshJumpDialer : ISshTransportDialer
+internal sealed class SshJumpDialer : ISshTransportDialer, ISshDialKindSource
 {
     private readonly Func<SshDialTarget, CancellationToken, ValueTask<SshConnection>> _connect;
     private readonly SshEndPoint _jump;
@@ -48,18 +50,22 @@ internal sealed class SshJumpDialer : ISshTransportDialer
 
         // 跳板这一跳的整个建连都发生在外层的拨号阶段里 ——
         // 把外层的计时器交给它，它在等用户裁决主机密钥时外层也停表（velashell-docs/zh/ssh/spec/09 §2.4）。
-        _connect = (target, ct) => SshConnection.ConnectAsync(jumpHost with { OuterDeadline = target.Deadline }, ct);
+        _connect = (target, ct) => SshConnection.ConnectAsync(
+            jumpHost with { OuterDeadline = target.Deadline, MetricsHost = target.MetricsHost }, ct);
     }
 
     /// <summary>用回调构造：跳板连接由调用方建。</summary>
     /// <param name="jump">跳板的地址（进诊断信息与逐跳记录）。</param>
-    /// <param name="connect">建立到跳板的连接；每次拨号调一次。</param>
-    internal SshJumpDialer(SshEndPoint jump, Func<CancellationToken, ValueTask<SshConnection>> connect)
+    /// <param name="connect">
+    /// 建立到跳板的连接；每次拨号调一次。回调拿到的上下文带着外层的计时器 ——
+    /// 它用 <see cref="SshJumpContext.ConnectAsync"/> 连，跳板上等人时外层也停表。
+    /// </param>
+    internal SshJumpDialer(SshEndPoint jump, Func<SshJumpContext, CancellationToken, ValueTask<SshConnection>> connect)
     {
         ArgumentNullException.ThrowIfNull(connect);
         _jump = jump;
         _jumpName = jump.ToString();
-        _connect = (_, ct) => connect(ct);
+        _connect = (target, ct) => connect(new SshJumpContext(jump, target.Deadline, target.MetricsHost), ct);
     }
 
     /// <summary>跳板的连接参数；用回调构造时为 <see langword="null"/>。</summary>
@@ -87,7 +93,15 @@ internal sealed class SshJumpDialer : ISshTransportDialer
             // 报出来的是「建立 TCP 连接超时」—— 可卡住的是跳板的握手。说清是哪一跳。
             throw OuterTimeout(jump, $"经跳板 {_jumpName} 建连时超时", startedAt, ex);
         }
-        catch (SshException ex)
+        catch (SshAuthenticationException ex) when (ex.InnerException is not SshAuthenticationException)
+        {
+            // 〔FW-D4〕跳板自己的认证没过：仍然是认证失败，逐条尝试记录与服务端给的方法留在最外层，
+            // 只在消息里说清是哪一跳。曾经改写成 SshConnectException，Attempts / ServerOffered 只剩在 InnerException 里，
+            // 宿主据此把它当成「连不上」而不是「认证失败」。更深一跳已经这样改写过的（内层就是认证失败）原样往外传。
+            throw new SshAuthenticationException(
+                ex.Reason, $"跳板 {_jumpName} 认证失败：{ex.Message}", ex.Attempts, ex.ServerOffered, ex.PartialSuccessAchieved, ex);
+        }
+        catch (SshException ex) when (ex is not SshAuthenticationException)
         {
             IReadOnlyList<SshHopInfo> hops = ex is SshConnectException { Hops.Count: > 0 } connect
                 ? [.. connect.Hops, DialHops.Hop(SshDialKind.SshJump, jump, succeeded: false, startedAt, ex.Message)]
@@ -129,11 +143,22 @@ internal sealed class SshJumpDialer : ISshTransportDialer
             }
 
             string detail = ex.Message;
+            IReadOnlyList<SshHopInfo> hops =
+                [reachedJump, DialHops.Hop(SshDialKind.SshJump, target.EndPoint, succeeded: false, tunnelStartedAt, detail)];
+
+            // 〔velashell-docs/zh/ssh/spec/09 §2.2〕只有跳板回了 CHANNEL_OPEN_FAILURE 才是「不肯转发」。
+            // 开隧道时跳板自己断了（ClosedByPeer）、违反了协议，照原因码报 —— 曾经一律改写成 ProxyRefused，
+            // 断线被说成了「跳板拒绝」。
+            if (ex is not SshChannelException { Reason: SshFailureReason.ChannelOpenFailed })
+            {
+                throw DialHops.Rewrap(ex, $"跳板 {jump} 在转发到 {target.EndPoint} 时出了问题：{detail}", hops);
+            }
+
             throw new SshConnectException(
                 SshFailureReason.ProxyRefused, SshPhase.Dialing,
                 $"跳板 {jump} 不肯转发到 {target.EndPoint}：{detail}", ex)
             {
-                Hops = [reachedJump, DialHops.Hop(SshDialKind.SshJump, target.EndPoint, succeeded: false, tunnelStartedAt, detail)],
+                Hops = hops,
             };
         }
     }

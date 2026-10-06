@@ -57,7 +57,8 @@ public class SshCredentialSetupTests
             await SshConnectionAssembler.BuildCredentialsAsync(Password(), TestContext.CancellationToken);
 
         var credential = (PasswordCredential)credentials[0];
-        Assert.IsTrue(credential.AlsoAnswerKeyboardInteractive);
+        Assert.IsTrue(credential.CanAnswerKeyboardInteractive);
+        Assert.IsNull(credential.NewPasswordProvider, "没有界面时不改密码:服务端要求先改就报「要先改密码」");
     }
 
     /// <summary>
@@ -75,7 +76,8 @@ public class SshCredentialSetupTests
             info, TestContext.CancellationToken, KeyboardInteractiveResponder.For(info, new NeverAsked()));
 
         Assert.HasCount(2, credentials);
-        Assert.IsFalse(((PasswordCredential)credentials[0]).AlsoAnswerKeyboardInteractive);
+        Assert.IsFalse(((PasswordCredential)credentials[0]).CanAnswerKeyboardInteractive);
+        Assert.IsNotNull(((PasswordCredential)credentials[0]).NewPasswordProvider, "有界面时服务端要求先改密码就弹框问新密码");
         Assert.IsInstanceOfType<KeyboardInteractiveCredential>(credentials[1]);
     }
 

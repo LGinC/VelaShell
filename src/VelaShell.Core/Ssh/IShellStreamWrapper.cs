@@ -70,6 +70,15 @@ public interface IShellStreamWrapper : IAsyncDisposable
     /// 所以原因留在这里,由宿主以一行灰字写进终端。没有这类事的实现返回空。
     /// </remarks>
     IReadOnlyList<ShellStreamNotice> Notices => [];
+
+    /// <summary>这条流能不能发 BREAK(SSH 的 RFC 4335;串口控制台服务器、网络设备的 console 靠它进 ROMMON / 引导菜单)。</summary>
+    /// <remarks>不支持的实现(本地终端、插件终端)保持默认的 <see langword="false" />,命令面板据此不让点。</remarks>
+    bool SupportsBreak => false;
+
+    /// <summary>发 BREAK,用设备的默认长度。</summary>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>对端有没有执行;不支持、或者流已经断了时为 <see langword="false" />。</returns>
+    Task<bool> SendBreakAsync(CancellationToken cancellationToken) => Task.FromResult(false);
 }
 
 /// <summary>打开 shell 流时附带的一条提示。</summary>

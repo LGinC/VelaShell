@@ -26,7 +26,7 @@ namespace VelaShell.Ssh.Transport;
 /// 连接超时早就用得差不多了。
 /// </para>
 /// </remarks>
-internal sealed class TcpTransportDialer : ISshTransportDialer
+internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSource
 {
     /// <summary>一个可以共用的实例。</summary>
     public static TcpTransportDialer Shared { get; } = new();
@@ -45,6 +45,19 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
     /// TCP 这一步照样在 30 秒被掐断，而那个 30 秒在任何配置里都看不到。
     /// </remarks>
     public TimeSpan ConnectTimeout { get; init; } = Timeout.InfiniteTimeSpan;
+
+    /// <summary>只连这一族的地址（<c>ssh_config</c> 的 <c>AddressFamily inet / inet6</c>）；<see cref="AddressFamily.Unspecified"/>（默认）不限。</summary>
+    public AddressFamily AddressFamily { get; init; } = AddressFamily.Unspecified;
+
+    /// <summary>
+    /// 本机这一端从哪些地址发起（<c>BindAddress</c> / <c>BindInterface</c>）：每次发起挑与目标地址同一族的那个；
+    /// 没有同一族的就不连那个目标地址。空（默认）不绑，由系统挑。
+    /// </summary>
+    public IReadOnlyList<IPAddress> LocalAddresses
+    {
+        get;
+        init => field = value is null ? [] : Array.AsReadOnly([.. value]);
+    } = [];
 
     /// <inheritdoc />
     public async ValueTask<Stream> DialAsync(
@@ -72,11 +85,23 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
                 throw new SocketException((int)SocketError.HostNotFound);
             }
 
+            // 〔velashell-docs/zh/ssh/spec/09 §7〕AddressFamily / BindAddress 限定了地址族：只连那一族的目标地址。
+            addresses = [.. addresses.Where(IsUsable)];
+            if (addresses.Length == 0)
+            {
+                string message = $"{target.EndPoint.Host} 没有能连的地址：配置限定了地址族" +
+                    $"（{(AddressFamily == AddressFamily.Unspecified ? "本机绑定的地址" : AddressFamily.ToString())}），而它解析出来的都不是这一族。";
+                throw new SshConnectException(SshFailureReason.DnsFailure, SshPhase.Dialing, message)
+                {
+                    Hops = [DialHops.Hop(Kind, target.EndPoint, succeeded: false, startedAt, message)],
+                };
+            }
+
             // 操作系统那一层的 TCP keepalive 一律打开：与 SSH 的保活互不替代，开着没有代价。
             const bool keepAlive = true;
             Socket socket = await RaceAsync(
                     Interleave(addresses),
-                    (address, token) => AttemptAsync(address, target.EndPoint.Port, keepAlive, token),
+                    (address, token) => AttemptAsync(address, target.EndPoint.Port, keepAlive, LocalAddressFor(address), token),
                     AttemptDelay,
                     timeout.Token)
                 .ConfigureAwait(false);
@@ -100,6 +125,15 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
             };
         }
     }
+
+    /// <summary>这个目标地址能不能连：在限定的地址族里，绑了本机地址时还要有同一族的那个。</summary>
+    private bool IsUsable(IPAddress address) =>
+        (AddressFamily == AddressFamily.Unspecified || address.AddressFamily == AddressFamily)
+        && (LocalAddresses.Count == 0 || LocalAddresses.Any(local => local.AddressFamily == address.AddressFamily));
+
+    /// <summary>连这个目标地址时本机绑哪个地址；不绑为 <see langword="null"/>。</summary>
+    private IPAddress? LocalAddressFor(IPAddress address) =>
+        LocalAddresses.FirstOrDefault(local => local.AddressFamily == address.AddressFamily);
 
     /// <summary>把地址按族交替排好，从解析结果里的第一个族开始（RFC 8305 §4）。</summary>
     internal static IPAddress[] Interleave(IReadOnlyList<IPAddress> addresses)
@@ -223,11 +257,16 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
         System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
 
     private static async Task<Socket> AttemptAsync(
-        IPAddress address, int port, bool keepAlive, CancellationToken cancellationToken)
+        IPAddress address, int port, bool keepAlive, IPAddress? local, CancellationToken cancellationToken)
     {
         Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         try
         {
+            if (local is not null)
+            {
+                socket.Bind(new IPEndPoint(local, 0));
+            }
+
             if (keepAlive)
             {
                 socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
@@ -247,13 +286,39 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
         }
     }
 
-    private static SshConnectException Translate(SocketException ex, SshEndPoint endPoint) =>
+    /// <summary>把套接字错误翻成带原因码的连接失败。</summary>
+    /// <remarks>
+    /// 原因码要说真话（velashell-docs/zh/ssh/spec/08 §3）：宿主按它本地化、按它决定要不要重试。
+    /// 曾经认不出的错误一律报成「拒绝连接」—— 断网时最常见的 DNS 暂时失败（<c>EAI_AGAIN</c>，
+    /// 即 <see cref="SocketError.TryAgain"/>）也在其中，用户去查服务端，其实是本机断网。
+    /// </remarks>
+    internal static SshConnectException Translate(SocketException ex, SshEndPoint endPoint) =>
         ex.SocketErrorCode switch
         {
             SocketError.HostNotFound or SocketError.NoData =>
                 new SshConnectException(
                     SshFailureReason.DnsFailure, SshPhase.Dialing,
                     $"DNS 查不到 {endPoint.Host}。", ex),
+
+            SocketError.TryAgain =>
+                new SshConnectException(
+                    SshFailureReason.DnsFailure, SshPhase.Dialing,
+                    $"DNS 暂时查不了 {endPoint.Host} —— 本机多半断网了，或者 DNS 服务器没有响应。", ex),
+
+            SocketError.NoRecovery =>
+                new SshConnectException(
+                    SshFailureReason.DnsFailure, SshPhase.Dialing,
+                    $"查 {endPoint.Host} 时 DNS 出了不可恢复的错误。", ex),
+
+            SocketError.NetworkDown =>
+                new SshConnectException(
+                    SshFailureReason.TcpUnreachable, SshPhase.Dialing,
+                    $"连 {endPoint} 时本机网络不可用。", ex),
+
+            SocketError.HostDown =>
+                new SshConnectException(
+                    SshFailureReason.TcpUnreachable, SshPhase.Dialing,
+                    $"{endPoint} 所在的主机没有响应（主机已关机或不在网络上）。", ex),
 
             SocketError.ConnectionRefused =>
                 new SshConnectException(
@@ -270,8 +335,10 @@ internal sealed class TcpTransportDialer : ISshTransportDialer
                     SshFailureReason.TcpUnreachable, SshPhase.Dialing,
                     $"到 {endPoint} 的路由不通。", ex),
 
+            // 其余（本机防火墙拦了出站、本机地址不可用……）说不清是哪一类，就报不知道 ——
+            // 借一个相近的原因码，宿主会照它翻成一句假话。
             _ => new SshConnectException(
-                SshFailureReason.TcpRefused, SshPhase.Dialing,
+                SshFailureReason.Unknown, SshPhase.Dialing,
                 $"连 {endPoint} 失败：{ex.SocketErrorCode}。", ex),
         };
 }

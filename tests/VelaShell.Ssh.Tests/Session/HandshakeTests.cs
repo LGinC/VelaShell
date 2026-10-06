@@ -195,6 +195,62 @@ public sealed class HandshakeTests
 
     // ------------------------------------------------------------ 版本交换
 
+    /// <summary>
+    /// 〔spec/02 §六〕服务端标识串的注释里有不是合法 UTF-8 的字节（Latin-1 的 ©）：进交换哈希的必须是原始字节。
+    /// 曾经解成 string 再按 UTF-8 编回去，那个字节变成 EF BF BD，验签必然失败，还报「可能有中间人」。
+    /// </summary>
+    [TestMethod]
+    public async Task 标识串里的非UTF8字节原样进交换哈希()
+    {
+        (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
+        byte[] identification = [.. "SSH-2.0-Vendor_1.0 "u8, 0xA9, .. " Corp"u8];
+        await using TestSshServer server = new(serverStream, new TestSshServerOptions { IdentificationBytes = identification });
+        await using SshPacketTransport clientTransport = new(clientStream);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        Task<TestSshServerHandshake> serverTask = server.HandshakeAsync(cts.Token);
+
+        SshVersionExchangeResult versions =
+            await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token);
+        Assert.AreSequenceEqual(identification, versions.ServerVersionBytes);
+
+        SshKeyExchangeRunner runner = new(clientTransport, SshAlgorithmSet.Default, new DangerousAcceptAnyHostKeyPolicy());
+        SshKeyExchangeResult kex = await runner.RunAsync(versions, "test.invalid", 22, cancellationToken: cts.Token);
+        TestSshServerHandshake handshake = await serverTask;
+
+        Assert.AreSequenceEqual(handshake.ExchangeHash, kex.ExchangeHash, "两边算出的交换哈希必须一致");
+    }
+
+    /// <summary>〔RFC 4253 §4.2〕标识串含 CRLF 最多 255 字节：255 照收，256 拒绝（曾经差一，256 也能过）。</summary>
+    [TestMethod]
+    [DataRow(253, true)]
+    [DataRow(254, false)]
+    public async Task 标识串含行尾最多255字节(int lengthWithoutCrLf, bool accepted)
+    {
+        (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
+        byte[] identification = [.. "SSH-2.0-"u8, .. Enumerable.Repeat((byte)'x', lengthWithoutCrLf - 8)];
+        await using TestSshServer server = new(serverStream, new TestSshServerOptions { IdentificationBytes = identification });
+        await using SshPacketTransport clientTransport = new(clientStream);
+
+        using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
+        _ = server.HandshakeAsync(cts.Token);
+
+        if (accepted)
+        {
+            SshVersionExchangeResult versions =
+                await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token);
+            Assert.HasCount(lengthWithoutCrLf, versions.ServerVersionBytes);
+        }
+        else
+        {
+            SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(
+                async () => await SshVersionExchange.ExchangeAsync(clientTransport, cancellationToken: cts.Token));
+            Assert.AreEqual(SshFailureReason.NotAnSshServer, error.Reason);
+        }
+
+        await cts.CancelAsync();
+    }
+
     [TestMethod]
     public async Task 服务端的前导行被收集起来()
     {
@@ -261,6 +317,27 @@ public sealed class HandshakeTests
 
         Assert.AreEqual(SshFailureReason.ProtocolError, ex.Reason);
         Assert.Contains("Terrapin", ex.Message);
+    }
+
+    [TestMethod]
+    public async Task 严格KEX下对端的第一个报文不是KEXINIT时断开()
+    {
+        // 读 KEXINIT 时还不知道会协商出严格 KEX，前面的 IGNORE 只能先照 RFC 跳过 —— 协商完必须回头追究。
+        SshProtocolException ex = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await HandshakeAsync(
+                serverOptions: new TestSshServerOptions { InjectIgnoreBeforeKexInit = true }));
+
+        Assert.AreEqual(SshFailureReason.ProtocolError, ex.Reason);
+        Assert.Contains("第一个报文", ex.Message);
+    }
+
+    [TestMethod]
+    public async Task 不启用严格KEX时KEXINIT之前的IGNORE照常跳过()
+    {
+        (SshKeyExchangeResult client, _) = await HandshakeAsync(
+            serverOptions: new TestSshServerOptions { AdvertiseStrictKex = false, InjectIgnoreBeforeKexInit = true });
+
+        Assert.IsFalse(client.StrictKeyExchange);
     }
 
     [TestMethod]

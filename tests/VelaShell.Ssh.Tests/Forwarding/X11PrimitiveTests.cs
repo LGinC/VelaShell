@@ -32,27 +32,29 @@ public sealed class X11PrimitiveTests
     }
 
     [TestMethod]
-    public void 解析不了的DISPLAY返回null而不是抛()
+    public void 解析不了的DISPLAY_TryParse返回false_Parse才抛()
     {
         // DISPLAY 没设、或者设成奇怪的值，是很常见的状态 ——
-        // 调用方要的是「能不能用」，不是一个异常。
-        Assert.IsNull(X11Display.Parse(null));
-        Assert.IsNull(X11Display.Parse(""));
-        Assert.IsNull(X11Display.Parse("   "));
-        Assert.IsNull(X11Display.Parse("没有冒号"));
-        Assert.IsNull(X11Display.Parse(":"));
-        Assert.IsNull(X11Display.Parse(":abc"));
-        Assert.IsNull(X11Display.Parse(":-1"));
-        Assert.IsNull(X11Display.Parse(":0.abc"));
+        // 调用方要的是「能不能用」，不是一个异常；字面写死的值用 Parse，写错了当场抛。
+        Assert.ThrowsExactly<ArgumentException>(() => X11Display.Parse(":abc"));
+        Assert.ThrowsExactly<ArgumentNullException>(() => X11Display.Parse(null!));
+        Assert.IsFalse(X11Display.TryParse(null, out _));
+        Assert.IsFalse(X11Display.TryParse("", out _));
+        Assert.IsFalse(X11Display.TryParse("   ", out _));
+        Assert.IsFalse(X11Display.TryParse("没有冒号", out _));
+        Assert.IsFalse(X11Display.TryParse(":", out _));
+        Assert.IsFalse(X11Display.TryParse(":abc", out _));
+        Assert.IsFalse(X11Display.TryParse(":-1", out _));
+        Assert.IsFalse(X11Display.TryParse(":0.abc", out _));
 
         // 只认纯十进制数字：符号、空白都不行。
-        Assert.IsNull(X11Display.Parse(":+1"));
-        Assert.IsNull(X11Display.Parse(": 1"));
-        Assert.IsNull(X11Display.Parse(":0.+1"));
+        Assert.IsFalse(X11Display.TryParse(":+1", out _));
+        Assert.IsFalse(X11Display.TryParse(": 1", out _));
+        Assert.IsFalse(X11Display.TryParse(":0.+1", out _));
 
         // 6000+N 超出端口范围的显示号 —— 否则造 IPEndPoint 时会抛。
-        Assert.IsNull(X11Display.Parse(":60000"));
-        Assert.IsNotNull(X11Display.Parse($":{IPEndPoint.MaxPort - X11Display.TcpPortBase}"));
+        Assert.IsFalse(X11Display.TryParse(":60000", out _));
+        Assert.IsTrue(X11Display.TryParse($":{IPEndPoint.MaxPort - X11Display.TcpPortBase}", out _));
     }
 
     [TestMethod]
@@ -71,7 +73,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 本机显示的候选端点包含套接字与回环TCP()
     {
-        X11Display display = X11Display.Parse(":0")!;
+        X11Display display = X11Display.Parse(":0");
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();
 
         // 至少要有回环 TCP —— Windows 上的 VcXsrv 只听这个。
@@ -93,7 +95,7 @@ public sealed class X11PrimitiveTests
     {
         // 嵌套 ssh -X 时 sshd 给的是 DISPLAY=localhost:10 —— 按 X 的约定就是 TCP 6010。
         // 去试 Linux 抽象套接字的话，同机的别的用户抢先绑上 @/tmp/.X11-unix/X10 就能收到真 cookie。
-        X11Display display = X11Display.Parse("localhost:10")!;
+        X11Display display = X11Display.Parse("localhost:10");
 
         var only = (IPEndPoint)display.GetCandidateEndPoints().Single();
         Assert.AreEqual(IPAddress.Loopback, only.Address);
@@ -107,7 +109,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 远程显示只走TCP且端口是6000加显示号()
     {
-        X11Display display = X11Display.Parse("box.example.com:7")!;
+        X11Display display = X11Display.Parse("box.example.com:7");
 
         Assert.IsFalse(display.IsLocal);
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();
@@ -134,7 +136,7 @@ public sealed class X11PrimitiveTests
         IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
         Assert.HasCount(2, entries);
 
-        byte[]? found = XAuthority.FindCookie(entries, X11Display.Parse(":0")!);
+        byte[]? found = XAuthority.FindCookie(entries, X11Display.Parse(":0"));
         Assert.AreSequenceEqual(cookie, found, "应当挑本机主机名那一条");
     }
 
@@ -150,7 +152,7 @@ public sealed class X11PrimitiveTests
         ];
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!, hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost"));
     }
 
     [TestMethod]
@@ -161,8 +163,8 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost.example.com", "0", XAuthority.MitMagicCookie1, cookie);
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!, hostName: "myhost.example.com"));
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!, hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost.example.com"));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost"));
     }
 
     [TestMethod]
@@ -172,7 +174,7 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost", "0", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
 
         Assert.IsNull(XAuthority.FindCookie(
-            XAuthority.Parse(file), X11Display.Parse("otherhost:0")!, hostName: "myhost", hostAddresses: [IPAddress.Parse("10.0.0.2")]));
+            XAuthority.Parse(file), X11Display.Parse("otherhost:0"), hostName: "myhost", hostAddresses: [IPAddress.Parse("10.0.0.2")]));
     }
 
     [TestMethod]
@@ -182,9 +184,9 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost", "0", XAuthority.MitMagicCookie1, cookie);
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("127.0.0.1:0")!, hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("127.0.0.1:0"), hostName: "myhost"));
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("MyHost:0")!, hostName: "myhost", hostAddresses: []));
+            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("MyHost:0"), hostName: "myhost", hostAddresses: []));
     }
 
     [TestMethod]
@@ -199,11 +201,11 @@ public sealed class X11PrimitiveTests
         ];
         IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
 
-        Assert.AreSequenceEqual(cookie, XAuthority.FindCookie(entries, X11Display.Parse("10.0.0.2:0")!));
+        Assert.AreSequenceEqual(cookie, XAuthority.FindCookie(entries, X11Display.Parse("10.0.0.2:0")));
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(entries, X11Display.Parse("box:0")!, hostAddresses: [IPAddress.Parse("10.0.0.2").MapToIPv6()]));
-        Assert.IsNull(XAuthority.FindCookie(entries, X11Display.Parse("10.0.0.3:0")!), "别的主机的 cookie 不能拿来用");
-        Assert.IsNull(XAuthority.FindCookie(entries, X11Display.Parse("box:0")!), "域名没解析出地址时不匹配网络族");
+            cookie, XAuthority.FindCookie(entries, X11Display.Parse("box:0"), hostAddresses: [IPAddress.Parse("10.0.0.2").MapToIPv6()]));
+        Assert.IsNull(XAuthority.FindCookie(entries, X11Display.Parse("10.0.0.3:0")), "别的主机的 cookie 不能拿来用");
+        Assert.IsNull(XAuthority.FindCookie(entries, X11Display.Parse("box:0")), "域名没解析出地址时不匹配网络族");
     }
 
     [TestMethod]
@@ -214,7 +216,7 @@ public sealed class X11PrimitiveTests
             XAuthority.FamilyWild, "", "0", "XDM-AUTHORIZATION-1", [1, 2, 3, 4]);
 
         Assert.IsNull(
-            XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!),
+            XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")),
             "不支持的授权协议不该被当成可用的 cookie");
     }
 
@@ -224,8 +226,8 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(
             XAuthority.FamilyWild, "", "3", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
 
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")!));
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":3")!));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":3")));
     }
 
     [TestMethod]
@@ -233,19 +235,19 @@ public sealed class X11PrimitiveTests
     {
         // 前导零只是写法不同：数值上就是 5。
         byte[] padded = Entry(XAuthority.FamilyWild, "", "05", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":5")!));
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":0")!));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":5")));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":0")));
 
         // 空串仍是通配。
         byte[] wild = Entry(XAuthority.FamilyWild, "", "", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(wild), X11Display.Parse(":9")!));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(wild), X11Display.Parse(":9")));
 
         // 非空而解析不了的（符号、空白、非数字、溢出）不匹配任何显示 —— 更不当通配。
         foreach (string bad in (string[])["+5", "-5", " 5", "5 ", "5x", "x", "99999999999"])
         {
             byte[] file = Entry(XAuthority.FamilyWild, "", bad, XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
             Assert.IsNull(
-                XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":5")!),
+                XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":5")),
                 $"显示号 \"{bad}\" 不该匹配");
         }
     }
@@ -262,7 +264,7 @@ public sealed class X11PrimitiveTests
         IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
         Assert.HasCount(1, entries, "截断处之前的记录要保留");
         Assert.AreSequenceEqual(
-            new byte[] { 7, 7, 7, 7 }, XAuthority.FindCookie(entries, X11Display.Parse(":0")!));
+            new byte[] { 7, 7, 7, 7 }, XAuthority.FindCookie(entries, X11Display.Parse(":0")));
     }
 
     // ------------------------------------------------------------ 连接建立报文
@@ -384,8 +386,7 @@ public sealed class X11PrimitiveTests
 
     private static void AssertDisplay(string value, string host, int number, int screen)
     {
-        var display = X11Display.Parse(value);
-        Assert.IsNotNull(display, $"应当能解析 {value}");
+        Assert.IsTrue(X11Display.TryParse(value, out X11Display? display), $"应当能解析 {value}");
         Assert.AreEqual(host, display.Host, $"{value} 的 host");
         Assert.AreEqual(number, display.Number, $"{value} 的显示号");
         Assert.AreEqual(screen, display.Screen, $"{value} 的屏幕号");

@@ -123,6 +123,68 @@ public sealed class SshPublicKeyTests
         Assert.IsFalse(key.VerifySignature(signatureBlob, data, SshAlgorithmNames.SshEd25519));
     }
 
+    /// <summary>
+    /// 〔AU-P1〕只解析、不验签的公钥不留原生钥（CNG 句柄只能靠终结器回收）；第一次验签时才建，之后复用。
+    /// </summary>
+    [TestMethod]
+    [DataRow(SshAlgorithmNames.RsaSha256)]
+    [DataRow(SshAlgorithmNames.EcdsaSha2Nistp256)]
+    public async Task 原生钥第一次验签时才建(string algorithm)
+    {
+        using VelaShell.Ssh.Auth.InMemorySshSigner signer = algorithm == SshAlgorithmNames.RsaSha256
+            ? VelaShell.Ssh.Auth.InMemorySshSigner.FromRsa(RSA.Create(2048))
+            : VelaShell.Ssh.Auth.InMemorySshSigner.FromEcdsa(ECDsa.Create(ECCurve.NamedCurves.nistP256));
+        byte[] data = RandomNumberGenerator.GetBytes(32);
+        byte[] signature = await signer.SignAsync(data, algorithm);
+
+        SshPublicKey key = SshPublicKey.Decode(signer.PublicKey.Blob);
+        Assert.IsFalse(key.HasNativeKey, "只解析不该建原生钥");
+
+        Assert.IsTrue(key.VerifySignature(signature, data, algorithm));
+        Assert.IsTrue(key.HasNativeKey);
+        Assert.IsTrue(key.VerifySignature(signature, data, algorithm), "建好的原生钥照样能复用");
+    }
+    /// <summary>〔AU-D1〕签名 blob 末尾多出字节：不作数 —— 同一个签名不许有两种都验得过的编码。</summary>
+    [TestMethod]
+    public void 签名blob末尾有多余字节时验不过()
+    {
+        (SshPublicKey key, Ed25519PrivateKeyParameters priv) = CreateEd25519();
+        byte[] data = RandomNumberGenerator.GetBytes(100);
+
+        Ed25519Signer signer = new();
+        signer.Init(true, priv);
+        signer.BlockUpdate(data);
+        byte[] signature = signer.GenerateSignature();
+
+        byte[] exact = Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshEd25519);
+            WriteString(w, signature);
+        });
+        Assert.IsTrue(key.VerifySignature(exact, data, SshAlgorithmNames.SshEd25519));
+        Assert.IsFalse(key.VerifySignature([.. exact, 0], data, SshAlgorithmNames.SshEd25519));
+    }
+
+    /// <summary>签名算法与钥的类型对不上：不作数（RSA 的钥不验 Ed25519 的签名）。</summary>
+    [TestMethod]
+    public void 签名算法与钥的类型对不上时验不过()
+    {
+        using RSA rsa = RSA.Create(2048);
+        SshPublicKey key = SshPublicKey.Decode(Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshRsa);
+            WriteMpint(w, rsa.ExportParameters(false).Exponent!);
+            WriteMpint(w, rsa.ExportParameters(false).Modulus!);
+        }));
+
+        byte[] blob = Blob(w =>
+        {
+            WriteString(w, SshAlgorithmNames.SshEd25519);
+            WriteString(w, new byte[64]);
+        });
+        Assert.IsFalse(key.VerifySignature(blob, [1, 2, 3], SshAlgorithmNames.SshEd25519));
+    }
+
     // ------------------------------------------------------------ ECDSA
 
     [TestMethod]
@@ -412,5 +474,23 @@ public sealed class SshPublicKeyTests
         Assert.IsFalse(key.VerifySignature([], data, SshAlgorithmNames.SshEd25519));
         Assert.IsFalse(key.VerifySignature([0, 0, 0, 99], data, SshAlgorithmNames.SshEd25519));
         Assert.IsFalse(key.VerifySignature(new byte[64], data, SshAlgorithmNames.SshEd25519));
+    }
+
+    /// <summary>
+    /// 指纹图与真 ssh-keygen -lv 画的逐字节一致（样本：OpenSSH 10.0 生成的四把钥，Fixtures/randomart-*）。
+    /// 曾经 spec 里写着「提供」，全库却没有这个成员。
+    /// </summary>
+    [TestMethod]
+    [DataRow("ed25519")]
+    [DataRow("ecdsa384")]
+    [DataRow("ecdsa521")]
+    [DataRow("rsa3072")]
+    public void 指纹图与ssh_keygen画的一致(string name)
+    {
+        string directory = Path.Combine(AppContext.BaseDirectory, "HostKeys", "Fixtures");
+        SshPublicKey key = SshPublicKey.Parse(File.ReadAllText(Path.Combine(directory, $"randomart-{name}.pub")));
+        string expected = File.ReadAllText(Path.Combine(directory, $"randomart-{name}.txt")).Replace("\r\n", "\n").TrimEnd('\n');
+
+        Assert.AreEqual(expected, key.RandomArt);
     }
 }

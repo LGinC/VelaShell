@@ -743,6 +743,24 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
         return null;
     }
 
+    /// <summary>给活动会话发 BREAK,执行了没有用一条提示说出来(没执行多半是服务端不支持,或者会话没有终端)。</summary>
+    private async Task SendBreakToActiveSessionAsync()
+    {
+        if (ActiveTerminalTab?.ShellStream is not { SupportsBreak: true } stream)
+        {
+            return;
+        }
+
+        if (await stream.SendBreakAsync(CancellationToken.None))
+        {
+            Toasts.Info(Strings.Get("Toast_BreakSent"));
+        }
+        else
+        {
+            Toasts.Warning(Strings.Get("Toast_BreakNotPerformed"));
+        }
+    }
+
     /// <summary>
     /// 运行时反馈的浮层通道(断线、重连倒计时、连接失败、导出成功……)。
     /// </summary>
@@ -1067,6 +1085,17 @@ public class MainWindowViewModel : ReactiveObject, Services.Plugins.ITerminalRes
                 Strings.Get("CmdCat_Edit"),
                 () => ActiveTerminalTab?.TerminalEmulator.WriteInput([0x0C]),
                 () => ActiveTerminalTab?.ConnectionStatus == SessionStatus.Connected
+            )
+        );
+        // BREAK(RFC 4335):经 SSH 连串口控制台服务器、网络设备的 console 时进 ROMMON / 引导菜单用。
+        // 只有 SSH 会话支持;服务端执行了没有用一条提示说出来。
+        Commands.Register(
+            new(
+                "session.break",
+                Strings.Get("Cmd_SendBreak"),
+                Strings.Get("CmdCat_Session"),
+                () => _ = SendBreakToActiveSessionAsync(),
+                () => ActiveTerminalTab is { ConnectionStatus: SessionStatus.Connected, ShellStream.SupportsBreak: true }
             )
         );
 

@@ -67,6 +67,7 @@ public static class SshConnectionExtensions
         ArgumentNullException.ThrowIfNull(commandLine);
 
         SshCommandOptions effective = options ?? SshCommandOptions.Default;
+        effective.X11Forwarding?.Validate();   // 配置矛盾在开通道之前就抛
         SshChannel channel = await connection
             .OpenSessionChannelAsync(effective.Channel, cancellationToken).ConfigureAwait(false);
 
@@ -115,10 +116,10 @@ public static class SshConnectionExtensions
         }
     }
 
-    /// <summary>开一个交互式 shell。</summary>
+    /// <summary>开一个交互式 shell；给了 <see cref="SshShellOptions.Command"/> 时在伪终端里跑那条命令（<c>ssh -t</c>）。</summary>
     /// <remarks>
     /// 请求的时序是 <c>pty-req</c> → <c>x11-req</c> → <c>auth-agent-req</c> → <c>env</c> →
-    /// （<see cref="SshSessionRequestOptions.BeforeStart"/>）→ <c>shell</c>（<c>velashell-docs/zh/ssh/spec/07</c> §7.5.3）。
+    /// （<see cref="SshSessionRequestOptions.BeforeStart"/>）→ <c>shell</c> 或 <c>exec</c>（<c>velashell-docs/zh/ssh/spec/07</c> §7.5.3）。
     /// X11 与 agent 转发只在选项里显式要求时才请求；没开成时按各自的 <see cref="ForwardFailureMode"/> 处理
     /// （<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）：默认 <see cref="ForwardFailureMode.Fail"/> 抛出，不静默降级；
     /// <see cref="ForwardFailureMode.Continue"/>（连接级开关打开的）照常启动 shell，对应的转发为空，
@@ -132,8 +133,11 @@ public static class SshConnectionExtensions
         ArgumentNullException.ThrowIfNull(connection);
 
         SshShellOptions effective = options ?? SshShellOptions.Default;
+        effective.X11Forwarding?.Validate();   // 配置矛盾在开通道之前就抛
+
+        // 〔Q7〕终端的通道走交互道：按键与窗口大小变化不排在别的通道积压的批量数据后面（SshChannelOptions.IsInteractive）。
         SshChannel channel = await connection
-            .OpenSessionChannelAsync(effective.Channel, cancellationToken).ConfigureAwait(false);
+            .OpenSessionChannelAsync(effective.Channel with { IsInteractive = true }, cancellationToken).ConfigureAwait(false);
 
         SessionForwarding forwarding = default;
         try
@@ -169,19 +173,45 @@ public static class SshConnectionExtensions
                 await beforeStart(channel, cancellationToken).ConfigureAwait(false);
             }
 
-            bool shellAccepted = await channel.SendRequestAsync(
-                SshProtocolNames.RequestShell, default, wantReply: true, cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!shellAccepted)
+            if (effective.Command is { } command)
             {
-                throw new SshChannelException(
-                    SshFailureReason.ChannelRequestRejected, "服务端拒绝启动 shell。");
+                ArrayBufferWriter<byte> exec = new();
+                SshDataWriter execWriter = new(exec);
+                execWriter.WriteUtf8String(command);
+
+                bool execAccepted = await channel.SendRequestAsync(
+                    SshProtocolNames.RequestExec, exec.WrittenMemory, wantReply: true, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!execAccepted)
+                {
+                    throw new SshChannelException(
+                        SshFailureReason.ChannelRequestRejected,
+                        "服务端拒绝执行这条命令（常见原因：账号被限制成只能跑固定命令，" +
+                        "或者 sshd_config 里配了 ForceCommand）。");
+                }
             }
+            else
+            {
+                bool shellAccepted = await channel.SendRequestAsync(
+                    SshProtocolNames.RequestShell, default, wantReply: true, cancellationToken)
+                    .ConfigureAwait(false);
+
+                if (!shellAccepted)
+                {
+                    throw new SshChannelException(
+                        SshFailureReason.ChannelRequestRejected, "服务端拒绝启动 shell。");
+                }
+            }
+
+            // 按键时序混淆：输入改经混淆器按节拍发；掩护用 PING（对端不认时混淆器只攒批）。
+            KeystrokeObfuscator? obfuscator = effective.ObscureKeystrokeTiming is { } interval
+                ? new KeystrokeObfuscator(channel, interval, connection.SendChaffAsync, connection.Time)
+                : null;
 
             return new SshShell(
                 channel, effective.Size, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure,
-                forwarding.AgentSetupFailure);
+                forwarding.AgentSetupFailure, obfuscator);
         }
         catch (Exception)
         {

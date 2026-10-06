@@ -43,7 +43,8 @@ internal static class PuttyPrivateKeyFile
         text is not null && text.StartsWith("PuTTY-User-Key-File-", StringComparison.Ordinal);
 
     /// <summary>解一段 <c>.ppk</c> 文本。</summary>
-    public static InMemorySshSigner Parse(string text, string? passphrase = null, string? origin = null)
+    public static InMemorySshSigner Parse(
+        string text, ReadOnlySpan<char> passphrase = default, string? origin = null, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(text);
         string where = origin is null ? "" : $"（{origin}）";
@@ -52,8 +53,15 @@ internal static class PuttyPrivateKeyFile
 
         if (file.Encryption == "none")
         {
-            VerifyMac(file, macKey: DeriveMacKey(file, passphrase: null), where);
-            return BuildSigner(file.PublicBlob, file.PrivateBlob, file.Algorithm, where);
+            try
+            {
+                VerifyMac(file, macKey: DeriveMacKey(file, passphrase: default), where);
+                return BuildSigner(file.PublicBlob, file.PrivateBlob, file.Algorithm, where);
+            }
+            finally
+            {
+                Clear(file.PrivateBlob);
+            }
         }
 
         if (file.Encryption != "aes256-cbc")
@@ -62,22 +70,55 @@ internal static class PuttyPrivateKeyFile
                 $"不支持的 .ppk 加密方式 {file.Encryption}{where}。");
         }
 
-        if (string.IsNullOrEmpty(passphrase))
+        if (passphrase.IsEmpty)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyPassphraseRequired, $"这把 .ppk 需要口令{where}。");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();   // Argon2 一旦开算就停不下来
         (byte[] key, byte[] iv, byte[] macKey) = DeriveKeys(file, passphrase, where);
-        byte[] privateBlob = DecryptCbc(file.PrivateBlob, key, iv, where);
+        byte[]? privateBlob = null;
+        try
+        {
+            privateBlob = DecryptCbc(file.PrivateBlob, key, iv, where);
 
-        PuttyFile decrypted = file with { PrivateBlob = privateBlob };
+            PuttyFile decrypted = file with { PrivateBlob = privateBlob };
 
-        // ⚠️ **先验 MAC 再用私钥。**口令错了的症状就是 MAC 对不上 ——
-        //    不验的话我们会拿一堆乱码去构造密钥，报出来的错
-        //    会是「RSA 参数不成立」之类，而真正的原因是「口令打错了」。
-        VerifyMac(decrypted, macKey, where, wrongPassphraseLikely: true);
+            // ⚠️ **先验 MAC 再用私钥。**口令错了的症状就是 MAC 对不上 ——
+            //    不验的话我们会拿一堆乱码去构造密钥，报出来的错
+            //    会是「RSA 参数不成立」之类，而真正的原因是「口令打错了」。
+            VerifyMac(decrypted, macKey, where, wrongPassphraseLikely: true);
 
-        return BuildSigner(file.PublicBlob, privateBlob, file.Algorithm, where);
+            return BuildSigner(file.PublicBlob, privateBlob, file.Algorithm, where);
+        }
+        finally
+        {
+            // 派生出的密钥、IV、MAC 密钥与解出的明文私钥区（velashell-docs/zh/ssh/spec/04 §5.2）。
+            Clear(key, iv, macKey, privateBlob);
+        }
+    }
+
+    /// <summary>读 <c>.ppk</c> 的公钥段（<c>Public-Lines</c>）：明文，不用口令，也没有与私钥核对。</summary>
+    public static byte[] ReadPublicBlob(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+
+        var file = PuttyFile.Parse(text, where: "");
+        Clear(file.PrivateBlob);   // 不加密的 .ppk 里这是明文私钥
+        return file.PublicBlob;
+    }
+
+    /// <summary>把私钥的中间副本清零。</summary>
+    /// <remarks>只清得了数组：<see cref="BigInteger"/> 与口令的 <see cref="string"/> 是不可变的，清不掉 —— 那是这里能做到的边界。</remarks>
+    private static void Clear(params ReadOnlySpan<byte[]?> secrets)
+    {
+        foreach (byte[]? secret in secrets)
+        {
+            if (secret is not null)
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
+        }
     }
 
     // ------------------------------------------------------------ 文件结构
@@ -229,14 +270,21 @@ internal static class PuttyPrivateKeyFile
     // ------------------------------------------------------------ 口令派生
 
     private static (byte[] Key, byte[] Iv, byte[] MacKey) DeriveKeys(
-        PuttyFile file, string passphrase, string where)
+        PuttyFile file, ReadOnlySpan<char> passphrase, string where)
     {
         if (file.Version == 3)
         {
             // v3：Argon2 一次产出 80 字节 —— 32 字节密钥 + 16 字节 IV + 32 字节 MAC 密钥。
             // 变体与参数的校验都在 Argon2 里。
             byte[] material = Argon2(file, passphrase, where);
-            return (material[..32], material[32..48], material[48..80]);
+            try
+            {
+                return (material[..32], material[32..48], material[48..80]);
+            }
+            finally
+            {
+                Clear(material);
+            }
         }
 
         // v2：两段 SHA-1 拼出 32 字节密钥，IV 全零，MAC 密钥另算。
@@ -244,13 +292,22 @@ internal static class PuttyPrivateKeyFile
         // SHA-1 在这里不是当抗碰撞散列用的 —— 它是 PuTTY 定下的口令派生构造，
         // 换算法就读不了任何已有的 .ppk 了。
 #pragma warning disable CA5350 // .ppk v2 的 KDF 由格式规定就是 SHA-1
-        byte[] passBytes = Encoding.UTF8.GetBytes(passphrase);
-        byte[] first = SHA1.HashData([0, 0, 0, 0, .. passBytes]);
-        byte[] second = SHA1.HashData([0, 0, 0, 1, .. passBytes]);
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
+        byte[] firstInput = [0, 0, 0, 0, .. passBytes];
+        byte[] secondInput = [0, 0, 0, 1, .. passBytes];
+        byte[] first = SHA1.HashData(firstInput);
+        byte[] second = SHA1.HashData(secondInput);
 #pragma warning restore CA5350
 
-        byte[] key = [.. first, .. second[..12]];
-        return (key, new byte[16], DeriveMacKey(file, passphrase));
+        try
+        {
+            byte[] key = [.. first, .. second[..12]];
+            return (key, new byte[16], DeriveMacKey(file, passphrase));
+        }
+        finally
+        {
+            Clear(passBytes, firstInput, secondInput, first, second);
+        }
     }
 
     /// <summary>Argon2 的内存参数上限（KiB）。PuTTYgen 默认 8 MiB。</summary>
@@ -265,7 +322,7 @@ internal static class PuttyPrivateKeyFile
     /// <summary>内存 × 遍数的上限（KiB·遍）：两个都顶到各自上限也要不了这么多。</summary>
     internal const long MaxArgon2Work = 8L * 1024 * 1024;
 
-    private static byte[] Argon2(PuttyFile file, string passphrase, string where)
+    private static byte[] Argon2(PuttyFile file, ReadOnlySpan<char> passphrase, string where)
     {
         // 这三个参数来自文件，也就是来自不可信输入，而且**在验 MAC 之前**就要用上 ——
         // MAC 密钥本身就是 Argon2 的输出。不设上限的话，Argon2-Memory 写一个 4194304
@@ -307,11 +364,21 @@ internal static class PuttyPrivateKeyFile
         generator.Init(parameters);
 
         byte[] output = new byte[80];
-        generator.GenerateBytes(Encoding.UTF8.GetBytes(passphrase), output);
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
+        try
+        {
+            generator.GenerateBytes(passBytes, output);
+        }
+        finally
+        {
+            Clear(passBytes);
+        }
         return output;
     }
 
-    private static byte[] DeriveMacKey(PuttyFile file, string? passphrase)
+    /// <param name="file">文件。</param>
+    /// <param name="passphrase">口令；不加密的文件给空。</param>
+    private static byte[] DeriveMacKey(PuttyFile file, ReadOnlySpan<char> passphrase)
     {
         if (file.Version == 3)
         {
@@ -320,11 +387,17 @@ internal static class PuttyPrivateKeyFile
         }
 
 #pragma warning disable CA5350 // 同上：格式规定
-        byte[] input = passphrase is null
-            ? Encoding.UTF8.GetBytes(MacKeyPhrase)
-            : [.. Encoding.UTF8.GetBytes(MacKeyPhrase), .. Encoding.UTF8.GetBytes(passphrase)];
+        byte[] passBytes = SshPrivateKeyFile.Utf8(passphrase);
+        byte[] input = [.. Encoding.UTF8.GetBytes(MacKeyPhrase), .. passBytes];
 
-        return SHA1.HashData(input);
+        try
+        {
+            return SHA1.HashData(input);
+        }
+        finally
+        {
+            Clear(input, passBytes);   // 带口令时它们含着口令
+        }
 #pragma warning restore CA5350
     }
 
@@ -365,9 +438,14 @@ internal static class PuttyPrivateKeyFile
     private static void VerifyMac(
         PuttyFile file, byte[] macKey, string where, bool wrongPassphraseLikely = false)
     {
+        // ⚠️ v2 / v3 的 Private-MAC 是必填的。曾经缺了就跳过整段校验：拿到加密 .ppk 的人删掉这一行，
+        //    就能改公钥段（RSA 的 n、e，ECDSA 的曲线与点都取自那里）而不被发现，与私钥半拼成「不是你以为的那把」钥；
+        //    口令错了也查不出来。
         if (file.Mac.Length == 0)
         {
-            return;   // 没有 MAC 字段的老文件
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 缺少 Private-MAC{where} —— v{file.Version} 的 MAC 是必填的，没有它就验不了文件有没有被改过。");
         }
 
         foreach (int length in CandidateLengths(file))
@@ -380,11 +458,13 @@ internal static class PuttyPrivateKeyFile
             writer.WriteString(file.PublicBlob);
             writer.WriteString(file.PrivateBlob.AsSpan(0, length));
 
+            // MAC 的输入里有明文私钥区：直接在缓冲上算，不再 ToArray 出一份副本；算完连缓冲一起清零。
             byte[] actual = file.Version == 3
-                ? HMACSHA256.HashData(macKey, buffer.WrittenSpan.ToArray())
+                ? HMACSHA256.HashData(macKey, buffer.WrittenSpan)
 #pragma warning disable CA5350 // .ppk v2 的 MAC 由格式规定就是 HMAC-SHA1
-                : HMACSHA1.HashData(macKey, buffer.WrittenSpan.ToArray());
+                : HMACSHA1.HashData(macKey, buffer.WrittenSpan);
 #pragma warning restore CA5350
+            buffer.Clear();
 
             if (CryptographicOperations.FixedTimeEquals(actual, file.Mac))
             {
@@ -451,25 +531,56 @@ internal static class PuttyPrivateKeyFile
     {
         SshDataReader priv = new(new ReadOnlySequence<byte>(privateBlob));
 
-        return algorithm switch
+        InMemorySshSigner signer = algorithm switch
         {
             SshAlgorithmNames.SshEd25519 => BuildEd25519(ref priv),
             SshAlgorithmNames.SshRsa => BuildRsa(publicBlob, ref priv, where),
             SshAlgorithmNames.EcdsaSha2Nistp256 or SshAlgorithmNames.EcdsaSha2Nistp384 or SshAlgorithmNames.EcdsaSha2Nistp521 => BuildEcdsa(publicBlob, ref priv, algorithm, where),
             _ => throw new SshPrivateKeyException(SshFailureReason.Unsupported, $".ppk 里是不支持的密钥类型 {algorithm}{where}。"),
         };
+
+        // 私钥半派生出的公钥必须就是 Public-Lines 那一把。
+        // 不核对的话，坏文件（或被改过公钥段、又重算了 MAC 的未加密文件 —— 它的 MAC 键是公开的）
+        // 得到的是一把「不是你以为的那把」钥，症状只是服务端一句「不接受这把公钥」。
+        if (!signer.PublicKey.Blob.Span.SequenceEqual(publicBlob))
+        {
+            signer.Dispose();
+            throw new SshPrivateKeyException(
+                SshFailureReason.KeyFormatInvalid,
+                $".ppk 的私钥与 Public-Lines 里的公钥不是一对{where}，文件可能被改过或已损坏。");
+        }
+
+        return signer;
     }
 
     private static InMemorySshSigner BuildEd25519(scoped ref SshDataReader priv)
     {
-        byte[] seed = priv.ReadMpint(256).ToArray();
+        // 〔AU-E2〕PuTTY 把 Ed25519 私钥（RFC 8032 的 32 字节种子，原样的字节）写成**定长 32 字节**，不是 mpint：
+        // 首字节 ≥ 0x80 时也不补前导零 —— 真 puttygen（0.83）的产物如此，样本在测试的 Keys/Fixtures 里。
+        // 曾经按 mpint 读，这样的文件（约一半）被判「mpint 为负」、根本读不进来。
+        // 照 mpint 规矩写的（带一个前导零、或去掉了前导零而短于 32 字节）也照收，归一到 32 字节；
+        // 读错了的话派生出的公钥对不上 Public-Lines，BuildSigner 的核对会当场拦住。
+        byte[] field = priv.ReadStringAsArray(33);
+        byte[] seed = new byte[32];
+        try
+        {
+            ReadOnlySpan<byte> value = field;
+            if (value.Length == 33)
+            {
+                if (value[0] != 0)
+                {
+                    throw new SshWireFormatException("Ed25519 私钥字段是 33 字节，却不是「前导零 + 32 字节」。");
+                }
+                value = value[1..];
+            }
+            value.CopyTo(seed.AsSpan(32 - value.Length));
 
-        // mpint 可能带一个前导零，也可能短于 32 字节 —— 两种都要归一到 32。
-        byte[] normalized = new byte[32];
-        ReadOnlySpan<byte> trimmed = seed.Length > 32 ? seed.AsSpan(seed.Length - 32) : seed;
-        trimmed.CopyTo(normalized.AsSpan(32 - trimmed.Length));
-
-        return InMemorySshSigner.FromEd25519(normalized);
+            return InMemorySshSigner.FromEd25519(seed);
+        }
+        finally
+        {
+            Clear(field, seed);
+        }
     }
 
     private static InMemorySshSigner BuildRsa(
@@ -485,6 +596,7 @@ internal static class PuttyPrivateKeyFile
         byte[] q = priv.ReadMpint(4096).ToArray();
         byte[] iqmp = priv.ReadMpint(4096).ToArray();
 
+        RSAParameters parameters = default;
         try
         {
             BigInteger bigD = new(d, isUnsigned: true, isBigEndian: true);
@@ -493,7 +605,7 @@ internal static class PuttyPrivateKeyFile
 
             byte[] modulus = Trim(n);
 
-            RSAParameters parameters = new()
+            parameters = new()
             {
                 Modulus = modulus,
                 Exponent = Trim(e),
@@ -512,6 +624,10 @@ internal static class PuttyPrivateKeyFile
         catch (CryptographicException ex)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $".ppk 里的 RSA 参数不成立{where}：{ex.Message}", ex);
+        }
+        finally
+        {
+            Clear(d, p, q, iqmp, parameters.D, parameters.P, parameters.Q, parameters.DP, parameters.DQ, parameters.InverseQ);
         }
     }
 
@@ -538,9 +654,10 @@ internal static class PuttyPrivateKeyFile
 
         byte[] d = priv.ReadMpint(512).ToArray();
 
+        ECParameters parameters = default;
         try
         {
-            ECParameters parameters = new()
+            parameters = new()
             {
                 Curve = curve,
                 Q = new ECPoint
@@ -558,6 +675,10 @@ internal static class PuttyPrivateKeyFile
         catch (CryptographicException ex)
         {
             throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $".ppk 里的 ECDSA 参数不成立{where}：{ex.Message}", ex);
+        }
+        finally
+        {
+            Clear(d, parameters.D);
         }
     }
 

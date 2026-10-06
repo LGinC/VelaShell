@@ -11,6 +11,7 @@
 using System.Buffers;
 using System.IO.Pipelines;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 
 namespace VelaShell.Ssh.Forwarding;
 
@@ -26,6 +27,13 @@ internal interface IRelayEndpoint : IAsyncDisposable
 
     /// <summary>写到这一端去的数据。</summary>
     PipeWriter Output { get; }
+
+    /// <summary>这一端的底层就是一条流时，往它写可以直接写进这条流；没有就是 <see langword="null"/>，按 <see cref="Output"/> 写。</summary>
+    /// <remarks>
+    /// 〔FW-P1〕<c>PipeWriter.Create(stream)</c> 要先把数据拷进它自己的缓冲、刷的时候再写进流 —— 每个字节多复制一次。
+    /// 直接写省掉这一次。同一端只有一个方向在往里写，两条路不会交错。默认 <see langword="null"/>。
+    /// </remarks>
+    Stream? DirectOutput => null;
 
     /// <summary>
     /// 告诉这一端「我不会再发数据了」。
@@ -90,6 +98,8 @@ internal static class DuplexRelay
     /// <param name="right">另一端（通常是 SSH 通道）。</param>
     /// <param name="onBytesFromLeft">左 → 右每搬一块的回调（计量用，可为空）。</param>
     /// <param name="onBytesFromRight">右 → 左每搬一块的回调。</param>
+    /// <param name="throttleFromLeft">左 → 右每读到一段、写出去之前等它（限速用，可为空）。</param>
+    /// <param name="throttleFromRight">右 → 左同上。</param>
     /// <param name="cancellationToken">取消令牌。取消按出错处理：两端一起中止。</param>
     /// <remarks>
     /// <para>
@@ -107,6 +117,8 @@ internal static class DuplexRelay
         IRelayEndpoint right,
         Action<int>? onBytesFromLeft = null,
         Action<int>? onBytesFromRight = null,
+        Func<int, CancellationToken, ValueTask>? throttleFromLeft = null,
+        Func<int, CancellationToken, ValueTask>? throttleFromRight = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(left);
@@ -117,8 +129,12 @@ internal static class DuplexRelay
 
         // 两个方向**同时**跑。串行搬是死锁的经典写法：
         // 先搬完一个方向再搬另一个，而对面正等着我们读它才肯继续。
-        Task<long> leftToRight = PumpAsync(left, right, onBytesFromLeft, abort);
-        Task<long> rightToLeft = PumpAsync(right, left, onBytesFromRight, abort);
+        // 各自搬了多少记在外面：出错收场的那个方向也照实报（〔FW-E8〕曾经只看正常结束的任务，
+        // 下载 500 MB 时链路断了，ConnectionClosed 报的是 0 / 0）。
+        StrongBox<long> fromLeftCount = new();
+        StrongBox<long> fromRightCount = new();
+        Task leftToRight = PumpAsync(left, right, onBytesFromLeft, throttleFromLeft, fromLeftCount, abort);
+        Task rightToLeft = PumpAsync(right, left, onBytesFromRight, throttleFromRight, fromRightCount, abort);
 
         try
         {
@@ -130,17 +146,20 @@ internal static class DuplexRelay
             // 而那往往只是被中止的另一个方向（一个取消），不是真正出错的那一边。
         }
 
-        long fromLeft = leftToRight.IsCompletedSuccessfully ? await leftToRight.ConfigureAwait(false) : 0;
-        long fromRight = rightToLeft.IsCompletedSuccessfully ? await rightToLeft.ConfigureAwait(false) : 0;
-
         return new RelayResult(
-            fromLeft, fromRight, TimeSpan.FromMilliseconds(Environment.TickCount64 - start), abort.Failure);
+            fromLeftCount.Value, fromRightCount.Value, TimeSpan.FromMilliseconds(Environment.TickCount64 - start), abort.Failure);
     }
 
-    private static async Task<long> PumpAsync(
-        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes, RelayAbort abort)
+    /// <param name="source">从这一端读。</param>
+    /// <param name="destination">往这一端写。</param>
+    /// <param name="onBytes">每搬一段调用一次。</param>
+    /// <param name="throttle">写出去之前等它（限速）；等的时候不再读，背压自然传回发送方。</param>
+    /// <param name="total">搬过的字节数，边搬边记 —— 出错收场时也是准的。</param>
+    /// <param name="abort">两个方向共用的中止。</param>
+    private static async Task PumpAsync(
+        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes,
+        Func<int, CancellationToken, ValueTask>? throttle, StrongBox<long> total, RelayAbort abort)
     {
-        long total = 0;
         bool finished = false;
 
         // 往 destination 写的这个方向，在 destination 整个结束时停下（见 IRelayEndpoint.Closed）。
@@ -159,22 +178,43 @@ internal static class DuplexRelay
 
                 if (!buffer.IsEmpty)
                 {
-                    foreach (ReadOnlyMemory<byte> segment in buffer)
+                    if (throttle is not null)
                     {
-                        destination.Output.Write(segment.Span);
+                        await throttle((int)Math.Min(buffer.Length, int.MaxValue), cancellationToken).ConfigureAwait(false);
+                    }
+
+                    bool destinationDone = false;
+                    if (destination.DirectOutput is { } direct)
+                    {
+                        // 底层是流：逐段直接写进去，不经 PipeWriter 的缓冲再拷一遍。
+                        foreach (ReadOnlyMemory<byte> segment in buffer)
+                        {
+                            await direct.WriteAsync(segment, cancellationToken).ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
+                        foreach (ReadOnlyMemory<byte> segment in buffer)
+                        {
+                            destination.Output.Write(segment.Span);
+                        }
                     }
 
                     int length = (int)buffer.Length;
-                    total += length;
+                    total.Value += length;
 
                     // 计量在**搬运循环里**累加，不在通道层：
                     // 通道层的字节数含协议开销，而面板上要显示的是应用数据量。
                     onBytes?.Invoke(length);
 
-                    FlushResult flush = await destination.Output.FlushAsync(cancellationToken)
-                        .ConfigureAwait(false);
+                    if (destination.DirectOutput is null)
+                    {
+                        FlushResult flush = await destination.Output.FlushAsync(cancellationToken)
+                            .ConfigureAwait(false);
+                        destinationDone = flush.IsCompleted;
+                    }
 
-                    if (flush.IsCompleted)
+                    if (destinationDone)
                     {
                         break;   // 对面不要了
                     }
@@ -220,8 +260,6 @@ internal static class DuplexRelay
 
             await source.Input.CompleteAsync().ConfigureAwait(false);
         }
-
-        return total;
     }
 
     /// <summary>一次搬运的中止开关：两个方向共用，谁先出错谁拉下。</summary>
@@ -308,6 +346,9 @@ internal sealed class StreamRelayEndpoint : IRelayEndpoint
 
     /// <inheritdoc />
     public PipeWriter Output { get; }
+
+    /// <inheritdoc />
+    public Stream? DirectOutput => _stream;
 
     /// <inheritdoc />
     public async ValueTask CompleteSendAsync(CancellationToken cancellationToken)

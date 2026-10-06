@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Net.Sockets;
+using VelaShell.Core.Sftp;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Ssh;
 using VelaShell.Ssh.Auth;
@@ -91,6 +93,68 @@ public class SftpSymlinkIntegrationTests
         }
     }
 
+    /// <summary>文件面板的剩余空间(statvfs)、路径栏的 ~用户名(expand-path)、上传时按句柄保留修改时间,经宿主的 SFTP 包装在真服务端上走通。</summary>
+    [TestMethod]
+    [TestCategory("DockerIntegration")]
+    [Timeout(60_000)]
+    public async Task SftpExtensions_WorkAgainstARealServer()
+    {
+        RequireDockerAndSsh();
+
+        VelaSshClientWrapper ssh = await ConnectAsync();
+        try
+        {
+            SshConnection inner = ssh.InnerConnection ?? throw new InvalidOperationException("SSH not connected.");
+            await using var sftp = new VelaSftpClientWrapper(
+                async ct => await SftpFileSystem.ConnectAsync(inner, cancellationToken: ct));
+            await sftp.ConnectAsync(CancellationToken.None);
+
+            // 状态栏的延迟:经宿主的包装量 SSH 层的往返时间。
+            TimeSpan? rtt = await ssh.MeasureRoundTripAsync();
+            Assert.IsNotNull(rtt);
+            Assert.IsGreaterThan(TimeSpan.Zero, rtt.Value);
+
+            RemoteSpaceInfo? space = await sftp.GetSpaceAsync("/tmp");
+
+            Assert.IsNotNull(space, "OpenSSH 的 sftp-server 支持 statvfs@openssh.com");
+            Assert.IsLessThanOrEqualTo(space.TotalBytes, space.AvailableBytes);
+            string[] df = (await ssh.RunCommandAsync("stat -f -c '%S %b' /tmp")).Trim().Split(' ');
+            Assert.AreEqual(ulong.Parse(df[0], CultureInfo.InvariantCulture) * ulong.Parse(df[1], CultureInfo.InvariantCulture), space.TotalBytes);
+
+            // 路径栏的 ~用户名 同一条路:经宿主的包装请服务端展开。
+            Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
+            Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
+
+            // 属主名(users-groups-by-id):只开了 SFTP 的账号靠它显示名字。
+            Assert.IsTrue(sftp.SupportsIdLookup);
+            (IReadOnlyList<string?> users, IReadOnlyList<string?> groups) = await sftp.LookupNamesAsync([0, 4_242_424], [0]);
+            Assert.AreEqual("root", users[0]);
+            Assert.IsNull(users[1]);
+            Assert.AreEqual("root", groups[0]);
+
+            // 服务端内复制(copy-data):数据不出服务器,复制出来的内容一致。
+            Assert.IsTrue(sftp.SupportsServerCopy);
+            string copySource = $"/tmp/vela-copy-{Guid.NewGuid():N}.bin";
+            await ssh.RunCommandAsync($"head -c 200000 /dev/urandom > {copySource}");
+            ulong copied = 0;
+            await sftp.CopyOnServerAsync(copySource, copySource + ".copy", b => copied = b);
+            string sums = await ssh.RunCommandAsync($"sha256sum {copySource} {copySource}.copy | cut -c1-64; rm -f {copySource} {copySource}.copy");
+            string[] lines = sums.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            Assert.AreEqual(lines[0], lines[1]);
+            Assert.AreEqual(200_000UL, copied);
+
+            // 上传时保留修改时间并落盘:关闭之前按同一个句柄设(FSETSTAT)、fsync,远端 stat 看到的就是设下的时间。
+            string uploaded = $"/tmp/vela-mtime-{Guid.NewGuid():N}.txt";
+            DateTimeOffset mtime = new(2022, 3, 4, 5, 6, 7, TimeSpan.Zero);
+            await sftp.UploadAsync(new MemoryStream("payload"u8.ToArray()), uploaded, new RemoteUploadOptions(LastWriteTime: mtime, Fsync: true));
+            string seen = (await ssh.RunCommandAsync($"stat -c %Y {uploaded}; rm -f {uploaded}")).Trim();
+            Assert.AreEqual(mtime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), seen);
+        }
+        finally
+        {
+            await ssh.DisposeAsync();
+        }
+    }
     /// <summary>跳过记 Inconclusive 而不是"通过":全绿的报告里不能混着一行断言都没跑的用例。</summary>
     private static void RequireDockerAndSsh()
     {

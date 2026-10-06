@@ -106,7 +106,7 @@ internal ref struct SshDataReader
     /// </summary>
     /// <param name="maxLength">
     /// 允许的最大长度。<b>必须给</b> —— 规格里没有「这个字段不会太大」这种理由
-    /// （velashell-docs/zh/ssh/spec/00-overview.md §5.1）。
+    /// （velashell-docs/zh/ssh/spec/00-overview.md §5 第 1 条）。
     /// </param>
     public ReadOnlySequence<byte> ReadString(int maxLength)
     {

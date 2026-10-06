@@ -6,6 +6,8 @@
 //   行为规格:              velashell-docs/zh/ssh/spec/09-dialing.md §7
 
 using System.Globalization;
+using System.Net.Sockets;
+using System.Text;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Forwarding;
 
@@ -17,29 +19,147 @@ public sealed class SshHostConfig
     // ⚠️ IDE0028 会建议把它简化成 []。**不能听** —— 那会把
     //    OrdinalIgnoreCase 丢掉，而 ssh_config 的键是不区分大小写的
     //    （`HostName` 与 `hostname` 是同一个键）。
-#pragma warning disable IDE0028
-    private readonly Dictionary<string, List<string>> _settings = new(StringComparer.OrdinalIgnoreCase);
-#pragma warning restore IDE0028
+    private readonly Dictionary<string, List<string>> _settings = [with(StringComparer.OrdinalIgnoreCase)];
 
-    internal SshHostConfig(string host) => QueriedHost = host;
+    /// <param name="host">查的是哪个名字。</param>
+    /// <param name="originalHost">使用者输入的那个名字（<c>HostName</c> 里的 <c>%h</c> 换成它）；缺省就是 <paramref name="host"/>。</param>
+    internal SshHostConfig(string host, string? originalHost = null)
+    {
+        QueriedHost = host;
+        _originalHost = originalHost ?? host;
+    }
+
+    /// <summary>使用者输入的那个名字（<c>HostName</c> 里的 <c>%h</c> 换成它）。</summary>
+    private readonly string _originalHost;
 
     /// <summary>当初查的是哪个名字。</summary>
     public string QueriedHost { get; }
 
     /// <summary>真正要连的主机（<c>HostName</c>，没有就是 <see cref="QueriedHost"/>）。</summary>
-    public string HostName => First("HostName") ?? QueriedHost;
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §七〕<c>HostName</c> 里的 <c>%h</c> 换成使用者输入的名字、<c>%%</c> 换成 <c>%</c>
+    /// （<c>Host *.prod</c> 配 <c>HostName %h.example.com</c> 是常见写法）。曾经原样交出去：建连拿字面量
+    /// <c>%h.example.com</c> 去连，<c>DnsFailure</c>；<c>IdentityFile</c> 等处代入的 <c>%h</c> 也是这个没展开的值。
+    /// </remarks>
+    public string HostName => First("HostName") is { } configured ? ExpandHostTokens(configured, _originalHost) : QueriedHost;
 
-    /// <summary>端口。</summary>
-    public int Port =>
-        int.TryParse(First("Port"), NumberStyles.Integer, CultureInfo.InvariantCulture, out int port)
-            ? port
-            : 22;
+    /// <summary>展开 <c>HostName</c> 认的两个记号：<c>%h</c> 与 <c>%%</c>；别的原样留着。</summary>
+    private static string ExpandHostTokens(string value, string originalHost)
+    {
+        if (!value.Contains('%', StringComparison.Ordinal))
+        {
+            return value;
+        }
+
+        StringBuilder result = new(value.Length + originalHost.Length);
+        for (int i = 0; i < value.Length; i++)
+        {
+            if (value[i] == '%' && i + 1 < value.Length && value[i + 1] is 'h' or '%')
+            {
+                result.Append(value[++i] == 'h' ? originalHost : "%");
+            }
+            else
+            {
+                result.Append(value[i]);
+            }
+        }
+        return result.ToString();
+    }
+
+    /// <summary>端口；没配、或者配的不是 1–65535 之间的整数时是 22。</summary>
+    /// <remarks>
+    /// 〔FW-E14〕配得不对的端口在建连时（<see cref="SshConfigFile.CreateConnectionOptionsAsync"/>）当成配置错误报出来；
+    /// 这里只交出一个能用的值。曾经 <c>Port -1</c> / <c>Port 99999</c> 原样交出去，建连时抛的是 BCL 的参数异常，
+    /// 宿主导入时又自己夹了一次。
+    /// </remarks>
+    public int Port => TryParsePort(First("Port"), out int port) ? port : 22;
+
+    /// <summary>是不是 1–65535 之间的整数（不带正负号、不带空白）。</summary>
+    internal static bool TryParsePort(string? text, out int port) =>
+        int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out port) && port is >= 1 and <= 65535;
 
     /// <summary>用户名。</summary>
     public string? User => First("User");
 
-    /// <summary>私钥文件（<c>IdentityFile</c> 可以出现多次，按顺序）。</summary>
+    /// <summary>私钥文件（<c>IdentityFile</c> 可以出现多次，按顺序），配置里的原文。</summary>
+    /// <remarks>要拿来读文件，用 <see cref="ExpandIdentityFiles"/>。</remarks>
     public IReadOnlyList<string> IdentityFiles => All("IdentityFile");
+
+    /// <summary>
+    /// 展开好的私钥文件路径（按出现的顺序）：<c>~</c> 与 <c>%d</c> <c>%u</c> <c>%h</c> <c>%r</c> <c>%%</c> 照这台主机与用户展开，
+    /// 与连接时读私钥用的是同一套；<c>IdentityFile none</c> 不算。
+    /// </summary>
+    /// <param name="remoteUser">登录用户（<c>%r</c>）；不给就用 <see cref="User"/>。</param>
+    /// <remarks>
+    /// 文件存不存在不管，相对路径也原样留着 —— 那是读的时候的事。
+    /// 曾经展开是 internal 的，宿主导入 <c>ssh_config</c> 时只好自己再写一份（而且不认 <c>%h</c> / <c>%r</c>）。
+    /// </remarks>
+    public IReadOnlyList<string> ExpandIdentityFiles(string? remoteUser = null) =>
+    [
+        .. IdentityFiles
+            .Where(static raw => !string.Equals(raw.Trim().Trim('"'), "none", StringComparison.OrdinalIgnoreCase))
+            .Select(raw => Expand(raw, remoteUser))
+            .OfType<string>(),
+    ];
+
+    /// <summary><c>CertificateFile</c>：与 <c>IdentityFile</c> 配对的证书，展开记号之后的路径（不管存在与否）。</summary>
+    /// <param name="remoteUser">登录用户（<c>%r</c>）；不给就用 <see cref="User"/>。</param>
+    public IReadOnlyList<string> ExpandCertificateFiles(string? remoteUser = null) =>
+    [
+        .. All("CertificateFile")
+            .Where(static raw => !string.Equals(raw.Trim().Trim('"'), "none", StringComparison.OrdinalIgnoreCase))
+            .Select(raw => Expand(raw, remoteUser))
+            .OfType<string>(),
+    ];
+
+    /// <summary>按这台主机展开路径里的记号（见 <c>SshConfigFile.ExpandPath</c>）。</summary>
+    internal string? Expand(string? raw, string? remoteUser = null) =>
+        SshConfigFile.ExpandPath(raw, HostName, remoteUser ?? User, Port, QueriedHost, ProxyJump, First("HostKeyAlias"));
+
+    /// <summary>
+    /// 会话要设的环境变量：<c>SetEnv 名=值</c>（可以多个、多行，先出现的赢），再加上 <c>SendEnv</c>
+    /// 通配（<c>*</c> / <c>?</c>，不分大小写）选中的本机环境变量（<c>SetEnv</c> 里有的不覆盖）。
+    /// </summary>
+    /// <remarks>
+    /// 服务端的 <c>AcceptEnv</c> 只放行少数变量，被拒是常态（velashell-docs/zh/ssh/spec/05 §5.2）。
+    /// <c>SendEnv -模式</c>（去掉之前的模式）这里不处理：一律只增不减。
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> SessionEnvironment()
+    {
+        Dictionary<string, string> result = new(StringComparer.Ordinal);
+        foreach (string line in All("SetEnv"))
+        {
+            foreach (string pair in line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                int equals = pair.IndexOf('=', StringComparison.Ordinal);
+                if (equals > 0)
+                {
+                    result.TryAdd(pair[..equals], pair[(equals + 1)..].Trim('"'));
+                }
+            }
+        }
+
+        string[] patterns = [.. All("SendEnv").SelectMany(static l => l.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+            .Where(static p => !p.StartsWith('-'))];
+        if (patterns.Length > 0)
+        {
+            foreach (System.Collections.DictionaryEntry variable in System.Environment.GetEnvironmentVariables())
+            {
+                if (variable.Key is string name && variable.Value is string value
+                    && patterns.Any(p => System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(p, name, ignoreCase: true)))
+                {
+                    result.TryAdd(name, value);
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary><c>ConnectionAttempts</c>：拨号失败时一共试几次（每次隔一秒），默认 1。</summary>
+    public int ConnectionAttempts =>
+        int.TryParse(First("ConnectionAttempts"), NumberStyles.None, CultureInfo.InvariantCulture, out int value) && value >= 1
+            ? Math.Min(value, 100)
+            : 1;
 
     /// <summary>跳板（<c>ProxyJump</c>）。</summary>
     public string? ProxyJump => First("ProxyJump");
@@ -63,10 +183,12 @@ public sealed class SshHostConfig
     /// <summary><c>ForwardX11Timeout</c>：X11 转发的有效期；没写或写不对为 <see langword="null"/>（用默认）。</summary>
     /// <remarks>
     /// ssh_config 的时间格式：数字后跟 <c>s</c> / <c>m</c> / <c>h</c> / <c>d</c> / <c>w</c>（大小写均可），
-    /// 不带单位为秒，几段相加（<c>1h30m</c>）；<c>0</c> 为不过期（<see cref="TimeSpan.Zero"/>）。
+    /// 不带单位为秒，几段相加（<c>1h30m</c>）；<c>0</c> 为不过期（<see cref="Timeout.InfiniteTimeSpan"/>）。
     /// </remarks>
     public TimeSpan? ForwardX11Timeout =>
-        TryParseTimeSpec(First("ForwardX11Timeout"), out TimeSpan value) ? value : null;
+        TryParseTimeSpec(First("ForwardX11Timeout"), out TimeSpan value)
+            ? value == TimeSpan.Zero ? Timeout.InfiniteTimeSpan : value
+            : null;
 
     /// <summary>解析 ssh_config 的时间格式（见 <see cref="ForwardX11Timeout"/>）。</summary>
     /// <remarks>写不对（空、带别的字符、单位不认识、溢出）就返回 <see langword="false"/> —— 不猜。</remarks>
@@ -141,6 +263,65 @@ public sealed class SshHostConfig
     /// <summary><c>UserKnownHostsFile</c>。</summary>
     public string? UserKnownHostsFile => First("UserKnownHostsFile");
 
+    /// <summary>
+    /// <c>GlobalKnownHostsFile</c>：只读的全局 known_hosts（可以几个、空格分隔，展开记号）；没写或写 <c>none</c> 时为空。
+    /// </summary>
+    /// <remarks>写了才读 —— 不去找系统目录里默认的那一份。</remarks>
+    public IReadOnlyList<string> GlobalKnownHostsFiles =>
+        First("GlobalKnownHostsFile") is { } value && !string.Equals(value.Trim(), "none", StringComparison.OrdinalIgnoreCase)
+            ? [.. value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(path => Expand(path.Trim('"')))
+                .OfType<string>()]
+            : [];
+
+    /// <summary><c>HostKeyAlias</c>：查、记主机密钥时代替主机名的别名；没写为 <see langword="null"/>。</summary>
+    public string? HostKeyAlias =>
+        First("HostKeyAlias")?.Trim() is { Length: > 0 } alias && !string.Equals(alias, "none", StringComparison.OrdinalIgnoreCase)
+            ? alias
+            : null;
+
+    /// <summary><c>AddressFamily</c>：<c>inet</c> → IPv4、<c>inet6</c> → IPv6，其余（<c>any</c>、没写）→ 不限。</summary>
+    public AddressFamily AddressFamily => First("AddressFamily")?.Trim().ToLowerInvariant() switch
+    {
+        "inet" => AddressFamily.InterNetwork,
+        "inet6" => AddressFamily.InterNetworkV6,
+        _ => AddressFamily.Unspecified,
+    };
+
+    /// <summary><c>BindAddress</c>：本机这一端从哪个地址发起连接；没写为 <see langword="null"/>。</summary>
+    public string? BindAddress => First("BindAddress");
+
+    /// <summary><c>BindInterface</c>：本机这一端从哪块网卡（按名字）发起连接；没写为 <see langword="null"/>。</summary>
+    public string? BindInterface => First("BindInterface");
+
+    /// <summary>按 <c>IdentityAgent</c> 决定认证时用哪个 agent。</summary>
+    /// <param name="endpoint">agent 的端点；<see langword="null"/> 是默认的那个（<c>SSH_AUTH_SOCK</c> / Windows 的 OpenSSH agent 管道）。</param>
+    /// <returns>写着 <c>none</c>（或者给的环境变量没设）时为 <see langword="false"/>：不用 agent。</returns>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕ssh_config(5) 的写法：<c>none</c>、<c>SSH_AUTH_SOCK</c>、以 <c>$</c> 开头的环境变量（值是路径）、
+    /// 一个路径（展开 <c>~</c> 与记号）。本库不替调用方建 agent 凭据（不做隐式回退，spec/04 §2.2）—— 调用方照它连 agent。
+    /// </remarks>
+    public bool TryGetIdentityAgent(out string? endpoint)
+    {
+        endpoint = null;
+        string? value = First("IdentityAgent")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(value) || string.Equals(value, "SSH_AUTH_SOCK", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        if (value.StartsWith('$'))
+        {
+            endpoint = Environment.GetEnvironmentVariable(value[1..]);
+            return !string.IsNullOrEmpty(endpoint);
+        }
+        endpoint = Expand(value);
+        return true;
+    }
+
     /// <summary>是否只用显式给出的密钥（<c>IdentitiesOnly yes</c>）。</summary>
     public bool IdentitiesOnly => IsYes(First("IdentitiesOnly"));
 
@@ -182,12 +363,79 @@ public sealed class SshHostConfig
             return endpoint is not null;
         }
 
-        endpoint = SshConfigFile.ExpandPath(value, HostName, User);
+        endpoint = Expand(value);
         return endpoint is not null;
     }
 
+    /// <summary><c>Ciphers</c>：加密算法清单（OpenSSH 的 <c>+ - ^</c> 写法，见 <see cref="Crypto.SshAlgorithmSpec"/>）。</summary>
+    public string? Ciphers => First("Ciphers");
+
+    /// <summary><c>KexAlgorithms</c>：密钥交换算法清单（写法同上）。</summary>
+    public string? KexAlgorithms => First("KexAlgorithms");
+
+    /// <summary><c>MACs</c>：MAC 算法清单（写法同上）。</summary>
+    public string? Macs => First("MACs");
+
+    /// <summary><c>HostKeyAlgorithms</c>：主机密钥算法清单（写法同上）。</summary>
+    public string? HostKeyAlgorithms => First("HostKeyAlgorithms");
+
+    /// <summary><c>PubkeyAcceptedAlgorithms</c>（旧名 <c>PubkeyAcceptedKeyTypes</c>）：公钥认证用哪些签名算法（写法同上）。</summary>
+    public string? PubkeyAcceptedAlgorithms => First("PubkeyAcceptedAlgorithms") ?? First("PubkeyAcceptedKeyTypes");
+
     /// <summary><c>Compression</c>。</summary>
     public bool Compression => IsYes(First("Compression"));
+
+    /// <summary><c>GatewayPorts</c>：本地转发没写监听地址时绑全部网卡而不是环回。</summary>
+    public bool GatewayPorts => IsYes(First("GatewayPorts"));
+
+    /// <summary><c>ExitOnForwardFailure</c>：配置里的转发有一条起不来就整体失败（脚本与自动化场景要它）。</summary>
+    public bool ExitOnForwardFailure => IsYes(First("ExitOnForwardFailure"));
+
+    /// <summary><c>ClearAllForwardings</c>：不起配置里的任何转发。</summary>
+    public bool ClearAllForwardings => IsYes(First("ClearAllForwardings"));
+
+    /// <summary>
+    /// 配置里的转发（<c>LocalForward</c> / <c>RemoteForward</c> / <c>DynamicForward</c>，按种类、各自按出现顺序），解析成结构化的两头。
+    /// <c>ClearAllForwardings yes</c> 时为空。
+    /// </summary>
+    /// <exception cref="Diagnostics.SshConnectException">某一条写法不对（<see cref="Diagnostics.SshFailureReason.InvalidConfiguration"/>）。</exception>
+    /// <remarks>与其它键不同，这三个键是<b>累加</b>的：每一行都是一条转发（ssh_config(5)）。</remarks>
+    public IReadOnlyList<SshConfigForward> GetForwards() =>
+        ClearAllForwardings
+            ? []
+            :
+            [
+                .. All("LocalForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Local, v)),
+                .. All("RemoteForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Remote, v)),
+                .. All("DynamicForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Dynamic, v)),
+            ];
+
+    /// <summary>
+    /// <c>PermitRemoteOpen</c>：远程动态转发的放行名单。没写时是 <see cref="Forwarding.RemoteOpenPolicy.Any"/>（OpenSSH 的默认）——
+    /// 写进配置的 <c>RemoteForward 端口</c> 就是配置作者的明确选择；<c>any</c> / <c>none</c> 照字面。
+    /// </summary>
+    /// <exception cref="Diagnostics.SshConnectException">规则写法不对（<see cref="Diagnostics.SshFailureReason.InvalidConfiguration"/>）。</exception>
+    public Forwarding.RemoteOpenPolicy GetPermitRemoteOpen()
+    {
+        string? value = First("PermitRemoteOpen");
+        if (value is null || value.Trim().Equals("any", StringComparison.OrdinalIgnoreCase))
+        {
+            return Forwarding.RemoteOpenPolicy.Any;
+        }
+        if (value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return Forwarding.RemoteOpenPolicy.None;
+        }
+        try
+        {
+            return Forwarding.RemoteOpenPolicy.Allow(value.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new Diagnostics.SshConnectException(Diagnostics.SshFailureReason.InvalidConfiguration, Diagnostics.SshPhase.Dialing,
+                $"PermitRemoteOpen 写得不对：{ex.Message}", ex);
+        }
+    }
 
     /// <summary><c>ServerAliveInterval</c>（秒，<c>0</c> = 关）。</summary>
     public int ServerAliveInterval =>
@@ -261,13 +509,42 @@ public sealed class SshHostConfig
             };
         }
 
+        // SetEnv / SendEnv：模板里显式给了环境变量就不动（显式的赢）。
+        if (options.Environment.Count == 0 && SessionEnvironment() is { Count: > 0 } environment)
+        {
+            options = options with { Environment = environment };
+        }
+
+        // ObscureKeystrokeTiming：yes 是 20 毫秒的节拍（OpenSSH 的默认），interval:N 是 N 毫秒，no 不混淆。
+        if (options.ObscureKeystrokeTiming is null && First("ObscureKeystrokeTiming") is { } obscure)
+        {
+            string value = obscure.Trim();
+            TimeSpan? interval = value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                ? TimeSpan.FromMilliseconds(20)
+                : value.StartsWith("interval:", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(value["interval:".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out int ms) && ms is >= 1 and <= 1000
+                    ? TimeSpan.FromMilliseconds(ms)
+                    : null;
+            if (interval is not null)
+            {
+                options = options with { ObscureKeystrokeTiming = interval };
+            }
+        }
+
+        // RemoteCommand：在伪终端里跑这条命令而不是登录 shell（模板里显式给了命令就不动）。
+        if (options.Command is null && First("RemoteCommand") is { } remoteCommand
+            && !remoteCommand.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            options = options with { Command = remoteCommand };
+        }
+
         if (ForwardX11 && options.X11Forwarding is null)
         {
             options = options with
             {
                 X11Forwarding = new X11ForwardOptions
                 {
-                    Trusted = ForwardX11Trusted,
+                    IsTrusted = ForwardX11Trusted,
                     FailureMode = ForwardFailureMode.Continue,
                     Timeout = ForwardX11Timeout ?? X11ForwardOptions.Default.Timeout,
                 },

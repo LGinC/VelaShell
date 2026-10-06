@@ -11,7 +11,11 @@
 // 长度校验、先验后解的顺序、以及「NeedMoreData 时不得改动状态」。
 
 using System.Buffers;
+using System.Buffers.Binary;
 using System.Security.Cryptography;
+using Org.BouncyCastle.Crypto.Engines;
+using Org.BouncyCastle.Crypto.Macs;
+using Org.BouncyCastle.Crypto.Parameters;
 using VelaShell.Ssh.Crypto;
 
 namespace VelaShell.Ssh.Tests.Crypto;
@@ -145,6 +149,162 @@ public sealed class CipherSuiteConformanceTests
         }
     }
 
+    // ------------------------------------------------------------ AEAD 的独立参照
+    //
+    // 往返测试证明不了套件对 —— 封与拆是同一份代码，K_1 / K_2 颠倒、nonce 字节序、GCM 计数器起点
+    // 这类错误两边错得一样，照样往返得通，只有对着另一份实现（OpenSSH）才暴露。这里照 spec 01 §2.1 的文字
+    // 用原语（BouncyCastle 的原始 ChaCha20 与 Poly1305、BCL 的 AesGcm）另拼一份，两个方向都比：
+    // 库封的帧由参照拆，参照封的帧由库拆。
+
+    /// <summary>原始 ChaCha20（64 位 nonce = 序号的大端，64 位块计数从 <paramref name="counter"/> 起）作用在 <paramref name="data"/> 上。</summary>
+    private static byte[] ChaChaReference(ReadOnlySpan<byte> key, uint seq, int counter, ReadOnlySpan<byte> data)
+    {
+        byte[] nonce = new byte[8];
+        BinaryPrimitives.WriteUInt64BigEndian(nonce, seq);
+        ChaChaEngine engine = new(20);
+        engine.Init(true, new ParametersWithIV(new KeyParameter(key.ToArray()), nonce));
+
+        byte[] skipped = new byte[64 * counter];
+        engine.ProcessBytes(skipped, 0, skipped.Length, skipped, 0);
+
+        byte[] input = data.ToArray();
+        byte[] output = new byte[input.Length];
+        engine.ProcessBytes(input, 0, input.Length, output, 0);
+        return output;
+    }
+
+    private static byte[] Poly1305Reference(ReadOnlySpan<byte> key, ReadOnlySpan<byte> data)
+    {
+        Poly1305 mac = new();
+        mac.Init(new KeyParameter(key.ToArray()));
+        byte[] input = data.ToArray();
+        mac.BlockUpdate(input, 0, input.Length);
+        byte[] tag = new byte[16];
+        mac.DoFinal(tag, 0);
+        return tag;
+    }
+
+    /// <summary>
+    /// chacha20-poly1305@openssh.com 与独立参照逐字节一致：密钥材料前 32 字节是 K_2、后 32 字节是 K_1；
+    /// K_1 只加密长度（counter 0），K_2 的 counter 0 出 Poly1305 密钥、counter 1 起加密其余；tag 覆盖整个密文。
+    /// </summary>
+    [TestMethod]
+    [DataRow(0u)]
+    [DataRow(7u)]
+    [DataRow(uint.MaxValue)]
+    public void ChaCha20Poly1305与独立参照一致(uint seq)
+    {
+        byte[] material = RandomNumberGenerator.GetBytes(ChaCha20Poly1305CipherSuite.KeyMaterialBytes);
+        byte[] k2 = material[..32];
+        byte[] k1 = material[32..];
+        byte[] payload = RandomNumberGenerator.GetBytes(100);
+
+        // 库封 → 参照拆。
+        using (ChaCha20Poly1305CipherSuite suite = new(material))
+        {
+            byte[] frame = Seal(suite, payload, seq);
+            int packetLength = BinaryPrimitives.ReadInt32BigEndian(ChaChaReference(k1, seq, 0, frame.AsSpan(0, 4)));
+            Assert.AreEqual(frame.Length - 4 - 16, packetLength, "长度字段要用 K_1 解得开");
+
+            byte[] polyKey = ChaChaReference(k2, seq, 0, new byte[32]);
+            Assert.AreSequenceEqual(
+                Poly1305Reference(polyKey, frame.AsSpan(0, 4 + packetLength)), frame[(4 + packetLength)..], "tag 覆盖整个密文");
+
+            byte[] packet = ChaChaReference(k2, seq, 1, frame.AsSpan(4, packetLength));
+            int padding = packet[0];
+            Assert.AreSequenceEqual(payload, packet[1..(packetLength - padding)]);
+        }
+
+        // 参照封 → 库拆。
+        byte[] built = BuildChaChaFrame(k1, k2, seq, payload);
+        using (ChaCha20Poly1305CipherSuite suite = new(material))
+        {
+            Assert.AreSequenceEqual(payload, Open(suite, built, seq, out long consumed));
+            Assert.AreEqual(built.Length, consumed);
+        }
+    }
+
+    private static byte[] BuildChaChaFrame(byte[] k1, byte[] k2, uint seq, byte[] payload)
+    {
+        // 长度字段不算进对齐（它是单独加密的）：padding_length + payload + padding 是 8 的倍数，padding 至少 4。
+        int padding = 8 - ((1 + payload.Length) % 8);
+        if (padding < 4)
+        {
+            padding += 8;
+        }
+        byte[] packet = [(byte)padding, .. payload, .. RandomNumberGenerator.GetBytes(padding)];
+        byte[] length = new byte[4];
+        BinaryPrimitives.WriteInt32BigEndian(length, packet.Length);
+
+        byte[] cipherText = [.. ChaChaReference(k1, seq, 0, length), .. ChaChaReference(k2, seq, 1, packet)];
+        byte[] tag = Poly1305Reference(ChaChaReference(k2, seq, 0, new byte[32]), cipherText);
+        return [.. cipherText, .. tag];
+    }
+
+    /// <summary>
+    /// aes-gcm@openssh.com 与独立参照逐字节一致：nonce = 4 字节固定 IV ‖ 8 字节 invocation counter（每帧加 1，
+    /// 64 位无符号回绕，固定部分不动）—— 不是报文序号；长度字段是明文、作 AAD。
+    /// 序号故意与计数器错开，计数器从回绕前一个值起步。
+    /// </summary>
+    [TestMethod]
+    [DataRow(16)]
+    [DataRow(32)]
+    public void AesGcm与独立参照一致(int keyBytes)
+    {
+        byte[] key = RandomNumberGenerator.GetBytes(keyBytes);
+        byte[] iv = RandomNumberGenerator.GetBytes(12);
+        iv.AsSpan(4).Fill(0xFF);   // invocation counter = FF…FF：第二帧回绕到 0
+        byte[][] payloads = [RandomNumberGenerator.GetBytes(37), RandomNumberGenerator.GetBytes(64), RandomNumberGenerator.GetBytes(5)];
+        uint[] sequences = [1000, 1001, 1002];
+
+        using AesGcm reference = new(key, 16);
+
+        // 库封 → 参照拆。
+        using (AesGcmCipherSuite suite = new(key, iv))
+        {
+            for (int i = 0; i < payloads.Length; i++)
+            {
+                byte[] frame = Seal(suite, payloads[i], sequences[i]);
+                int packetLength = BinaryPrimitives.ReadInt32BigEndian(frame);
+                byte[] packet = new byte[packetLength];
+                reference.Decrypt(
+                    GcmNonce(iv, i), frame.AsSpan(4, packetLength), frame.AsSpan(4 + packetLength, 16), packet, frame.AsSpan(0, 4));
+                Assert.AreSequenceEqual(payloads[i], packet[1..(packetLength - packet[0])], $"第 {i + 1} 帧");
+            }
+        }
+
+        // 参照封 → 库拆。
+        using (AesGcmCipherSuite suite = new(key, iv))
+        {
+            for (int i = 0; i < payloads.Length; i++)
+            {
+                int padding = 16 - ((1 + payloads[i].Length) % 16);
+                if (padding < 4)
+                {
+                    padding += 16;
+                }
+                byte[] packet = [(byte)padding, .. payloads[i], .. RandomNumberGenerator.GetBytes(padding)];
+                byte[] length = new byte[4];
+                BinaryPrimitives.WriteInt32BigEndian(length, packet.Length);
+                byte[] cipherText = new byte[packet.Length];
+                byte[] tag = new byte[16];
+                reference.Encrypt(GcmNonce(iv, i), packet, cipherText, tag, length);
+
+                byte[] frame = [.. length, .. cipherText, .. tag];
+                Assert.AreSequenceEqual(payloads[i], Open(suite, frame, sequences[i], out _), $"第 {i + 1} 帧");
+            }
+        }
+    }
+
+    /// <summary>第 <paramref name="frameIndex"/> 帧（从 0 数）的 nonce：固定 IV 不动，后 8 字节按 64 位无符号加上帧号。</summary>
+    private static byte[] GcmNonce(byte[] iv, int frameIndex)
+    {
+        byte[] nonce = (byte[])iv.Clone();
+        ulong counter = BinaryPrimitives.ReadUInt64BigEndian(nonce.AsSpan(4));
+        BinaryPrimitives.WriteUInt64BigEndian(nonce.AsSpan(4), unchecked(counter + (ulong)frameIndex));
+        return nonce;
+    }
+
     private static byte[] Open(ISshCipherSuite suite, byte[] frame, uint seq, out long consumed)
     {
         ArrayBufferWriter<byte> writer = new();
@@ -181,6 +341,70 @@ public sealed class CipherSuiteConformanceTests
         }
     }
 
+    /// <summary>把一段字节切成每段 <paramref name="chunk"/> 字节的多段序列（模拟跨了管道段的帧）。</summary>
+    private static ReadOnlySequence<byte> Segmented(byte[] data, int chunk)
+    {
+        Segment first = new(data.AsMemory(0, Math.Min(chunk, data.Length)));
+        Segment last = first;
+        for (int offset = chunk; offset < data.Length; offset += chunk)
+        {
+            last = last.Append(data.AsMemory(offset, Math.Min(chunk, data.Length - offset)));
+        }
+        return new ReadOnlySequence<byte>(first, 0, last, last.Memory.Length);
+    }
+
+    private sealed class Segment : ReadOnlySequenceSegment<byte>
+    {
+        public Segment(ReadOnlyMemory<byte> memory) => Memory = memory;
+
+        public Segment Append(ReadOnlyMemory<byte> memory)
+        {
+            Segment next = new(memory) { RunningIndex = RunningIndex + Memory.Length };
+            Next = next;
+            return next;
+        }
+    }
+
+    /// <summary>
+    /// 整帧在一段连续内存里时直接在输入上验、解进输出；跨了段时走拷贝的那条路。两条路拆出来的必须一样，
+    /// 篡改同样都查得出来。
+    /// </summary>
+    [TestMethod]
+    public void 跨段的帧与连续的帧拆出同样的载荷()
+    {
+        foreach ((string name, SuiteFactory factory) in AllSuites())
+        {
+            (ISshCipherSuite sender, ISshCipherSuite receiver) = factory();
+            using (sender)
+            using (receiver)
+            {
+                for (uint seq = 0; seq < 4; seq++)
+                {
+                    byte[] payload = RandomNumberGenerator.GetBytes(1000 + (int)seq);
+                    byte[] frame = Seal(sender, payload, seq);
+
+                    ArrayBufferWriter<byte> writer = new();
+                    ReadOnlySequence<byte> input = seq % 2 == 0 ? Segmented(frame, 7) : new ReadOnlySequence<byte>(frame);
+                    SshOpenStatus status = receiver.TryOpen(input, seq, MaxPacket, writer, out long consumed);
+
+                    Assert.AreEqual(SshOpenStatus.Opened, status, name);
+                    Assert.AreEqual(frame.Length, consumed, name);
+                    Assert.AreSequenceEqual(payload, writer.WrittenSpan.ToArray(), $"{name}：第 {seq} 帧（{(seq % 2 == 0 ? "跨段" : "连续")}）载荷失真");
+                }
+
+                if (!sender.Shape.IsEncrypted)
+                {
+                    continue; // 明文套件没有完整性保护，这是它的定义
+                }
+
+                byte[] tampered = Seal(sender, [1, 2, 3], 4);
+                tampered[^1] ^= 0x01;
+                Assert.ThrowsExactly<SshFrameFormatException>(
+                    () => receiver.TryOpen(Segmented(tampered, 5), 4, MaxPacket, new ArrayBufferWriter<byte>(), out _),
+                    $"{name}：跨段的帧被篡改也要查得出来");
+            }
+        }
+    }
     [TestMethod]
     public void 帧长满足对齐要求()
     {
@@ -412,9 +636,6 @@ public sealed class CipherSuiteConformanceTests
                 CipherSuiteShape shape = sender.Shape;
                 Assert.IsGreaterThanOrEqualTo(8, shape.BlockBytes, $"{name}：块大小至少为 8（RFC 4253 §6）");
                 Assert.IsGreaterThanOrEqualTo(0, shape.TagBytes, name);
-                Assert.IsGreaterThanOrEqualTo(0, shape.AadBytes, name);
-                Assert.IsGreaterThanOrEqualTo(SshPacketFormat.LengthFieldBytes, shape.LengthProbeBytes,
-                    $"{name}：至少要读到 4 字节才谈得上解析长度");
                 Assert.AreEqual(shape.Shape(), receiver.Shape.Shape(), $"{name}：收发两侧形状必须一致");
             }
         }
@@ -425,6 +646,5 @@ internal static class ShapeAssertExtensions
 {
     /// <summary>把形状压成一个可比较的字符串，断言失败时一眼看出差在哪。</summary>
     public static string Shape(this CipherSuiteShape s) =>
-        $"lenEnc={s.LengthIsEncrypted} aad={s.AadBytes} tag={s.TagBytes} " +
-        $"block={s.BlockBytes} lenInAlign={s.LengthInAlignment} etm={s.EncryptThenMac} enc={s.IsEncrypted}";
+        $"tag={s.TagBytes} block={s.BlockBytes} lenInAlign={s.LengthInAlignment} enc={s.IsEncrypted}";
 }

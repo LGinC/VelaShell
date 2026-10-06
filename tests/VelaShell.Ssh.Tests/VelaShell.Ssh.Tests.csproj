@@ -59,6 +59,8 @@
     <!-- 加密私钥的样本是真 ssh-keygen 生成的（见 Keys/Fixtures/README.md），
          要随测试一起进输出目录才读得到。 -->
     <None Include="Keys/Fixtures/**" CopyToOutputDirectory="PreserveNewest" />
+    <!-- 指纹图的标准答案是真 ssh-keygen -lv 画的（见 HostKeys/SshPublicKeyTests 的 RandomArt 用例）。 -->
+    <None Include="HostKeys/Fixtures/**" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

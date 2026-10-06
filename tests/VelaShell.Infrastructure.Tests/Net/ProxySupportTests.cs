@@ -113,8 +113,8 @@ public class ProxySupportTests
         SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
             DialThroughAsync(route, "target.example", 22, cts.Token));
 
-        // 配了凭据却被拒:原因码留着 ProxyAuthRequired,文案说的是「凭据不对」而不是「没配凭据」。
-        Assert.AreEqual(SshFailureReason.ProxyAuthRequired, error.Reason);
+        // 配了凭据却被拒:原因码是 ProxyAuthFailed,文案说的是「凭据不对」而不是「没配凭据」。
+        Assert.AreEqual(SshFailureReason.ProxyAuthFailed, error.Reason);
         Assert.StartsWith(Strings.Get("Msg_ProxyAuthFailed"), error.Message);
     }
 
@@ -139,6 +139,54 @@ public class ProxySupportTests
         Assert.AreSequenceEqual(
             new byte[] { 0x05, 0x01, 0x00, 0x01, 127, 0, 0, 1, 0x08, 0xAE },
             requestBytes);
+    }
+
+    /// <summary>
+    /// 「不用代理做 DNS」而目标名在本机解析不了:报 DnsFailure,也根本不去连代理。
+    /// 曾经记成 ProxyRefused —— 那是可重试的「代理拒绝」,而代理根本没被碰过。
+    /// </summary>
+    [TestMethod]
+    public async Task LocalDns_FailureIsDnsFailure_AndTheProxyIsNeverContacted()
+    {
+        using CancellationTokenSource cts = Deadline();
+        bool contacted = false;
+        await using var server = new FakeServer(_ =>
+        {
+            contacted = true;
+            return Task.CompletedTask;
+        });
+
+        var route = new ProxyRoute(ProxyKind.Socks5, "127.0.0.1", server.Port, ProxyDns: false);
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
+            DialThroughAsync(route, "no-such-host.invalid", 22, cts.Token));
+
+        Assert.AreEqual(SshFailureReason.DnsFailure, error.Reason);
+        Assert.IsFalse(contacted, "本机解析失败却去连了代理。");
+    }
+
+    /// <summary>
+    /// 〔W6〕代理本身连不上:报 ProxyUnreachable,文案说的是「连不上代理」并带上具体原因与走的是哪个代理。
+    /// 曾经一律改写成 ProxyRefused(「代理拒绝转发」),而代理根本没连上。
+    /// </summary>
+    [TestMethod]
+    public async Task Socks5_ProxyItselfUnreachable_IsProxyUnreachable()
+    {
+        using CancellationTokenSource cts = Deadline();
+        int closedPort;
+        using (Socket probe = new(SocketType.Stream, ProtocolType.Tcp))
+        {
+            probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            closedPort = ((IPEndPoint)probe.LocalEndPoint!).Port;   // 绑了但不 Listen,随后释放 —— 连它会被拒
+        }
+
+        var route = new ProxyRoute(ProxyKind.Socks5, "127.0.0.1", closedPort);
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
+            DialThroughAsync(route, "target.example", 22, cts.Token));
+
+        Assert.AreEqual(SshFailureReason.ProxyUnreachable, error.Reason);
+        Assert.StartsWith(Strings.Format("Msg_ProxyUnreachable", ""), error.Message);
+        Assert.Contains(Strings.Get("SshErr_TcpRefused"), error.Message);
+        Assert.Contains($"via socks5 127.0.0.1:{closedPort} → target.example:22", error.Message);
     }
 
     /// <summary>代理拒绝连接(REP != 0)必须抛错。</summary>
@@ -247,9 +295,6 @@ public class ProxySupportTests
         Assert.AreEqual("hello", Encoding.ASCII.GetString(await ReadAsync(stream, 5, cts.Token)));
         await stream.WriteAsync(Encoding.ASCII.GetBytes("ping"), cts.Token);
         Assert.AreEqual("ping", Encoding.ASCII.GetString(await ReadAsync(stream, 4, cts.Token)));
-
-        // 走了代理，拨号器要如实报出自己这一跳的种类 —— 日志里靠它分辨直连与代理。
-        Assert.AreEqual(SshDialKind.Socks5, dialer.Kind);
     }
 
     // ———— 解析器 ————

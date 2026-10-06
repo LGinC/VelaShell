@@ -21,10 +21,13 @@ public readonly record struct SshKeepAlivePolicy
     /// <summary>建一个保活策略。</summary>
     /// <param name="interval">距<b>上次收到任何报文</b>的间隔。<see cref="TimeSpan.Zero"/> 表示不保活。</param>
     /// <param name="maxMissed">连续这么多次没等到应答就判定连接已死。</param>
-    /// <exception cref="ArgumentOutOfRangeException">间隔为负，或 <paramref name="maxMissed"/> 小于 1。</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// 间隔为负或超过 <see cref="MaxInterval"/>，或 <paramref name="maxMissed"/> 小于 1。
+    /// </exception>
     public SshKeepAlivePolicy(TimeSpan interval, int maxMissed = 3)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(interval, TimeSpan.Zero);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(interval, MaxInterval);
         ArgumentOutOfRangeException.ThrowIfLessThan(maxMissed, 1);
         Interval = interval;
         MaxMissed = maxMissed;
@@ -35,6 +38,10 @@ public readonly record struct SshKeepAlivePolicy
 
     /// <summary>连续这么多次没等到应答就判定连接已死。</summary>
     public int MaxMissed { get; }
+
+    /// <summary>间隔的上限：<see cref="int.MaxValue"/> 毫秒（约 24.8 天）。</summary>
+    /// <remarks>保活循环按毫秒睡；曾经不设上限，超过它时 <c>(int)</c> 溢出成负数，保活循环静默退出 —— 设了保活等于没设。</remarks>
+    public static TimeSpan MaxInterval { get; } = TimeSpan.FromMilliseconds(int.MaxValue);
 
     /// <summary>不保活。</summary>
     public static SshKeepAlivePolicy Disabled => default;
