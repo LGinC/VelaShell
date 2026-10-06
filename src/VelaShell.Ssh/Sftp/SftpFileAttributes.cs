@@ -187,10 +187,25 @@ public readonly record struct SftpFileAttributes
         }
     }
 
+    /// <summary>v3 定义了字段的那几个标志位。</summary>
+    private const SftpAttributeFields KnownFields =
+        SftpAttributeFields.Size | SftpAttributeFields.UidGid | SftpAttributeFields.Permissions
+        | SftpAttributeFields.Times | SftpAttributeFields.Extended;
+
     /// <summary>从报文里读出来。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §4.2〕带着不认识的标志位就不读了：v3 没定义那些位的字段，它们的字节在哪、多长都说不清，
+    /// 接着读就是从错位的地方解析 —— 在 NAME 应答里，后面每一项的名字与属性都是错的。曾经默默忽略那些位。
+    /// 报出去是 <see cref="SshWireFormatException"/>，解应答的入口把它包成公开的 <see cref="Diagnostics.SshProtocolException"/>。
+    /// </remarks>
     internal static SftpFileAttributes Read(ref SshDataReader reader)
     {
         var flags = (SftpAttributeFields)reader.ReadUInt32();
+        if ((flags & ~KnownFields) != 0)
+        {
+            throw new SshWireFormatException(
+                $"ATTRS 带着 v3 没定义的标志位 0x{(uint)(flags & ~KnownFields):X8}：它们的字段没法对齐，不往下读。");
+        }
 
         ulong size = 0;
         uint uid = 0;

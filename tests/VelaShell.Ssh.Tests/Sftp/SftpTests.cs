@@ -1771,6 +1771,41 @@ public sealed class SftpTests
     }
 
     /// <summary>
+    /// 服务端回了一个不认识的报文类型：这一次调用报协议错误，不把它当成应答去解；流水线照常可用。
+    /// </summary>
+    [TestMethod]
+    public async Task 应答是不认识的报文类型时这一次报协议错误()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { StatReplyOverride = ((SftpMessageType)200, [1, 2, 3, 4]) });
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await harness.Sftp.GetAttributesAsync("/home/joe", harness.Token));
+        Assert.Contains("200", error.Message);
+
+        Assert.AreEqual("/home/joe", await harness.Sftp.GetRealPathAsync(".", harness.Token), "别的请求照常");
+    }
+
+    /// <summary>
+    /// ATTRS 带着 v3 没定义的标志位：那些位的字段没法对齐，报协议错误而不是从错位的地方接着解。
+    /// 曾经默默忽略那些位 —— 在 NAME 应答里，后面每一项的名字与属性都会是错的。
+    /// </summary>
+    [TestMethod]
+    public async Task ATTRS带着不认识的标志位时报协议错误()
+    {
+        // flags = SIZE | 0x10（v4 起才有的位），后面是 size 与 4 个说不清属于谁的字节。
+        byte[] attrs = [0, 0, 0, 0x11, 0, 0, 0, 0, 0, 0, 0, 7, 9, 9, 9, 9];
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { StatReplyOverride = (SftpMessageType.Attrs, attrs) });
+
+        SshProtocolException error = await Assert.ThrowsExactlyAsync<SshProtocolException>(
+            async () => await harness.Sftp.GetAttributesAsync("/home/joe", harness.Token));
+        Assert.Contains("0x00000010", error.Message);
+
+        Assert.AreEqual("/home/joe", await harness.Sftp.GetRealPathAsync(".", harness.Token), "只影响这一次调用");
+    }
+
+    /// <summary>
     /// 一堆操作还在途就把文件系统释放掉：在途的与之后的调用只以「已释放 / 通道或连接的错误 / 取消」结束，
     /// 不出 <see cref="NullReferenceException"/>。宿主的 SFTP 包装曾经专门把 NRE 归一成「已释放」—— 那是换库前留下的。
     /// </summary>

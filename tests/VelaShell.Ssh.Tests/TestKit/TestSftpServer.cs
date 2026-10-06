@@ -138,6 +138,9 @@ internal sealed record TestSftpOptions
 
     /// <summary><c>READLINK</c> 回一个被截断的 NAME：宣告 1 项，却只有半个文件名。</summary>
     public bool MalformedReadLink { get; init; }
+
+    /// <summary><c>STAT</c> / <c>LSTAT</c> 原样回这个类型与 request-id 之后的这些字节（畸形应答的用例用）。</summary>
+    public (SftpMessageType Type, byte[] Body)? StatReplyOverride { get; init; }
 }
 
 /// <summary>在内存里说 SFTP v3 的测试服务端。</summary>
@@ -375,6 +378,8 @@ internal sealed class TestSftpServer
         return frame.Type switch
         {
             SftpMessageType.RealPath => HandleRealPath(id, rest),
+            SftpMessageType.Stat or SftpMessageType.LStat when _options.StatReplyOverride is { } replaced =>
+                Frame(replaced.Type, [.. BigEndian(id), .. replaced.Body]),
             SftpMessageType.Stat => HandleStat(id, rest, follow: true),
             SftpMessageType.LStat => HandleStat(id, rest, follow: false),
             SftpMessageType.Open when _options.WrongOpenReply => BuildData(id, [1, 2, 3, 4]),
@@ -996,6 +1001,13 @@ internal sealed class TestSftpServer
             ModifyTime = modifyTime,
             Extended = [],
         };
+    }
+
+    private static byte[] BigEndian(uint value)
+    {
+        byte[] bytes = new byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(bytes, value);
+        return bytes;
     }
 
     private static byte[] Frame(SftpMessageType type, ReadOnlySpan<byte> payload)
