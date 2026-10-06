@@ -536,7 +536,7 @@ public sealed partial class X11Server
         }
         long start = Math.Min(4L * offset, value.Data.Length);
         long count = Math.Min(4L * length, value.Data.Length - start);
-        byte[] slice = value.Data.AsSpan((int)start, (int)count).ToArray();
+        byte[] slice = value.Data.Slice((int)start, (int)count).ToArray();
         uint after = (uint)(value.Data.Length - start - count);
         uint items = (uint)(count / (value.Format / 8));
         c.Reply(minor, w =>

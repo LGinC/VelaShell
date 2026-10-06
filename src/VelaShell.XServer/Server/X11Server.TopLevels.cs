@@ -75,7 +75,7 @@ public sealed partial class X11Server
         if (props.TryGetValue(XAtom.WmClass, out XProperty? cls) && cls.Format == 8)
         {
             // WM_CLASS = "instance\0class\0"
-            ReadOnlySpan<byte> data = cls.Data.AsSpan(0, Math.Min(cls.Data.Length, (2 * MaxHostNameChars) + 2));
+            ReadOnlySpan<byte> data = cls.Data[..Math.Min(cls.Data.Length, (2 * MaxHostNameChars) + 2)];
             int split = data.IndexOf((byte)0);
             ReadOnlySpan<byte> classPart = split < 0 ? data : data[(split + 1)..];
             int end = classPart.IndexOf((byte)0);
@@ -83,7 +83,7 @@ public sealed partial class X11Server
         }
 
         uint transientId = props.TryGetValue(XAtom.WmTransientFor, out XProperty? transient) && transient is { Format: 32, Data.Length: >= 4 }
-            ? BitConverter.ToUInt32(transient.Data, 0)
+            ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(transient.Data)
             : 0;
         XTopLevelWindow? transientFor = transientId != 0 && Lookup<XWindow>(transientId) is { IsTopLevel: true } parent && !ReferenceEquals(parent, top)
             ? HandleFor(parent)
@@ -162,7 +162,7 @@ public sealed partial class X11Server
     /// <summary>客户端在 WM_PROTOCOLS 里声明了这个协议(WM_DELETE_WINDOW、WM_TAKE_FOCUS)。</summary>
     private bool SupportsProtocol(XWindow top, uint protocol) =>
         top.Properties.TryGetValue(_wmProtocolsAtom, out XProperty? p) && p.Format == 32
-        && MemoryMarshal.Cast<byte, uint>(p.Data.AsSpan(0, p.Data.Length & ~3)).Contains(protocol);
+        && MemoryMarshal.Cast<byte, uint>(p.Data[..(p.Data.Length & ~3)]).Contains(protocol);
 
     /// <summary>WM_HINTS 的 input 字段(ICCCM §4.1.2.4);没给(flags 里没有 InputHint)时按 True 算。</summary>
     private static bool AcceptsInputHint(XWindow top)

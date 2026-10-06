@@ -182,7 +182,7 @@ public sealed partial class X11Server
         uint[] values = new uint[Math.Min(property.Data.Length / 4, max)];
         for (int i = 0; i < values.Length; i++)
         {
-            values[i] = BinaryPrimitives.ReadUInt32LittleEndian(property.Data.AsSpan(i * 4));
+            values[i] = BinaryPrimitives.ReadUInt32LittleEndian(property.Data[(i * 4)..]);
         }
         return values;
     }
@@ -422,7 +422,7 @@ public sealed partial class X11Server
         if (!ReferenceEquals(icon, top.ParsedIcons.Source))
         {
             // 图标动辄几百 KB:只在属性真的换了时重新解析,改标题之类的刷新不重复这份工作(各份快照共用同一个列表)。
-            top.ParsedIcons = (icon, ParseIcons(ReadCard32s(icon)));
+            top.ParsedIcons = (icon, ParseIcons(ReadCard32s(icon, MaxIconWords)));
         }
 
         return snapshot with
@@ -446,6 +446,12 @@ public sealed partial class X11Server
             Icons = top.ParsedIcons.Icons,
         };
     }
+
+    /// <summary>
+    /// _NET_WM_ICON 只解析前这么多个值(4 MB):真实程序的图标合计几百 KB;属性能有 32 MB、可以一次追加几个字节,
+    /// 每次变了都要整份重新解析,不设上限就是「追加 4 字节、解析 30 MB」的放大。
+    /// </summary>
+    private const int MaxIconWords = 1 << 20;
 
     /// <summary>_NET_WM_ICON:若干组(宽, 高, 宽 × 高 个 ARGB)。尺寸不合理的组丢弃,后面的不再解析。</summary>
     private static List<XWindowIcon> ParseIcons(uint[] data)

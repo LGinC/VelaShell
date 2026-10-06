@@ -69,6 +69,32 @@ public sealed class ResourceQuotaTests
             bigRequest: true);
 
     [TestMethod]
+    public async Task 往几MB的属性上反复追加几个字节_只拷新字节()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        const uint property = 1;   // PRIMARY 当属性名用
+        byte[] chunk = new byte[200_000];
+        for (int i = 0; i < 20; i++)   // 4 MB:每次 Append 20 万字节
+        {
+            await c.SendAsync(18, 2, b => b.U32(c.RootWindow).U32(property).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)chunk.Length).Bytes(chunk));
+        }
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        const int appends = 3000;
+        await c.SendManyAsync(Enumerable.Range(0, appends).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+            (18, 2, b => b.U32(c.RootWindow).U32(property).U32(31).U8(8).U8(0).U8(0).U8(0).U32(4).U8((byte)i).U8(1).U8(2).U8(3))));
+        await c.SyncAsync();
+        Assert.IsLessThan(2_000, watch.ElapsedMilliseconds, "原先每次追加都整份复制 4 MB");
+
+        // 末尾的值对:最后一次追加的 4 个字节。
+        XMessage tail = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(property).U32(0)
+            .U32((uint)(((chunk.Length * 20) + (appends * 4) - 4) / 4)).U32(1));
+        Assert.AreEqual(4u, tail.U32(16));
+        Assert.AreEqual(unchecked((byte)(appends - 1)), tail.Bytes[32]);
+        Assert.AreEqual(3, tail.Bytes[35]);
+    }
+
+    [TestMethod]
     public async Task 属性值计入写它的客户端名下_删掉之后退还()
     {
         await using X11Server server = new(new X11ServerOptions { MaxClientMemory = 2 * MiB });

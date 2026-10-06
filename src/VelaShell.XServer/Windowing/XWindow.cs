@@ -13,13 +13,68 @@ using VelaShell.XServer.Server;
 namespace VelaShell.XServer.Windowing;
 
 /// <summary>窗口上的一个属性(ChangeProperty 存进来的东西)。</summary>
-/// <param name="Type">类型原子。</param>
-/// <param name="Format">8 / 16 / 32。</param>
-/// <param name="Data">原始字节 —— 按<b>存进来的那个客户端的字节序</b>规整成本机序存放,取出时再按取的人的字节序写出。</param>
-internal sealed record XProperty(uint Type, byte Format, byte[] Data)
+/// <remarks>
+/// 不可变:改一个属性就换一个新对象(快照、图标缓存按引用判断变没变)。追加(ChangeProperty 的 Append)与上一版共用一块
+/// 留了余量的存储,只拷新加的那几个字节 —— 原先每次追加都整份复制,往 30 MB 的属性上一次追加 4 字节就是 30 MB 的复制。
+/// 旧对象看到的仍是它自己的那一段(新加的字节写在它的长度之外)。
+/// </remarks>
+internal sealed class XProperty
 {
+    private readonly Storage _storage;
+
+    public XProperty(uint type, byte format, byte[] data)
+        : this(type, format, new Storage(data, data.Length), data.Length)
+    {
+    }
+
+    private XProperty(uint type, byte format, Storage storage, int length)
+    {
+        Type = type;
+        Format = format;
+        _storage = storage;
+        Length = length;
+    }
+
+    /// <summary>类型原子。</summary>
+    public uint Type { get; }
+
+    /// <summary>8 / 16 / 32。</summary>
+    public byte Format { get; }
+
+    /// <summary>值的字节数。</summary>
+    public int Length { get; }
+
+    /// <summary>值:按<b>存进来的那个客户端的字节序</b>规整成本机序存放,取出时再按取的人的字节序写出(只在执行线程上读)。</summary>
+    public ReadOnlySpan<byte> Data => _storage.Bytes.AsSpan(0, Length);
+
     /// <summary>值记在谁的账上(写它的客户端);服务端自己写的为 null(见 <c>X11Server.ChargeMemory</c>)。</summary>
     public XClient? ChargedTo { get; init; }
+
+    /// <summary>在末尾接上 <paramref name="tail" />,返回新的属性对象(本对象不变)。</summary>
+    public XProperty Append(ReadOnlySpan<byte> tail, XClient? chargedTo)
+    {
+        int length = Length + tail.Length;
+        Storage storage = _storage;
+        if (storage.Used != Length || storage.Bytes.Length < length)
+        {
+            // 存储已被别的版本接着写过、或者放不下:另起一块,容量翻倍(最多到单个属性的上限),之后的追加就只拷新字节。
+            int capacity = (int)Math.Clamp(Length * 2L, length, Math.Max(length, X11Server.MaxPropertyBytes));
+            byte[] bigger = new byte[capacity];
+            Data.CopyTo(bigger);
+            storage = new Storage(bigger, Length);
+        }
+        tail.CopyTo(storage.Bytes.AsSpan(Length));
+        storage.Used = length;
+        return new XProperty(Type, Format, storage, length) { ChargedTo = chargedTo };
+    }
+
+    /// <summary>几个版本共用的一块存储;<see cref="Used" /> 是最新那个版本的长度。</summary>
+    private sealed class Storage(byte[] bytes, int used)
+    {
+        public byte[] Bytes { get; } = bytes;
+
+        public int Used { get; set; } = used;
+    }
 }
 
 /// <summary>一个窗口。</summary>

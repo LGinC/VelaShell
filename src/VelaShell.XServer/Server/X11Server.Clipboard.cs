@@ -229,7 +229,7 @@ public sealed partial class X11Server
         }
         DeleteSelectionProperty(property);
         _fetch = null;
-        Deliver(value.Type, value.Data);
+        Deliver(value.Type, value.Data.ToArray());
     }
 
     /// <summary>INCR 传输中:属主往请求窗口写了一块。空块表示结束。</summary>

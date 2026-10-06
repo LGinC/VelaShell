@@ -130,4 +130,18 @@ public sealed class UnitTests
         XProtocolError error = Assert.ThrowsExactly<XProtocolError>(() => r.U32());
         Assert.AreEqual(XErrorCode.Length, error.Code, "读过请求的长度是 BadLength,不会读到后面的旧字节");
     }
+
+    [TestMethod]
+    public void 属性追加共用留了余量的存储_旧版本看到的值不变()
+    {
+        Windowing.XProperty a = new(31, 8, "ab"u8.ToArray());
+        Windowing.XProperty b = a.Append("cd"u8, null);
+        Windowing.XProperty c = b.Append("ef"u8, null);
+        Windowing.XProperty fork = b.Append("XY"u8, null);   // 从旧版本接着写:不能改到 c
+        CollectionAssert.AreEqual("ab"u8.ToArray(), a.Data.ToArray());
+        CollectionAssert.AreEqual("abcd"u8.ToArray(), b.Data.ToArray());
+        CollectionAssert.AreEqual("abcdef"u8.ToArray(), c.Data.ToArray());
+        CollectionAssert.AreEqual("abcdXY"u8.ToArray(), fork.Data.ToArray());
+        Assert.AreEqual(31u, fork.Type);
+    }
 }

@@ -143,11 +143,10 @@ public sealed partial class X11Server
             throw;
         }
         byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
-        if (existing is not null)
-        {
-            data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
-        }
-        window.Properties[property] = new XProperty(type, format, data) { ChargedTo = c };
+        // 追加接在留了余量的存储后面,只拷新字节(xs_plan WN-P1);前插少见,照旧整份拼一次。
+        window.Properties[property] = existing is null ? new XProperty(type, format, data) { ChargedTo = c }
+            : mode == 2 ? existing.Append(data, c)
+            : new XProperty(type, format, [.. data, .. existing.Data]) { ChargedTo = c };
         SendPropertyNotify(window, property, deleted: false);
         OnTopLevelPropertyChanged(window, property);
     }
@@ -236,7 +235,7 @@ public sealed partial class X11Server
         }
         long l = Math.Min(t, 4L * longLength);
         long after = n - (i + l);
-        byte[] value = prop.Data.AsSpan((int)i, (int)l).ToArray();
+        byte[] value = prop.Data.Slice((int)i, (int)l).ToArray();
         if (c.BigEndian && prop.Format != 8)
         {
             // 本机序 → 大端:与 ToNativeOrder 互逆。
