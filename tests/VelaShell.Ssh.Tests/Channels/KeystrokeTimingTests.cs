@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright 2026 VelaShell Labs
 //
-// 被测规格: velashell-docs/zh/ssh/spec/05-connection.md §7.4
+// 被测规格: velashell-docs/zh/ssh/spec/05-connection.md §7.3
 
 using System.Text;
 using VelaShell.Ssh.Channels;

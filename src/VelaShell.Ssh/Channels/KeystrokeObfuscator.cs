@@ -3,7 +3,7 @@
 //
 // 规范依据(AGENTS.md §2 纪律 1):
 //   OpenSSH PROTOCOL / ssh_config(5)  ObscureKeystrokeTiming(只取行为描述)、ping@openssh.com
-//   行为规格:                          velashell-docs/zh/ssh/spec/05-connection.md §7.4
+//   行为规格:                          velashell-docs/zh/ssh/spec/05-connection.md §7.3
 
 using System.Buffers;
 using System.IO.Pipelines;

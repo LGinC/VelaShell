@@ -56,7 +56,7 @@ public sealed record SshShellOptions : SshSessionRequestOptions
     /// </summary>
     /// <remarks>
     /// <para>
-    /// 〔velashell-docs/zh/ssh/spec/05 §7.4〕按键之间的时间间隔在网上看得见（每次按键一个报文），是公认的侧信道 —— 输口令、敲命令的节奏能推测出内容。
+    /// 〔velashell-docs/zh/ssh/spec/05 §7.3〕按键之间的时间间隔在网上看得见（每次按键一个报文），是公认的侧信道 —— 输口令、敲命令的节奏能推测出内容。
     /// 打开之后输入按固定节拍发，没有输入的节拍上发等长的 PING 当掩护，一直到最后一次按键之后的一段随机时间（0.5–1.5 秒）；闲着时一个报文都不发。
     /// </para>
     /// <para>
