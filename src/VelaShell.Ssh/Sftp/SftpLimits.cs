@@ -19,7 +19,8 @@ public readonly record struct SftpLimits(
     ulong MaxOpenHandles)
 {
     /// <summary>服务端没宣告 <c>limits@openssh.com</c> 时的保守默认。</summary>
-    public static SftpLimits Conservative => new(
+    /// <remarks>〔AGENTS 4.3〕静态实例只叫 <c>Default</c> / <c>Disabled</c> / <c>Empty</c>；曾经叫 <c>Conservative</c>。</remarks>
+    public static SftpLimits Default => new(
         MaxPacketLength: SftpProtocol.DefaultBlockSize + 1024,
         MaxReadLength: SftpProtocol.DefaultBlockSize,
         MaxWriteLength: SftpProtocol.DefaultBlockSize,

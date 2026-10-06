@@ -29,7 +29,7 @@ public sealed class SftpCapabilities
         // 冻结的字典：曾经交出去的是 Dictionary，下转型就能改 —— 改了 RawExtensions，HasPosixRename 跟着变。
         RawExtensions = rawExtensions.ToFrozenDictionary(
             static pair => pair.Key, static pair => (ReadOnlyMemory<byte>)pair.Value, StringComparer.Ordinal);
-        Limits = SftpLimits.Conservative;
+        Limits = SftpLimits.Default;
     }
 
     /// <summary>服务端宣告的版本号（我们按 3 工作，更高的会降级）。</summary>
