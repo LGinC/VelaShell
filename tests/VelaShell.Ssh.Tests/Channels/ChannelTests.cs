@@ -854,6 +854,7 @@ public sealed class ChannelTests
             await closing;
 
             Assert.AreEqual(SshChannelCloseReason.ClosedLocally, (await ReadUntilClosedAsync(channel, local.Token)).Reason);
+            Assert.AreEqual(SshChannelCloseReason.ClosedLocally, channel.CloseReason, "属性与事件一致，谁来问都一样");
             await channel.DisposeAsync();
         }
 
@@ -861,6 +862,14 @@ public sealed class ChannelTests
         await using Harness remote = await Harness.StartAsync(new TestChannelScript());
         await using SshCommand command = await remote.Connection.ExecuteAsync("关", cancellationToken: remote.Token);
         Assert.AreEqual(SshChannelCloseReason.ClosedByPeer, (await ReadUntilClosedAsync(command.Channel, remote.Token)).Reason);
+        Assert.AreEqual(SshChannelCloseReason.ClosedByPeer, command.Channel.CloseReason);
+
+        // 会话没了：通道跟着没，原因是 SessionClosed；还开着时是 Unknown。
+        await using Harness dropped = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null });
+        SshChannel orphan = await dropped.Connection.OpenSessionChannelAsync(null, dropped.Token);
+        Assert.AreEqual(SshChannelCloseReason.Unknown, orphan.CloseReason);
+        await dropped.Connection.DisposeAsync();
+        Assert.AreEqual(SshChannelCloseReason.SessionClosed, orphan.CloseReason);
 
         static async Task<SshChannelEvent.Closed> ReadUntilClosedAsync(SshChannel channel, CancellationToken token)
         {

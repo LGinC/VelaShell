@@ -224,6 +224,19 @@ public sealed class SshChannel : IAsyncDisposable
     /// </remarks>
     public CancellationToken Closed => _lifetime.Token;
 
+    /// <summary>通道为什么关闭；还没关时是 <see cref="SshChannelCloseReason.Unknown"/>。</summary>
+    /// <remarks>
+    /// <para>
+    /// 在 stdout / stderr 读到头之前就已经记下：读端看到结尾时来看它，就分得出「对端关的（远端进程退了）」「会话没了」「本端关的」。
+    /// 只收到 EOF、还没收到 CLOSE 时读端也会读到头，那时它还是 <see cref="SshChannelCloseReason.Unknown"/>。
+    /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §一〕事件流里也有（<see cref="SshChannelEvent.Closed"/>），但事件流是单读者的；这里谁来问、问几次都一样。
+    /// 曾经只在事件流里，宿主只好从读管道的结束方式反推「远端退出 / 断线 / 本端拆除」。
+    /// </para>
+    /// </remarks>
+    public SshChannelCloseReason CloseReason => Volatile.Read(ref _closedEvent)?.Reason ?? SshChannelCloseReason.Unknown;
+
     /// <summary>当前状态。</summary>
     public SshChannelState State
     {

@@ -95,8 +95,8 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
 
                 if (result.IsCompleted)
                 {
-                    // 读完且没抛:对端正常关闭了通道 —— 远端 shell 自己退了。
-                    EndRead(ShellCloseReason.RemoteExited);
+                    // 读完且没抛:看库记下的关闭原因,不靠管道的结束方式反推(W7)。
+                    EndRead(FromChannel(_shell.Channel.CloseReason));
                     return 0;
                 }
 
@@ -116,6 +116,18 @@ public sealed class ShellStreamWrapper : IShellStreamWrapper
         catch (InvalidOperationException) { EndRead(ShellCloseReason.LocalTeardown); return 0; }
         catch (OperationCanceledException) { EndRead(ShellCloseReason.LocalTeardown); return 0; }
     }
+
+    /// <summary>库记下的通道关闭原因换成终端流的结束原因。</summary>
+    /// <remarks>
+    /// 会话没了是断线(自动重连该管),本端关的是拆除;对端关的、以及只收到 EOF 还没收到 CLOSE 的(<see cref="SshChannelCloseReason.Unknown" />),
+    /// 是远端 shell 自己退了 —— 用户在远端敲了 <c>exit</c>,不该再把他连回去(#383)。
+    /// </remarks>
+    internal static ShellCloseReason FromChannel(SshChannelCloseReason reason) => reason switch
+    {
+        SshChannelCloseReason.SessionClosed => ShellCloseReason.ConnectionLost,
+        SshChannelCloseReason.ClosedLocally => ShellCloseReason.LocalTeardown,
+        _ => ShellCloseReason.RemoteExited,
+    };
 
     /// <summary>标记读端到此为止,并记下第一次给出的原因(后续读一律短路,不再改写)。</summary>
     private void EndRead(ShellCloseReason reason)
