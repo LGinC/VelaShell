@@ -24,6 +24,26 @@ internal sealed record RemoteIdentityMap(
         new Dictionary<string, int>(),
         new Dictionary<string, int>());
 
+    /// <summary>补进几条 id → 名称(表里已有的不动);名称 → id 的反查表跟着补。</summary>
+    public RemoteIdentityMap With(IEnumerable<KeyValuePair<int, string>> users, IEnumerable<KeyValuePair<int, string>> groups)
+    {
+        Dictionary<int, string> u = new(Users);
+        Dictionary<int, string> g = new(Groups);
+        Dictionary<string, int> uid = new(UserIds, StringComparer.Ordinal);
+        Dictionary<string, int> gid = new(GroupIds, StringComparer.Ordinal);
+        foreach ((int id, string name) in users)
+        {
+            u.TryAdd(id, name);
+            uid.TryAdd(name, id);
+        }
+        foreach ((int id, string name) in groups)
+        {
+            g.TryAdd(id, name);
+            gid.TryAdd(name, id);
+        }
+        return new(u, g, uid, gid);
+    }
+
     /// <summary>取 UID 对应的用户名;查不到则回退十进制数字(与 ls -n 的显示一致)。</summary>
     public string UserName(int uid) =>
         Users.TryGetValue(uid, out string? name) ? name : uid.ToString(CultureInfo.InvariantCulture);
@@ -100,7 +120,81 @@ internal sealed class RemoteIdentityResolver(ISshConnectionService connectionSer
         _cache.GetOrAdd(sessionId, static (id, self) => self.LoadAsync(id), this);
 
     /// <summary>丢弃会话的映射缓存(会话关闭时调用;重连后会重新查表)。</summary>
-    public void Invalidate(Guid sessionId) => _cache.TryRemove(sessionId, out _);
+    public void Invalidate(Guid sessionId)
+    {
+        _cache.TryRemove(sessionId, out _);
+        _asked.TryRemove(sessionId, out _);
+    }
+
+    /// <summary>经 SFTP 扩展问过的 id(含服务端也不认识的):每个 id 每个会话只问一次。</summary>
+    private readonly ConcurrentDictionary<Guid, AskedIds> _asked = new();
+
+    private sealed class AskedIds
+    {
+        public HashSet<int> Users { get; } = [];
+        public HashSet<int> Groups { get; } = [];
+        public Lock Gate { get; } = new();
+    }
+
+    /// <summary>
+    /// 取映射,并把这次要显示的 id 里表中没有的,经 SFTP 的 <c>users-groups-by-id@openssh.com</c> 补上。
+    /// </summary>
+    /// <remarks>
+    /// 有 exec 的会话整表一次读回,基本用不上它;只开了 SFTP 的账号(chroot 的 internal-sftp)查不了 passwd,
+    /// 属主一栏原来只能显示数字。每个 id 每个会话只问一次(服务端也不认识的同样不再问),补上的进会话缓存,
+    /// 之后切目录零额外往返。服务端不支持、查失败时就是原来的映射。
+    /// </remarks>
+    public async Task<RemoteIdentityMap> FillAsync(
+        Guid sessionId, ISftpClientWrapper client, IEnumerable<int> userIds, IEnumerable<int> groupIds,
+        CancellationToken cancellationToken)
+    {
+        RemoteIdentityMap map = await GetAsync(sessionId).ConfigureAwait(false);
+        if (!client.SupportsIdLookup)
+        {
+            return map;
+        }
+
+        AskedIds asked = _asked.GetOrAdd(sessionId, static _ => new AskedIds());
+        int[] users;
+        int[] groups;
+        lock (asked.Gate)
+        {
+            users = [.. userIds.Distinct().Where(id => !map.Users.ContainsKey(id) && asked.Users.Add(id))];
+            groups = [.. groupIds.Distinct().Where(id => !map.Groups.ContainsKey(id) && asked.Groups.Add(id))];
+        }
+        if (users.Length == 0 && groups.Length == 0)
+        {
+            return map;
+        }
+
+        (IReadOnlyList<string?> userNames, IReadOnlyList<string?> groupNames) =
+            await client.LookupNamesAsync(users, groups, cancellationToken).ConfigureAwait(false);
+        KeyValuePair<int, string>[] newUsers = [.. Named(users, userNames)];
+        KeyValuePair<int, string>[] newGroups = [.. Named(groups, groupNames)];
+        if (newUsers.Length == 0 && newGroups.Length == 0)
+        {
+            return map;
+        }
+
+        // 并发的两次补齐各补各的:在缓存里最新的那张表上合并,而不是谁后写谁赢。
+        Task<RemoteIdentityMap> merged = _cache.AddOrUpdate(
+            sessionId,
+            _ => Task.FromResult(map.With(newUsers, newGroups)),
+            (_, existing) => Task.FromResult(
+                (existing.IsCompletedSuccessfully ? existing.Result : map).With(newUsers, newGroups)));
+        return await merged.ConfigureAwait(false);
+
+        static IEnumerable<KeyValuePair<int, string>> Named(int[] ids, IReadOnlyList<string?> names)
+        {
+            for (int i = 0; i < ids.Length && i < names.Count; i++)
+            {
+                if (names[i] is { Length: > 0 } name)
+                {
+                    yield return new(ids[i], name);
+                }
+            }
+        }
+    }
 
     private async Task<RemoteIdentityMap> LoadAsync(Guid sessionId)
     {

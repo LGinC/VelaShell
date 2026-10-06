@@ -193,6 +193,42 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     }
 
     /// <inheritdoc />
+    public bool SupportsIdLookup => _fs is { } fs && fs.Capabilities.HasUsersGroupsById;
+
+    /// <inheritdoc />
+    public async Task<(IReadOnlyList<string?> Users, IReadOnlyList<string?> Groups)> LookupNamesAsync(
+        IReadOnlyList<int> userIds, IReadOnlyList<int> groupIds, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(userIds);
+        ArgumentNullException.ThrowIfNull(groupIds);
+        string?[] users = new string?[userIds.Count];
+        string?[] groups = new string?[groupIds.Count];
+        if (_fs is not { } fs || !fs.Capabilities.HasUsersGroupsById)
+        {
+            return (users, groups);
+        }
+
+        // 一次最多问 MaxIdsPerLookup 个:多了分批。id 在宿主里是 int(与 SftpEntry 一致),线上是 uint32。
+        int batch = SftpFileSystem.MaxIdsPerLookup;
+        try
+        {
+            for (int start = 0; start < Math.Max(userIds.Count, groupIds.Count); start += batch)
+            {
+                uint[] u = [.. userIds.Skip(start).Take(batch).Select(static id => unchecked((uint)id))];
+                uint[] g = [.. groupIds.Skip(start).Take(batch).Select(static id => unchecked((uint)id))];
+                SftpIdNames names = await fs.LookupUserAndGroupNamesAsync(u, g, cancellationToken).ConfigureAwait(false);
+                names.UserNames.ToArray().CopyTo(users, start);
+                names.GroupNames.ToArray().CopyTo(groups, start);
+            }
+        }
+        catch (Exception ex) when (ex is SftpException or VelaShell.Ssh.Diagnostics.SshException)
+        {
+            // 查不到就显示数字,不该让列目录失败。
+        }
+        return (users, groups);
+    }
+
+    /// <inheritdoc />
     public bool SupportsServerCopy => _fs is { } fs && fs.Capabilities.HasCopyData;
 
     /// <inheritdoc />

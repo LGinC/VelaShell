@@ -83,9 +83,12 @@ public class SftpService : ISftpService
         ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         IEnumerable<SftpEntry> files = await client.ListDirectoryAsync(path, cancellationToken).ConfigureAwait(false);
 
-        // 属主/属组名要查远端 passwd 库(SFTP 只报数字 id):每会话查一次,查不到回退数字。
-        RemoteIdentityMap identities = await _identities.GetAsync(sessionId).ConfigureAwait(false);
-        return [.. files.Where(f => f.Name is not "." and not "..").Select(f => MapToRemoteFileInfo(f, identities))];
+        // 属主/属组名要查远端 passwd 库(SFTP 只报数字 id):每会话查一次;表里没有的(只开了 SFTP 的账号整张表都没有)
+        // 经 SFTP 扩展补上,还查不到就回退数字。
+        SftpEntry[] entries = [.. files.Where(f => f.Name is not "." and not "..")];
+        RemoteIdentityMap identities = await _identities.FillAsync(
+            sessionId, client, entries.Select(f => f.UserId), entries.Select(f => f.GroupId), cancellationToken).ConfigureAwait(false);
+        return [.. entries.Select(f => MapToRemoteFileInfo(f, identities))];
     }
 
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持取消。</summary>

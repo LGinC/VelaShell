@@ -869,6 +869,45 @@ public class SftpServiceTests
         Assert.AreEqual("33", result[0].Group);
     }
 
+    /// <summary>
+    /// 只开了 SFTP 的账号(没有 exec,查不了 passwd):表里没有的 id 经 SFTP 扩展(users-groups-by-id)补上 ——
+    /// 属主一栏原来只能显示数字。每个 id 每个会话只问一次,服务端也不认识的同样不再问。
+    /// </summary>
+    [TestMethod]
+    public async Task ListDirectoryAsync_SftpOnlyAccount_ResolvesNamesThroughTheSftpExtension()
+    {
+        ISshClientWrapper sshClient = Substitute.For<ISshClientWrapper>();
+        sshClient.RunCommandAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                 .ThrowsAsync(new InvalidOperationException("no exec channel"));
+        _connectionService.GetClient(_sessionId).Returns(sshClient);
+        _sftpClient.SupportsIdLookup.Returns(true);
+        _sftpClient.LookupNamesAsync(Arg.Any<IReadOnlyList<int>>(), Arg.Any<IReadOnlyList<int>>(), Arg.Any<CancellationToken>())
+                   .Returns(call =>
+                   {
+                       IReadOnlyList<int> uids = call.ArgAt<IReadOnlyList<int>>(0);
+                       IReadOnlyList<int> gids = call.ArgAt<IReadOnlyList<int>>(1);
+                       return Task.FromResult<(IReadOnlyList<string?>, IReadOnlyList<string?>)>((
+                           [.. uids.Select(u => u == 1000 ? "deploy" : null)],
+                           [.. gids.Select(g => g == 33 ? "www-data" : null)]));
+                   });
+        _sftpClient.ListDirectoryAsync(Arg.Any<string>(), Arg.Any<CancellationToken>())
+                   .Returns(Task.FromResult<IEnumerable<SftpEntry>>(
+                   [
+                       CreateMockSftpFile("app.log", "/srv/app.log", 10, false, "rw-r--r--") with { UserId = 1000, GroupId = 33 },
+                       CreateMockSftpFile("orphan", "/srv/orphan", 10, false, "rw-r--r--") with { UserId = 4242, GroupId = 33 },
+                   ]));
+
+        List<RemoteFileInfo> first = await _sftpService.ListDirectoryAsync(_sessionId, "/srv");
+        List<RemoteFileInfo> second = await _sftpService.ListDirectoryAsync(_sessionId, "/srv");
+
+        Assert.AreEqual("deploy", first[0].Owner);
+        Assert.AreEqual("www-data", first[0].Group);
+        Assert.AreEqual("4242", first[1].Owner, "服务端也不认识的回退数字");
+        Assert.AreEqual("deploy", second[0].Owner);
+        await _sftpClient.Received(1).LookupNamesAsync(
+            Arg.Any<IReadOnlyList<int>>(), Arg.Any<IReadOnlyList<int>>(), Arg.Any<CancellationToken>());
+    }
+
     /// <summary>整表只查一次:切目录不该每次都往返一条 getent。</summary>
     [TestMethod]
     public async Task ListDirectoryAsync_QueriesIdentityDatabaseOncePerSession()

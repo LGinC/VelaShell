@@ -125,6 +125,13 @@ public class SftpSymlinkIntegrationTests
             Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
             Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
 
+            // 属主名(users-groups-by-id):只开了 SFTP 的账号靠它显示名字。
+            Assert.IsTrue(sftp.SupportsIdLookup);
+            (IReadOnlyList<string?> users, IReadOnlyList<string?> groups) = await sftp.LookupNamesAsync([0, 4_242_424], [0]);
+            Assert.AreEqual("root", users[0]);
+            Assert.IsNull(users[1]);
+            Assert.AreEqual("root", groups[0]);
+
             // 服务端内复制(copy-data):数据不出服务器,复制出来的内容一致。
             Assert.IsTrue(sftp.SupportsServerCopy);
             string copySource = $"/tmp/vela-copy-{Guid.NewGuid():N}.bin";

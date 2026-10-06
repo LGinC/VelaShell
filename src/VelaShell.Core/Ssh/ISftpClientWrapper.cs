@@ -151,6 +151,16 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// </summary>
     Task CreateSymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken = default);
 
+    /// <summary>服务端能不能把数字 uid / gid 翻成名字(SFTP 的 <c>users-groups-by-id@openssh.com</c>)。</summary>
+    bool SupportsIdLookup { get; }
+
+    /// <summary>
+    /// 请服务端把数字 uid / gid 翻成名字,与传入的一一对应;服务端不认识的、查不了的为 <see langword="null" />(不抛)。
+    /// </summary>
+    /// <remarks>只开了 SFTP、没有 exec 的账号查不了 passwd 库,属主一栏靠它才显示得出名字。</remarks>
+    Task<(IReadOnlyList<string?> Users, IReadOnlyList<string?> Groups)> LookupNamesAsync(
+        IReadOnlyList<int> userIds, IReadOnlyList<int> groupIds, CancellationToken cancellationToken = default);
+
     /// <summary>服务端能不能在自己那边复制文件(SFTP 的 <c>copy-data</c>):能的话复制不必下载再上传。</summary>
     bool SupportsServerCopy { get; }
 
