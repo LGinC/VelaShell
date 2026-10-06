@@ -232,6 +232,8 @@ sed -i 's/^X11Forwarding .*/X11Forwarding yes/' "$conf"
 grep -q '^X11Forwarding yes' "$conf" || echo 'X11Forwarding yes' >> "$conf"
 grep -q '^X11UseLocalhost' "$conf" || echo 'X11UseLocalhost yes' >> "$conf"
 grep -q '^AllowStreamLocalForwarding' "$conf" || echo 'AllowStreamLocalForwarding yes' >> "$conf"
+# 服务端按字节数主动发起重协商：「开着压缩时服务端发起的重协商」那条用例靠它。
+grep -q '^RekeyLimit' "$conf" || echo 'RekeyLimit 1M' >> "$conf"
 
 kill -HUP "$pid"
 

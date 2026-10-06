@@ -77,13 +77,27 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>
+    /// <c>VELASHELL_SSH_INTEROP_KEY_ONLY=1</c> 时默认凭据改用 <see cref="KeyPath"/> 的私钥，而不是口令 ——
+    /// 本机没有 Docker、在 WSL 里起一台非 root 的 sshd 时用：非 root 的 sshd 只能让它自己那个用户登录，而且验不了口令。
+    /// </summary>
+    private static readonly Lazy<InMemorySshSigner?> KeyOnlySigner = new(() =>
+        Environment.GetEnvironmentVariable("VELASHELL_SSH_INTEROP_KEY_ONLY") == "1" && KeyPath is { } path
+            ? SshPrivateKeyFile.Parse(File.ReadAllText(path), passphrase: null, path)
+            : null);
+
+    private static IReadOnlyList<SshCredential> DefaultCredentials() =>
+        KeyOnlySigner.Value is { } signer
+            ? [new PublicKeyCredential(signer, KeyPath!)]
+            : [new PasswordCredential(Password)];
+
     private static SshConnectionOptions Options(
         SshAlgorithmSet? algorithms = null, IReadOnlyList<SshCredential>? credentials = null) =>
         new(User, Host, Port)
         {
             // 互操作测试里服务端每次重建，主机密钥每次都变 —— 这里不是在测 TOFU。
             HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
-            Credentials = credentials ?? [new PasswordCredential(Password)],
+            Credentials = credentials ?? DefaultCredentials(),
             Algorithms = algorithms ?? SshAlgorithmSet.Default,
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
@@ -108,7 +122,8 @@ public sealed class OpenSshInteropTests
     {
         RequireServer();
 
-        List<string> failed = [];
+        List<string> unsupported = [];
+        List<string> broken = [];
 
         foreach (string kex in SshAlgorithmSet.Default.KeyExchange)
         {
@@ -124,23 +139,38 @@ public sealed class OpenSshInteropTests
                 await using SshConnection connection = await SshConnection.ConnectAsync(Options(only));
                 SshCommandResult r = await connection.RunAsync("true");
                 Assert.AreEqual(0, r.ExitCode, kex);
+                Assert.AreEqual(kex, connection.Algorithms.KeyExchange, "谈成的不是要求的那一个");
+            }
+            catch (SshNegotiationException ex)
+            {
+                // 对端不支持某个算法是**正常的**（比如老 OpenSSH 没有后量子混合）—— 只有协商不成才算这一类。
+                unsupported.Add($"{kex}：{ex.Message}");
             }
             catch (SshException ex)
             {
-                // 对端不支持某个算法是**正常的**（比如老 OpenSSH 没有后量子混合）。
-                // 记下来一起报，别一个失败就中断整张矩阵。
-                failed.Add($"{kex}：{ex.Message}");
+                // 谈成了却失败（验签失败、MAC 错、共享密钥算错）是我们坏了，不是对端不支持。
+                // 曾经这里一概 catch (SshException)，再只要求「至少一个能通」—— sntrup761、ecdh-nistp384/521、
+                // DH 坏了照样绿。
+                broken.Add($"{kex}：{ex.Reason} {ex.Message}");
             }
         }
 
-        // 至少要有一个能通 —— 一个都不通说明不是「对端不支持」，是我们坏了。
-        Assert.IsLessThan(
-            SshAlgorithmSet.Default.KeyExchange.Count, failed.Count,
-            "没有任何一种密钥交换能与对端握手：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+        Assert.IsEmpty(broken,
+            "这些密钥交换谈成了却握不了手：" + Environment.NewLine + string.Join(Environment.NewLine, broken));
 
-        Console.WriteLine(failed.Count == 0
+        // curve25519 与 ECDH 是 OpenSSH 各版本默认都开着的，必须能通：它们「不支持」只能是我们的清单或协商出了错。
+        // 有限域 DH 不在其列 —— OpenSSH 10.0 的 sshd 默认已经不开它了。
+        string[] required =
+        [
+            SshAlgorithmNames.Curve25519Sha256, SshAlgorithmNames.EcdhSha2Nistp256, SshAlgorithmNames.EcdhSha2Nistp384,
+            SshAlgorithmNames.EcdhSha2Nistp521,
+        ];
+        Assert.IsFalse(unsupported.Any(u => required.Any(r => u.StartsWith(r + "：", StringComparison.Ordinal))),
+            "OpenSSH 默认就支持的密钥交换谈不成：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
+
+        Console.WriteLine(unsupported.Count == 0
             ? "全部密钥交换算法都通过了。"
-            : "对端不支持这些（可能是正常的）：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+            : "对端不支持这些（可能是正常的）：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
     }
 
     [TestMethod]
@@ -148,7 +178,7 @@ public sealed class OpenSshInteropTests
     {
         RequireServer();
 
-        List<string> failed = [];
+        List<string> unsupported = [];
 
         foreach (string cipher in SshAlgorithmSet.Default.EncryptionClientToServer)
         {
@@ -164,15 +194,62 @@ public sealed class OpenSshInteropTests
                 SshCommandResult r = await connection.RunAsync("echo ok");
                 Assert.AreEqual("ok\n", r.StandardOutput, cipher);
             }
-            catch (SshException ex)
+            catch (SshNegotiationException ex)
             {
-                failed.Add($"{cipher}：{ex.Message}");
+                unsupported.Add($"{cipher}：{ex.Message}");
             }
         }
 
-        Assert.IsLessThan(
-            SshAlgorithmSet.Default.EncryptionClientToServer.Count, failed.Count,
-            "没有任何一种加密算法能与对端收发：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+        // 谈成了却收发失败的直接让用例失败（异常不接）；协商不成的只报出来。
+        // 默认清单里的加密算法 OpenSSH 6.5 起全都支持，一个都不该谈不成。
+        Assert.IsEmpty(unsupported,
+            "这些加密算法与对端谈不成：" + Environment.NewLine + string.Join(Environment.NewLine, unsupported));
+    }
+
+    /// <summary>
+    /// 每一种 MAC 都与真实的 OpenSSH 对一遍（固定用 aes256-ctr，这样 MAC 才真的被协商出来）。
+    /// 曾经加密矩阵只变密码，CTR 下总是谈成 hmac-sha2-256-etm：sha2-512-etm、整条 MtE 路径（hmac-sha2-256/512）、
+    /// hmac-sha1(-etm) 都只与本库自己的另一半对过 —— 两边错得一样时往返测试测不出来。
+    /// </summary>
+    [TestMethod]
+    public async Task 每一种MAC都能与OpenSSH收发()
+    {
+        RequireServer();
+
+        List<string> failed = [];
+        foreach (string mac in SshAlgorithmSet.Default.WithLegacyInterop().MacClientToServer)
+        {
+            SshAlgorithmSet only = SshAlgorithmSet.Default with
+            {
+                EncryptionClientToServer = [SshAlgorithmNames.Aes256Ctr],
+                EncryptionServerToClient = [SshAlgorithmNames.Aes256Ctr],
+                MacClientToServer = [mac],
+                MacServerToClient = [mac],
+            };
+
+            try
+            {
+                await using SshConnection connection = await SshConnection.ConnectAsync(Options(only));
+                Assert.AreEqual(mac, connection.Algorithms.MacClientToServer, "谈成的不是要求的那个 MAC");
+
+                // 两个方向各走一大段（几百个报文），不止一两个报文。
+                SshCommandResult bulk = await connection.RunAsync("head -c 262144 /dev/zero | tr '\\0' 'm'");
+                Assert.AreEqual(256 * 1024, bulk.StandardOutput.Length, mac);
+
+                await using SshCommand echo = await connection.ExecuteAsync("wc -c");
+                await echo.StandardInput.WriteAsync(new byte[200 * 1024]);
+                await echo.CompleteStandardInputAsync();
+                (_, string counted, _) = await echo.ReadToEndAsync();
+                Assert.AreEqual("204800", counted.Trim(), mac);
+            }
+            catch (SshException ex)
+            {
+                failed.Add($"{mac}：{ex.Reason} {ex.Message}");
+            }
+        }
+
+        Assert.IsEmpty(failed,
+            "这些 MAC 与 OpenSSH 收发失败：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
     }
 
     [TestMethod]
@@ -228,6 +305,46 @@ public sealed class OpenSshInteropTests
 
         Assert.IsEmpty(failed,
             "这些加密算法在重协商之后收发失败：" + Environment.NewLine + string.Join(Environment.NewLine, failed));
+    }
+
+    /// <summary>
+    /// 开着压缩跑大块传输，让服务端按它自己的 <c>RekeyLimit</c> 发起重协商：换钥前后的压缩流与新钥都要对得上。
+    /// 曾经「重协商 + zlib@openssh.com」与服务端发起的重协商只与本库自己的测试桩对过。
+    /// </summary>
+    /// <remarks>
+    /// 要服务端配了 <c>RekeyLimit</c>（自家镜像与 <c>Start-TestServer.ps1 -X11</c> 配的是 1M）；没配、一次重协商都没发生时
+    /// 报 Inconclusive，而不是当成通过 —— 数据对上了也说明不了换钥这一段。
+    /// </remarks>
+    [TestMethod]
+    public async Task 开着压缩时服务端发起的重协商照常收发()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options(SshAlgorithmSet.Default.WithCompression()));
+        Assert.AreEqual(SshAlgorithmNames.ZlibOpenSsh, connection.Algorithms.CompressionServerToClient, "前提：压缩谈成了");
+
+        // 随机数据压不小：base64 之后 8 MiB，越过服务端的 RekeyLimit 好几次。
+        SshCommandResult bulk = await connection.RunAsync("head -c 6291456 /dev/urandom | base64 -w0");
+        Assert.AreEqual(0, bulk.ExitCode, bulk.StandardError);
+        Assert.AreEqual(8 * 1024 * 1024, bulk.StandardOutput.Length);
+        Assert.IsTrue(bulk.StandardOutput.All(c => char.IsAsciiLetterOrDigit(c) || c is '+' or '/'), "换钥前后的数据要一字节不差");
+
+        // 反方向也走一大段：换钥之后我们发的压缩流对端要解得开。
+        byte[] upload = new byte[3 * 1024 * 1024];
+        Random.Shared.NextBytes(upload);
+        await using (SshCommand count = await connection.ExecuteAsync("wc -c"))
+        {
+            await count.StandardInput.WriteAsync(upload);
+            await count.CompleteStandardInputAsync();
+            (_, string counted, _) = await count.ReadToEndAsync();
+            Assert.AreEqual(upload.Length.ToString(CultureInfo.InvariantCulture), counted.Trim());
+        }
+
+        if (connection.RekeyCount == 0)
+        {
+            Assert.Inconclusive("服务端一次重协商都没发起 —— 它没配 RekeyLimit，换钥这一段没跑到。");
+        }
+        Assert.IsTrue(connection.IsAlive);
     }
 
     [TestMethod]
@@ -637,7 +754,7 @@ public sealed class OpenSshInteropTests
         SshConnectionOptions target = new(User, "127.0.0.1", 2222)
         {
             HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
-            Credentials = [new PasswordCredential(Password)],
+            Credentials = DefaultCredentials(),
             Dialer = Ssh.Transport.DialerChain.Jump(Options()),
             ConnectTimeout = TimeSpan.FromSeconds(30),
         };
