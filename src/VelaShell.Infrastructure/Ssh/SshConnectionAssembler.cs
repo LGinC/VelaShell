@@ -163,6 +163,7 @@ internal static class SshConnectionAssembler
                 // 而不放开这一项,RSA 私钥登录必然失败。库在对端不发 server-sig-algs 时会先试 SHA-2、被拒再降级一次。
                 AllowSha1RsaSignatures = info.Ssh?.LegacyAlgorithms == true,
                 BannerHandler = banners.OnBannerAsync,
+                PreAuthBannerHandler = banners.OnPreAuthBannerAsync,
             };
 
             SshConnection connection;

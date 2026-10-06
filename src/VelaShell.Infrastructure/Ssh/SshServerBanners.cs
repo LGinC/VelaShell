@@ -9,6 +9,10 @@ namespace VelaShell.Infrastructure.Ssh;
 /// 曾经宿主不设 <c>BannerHandler</c>,横幅被静默丢掉 —— 而那常常正是服务端唯一一次告诉用户「密码快过期了」。
 /// 横幅来自<b>未认证</b>的对端,是注入面:逐行把控制字符与双向控制符换成 ?(终端转义序列就此失效,规则是库的 PeerText)再交出去,
 /// 行数与行长都有上限。跳板链上每一跳的横幅都收,按到达的先后。
+/// <para>
+/// 版本交换之前的前导行(有的设备在标识串之前就打印法律声明、维护公告,规格 02 §3)也收进来,
+/// 排在那一跳认证横幅的前面 —— 曾经库把它们收集起来却没人接,用户看不到。
+/// </para>
 /// </remarks>
 public sealed class SshServerBanners
 {
@@ -35,6 +39,10 @@ public sealed class SshServerBanners
         }
         return ValueTask.CompletedTask;
     }
+
+    /// <summary>当成 <c>SshConnectionOptions.PreAuthBannerHandler</c> 用:标识串之前的前导行,当成一段横幅收下。</summary>
+    public ValueTask OnPreAuthBannerAsync(IReadOnlyList<string> lines, CancellationToken cancellationToken) =>
+        OnBannerAsync(string.Join('\n', lines), cancellationToken);
 
     /// <summary>取走已收到的横幅,一行一条提示;只交出一次(之后再开的 shell 不重复显示)。</summary>
     public IReadOnlyList<ShellStreamNotice> TakeNotices()

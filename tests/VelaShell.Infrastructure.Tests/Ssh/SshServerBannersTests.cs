@@ -26,6 +26,22 @@ public sealed class SshServerBannersTests
         Assert.DoesNotContain(n => n.IsWarning, notices);
     }
 
+    /// <summary>标识串之前的前导行(规格 02 §3)排在认证横幅前面,同样逐行清洗。</summary>
+    [TestMethod]
+    public async Task 标识串之前的前导行排在认证横幅前面()
+    {
+        SshServerBanners banners = new();
+        await banners.OnPreAuthBannerAsync(["Maintenance tonight 22:00.", "\e[31mRed"], CancellationToken.None);
+        await banners.OnBannerAsync("Authorized use only.\n", CancellationToken.None);
+
+        string[] texts = [.. banners.TakeNotices().Select(n => n.Text)];
+
+        Assert.HasCount(3, texts);
+        Assert.AreEqual("Maintenance tonight 22:00.", texts[0]);
+        Assert.DoesNotContain("\e", texts[1]);
+        Assert.AreEqual("Authorized use only.", texts[2]);
+    }
+
     /// <summary>横幅来自未认证的对端:终端控制序列与双向控制符不许原样进终端。</summary>
     [TestMethod]
     public async Task 控制字符与双向控制符被去掉()
