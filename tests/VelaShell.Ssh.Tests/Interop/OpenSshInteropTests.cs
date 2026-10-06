@@ -1384,6 +1384,40 @@ public sealed class OpenSshInteropTests
         }
     }
 
+    /// <summary>
+    /// Windows CNG 密钥库里<b>不可导出</b>的钥登录真 sshd：公钥临时加进 authorized_keys，只给这一个凭据去连，签名由密钥库做。
+    /// </summary>
+    [TestMethod]
+    public async Task 用CNG密钥库里不可导出的钥登录真sshd()
+    {
+        RequireServer();
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("CNG 只在 Windows 上。");
+            return;
+        }
+
+        string name = Auth.CngSignerTests.CreateKey(System.Security.Cryptography.CngAlgorithm.Rsa, 3072);
+        await using SshConnection admin = await SshConnection.ConnectAsync(Options());
+        string marker = $"vela-cng-{Guid.NewGuid():N}";
+        try
+        {
+            using CngSshSigner signer = CngSshSigner.Open(name);
+            SshCommandResult added = await admin.RunAsync(
+                $"mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{signer.PublicKey.ToOpenSshFormat()} {marker}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys");
+            Assert.AreEqual(0, added.ExitCode, added.StandardError);
+
+            await using SshConnection connection = await SshConnection.ConnectAsync(
+                Options(credentials: [new PublicKeyCredential(signer)]));
+            Assert.AreEqual("cng", (await connection.RunAsync("echo cng")).StandardOutput.Trim());
+        }
+        finally
+        {
+            await admin.RunAsync($"sed -i '/{marker}/d' ~/.ssh/authorized_keys");
+            Auth.CngSignerTests.DeleteKey(name);
+        }
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {
