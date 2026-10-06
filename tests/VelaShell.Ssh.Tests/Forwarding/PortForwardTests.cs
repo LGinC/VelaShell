@@ -13,6 +13,7 @@ using System.Net.Sockets;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
+using VelaShell.Ssh.Config;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.HostKeys;
@@ -1423,5 +1424,62 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
             await Task.Delay(10, harness.Token);
         }
         Assert.IsEmpty(forwarder.Connections, "搬完就从快照里摘掉");
+    }
+
+    // ------------------------------------------------------------ ssh_config 里的转发
+
+    /// <summary>配置里的三种转发都起得来：本地（端口 0）、动态、远程（服务端分配端口）；种类对得上。</summary>
+    [TestMethod]
+    public async Task 配置里的转发一起起来()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34590 });
+        SshHostConfig config = SshConfigFile.Resolve(SshConfigFile.Parse("""
+            Host h
+                LocalForward 127.0.0.1:0 db.internal:5432
+                DynamicForward 0
+                RemoteForward 0 localhost:22
+            """), "h");
+
+        IReadOnlyList<PortForwarder> started = await SshConfigFile.StartForwardsAsync(harness.Connection, config, cancellationToken: harness.Token);
+        try
+        {
+            Assert.AreSequenceEqual([ForwardKind.Local, ForwardKind.Remote, ForwardKind.Dynamic], [.. started.Select(f => f.Kind)]);
+            Assert.AreEqual(34590, ((RemotePortForwarder)started[1]).BoundPort);
+            Assert.IsTrue(started.All(f => f.IsActive));
+        }
+        finally
+        {
+            foreach (PortForwarder forwarder in started)
+            {
+                await forwarder.DisposeAsync();
+            }
+        }
+    }
+
+    /// <summary>
+    /// 服务端拒了远程转发：没开 ExitOnForwardFailure 时报给回调、其余照起；开了就把已起的全部撤掉、整体失败（消息里有那一行）。
+    /// </summary>
+    [TestMethod]
+    public async Task 配置里的转发起不来时按ExitOnForwardFailure处理()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript());
+        const string Forwards = """
+                LocalForward 127.0.0.1:0 db.internal:5432
+                RemoteForward 0 localhost:22
+            """;
+
+        SshHostConfig lenient = SshConfigFile.Resolve(SshConfigFile.Parse("Host h\n" + Forwards), "h");
+        List<string> failed = [];
+        IReadOnlyList<PortForwarder> started = await SshConfigFile.StartForwardsAsync(
+            harness.Connection, lenient, (forward, _) => failed.Add(forward.Line), harness.Token);
+        Assert.HasCount(1, started);
+        Assert.AreSequenceEqual(["0 localhost:22"], failed.ToArray());
+        await started[0].DisposeAsync();
+
+        SshHostConfig strict = SshConfigFile.Resolve(SshConfigFile.Parse("Host h\n    ExitOnForwardFailure yes\n" + Forwards), "h");
+        SshForwardException failure = await Assert.ThrowsAsync<SshForwardException>(
+            async () => await SshConfigFile.StartForwardsAsync(harness.Connection, strict, cancellationToken: harness.Token));
+        Assert.AreEqual(Diagnostics.SshFailureReason.ForwardSetupFailed, failure.Reason);
+        StringAssert.Contains(failure.Message, "0 localhost:22");
     }
 }

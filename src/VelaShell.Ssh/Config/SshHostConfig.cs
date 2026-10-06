@@ -264,6 +264,58 @@ public sealed class SshHostConfig
     /// <summary><c>Compression</c>。</summary>
     public bool Compression => IsYes(First("Compression"));
 
+    /// <summary><c>GatewayPorts</c>：本地转发没写监听地址时绑全部网卡而不是环回。</summary>
+    public bool GatewayPorts => IsYes(First("GatewayPorts"));
+
+    /// <summary><c>ExitOnForwardFailure</c>：配置里的转发有一条起不来就整体失败（脚本与自动化场景要它）。</summary>
+    public bool ExitOnForwardFailure => IsYes(First("ExitOnForwardFailure"));
+
+    /// <summary><c>ClearAllForwardings</c>：不起配置里的任何转发。</summary>
+    public bool ClearAllForwardings => IsYes(First("ClearAllForwardings"));
+
+    /// <summary>
+    /// 配置里的转发（<c>LocalForward</c> / <c>RemoteForward</c> / <c>DynamicForward</c>，按种类、各自按出现顺序），解析成结构化的两头。
+    /// <c>ClearAllForwardings yes</c> 时为空。
+    /// </summary>
+    /// <exception cref="Diagnostics.SshConnectException">某一条写法不对（<see cref="Diagnostics.SshFailureReason.InvalidConfiguration"/>）。</exception>
+    /// <remarks>与其它键不同，这三个键是<b>累加</b>的：每一行都是一条转发（ssh_config(5)）。</remarks>
+    public IReadOnlyList<SshConfigForward> GetForwards() =>
+        ClearAllForwardings
+            ? []
+            :
+            [
+                .. All("LocalForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Local, v)),
+                .. All("RemoteForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Remote, v)),
+                .. All("DynamicForward").Select(v => SshConfigForward.Parse(SshConfigForwardKind.Dynamic, v)),
+            ];
+
+    /// <summary>
+    /// <c>PermitRemoteOpen</c>：远程动态转发的放行名单。没写时是 <see cref="Forwarding.RemoteOpenPolicy.Any"/>（OpenSSH 的默认）——
+    /// 写进配置的 <c>RemoteForward 端口</c> 就是配置作者的明确选择；<c>any</c> / <c>none</c> 照字面。
+    /// </summary>
+    /// <exception cref="Diagnostics.SshConnectException">规则写法不对（<see cref="Diagnostics.SshFailureReason.InvalidConfiguration"/>）。</exception>
+    public Forwarding.RemoteOpenPolicy GetPermitRemoteOpen()
+    {
+        string? value = First("PermitRemoteOpen");
+        if (value is null || value.Trim().Equals("any", StringComparison.OrdinalIgnoreCase))
+        {
+            return Forwarding.RemoteOpenPolicy.Any;
+        }
+        if (value.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return Forwarding.RemoteOpenPolicy.None;
+        }
+        try
+        {
+            return Forwarding.RemoteOpenPolicy.Allow(value.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries));
+        }
+        catch (ArgumentException ex)
+        {
+            throw new Diagnostics.SshConnectException(Diagnostics.SshFailureReason.InvalidConfiguration, Diagnostics.SshPhase.Dialing,
+                $"PermitRemoteOpen 写得不对：{ex.Message}", ex);
+        }
+    }
+
     /// <summary><c>ServerAliveInterval</c>（秒，<c>0</c> = 关）。</summary>
     public int ServerAliveInterval =>
         int.TryParse(
