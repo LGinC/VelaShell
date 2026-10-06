@@ -2464,7 +2464,7 @@
     <value>鍵を自動的に Agent に追加</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// 秘密鍵ファイルでのログインに成功した後、その鍵をローカルの ssh-agent に追加します(OpenSSH の AddKeysToAgent と同じ)。agent 転送や他のツールから利用できます。鍵は ssh-add -d で削除するまで agent に残り、Windows の agent では再起動後も保持されます</value>
+    <value>// 秘密鍵ファイルまたは証明書でのログインに成功した後、その鍵を(証明書と一緒に)ローカルの ssh-agent に追加します(OpenSSH の AddKeysToAgent と同じ)。agent 転送や他のツールから利用できます。鍵は ssh-add -d で削除するまで agent に残り、Windows の agent では再起動後も保持されます</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>

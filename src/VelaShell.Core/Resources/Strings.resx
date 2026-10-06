@@ -2626,7 +2626,7 @@ Paste anyway?</value>
     <value>Add keys to the agent automatically</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// After signing in with a private key file, add that key to the local ssh-agent (like OpenSSH AddKeysToAgent) so agent forwarding and other tools can use it. The key stays in the agent until removed with ssh-add -d; the Windows agent keeps it across reboots</value>
+    <value>// After signing in with a private key file or a certificate, add that key (together with its certificate) to the local ssh-agent (like OpenSSH AddKeysToAgent) so agent forwarding and other tools can use it. The key stays in the agent until removed with ssh-add -d; the Windows agent keeps it across reboots</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>

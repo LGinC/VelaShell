@@ -134,7 +134,7 @@ internal static class SshConnectionAssembler
         // 私钥签名器归这一次建连所有:连接建好(或失败)之后就不再需要它(重协商不会重新认证),
         // 在 finally 里释放 —— 它释放时把私钥材料清零。交给后台「自动加钥」的那一把除外,由它用完再释放。
         IReadOnlyList<SshCredential> credentials = [];
-        InMemorySshSigner? handedToAgentLoader = null;
+        ISshSigner? handedToAgentLoader = null;
         try
         {
             if (info.AuthMethod == AuthMethod.Agent)
@@ -189,7 +189,7 @@ internal static class SshConnectionAssembler
             // 「自动加载密钥到 Agent」:认证成功之后才加(配错的钥不该进 agent),而且丢到后台 ——
             // agent 没在跑时要等满三秒才知道,那段等待不该落在连接路径上。
             if (AddKeysToAgent(settings)
-                && SshAgentKeyLoader.TryGetKeyToAdd(info, credentials, out InMemorySshSigner key, out string comment))
+                && SshAgentKeyLoader.TryGetKeyToAdd(info, credentials, out ISshSigner key, out string comment))
             {
                 handedToAgentLoader = key;
                 _ = Task.Run(
@@ -201,7 +201,7 @@ internal static class SshConnectionAssembler
                         }
                         finally
                         {
-                            key.Dispose();
+                            ((IDisposable)key).Dispose();
                         }
                     },
                     CancellationToken.None);
@@ -226,7 +226,7 @@ internal static class SshConnectionAssembler
     /// agent 的签名器不归这里 —— 它背后的连接由 agent 客户端管。
     /// 曾经从不释放:私钥材料在托管堆上一直留到 GC,证书读失败时已经读出的私钥也留在原处。
     /// </remarks>
-    internal static void DisposeOwnedSigners(IReadOnlyList<SshCredential> credentials, InMemorySshSigner? except)
+    internal static void DisposeOwnedSigners(IReadOnlyList<SshCredential> credentials, ISshSigner? except)
     {
         foreach (SshCredential credential in credentials)
         {

@@ -2735,7 +2735,7 @@
     <value>自動將金鑰加入 Agent</value>
   </data>
   <data name="SetKeys_AddKeysToAgentDesc" xml:space="preserve">
-    <value>// 以私鑰檔登入成功後,將這把金鑰加入本機 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 轉送與其他工具使用。金鑰會一直留在 agent 中,直到以 ssh-add -d 移除;Windows 的 agent 重新開機後仍保留</value>
+    <value>// 以私鑰檔或憑證登入成功後,將這把金鑰(連同憑證)加入本機 ssh-agent(同 OpenSSH 的 AddKeysToAgent),供 agent 轉送與其他工具使用。金鑰會一直留在 agent 中,直到以 ssh-add -d 移除;Windows 的 agent 重新開機後仍保留</value>
   </data>
   <data name="SetKeys_AlgoEcdsa256" xml:space="preserve">
     <value>ECDSA 256</value>

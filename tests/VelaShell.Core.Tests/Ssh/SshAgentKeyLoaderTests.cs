@@ -33,6 +33,11 @@ public sealed class SshAgentKeyLoaderTests
 
         public void Hold(InMemorySshSigner key) => _blobs.Add(key.PublicKey.Blob.ToArray());
 
+        public void Hold(byte[] blob) => _blobs.Add(blob);
+
+        /// <summary>最近一次加钥报文里的密钥类型串。</summary>
+        public string? LastAddedKeyType { get; private set; }
+
         public ValueTask<SshAgentClient> ConnectAsync(CancellationToken cancellationToken)
         {
             (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
@@ -55,7 +60,7 @@ public sealed class SshAgentKeyLoaderTests
                     byte[] response = request[0] switch
                     {
                         11 => Identities(),
-                        17 => Add(),
+                        17 => Add(request),
                         _ => [5],
                     };
 
@@ -71,9 +76,11 @@ public sealed class SshAgentKeyLoaderTests
             }
         }
 
-        private byte[] Add()
+        private byte[] Add(byte[] request)
         {
             AddRequests++;
+            int typeLength = (int)BinaryPrimitives.ReadUInt32BigEndian(request.AsSpan(1));
+            LastAddedKeyType = Encoding.ASCII.GetString(request, 5, typeLength);
             return RejectAdditions ? [5] : [6];
         }
 
@@ -172,8 +179,39 @@ public sealed class SshAgentKeyLoaderTests
         Assert.AreEqual(SshAgentKeyLoader.Outcome.Failed, outcome);
     }
 
+    /// <summary>
+    /// 证书登录:给出的是证书签名器,加进 agent 的是「证书 + 私钥」(17 报文里的类型串是证书的),
+    /// agent 里已有这张证书时不再加。样本是真 ssh-keygen 签的那一份(借 SSH 库测试的 Keys/Fixtures)。
+    /// </summary>
     [TestMethod]
-    public void OnlyPrivateKeyAuthenticationOffersAKey()
+    public async Task CertificateLoginAddsTheCertificateTogetherWithItsKey()
+    {
+        string fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures");
+        InMemorySshSigner key = await SshPrivateKeyFile.LoadAsync(Path.Combine(fixtures, "cert-ed25519"));
+        OpenSshCertificate certificate = await OpenSshCertificate.LoadAsync(Path.Combine(fixtures, "cert-ed25519-cert.pub"));
+        using SshCertificateSigner signer = SshCertificateSigner.Create(certificate, key);
+        ConnectionInfo info = new()
+        {
+            Host = "h",
+            Username = "u",
+            AuthMethod = AuthMethod.Certificate,
+            PrivateKeyPath = "C:/keys/id_ed25519",
+        };
+
+        Assert.IsTrue(SshAgentKeyLoader.TryGetKeyToAdd(info, [new PublicKeyCredential(signer)], out ISshSigner offered, out string comment));
+        Assert.AreSame(signer, offered);
+        Assert.AreEqual("C:/keys/id_ed25519", comment);
+
+        FakeAgent agent = new();
+        Assert.AreEqual(SshAgentKeyLoader.Outcome.Added, await SshAgentKeyLoader.AddAsync(signer, comment, agent.ConnectAsync));
+        Assert.AreEqual("ssh-ed25519-cert-v01@openssh.com", agent.LastAddedKeyType);
+
+        agent.Hold(signer.PublicKey.Blob.ToArray());
+        Assert.AreEqual(SshAgentKeyLoader.Outcome.AlreadyPresent, await SshAgentKeyLoader.AddAsync(signer, comment, agent.ConnectAsync));
+    }
+
+    [TestMethod]
+    public void OnlyKeyAndCertificateAuthenticationOfferAKey()
     {
         using var key = InMemorySshSigner.GenerateEd25519();
         ConnectionInfo privateKey = new()
@@ -185,7 +223,7 @@ public sealed class SshAgentKeyLoaderTests
         };
 
         Assert.IsTrue(SshAgentKeyLoader.TryGetKeyToAdd(
-            privateKey, [new PublicKeyCredential(key, "C:/keys/id_ed25519")], out InMemorySshSigner offered, out string comment));
+            privateKey, [new PublicKeyCredential(key, "C:/keys/id_ed25519")], out ISshSigner offered, out string comment));
         Assert.AreSame(key, offered);
         Assert.AreEqual("C:/keys/id_ed25519", comment, "注释写私钥文件路径,与 ssh-add 一致");
 
@@ -195,11 +233,6 @@ public sealed class SshAgentKeyLoaderTests
         Assert.IsTrue(SshAgentKeyLoader.TryGetKeyToAdd(
             privateKey, [new PublicKeyCredential(key, "C:/keys/id_ed25519"), secondFactor], out offered, out _));
         Assert.AreSame(key, offered);
-
-        // 证书:签名器包着证书,库暂不支持「证书 + 私钥」的加钥格式。
-        ConnectionInfo certificate = new() { Host = "h", Username = "u", AuthMethod = AuthMethod.Certificate };
-        Assert.IsFalse(SshAgentKeyLoader.TryGetKeyToAdd(
-            certificate, [new PublicKeyCredential(key)], out _, out _));
 
         // 密码:没有钥。
         ConnectionInfo password = new() { Host = "h", Username = "u", AuthMethod = AuthMethod.Password };

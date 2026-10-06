@@ -481,6 +481,25 @@ public sealed class SshAgentClient : IAsyncDisposable
         return AddIdentityCoreAsync(key, certificate, comment, constraints, cancellationToken);
     }
 
+    /// <summary>把一个证书签名器（证书 + 进程内私钥）加进 agent。</summary>
+    /// <param name="certificate">证书签名器；证书与私钥是不是一对，造它时已经核对过。</param>
+    /// <param name="comment">注释。</param>
+    /// <param name="constraints">约束；<see langword="null"/> 或全空表示不带约束。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="ArgumentException">证书背后的私钥不在进程里（agent / 硬件里的钥加不了）。</exception>
+    /// <exception cref="SshAgentException">agent 拒绝了，或者通信失败。</exception>
+    public ValueTask AddIdentityAsync(
+        SshCertificateSigner certificate,
+        string comment,
+        SshAgentKeyConstraints? constraints = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(certificate);
+        return certificate.Inner is InMemorySshSigner key
+            ? AddIdentityCoreAsync(key, certificate.PublicKey, comment, constraints, cancellationToken)
+            : throw new ArgumentException("证书背后的私钥不在进程里（在 agent 或硬件里），没有私钥可加。", nameof(certificate));
+    }
+
     private async ValueTask AddIdentityCoreAsync(
         InMemorySshSigner key,
         SshPublicKey? certificate,

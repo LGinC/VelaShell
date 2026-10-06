@@ -40,17 +40,17 @@ internal static class SshAgentKeyLoader
 
     /// <summary>这次连接该不该往 agent 里加钥;该加时给出要加的签名器与注释。</summary>
     /// <remarks>
-    /// 只认「私钥」认证:证书认证的签名器包着证书,库暂不支持「证书 + 私钥」的加钥格式;
-    /// 「SSH Agent」认证的钥本来就在 agent 里;密码认证没有钥。
+    /// 认「私钥」与「证书」两种认证:证书认证加的是「证书 + 私钥」(<c>ssh-add</c> 遇到同名 <c>-cert.pub</c> 时做的事),
+    /// 之后经 agent 也能用证书登录。「SSH Agent」认证的钥本来就在 agent 里;密码认证没有钥。
     /// 钥是凭据列表的第一条,后面可能还跟着一条 keyboard-interactive(钥 + 动态码的第二步)。
     /// </remarks>
     internal static bool TryGetKeyToAdd(
-        VelaConnectionInfo info, IReadOnlyList<SshCredential> credentials, out InMemorySshSigner key, out string comment)
+        VelaConnectionInfo info, IReadOnlyList<SshCredential> credentials, out ISshSigner key, out string comment)
     {
-        if (info.AuthMethod == AuthMethod.PrivateKey
-            && credentials is [PublicKeyCredential { Signer: InMemorySshSigner signer }, ..])
+        if (info.AuthMethod is AuthMethod.PrivateKey or AuthMethod.Certificate
+            && credentials is [PublicKeyCredential { Signer: InMemorySshSigner or SshCertificateSigner } first, ..])
         {
-            key = signer;
+            key = first.Signer;
             comment = info.PrivateKeyPath ?? "";
             return true;
         }
@@ -60,12 +60,12 @@ internal static class SshAgentKeyLoader
         return false;
     }
 
-    /// <summary>把 <paramref name="key"/> 加进 agent;agent 里已有同一把钥时不重复加。</summary>
-    /// <param name="key">要加的私钥。</param>
+    /// <summary>把 <paramref name="key"/> 加进 agent;agent 里已有同一把钥(证书就看同一张证书)时不重复加。</summary>
+    /// <param name="key">要加的私钥,或者证书签名器(证书 + 私钥)。</param>
     /// <param name="comment">注释,<c>ssh-add -l</c> 显示的那一列;写私钥文件路径,与 <c>ssh-add</c> 一致。</param>
     /// <param name="connect">连本机 agent。</param>
     internal static async Task<Outcome> AddAsync(
-        InMemorySshSigner key,
+        ISshSigner key,
         string comment,
         Func<CancellationToken, ValueTask<SshAgentClient>> connect)
     {
@@ -83,7 +83,17 @@ internal static class SshAgentKeyLoader
                 return Outcome.AlreadyPresent;
             }
 
-            await agent.AddIdentityAsync(key, comment, cancellationToken: budget.Token).ConfigureAwait(false);
+            switch (key)
+            {
+                case SshCertificateSigner certificate:
+                    await agent.AddIdentityAsync(certificate, comment, cancellationToken: budget.Token).ConfigureAwait(false);
+                    break;
+                case InMemorySshSigner plain:
+                    await agent.AddIdentityAsync(plain, comment, cancellationToken: budget.Token).ConfigureAwait(false);
+                    break;
+                default:
+                    return Outcome.Failed;
+            }
             Trace.WriteLine($"[ssh-agent] 已把 {comment} 加入 {agent.Endpoint}");
             return Outcome.Added;
         }

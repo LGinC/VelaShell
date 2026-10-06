@@ -46,6 +46,9 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     /// <summary>被出示的那张证书。</summary>
     public OpenSshCertificate Certificate { get; }
 
+    /// <summary>证书里那把钥的签名器（往 agent 里加「证书 + 私钥」时要它的私钥）。</summary>
+    internal ISshSigner Inner => _inner;
+
     /// <summary>
     /// 认证时出示的「公钥」—— 它的 <see cref="SshPublicKey.Blob" /> 是整张证书。
     /// </summary>
