@@ -40,8 +40,8 @@
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | 一、欠账 | 4 | 2 | 9 | 9 | **24** |
-| 二、路线图 | — | 5 | 16 | 15 | **36** |
-| 三、文档待同步 | — | — | — | — | **27** |
+| 二、路线图 | — | 5 | 16 | 14 | **35** |
+| 三、文档待同步 | — | — | — | — | **28** |
 
 
 ---
@@ -198,7 +198,6 @@
 | ⏳ | 🟡 P2 | **主机证书（宿主侧）** | OpenSSH `@cert-authority` | **SSH 库已支持**（`plan.md` §113，velashell-docs `ssh/spec/03-key-exchange.md` §5.5）。宿主还用不上：`VelaHostKeyPolicy` 走自己的信任库（`IHostKeyService`），没有「受信 CA」的概念；证书目前按里面那把钥当普通主机密钥处理，默认算法清单里证书又排在后面，实际谈不成证书。要接：①信任库能存受信的主机 CA（手动添加，或从 `~/.ssh/known_hosts` 读 `@cert-authority`）；②`VelaHostKeyPolicy` 已实现 `IHostKeyTypePreference`（交出已记下的钥的类型，`ssh_plan.md` API-H4），还要在有对上的 CA 时把证书算法排前；③裁决时先用 `OpenSshCertificate.CheckHostCertificate` 验证书，CA 管的主机出示没有担保的钥**不退回 TOFU**（规格 §5.5 第 4 条）；④弹窗与设置页文案，五份 resx |
 | ⏳ | 🟡 P2 | **与 OpenSSH 互通：known_hosts 与 `~/.ssh/config`** | 各家都有 | known_hosts 现在只能在设置里看和删，导入 / 导出之后与命令行 ssh 共用一份信任基线（顺带喂给上一行的 `@cert-authority`）。`~/.ssh/config` 的导入已有（`plan.md` §58），反向的**导出**是同一条线 |
 | 💡 | 🟡 P2 | **团队共享配置（只读策略分发）** | Termius / Xshell 企业版 | 「运维组长发一份机器清单，组员只读订阅」。Gist 云同步的载荷格式与版本回溯现成，差的是**方向**：现在是「我的多设备漫游」，团队要的是「一处发布、多处只读」。⚠️ 这条会把产品推向企业形态，**先想清楚商业授权边界再动手** |
-| 💡 | 🟢 P3 | **后量子混合密钥交换 `mlkem768nistp256-sha256` / `mlkem1024nistp384-sha384`** | OpenSSH 10 | `mlkem768x25519-sha256` 已有；这两个混合方案的库代码不难（ML-KEM 已走 BCL）。原来卡在验证（交换哈希错一个字节也只会表现为「签名验不过」），**2026-10-06 找到了靶机**：AlmaLinux 10.2（RHEL 10.2 的下游补丁）的 OpenSSH 9.9p1 两种都有、默认策略就开着，在 Docker 里用它自带的客户端、Fedora 的 OpenSSH 10.5、libssh 0.12.2 强制这两种都谈成；Apache MINA SSHD 2.20 是独立的第二个实现（只是它的命令行服务端口令必须等于用户名）。上游 OpenSSH 10.6p1 只有 768 那个、默认不开。草案已定稿为 RFC 10042。做法同 F4：先照 RFC 10042 写 velashell-docs 的规格，再实现，Alma 靶机进 `docker-compose.test.yml` |
 | 💡 | 🟢 P3 | **FIDO 安全密钥直连硬件（第二阶段）** | OpenSSH `ssh-sk-helper` | 第一阶段（经 agent 用 `sk-ssh-ed25519` / `sk-ecdsa-sha2-nistp256`）已落地（`plan.md` §161）。第二阶段直接驱动硬件：Windows 走 `webauthn.dll`，其余平台要 libfido2 —— 新依赖要过 `src/VelaShell.Ssh/AGENTS.md` 3.3 的许可审查；还要有一把真钥做验证 |
 | 💡 | 🟢 P3 | **PKCS#11 与 macOS Secure Enclave 签名器** | OpenSSH `PKCS11Provider` | Windows 的 CNG 签名器已落地（`plan.md` §161），同一个 `ISshSigner` 形状。PKCS#11 要按平台加载厂商的 `.so` / `.dll`（P/Invoke，零反射照守）；Secure Enclave 要 macOS 的 Security 框架。都要真硬件验证 |
 | ⏳ | 🟢 P3 | **gssapi-with-mic（Kerberos）认证** | OpenSSH / PuTTY / SecureCRT | SSH 库还没实现（`plan.md` §113 评估）。协议面不大：RFC 4462 §3 的几种报文（60 / 61 / 63 / 64 / 65 / 66），MIC 覆盖 `session_id` 与认证请求头。GSS-API 本身走 BCL 的 `NegotiateAuthentication`（Windows 上是 SSPI，Linux / macOS 上是系统 GSSAPI 库），动手前先确认：①选 Kerberos 包时产出的是不是裸 krb5 机制令牌（不是 SPNEGO 包装），`host@主机名` 在两个平台上怎么写；②有没有可用的 MIC 接口；③凭据委派能否经 `TokenImpersonationLevel.Delegation` 拿到。**卡点在验证**：要 KDC + 配了 keytab 的 sshd + 拿得到票据的客户端，建议用 Docker 起 MIT krb5 KDC + sshd，Windows 域环境另找一台。`gssapi-keyex` 不在范围内 |
@@ -234,6 +233,7 @@
 | `plan.md` §118 窗口外框 | `{zh,en}/host/architecture.md` §5「窗口壳」的 ⚠️ 限定为 Win32、新增「各平台的外框」；`交互与界面规格.md` §2 补 macOS 红绿灯与各平台外框；`design-specs.md` 补 macOS 红绿灯；标题栏统一 28 的口径（设置窗口与消息框保持 48 的例外） | [velashell-docs#70](https://github.com/VelaShellLabs/velashell-docs/pull/70) 已开，与宿主 PR 一起合；实机验收后改掉 architecture 里「验收」那一段 |
 | `plan.md` §74 / §75 目录比较与同步 | `SFTP双栏与WinSCP差距分析.md`（C1 改已实现、新增第七节）与 `交互与界面规格.md` §6（文档工具条、同步窗口、保持远端最新、SHA-256 优先比较） | [velashell-docs#35](https://github.com/VelaShellLabs/velashell-docs/pull/35) **待合入** |
 | `plan.md` §82 #474 | `交互与界面规格.md` 资源管理器补**置顶**与 SFTP 路径栏的**复制当前路径**；`设置项审计.md` 补 `General.CollapseGroupsByDefault`、`Transfer.UseRecursiveDeleteCommand`（写明只对有 exec 通道的 SSH 会话生效、失败自动回退、没有逐条进度） | 已在 `docs/474-explorer-sftp` 分支改好（中英各 3 个文件），**待开 PR** |
+| `plan.md` §164 面向 FIPS 的后量子混合密钥交换 | `ssh/spec/03-key-exchange.md` §3.7（新的一节，含对 AlmaLinux 10.2 OpenSSH 的核对结果）、§8.1、§九；`ssh/spec/00-overview.md` 的算法表、默认清单顺序与 FIPS 预设；`ssh/spec/08-failures.md` §6 的断开原因码（中英两边） | [velashell-docs#91](https://github.com/VelaShellLabs/velashell-docs/pull/91) 已开，与宿主 [#563](https://github.com/joesdu/VelaShell/pull/563) 一起合 |
 | `plan.md` §163 agent 加钥的目的地约束 | `ssh/spec/07-forwarding.md` §7.3.2（新的一节，含对真 agent 的核对结果）、§7.3 的约束表与 §7.4 的指引；`ssh/getting-started.md` 的用法示例，以及「证书加钥暂不支持」这句过时的话（中英两边） | [velashell-docs#90](https://github.com/VelaShellLabs/velashell-docs/pull/90) 已开，与宿主 [#563](https://github.com/joesdu/VelaShell/pull/563) 一起合（§161 / §162 的那一批已随 [velashell-docs#89](https://github.com/VelaShellLabs/velashell-docs/pull/89) 合并） |
 | `plan.md` §117 SSH 库 API 整改 | `ssh/getting-started.md` 示例改用新公开面；`ssh/design/architecture.md` §6、§8 对上代码；`ssh/spec/08-failures.md` 补新增的 `SshFailureReason` 值与 `SshHostKeyVerdict.Reason` | 已在 `fix/ssh-api-cleanup` 分支备好（本地工作树，未提交），**待开 PR** |
 | `plan.md` §129 插件文件协议进双栏（#524 后续） | `交互与界面规格.md` §3（能进双选的类型）、§6.2（插件栏、续传核实不了按冲突处理）；`SFTP双栏与WinSCP差距分析.md` 8.2；`sdk/sdk-reference.md` 版本表把 `IProtocolStreamUpload` 那行的 TBD 换成 2.0.6。中英两棵树都改了 | [velashell-docs#75](https://github.com/VelaShellLabs/velashell-docs/pull/75) 已开，与宿主 PR 一起合 |

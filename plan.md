@@ -1714,3 +1714,17 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 顺带:主机证书那条互操作用例的原因码对上 `HostKeyChanged`(2026-09-26 起「只记着 CA、出示的证书没人担保」按「变了」拒绝,这条用例只在配了主机证书时跑,一直没跑到)。
 
 **三、验证**:单元测试钉住报文(规格里那个对过 `ssh-add` 的例子 12 / 74 / 98 / 102 / 147,外加带用户名、起点、两把钥、CA)、有约束必发 25、被拒不重试、校验与 `FromKnownHosts` 的规则、重开的条件。对真 OpenSSH 10.3 `ssh-agent` 的互操作用例:放行的主机连得上、用户名可带通配;主机钥或用户名对不上时 agent 拒签;经转发逐跳放行(A 上列得出、登 B 成功,少了 A → B 就都不行;B 是 `docker-compose.test.yml` 的多 shell 靶子);凭 CA 认主机(Start-TestServer.ps1 起的带主机证书的靶机);跳板时不重开确实在目标那一跳被拒,不带约束的钥不受影响。四处变异(不重开、CA 标志写反、只有目的地约束时发 17、不剔吊销的钥)都让瞄准的用例变红。反向用例给 agent 凭据之后配一个口令兜底:让认证整个失败的话,sshd 的 `PerSourcePenalties` 会把来源地址拒掉一阵,连累后面的用例(第一次全套跑时就这样红了两条)。`VelaShell.Ssh.Tests` 开互操作 1363 通过 / 9 跳过;带主机证书的靶机上互操作 46 通过 / 4 跳过;全解决方案零警告零错误。没核对的:Windows 的 OpenSSH agent 与 Pageant 收不收这个约束(要往使用者真在用的 agent 里加钥)。宿主还没接,记进 `feature-plan.md`「SSH 库已有、宿主还没接的能力」。
+
+## ✅ 164. 2026-10-07 SSH 库:面向 FIPS 的后量子混合密钥交换 `mlkem768nistp256-sha256` / `mlkem1024nistp384-sha384`
+
+**一、来由**:`ssh_plan.md` 第十节 F12。原来卡在验证 —— 交换哈希错一个字节,表现也只是「签名验不过」,手头没有能对照线上格式的服务端。调查找到了靶机:AlmaLinux 10.2(RHEL 10.2 的重建)的 OpenSSH 9.9p1 带着 RHEL 的下游补丁,两种都有;上游 OpenSSH 到 10.6p1 才有 768 那种、默认不开。草案也已定稿为 RFC 10042。按两阶段走:独立的分析会话照 RFC 10042、FIPS 203、SEC 1 写出 velashell-docs 03 §3.7(并对 Alma 的 OpenSSH 抓明文首次交换核对了长度),实现只照那一节。
+
+**二、做了什么**:
+- `HybridKeyExchange` 拆成「KEM + 经典」两半:经典那半是 X25519 或 NIST 曲线的 ECDH(点的编码与曲线校验复用 `EcdhKeyExchange`);`K_CL` 是定长的 X 坐标、前导零保留;`K = HASH(K_PQ ‖ K_CL)` 按 `string`;哈希三支各写各的(SHA-384 落进 SHA-512 不报任何错,只是每次都签名失败)。先查总长、再验点、最后解封装;每次交换都是新的临时密钥。
+- ML-KEM 按参数泛化成 768 / 1024,平台支持时走 BCL、否则 BouncyCastle;两条路径互通的用例 1024 也有一条。
+- 清单:默认清单里排在 `mlkem768x25519-sha256` 之后、sntrup761 与不带后量子的椭圆曲线之前 —— 开了 FIPS 策略的服务端不给 X25519,以前只能谈成不带后量子的 `ecdh-sha2-nistp256`;`FipsApprovedOnly` 里排最前。
+- 密钥交换里对端的公开值不合格时以 `KEY_EXCHANGE_FAILED`(3)断开,所有交换方法一律这样(规格的决策;曾经发 2),描述文字另写一句,不借用协商失败的那句。
+- 靶机:`docker-compose.test.yml` 新增 `ssh-pq`(`tests/fixtures/ssh-pq/Dockerfile`),同一个容器里三个 sshd —— FIPS 模式的清单(2226)、只给 1024 那种(2227)、RHEL 的 DEFAULT 策略(2228)。
+- 顺带:`Rekeyed` 事件改在「可以再发起」之后才报。曾经在「在谈」的标记清掉之前就报,订阅者收到事件就再发起一次时被当成空操作吞掉 —— 连续重协商的互操作用例就卡在这里。
+
+**三、验证**:对真服务端:两种各自握手、跑命令、重协商;每种连续交换 1200 次(碰到 X 坐标前导零的概率约 99%);默认清单与 FIPS 清单在三种服务端上谈成的方法与规格一致;经改字节的中继记下线上长度(`C_INIT` 1249 / 1665、`S_REPLY` 1153 / 1665),改 EC 点得 `ProtocolError`、改 KEM 密文得 `HostKeyRejected`。内存里另有反复交换直到碰上前导零的用例,以及各种不合格公开值、断开码 3 的用例。变异检验:去掉前导零(内存用例与 1200 次的互操作用例都红)、SHA-384 落进 SHA-512、断开码退回 2、事件时序退回去,都让瞄准的用例变红。`VelaShell.Ssh.Tests` 开互操作 1396 通过 / 9 跳过;宿主 `Infrastructure.Tests` 625、`VelaShell.Tests` 1792 通过,`Core.Tests` 只有那条靶机镜像过时的 X11 用例失败(同 §159);全解决方案零警告零错误。没做:上游 OpenSSH 10.6 与 Apache MINA SSHD 这两个实现的对照。留给拍板:`FipsApprovedOnly` 的注释说它「与 RHEL 的 FIPS 加密策略对 SSH 放行的一致」,可 RHEL 10.2 的 FIPS 策略还放行 `diffie-hellman-group-exchange-sha256` 与 group18,这份清单没收 —— 说法不完全准。
