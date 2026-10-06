@@ -129,6 +129,36 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task 带遮罩格式的字形_遮罩只按目标上可写的一块分配()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        // 40×20 的顶层里一个 32000×32000 的子窗口:可绘对象很大,可写的只有顶层那一小块。
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(s.Window).I16(0).I16(0).U16(32000).U16(32000).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        uint picture = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(picture).U32(child).U32(s.Formats.Rgb24).U32(0));
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.A8));
+        await c.SendAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65)
+            .U16(2).U16(2).I16(0).I16(0).I16(0).I16(0)
+            .U32(0x0000FFFF).U32(0x0000FFFF));
+        uint black = c.NewId();
+        await c.SendAsync(s.Major, 33, b => b.U32(black).U16(0).U16(0).U16(0).U16(0xFFFF));
+
+        // 两个字形相距 31000:外接矩形约 10^9 像素。原先按它分配遮罩(a8 就是 1 GB)。
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        await c.SendAsync(s.Major, 23, b => b.U8(3).U8(0).U8(0).U8(0).U32(black).U32(picture).U32(s.Formats.A8).U32(glyphSet)
+            .I16(0).I16(0)
+            .U8(1).U8(0).U8(0).U8(0).I16(5).I16(5).U8(65).U8(0).U8(0).U8(0)
+            .U8(1).U8(0).U8(0).U8(0).I16(31000).I16(31000).U8(65).U8(0).U8(0).U8(0));
+        await c.SyncAsync();
+        Assert.AreEqual(0x000000u, s.Pixel(5, 5), "第一个字形画上了");
+        Assert.IsLessThan(2_000, watch.ElapsedMilliseconds);
+    }
+
+    [TestMethod]
     public async Task 字形用纯色源画到窗口()
     {
         await using Setup s = await SetupAsync();

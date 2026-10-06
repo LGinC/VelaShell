@@ -900,11 +900,15 @@ public sealed partial class X11Server
             bounds = any ? Union(bounds, g) : g;
             any = true;
         }
-        bounds = bounds.Intersect(DrawableBounds(dst));
+        // 遮罩只覆盖目标上真正可写的那一块(同 CompositeShapes):两个相距很远的字形原先按外接矩形分配,32000² 的窗口上就是 1 GB。
+        XRect writable = BoundsOf(target.Target.Clip).Offset(-target.Target.OriginX, -target.Target.OriginY);
+        bounds = bounds.Intersect(DrawableBounds(dst)).Intersect(writable);
         if (!any || bounds.IsEmpty)
         {
             return;
         }
+        // 先按遮罩的大小扣工作量(带颜色的遮罩每像素 16 字节,按 4 倍算),再分配。
+        WorkBudget.Charge((long)bounds.Width * bounds.Height * (maskFormat.HasColor || placed.Any(p => p.Glyph.Alpha is null) ? 4 : 1));
         if (!maskFormat.HasColor && placed.All(p => p.Glyph.Alpha is not null))
         {
             // 常态(Xft):只有 alpha 的字形累加进只有 alpha 的遮罩 —— 字节饱和加,池化,整数快路径合成。
