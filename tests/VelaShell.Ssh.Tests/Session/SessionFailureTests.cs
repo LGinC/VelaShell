@@ -371,6 +371,11 @@ public sealed class SessionFailureTests
         SshConnectionClosedException ex = await Assert.ThrowsExactlyAsync<SshConnectionClosedException>(
             async () => await peer.Connection.OpenSessionChannelAsync());
         Assert.AreEqual(SshFailureReason.KeepAliveTimeout, ex.Reason);
+
+        // 结束原因不必从某个操作的异常里去猜：连接自己交出来。
+        SshException reason = await peer.Connection.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(SshFailureReason.KeepAliveTimeout, reason.Reason);
+        Assert.AreSame(reason, peer.Connection.CloseReason);
     }
 
     /// <summary>应答迟到不算丢：超时的探测留在账本里，迟到的应答落在它身上。</summary>
@@ -455,6 +460,29 @@ public sealed class SessionFailureTests
         Assert.AreEqual(SshFailureReason.Disconnected, ex.Reason);
         Assert.AreEqual(SshDisconnectReason.TooManyConnections, ex.DisconnectReason);
         Assert.AreEqual("Too many sessions", ex.PeerDescription);
+
+        SshConnectionClosedException reason = Assert.IsInstanceOfType<SshConnectionClosedException>(
+            await peer.Connection.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.AreEqual(SshDisconnectReason.TooManyConnections, reason.DisconnectReason, "结束原因带着对端的原因码");
+        Assert.AreEqual("Too many sessions", reason.PeerDescription);
+    }
+
+    /// <summary>
+    /// 本端释放：结束原因是 Aborted，而不是「对端关闭」；还没结束时 CloseReason 是 null。
+    /// 曾经没有结束原因这个入口，挂 Disconnected 的使用者只能一律报「对端关闭」。
+    /// </summary>
+    [TestMethod]
+    public async Task 本端释放时结束原因是Aborted()
+    {
+        await using var peer = RawPeer.Start();
+        Assert.IsNull(peer.Connection.CloseReason);
+        Assert.IsFalse(peer.Connection.Completion.IsCompleted);
+
+        await peer.Connection.DisposeAsync();
+
+        SshException reason = await peer.Connection.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(SshFailureReason.Aborted, reason.Reason);
+        Assert.IsFalse(peer.Connection.Completion.IsFaulted, "以结果完成，不以异常完成");
     }
 
     /// <summary>会话判死之后，通道的读者拿到判死的原因 —— 不是永远挂着，也不是一个像 EOF 的「读完」。</summary>

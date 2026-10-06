@@ -243,6 +243,31 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// </remarks>
     public CancellationToken Disconnected { get; }
 
+    /// <summary>连接结束时完成，结果是结束的原因。</summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/08 §2.1〕断线时是那次故障本身：保活超时（<c>KeepAliveTimeout</c>）、对端关闭（<c>ClosedByPeer</c>）、
+    /// 收到 <c>DISCONNECT</c>（<see cref="SshConnectionClosedException"/> 带着原因码与对端原话）、协议错误……；
+    /// 本端释放时是一个 <see cref="SshFailureReason.Aborted"/> 的 <see cref="SshConnectionClosedException"/>。
+    /// </para>
+    /// <para>
+    /// <b>以结果完成，从不以异常完成</b>：没人等它时也不会变成未观察的任务异常。
+    /// <see cref="Disconnected"/> 只说「到此为止」，原因在这里 —— 曾经没有这个入口，使用者挂 <see cref="Disconnected"/>
+    /// 只能一律报「对端关闭」，或者从读管道的结束方式去反推。
+    /// </para>
+    /// </remarks>
+    public Task<SshException> Completion => _completion.Task;
+
+    /// <summary>连接是怎么结束的；还没结束时为 <see langword="null"/>。与 <see cref="Completion"/> 的结果相同。</summary>
+    public SshException? CloseReason => _completion.Task.IsCompleted ? _completion.Task.Result : null;
+
+    private readonly TaskCompletionSource<SshException> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>记下结束原因（第一个胜出）。故障不是 <see cref="SshException"/>（取消、释放）时换成一个说得清的。</summary>
+    private void Complete(Exception reason) =>
+        _completion.TrySetResult(reason as SshException ?? new SshConnectionClosedException(
+            SshFailureReason.Aborted, SshPhase.Open, $"连接中止了：{reason.Message}", reason));
+
     /// <summary>开始收包。</summary>
     /// <remarks>必须在打开任何通道之前调用一次。</remarks>
     internal void Start()
@@ -1607,6 +1632,8 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
         // 先放出「断了」这个信号，再去收拾等在里面的人 ——
         // 顺序反过来的话，被唤醒的调用方回头去看 Disconnected，会看到它还没取消。
+        // 原因先记下：被唤醒的人可能马上就去看 CloseReason。
+        Complete(exception);
         SignalDisconnected();
 
         // 还在等开通道的人不会等到应答了。让它们拿到原因，而不是永远挂着。
@@ -1699,6 +1726,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             return;
         }
         _disposed = true;
+        Complete(new SshConnectionClosedException(SshFailureReason.Aborted, SshPhase.Open, "本端释放了连接。"));
         SignalDisconnected();
 
         // 〔velashell-docs/zh/ssh/spec/08 §六〕正常收工：先限时冲刷已入队的帧、发 DISCONNECT(BY_APPLICATION)，再停收发。
