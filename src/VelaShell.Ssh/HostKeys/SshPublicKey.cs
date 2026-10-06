@@ -118,6 +118,18 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     public ReadOnlyMemory<byte> Blob => _blob;
 
     /// <summary>
+    /// FIDO / U2F 安全密钥（<c>sk-*@openssh.com</c>）的 application 字段（通常是 <c>ssh:</c>）；别的钥为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.5〕这类钥的私钥永远在硬件里，本库经 agent 用它们（列身份、认证、转发）：
+    /// 认得、出示、转交 agent 签的名。<b>不验它们的签名</b> —— 客户端用不上（签名由服务端验），而手头没有能对照的硬件实现。
+    /// </remarks>
+    public string? SecurityKeyApplication { get; private init; }
+
+    /// <summary>这是不是 FIDO / U2F 安全密钥（<c>sk-*@openssh.com</c>）。</summary>
+    public bool IsSecurityKey => SecurityKeyApplication is not null;
+
+    /// <summary>
     /// OpenSSH 风格的 SHA-256 指纹：<c>SHA256:</c> 前缀 + base64（<b>去掉末尾的 <c>=</c> 填充</b>）。
     /// </summary>
     /// <remarks>
@@ -335,6 +347,8 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
                 SshAlgorithmNames.EcdsaSha2Nistp384 => ParseEcdsa(ref reader, keyType, copy, ECCurve.NamedCurves.nistP384, "nistp384", 384),
                 SshAlgorithmNames.EcdsaSha2Nistp521 => ParseEcdsa(ref reader, keyType, copy, ECCurve.NamedCurves.nistP521, "nistp521", 521),
                 SshAlgorithmNames.SshRsa => ParseRsa(ref reader, keyType, copy),
+                SshAlgorithmNames.SkSshEd25519 => ParseSecurityKeyEd25519(ref reader, keyType, copy),
+                SshAlgorithmNames.SkEcdsaSha2Nistp256 => ParseSecurityKeyEcdsa(ref reader, keyType, copy),
                 _ => throw new SshPublicKeyException(SshFailureReason.Unsupported, $"不支持的公钥类型：{keyType}。"),
             };
         }
@@ -459,6 +473,45 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         }
         reader.ExpectEnd("ssh-ed25519 公钥");
         return new SshPublicKey(keyType, blob, null, null, key, 256);
+    }
+
+    /// <summary><c>sk-ssh-ed25519@openssh.com</c>：<c>string</c> 公钥（32 字节）‖ <c>string</c> application。</summary>
+    private static SshPublicKey ParseSecurityKeyEd25519(ref SshDataReader reader, string keyType, byte[] blob)
+    {
+        byte[] key = reader.ReadStringAsArray(MaxFieldBytes);
+        string application = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        reader.ExpectEnd($"{keyType} 公钥");
+        if (key.Length != 32)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥必须是 32 字节，收到 {key.Length} 字节。");
+        }
+        return new SshPublicKey(keyType, blob, null, null, null, 256) { SecurityKeyApplication = application };
+    }
+
+    /// <summary><c>sk-ecdsa-sha2-nistp256@openssh.com</c>：<c>string</c> 曲线名 ‖ <c>string</c> 公钥点 ‖ <c>string</c> application。</summary>
+    private static SshPublicKey ParseSecurityKeyEcdsa(ref SshDataReader reader, string keyType, byte[] blob)
+    {
+        string curveName = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        byte[] point = reader.ReadStringAsArray(MaxFieldBytes);
+        string application = reader.ReadUtf8String(MaxFieldBytes, strict: true);
+        reader.ExpectEnd($"{keyType} 公钥");
+        if (curveName != "nistp256" || point.Length != 65 || point[0] != 0x04)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的曲线或公钥点不对（应为 nistp256 的 65 字节未压缩点）。");
+        }
+        try
+        {
+            ECDsa.Create(new ECParameters
+            {
+                Curve = ECCurve.NamedCurves.nistP256,
+                Q = new ECPoint { X = point[1..33], Y = point[33..] },
+            }).Dispose();
+        }
+        catch (Exception ex) when (ex is not SshPublicKeyException)
+        {
+            throw new SshPublicKeyException(SshFailureReason.KeyFormatInvalid, $"{keyType} 的公钥点不在曲线上。", ex);
+        }
+        return new SshPublicKey(keyType, blob, null, null, null, 256) { SecurityKeyApplication = application };
     }
 
     private static SshPublicKey ParseEcdsa(

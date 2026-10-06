@@ -99,6 +99,12 @@ internal static class SshAlgorithmNames
     /// <summary>Ed25519。RFC 8709。</summary>
     public const string SshEd25519 = "ssh-ed25519";
 
+    /// <summary>FIDO / U2F 安全密钥上的 Ed25519（OpenSSH <c>PROTOCOL.u2f</c>，<c>ssh-keygen -t ed25519-sk</c>）。</summary>
+    public const string SkSshEd25519 = "sk-ssh-ed25519@openssh.com";
+
+    /// <summary>FIDO / U2F 安全密钥上的 ECDSA P-256（<c>ssh-keygen -t ecdsa-sk</c>）。</summary>
+    public const string SkEcdsaSha2Nistp256 = "sk-ecdsa-sha2-nistp256@openssh.com";
+
     /// <summary>NIST P-256 上的 ECDSA。</summary>
     public const string EcdsaSha2Nistp256 = "ecdsa-sha2-nistp256";
 

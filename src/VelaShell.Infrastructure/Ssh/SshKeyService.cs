@@ -330,6 +330,9 @@ public sealed class SshKeyService(
             {
                 "ssh-rsa" => $"RSA {key.KeyBits}",
                 "ssh-ed25519" => "ED25519",
+                // FIDO / U2F 安全密钥(经 agent 用),与 ssh-add -l 的叫法一致。
+                "sk-ssh-ed25519@openssh.com" => "ED25519-SK",
+                "sk-ecdsa-sha2-nistp256@openssh.com" => "ECDSA-SK",
                 _ when key.PlainKeyType.StartsWith("ecdsa-", StringComparison.Ordinal) => $"ECDSA {key.KeyBits}",
                 _ => key.PlainKeyType,
             };
