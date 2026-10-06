@@ -14,5 +14,5 @@ namespace VelaShell.Ssh.Forwarding;
 /// <param name="StartedAt">开始搬运的时刻。</param>
 /// <param name="BytesSent">到目前为止本机送进隧道的应用字节数。</param>
 /// <param name="BytesReceived">到目前为止从隧道收回的应用字节数。</param>
-public sealed record ForwardConnectionInfo(
+public sealed record ForwardConnectionSnapshot(
     long Id, EndPoint? Source, string Target, DateTimeOffset StartedAt, long BytesSent, long BytesReceived);

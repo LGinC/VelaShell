@@ -98,7 +98,7 @@ public abstract class PortForwarder : IAsyncDisposable
     public ForwardThroughput Throughput => new(_sentMeter.PerSecond, _receivedMeter.PerSecond);
 
     /// <summary>正在搬的连接（快照，按序号排）：来源、目标、开始时刻、到目前为止的字节数。</summary>
-    public IReadOnlyList<ForwardConnectionInfo> Connections =>
+    public IReadOnlyList<ForwardConnectionSnapshot> Connections =>
         [.. _live.Values.OrderBy(c => c.Id).Select(c => c.Snapshot())];
 
     /// <summary>一条正在搬的连接；字节数在搬运循环里累加。</summary>
@@ -110,7 +110,7 @@ public abstract class PortForwarder : IAsyncDisposable
 
         public long Received;
 
-        public ForwardConnectionInfo Snapshot() =>
+        public ForwardConnectionSnapshot Snapshot() =>
             new(id, source, target, startedAt, Interlocked.Read(ref Sent), Interlocked.Read(ref Received));
     }
 
