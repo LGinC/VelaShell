@@ -55,6 +55,47 @@ public static partial class SshConfigFile
             isTarget: true, resolveDialer: true, new IdentityCache(), cancellationToken);
     }
 
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7.2〕<c>Ciphers</c> / <c>KexAlgorithms</c> / <c>MACs</c> / <c>HostKeyAlgorithms</c> 按 OpenSSH 的
+    /// <c>+ - ^</c> 写法作用到默认清单上；<c>PubkeyAcceptedAlgorithms</c> 里留着 <c>ssh-rsa</c> 时放开 SHA-1 的 RSA 签名
+    /// （老服务器最常见的那一行 <c>+ssh-rsa</c>）。写法不成立是配置错误：说清是哪台主机、哪一项。
+    /// </summary>
+    private static SshConnectionOptions ApplyAlgorithmLists(SshConnectionOptions options, SshHostConfig config, string host)
+    {
+        Crypto.SshAlgorithmSet algorithms = options.Algorithms;
+        try
+        {
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.KeyExchange, config.KexAlgorithms);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.HostKey, config.HostKeyAlgorithms);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.Encryption, config.Ciphers);
+            algorithms = Crypto.SshAlgorithmSpec.ApplyTo(algorithms, Crypto.SshAlgorithmCategory.Mac, config.Macs);
+
+            bool sha1Rsa = config.PubkeyAcceptedAlgorithms is { } accepted
+                && Crypto.SshAlgorithmSpec.Apply(Crypto.SshAlgorithmCategory.HostKey, accepted, SshAlgorithmSetDefaults.PublicKey)
+                    .Contains(Protocol.SshAlgorithmNames.SshRsa, StringComparer.Ordinal);
+            return options with { Algorithms = algorithms, AllowSha1RsaSignatures = options.AllowSha1RsaSignatures || sha1Rsa };
+        }
+        catch (Crypto.SshAlgorithmSpecException ex)
+        {
+            throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                $"{host} 的配置里算法清单写得不对：{ex.Message}", ex);
+        }
+    }
+
+    /// <summary><c>PubkeyAcceptedAlgorithms</c> 的「默认」：本库公钥认证默认用的签名算法（不含 SHA-1 的 <c>ssh-rsa</c>）。</summary>
+    private static class SshAlgorithmSetDefaults
+    {
+        public static readonly IReadOnlyList<string> PublicKey =
+        [
+            Protocol.SshAlgorithmNames.SshEd25519,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp256,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp384,
+            Protocol.SshAlgorithmNames.EcdsaSha2Nistp521,
+            Protocol.SshAlgorithmNames.RsaSha512,
+            Protocol.SshAlgorithmNames.RsaSha256,
+        ];
+    }
+
     /// <summary>一次解析里已经读过的 <c>IdentityFile</c>（按完整路径）；<see langword="null"/> 表示读不出来、已跳过。</summary>
     /// <remarks>
     /// 跳板与目标常常用同一把钥。曾经每一跳各读一遍：加密的钥每一跳都要重跑一遍 KDF
@@ -102,6 +143,8 @@ public static partial class SshConfigFile
             ],
             HostKeyPolicy = MapHostKeyPolicy(config, user, settings),
         };
+
+        options = ApplyAlgorithmLists(options, config, host);
 
         if (config.Compression)
         {

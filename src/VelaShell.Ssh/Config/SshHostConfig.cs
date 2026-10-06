@@ -246,6 +246,21 @@ public sealed class SshHostConfig
         return endpoint is not null;
     }
 
+    /// <summary><c>Ciphers</c>：加密算法清单（OpenSSH 的 <c>+ - ^</c> 写法，见 <see cref="Crypto.SshAlgorithmSpec"/>）。</summary>
+    public string? Ciphers => First("Ciphers");
+
+    /// <summary><c>KexAlgorithms</c>：密钥交换算法清单（写法同上）。</summary>
+    public string? KexAlgorithms => First("KexAlgorithms");
+
+    /// <summary><c>MACs</c>：MAC 算法清单（写法同上）。</summary>
+    public string? Macs => First("MACs");
+
+    /// <summary><c>HostKeyAlgorithms</c>：主机密钥算法清单（写法同上）。</summary>
+    public string? HostKeyAlgorithms => First("HostKeyAlgorithms");
+
+    /// <summary><c>PubkeyAcceptedAlgorithms</c>（旧名 <c>PubkeyAcceptedKeyTypes</c>）：公钥认证用哪些签名算法（写法同上）。</summary>
+    public string? PubkeyAcceptedAlgorithms => First("PubkeyAcceptedAlgorithms") ?? First("PubkeyAcceptedKeyTypes");
+
     /// <summary><c>Compression</c>。</summary>
     public bool Compression => IsYes(First("Compression"));
 
