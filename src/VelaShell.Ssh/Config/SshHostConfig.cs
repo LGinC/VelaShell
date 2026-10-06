@@ -80,8 +80,26 @@ public sealed class SshHostConfig
     /// <summary>用户名。</summary>
     public string? User => First("User");
 
-    /// <summary>私钥文件（<c>IdentityFile</c> 可以出现多次，按顺序）。</summary>
+    /// <summary>私钥文件（<c>IdentityFile</c> 可以出现多次，按顺序），配置里的原文。</summary>
+    /// <remarks>要拿来读文件，用 <see cref="ExpandIdentityFiles"/>。</remarks>
     public IReadOnlyList<string> IdentityFiles => All("IdentityFile");
+
+    /// <summary>
+    /// 展开好的私钥文件路径（按出现的顺序）：<c>~</c> 与 <c>%d</c> <c>%u</c> <c>%h</c> <c>%r</c> <c>%%</c> 照这台主机与用户展开，
+    /// 与连接时读私钥用的是同一套；<c>IdentityFile none</c> 不算。
+    /// </summary>
+    /// <param name="remoteUser">登录用户（<c>%r</c>）；不给就用 <see cref="User"/>。</param>
+    /// <remarks>
+    /// 文件存不存在不管，相对路径也原样留着 —— 那是读的时候的事。
+    /// 曾经展开是 internal 的，宿主导入 <c>ssh_config</c> 时只好自己再写一份（而且不认 <c>%h</c> / <c>%r</c>）。
+    /// </remarks>
+    public IReadOnlyList<string> ExpandIdentityFiles(string? remoteUser = null) =>
+    [
+        .. IdentityFiles
+            .Where(static raw => !string.Equals(raw.Trim().Trim('"'), "none", StringComparison.OrdinalIgnoreCase))
+            .Select(raw => SshConfigFile.ExpandPath(raw, HostName, remoteUser ?? User))
+            .OfType<string>(),
+    ];
 
     /// <summary>跳板（<c>ProxyJump</c>）。</summary>
     public string? ProxyJump => First("ProxyJump");

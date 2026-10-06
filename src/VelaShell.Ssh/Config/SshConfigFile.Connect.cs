@@ -367,10 +367,9 @@ public static partial class SshConfigFile
     {
         List<SshCredential> credentials = [];
 
-        foreach (string raw in config.IdentityFiles)
+        foreach (string path in config.ExpandIdentityFiles(user))
         {
-            string? path = ExpandPath(raw, config.HostName, user);
-            if (path is null || !File.Exists(path))
+            if (!File.Exists(path))
             {
                 continue;   // ssh 同样静默跳过不存在的 IdentityFile（默认列表里的大多数都不存在）
             }

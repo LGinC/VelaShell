@@ -110,6 +110,30 @@ public sealed class SshConfigTests
             ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"], [.. config.IdentityFiles], "顺序就是尝试顺序，不能重排");
     }
 
+    /// <summary>
+    /// 展开好的私钥路径是公开的：~ 与 %d %h %r %% 照这台主机与用户展开（与连接时读私钥同一套），none 不算。
+    /// 曾经展开是 internal 的，宿主导入时只好自己再写一份。
+    /// </summary>
+    [TestMethod]
+    public void 私钥路径照主机与用户展开()
+    {
+        SshHostConfig config = Resolve(
+            """
+            Host prod
+                HostName 10.0.0.5
+                User deploy
+                IdentityFile none
+                IdentityFile ~/.ssh/%h_%r
+                IdentityFile %d/keys/100%%
+            """,
+            "prod");
+
+        string home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.AreSequenceEqual(
+            [home + "/.ssh/10.0.0.5_deploy", home + "/keys/100%"], [.. config.ExpandIdentityFiles()]);
+        Assert.AreEqual(home + "/.ssh/10.0.0.5_root", config.ExpandIdentityFiles("root")[0], "给了登录用户就用它");
+    }
+
     [TestMethod]
     public void 键不区分大小写()
     {
