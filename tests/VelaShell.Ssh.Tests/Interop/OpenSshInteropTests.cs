@@ -1712,7 +1712,7 @@ public sealed class OpenSshInteropTests
                 {
                     socket.Bind(new IPEndPoint(IPAddress.Loopback, X11Display.TcpPortBase + number));
                     socket.Listen(4);
-                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}")!);
+                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}"));
                 }
                 catch (SocketException)
                 {

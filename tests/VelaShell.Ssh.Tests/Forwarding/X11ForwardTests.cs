@@ -611,7 +611,7 @@ public sealed class X11ForwardTests
     public void 非受信模式的xauth一定写进临时文件()
     {
         IReadOnlyList<string> arguments = X11Forwarder.BuildGenerateArguments(
-            "/tmp/velashell-x11-abc/xauthfile", X11Display.Parse(":3")!, 1200);
+            "/tmp/velashell-x11-abc/xauthfile", X11Display.Parse(":3"), 1200);
 
         // ⚠️ 少了 -f，受限 cookie 会覆盖使用者 .Xauthority 里的完全授权 cookie。
         Assert.AreEqual("-f", arguments[0]);
@@ -623,12 +623,12 @@ public sealed class X11ForwardTests
     [TestMethod]
     public void xauth的显示名保留主机与套接字路径()
     {
-        Assert.AreEqual(":0", X11Display.Parse(":0")!.XAuthName);
-        Assert.AreEqual(":0", X11Display.Parse("unix:0")!.XAuthName);
-        Assert.AreEqual("remote.example:10", X11Display.Parse("remote.example:10.0")!.XAuthName);
+        Assert.AreEqual(":0", X11Display.Parse(":0").XAuthName);
+        Assert.AreEqual(":0", X11Display.Parse("unix:0").XAuthName);
+        Assert.AreEqual("remote.example:10", X11Display.Parse("remote.example:10.0").XAuthName);
         Assert.AreEqual(
             "/private/tmp/com.apple.launchd.x/org.xquartz:0",
-            X11Display.Parse("/private/tmp/com.apple.launchd.x/org.xquartz:0")!.XAuthName);
+            X11Display.Parse("/private/tmp/com.apple.launchd.x/org.xquartz:0").XAuthName);
     }
 
     // ------------------------------------------------------------ 脚手架
@@ -801,7 +801,7 @@ public sealed class X11ForwardTests
                 {
                     socket.Bind(new IPEndPoint(IPAddress.Loopback, X11Display.TcpPortBase + number));
                     socket.Listen(4);
-                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}")!);
+                    return new FakeXServer(socket, X11Display.Parse($"localhost:{number}"));
                 }
                 catch (SocketException)
                 {

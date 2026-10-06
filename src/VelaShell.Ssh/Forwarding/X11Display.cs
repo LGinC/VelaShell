@@ -5,6 +5,7 @@
 //   X11 核心协议  DISPLAY 的形态与 6000+N 的端口约定
 //   行为规格:     velashell-docs/zh/ssh/spec/07-forwarding.md §7.5.6
 
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
@@ -61,20 +62,32 @@ public sealed record X11Display(string Host, int Number, int Screen, string? Uni
 
     /// <summary>解析 <c>DISPLAY</c>。</summary>
     /// <param name="value">形如 <c>:0</c>、<c>:10.2</c>、<c>unix:0</c>、<c>host:0</c>、<c>[::1]:0</c>。</param>
-    /// <returns>解析成功返回对象，否则 <see langword="null"/>。</returns>
+    /// <exception cref="ArgumentException">不是合法的 <c>DISPLAY</c>。</exception>
     /// <remarks>
-    /// <para>
-    /// <b>解析失败返回 <see langword="null"/> 而不是抛异常</b> ——
-    /// <c>DISPLAY</c> 没设或者设成了奇怪的值是很常见的状态，
+    /// 值来自环境变量或使用者输入时用 <see cref="TryParse"/>：<c>DISPLAY</c> 没设或者设成了奇怪的值是很常见的状态，
     /// 调用方需要的是「能不能用」，不是一个异常。
-    /// </para>
-    /// <para>
+    /// </remarks>
+    public static X11Display Parse(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        return ParseOrNull(value) ?? throw new ArgumentException($"不是合法的 DISPLAY：{value}", nameof(value));
+    }
+
+    /// <summary>解析 <c>DISPLAY</c>；没设或不合法时返回 <see langword="false"/>。</summary>
+    /// <param name="value">形如 <c>:0</c>、<c>:10.2</c>、<c>unix:0</c>、<c>host:0</c>、<c>[::1]:0</c>。</param>
+    /// <param name="display">解析出来的显示。</param>
+    /// <remarks>
     /// macOS 的 launchd 会把 <c>DISPLAY</c> 设成一个套接字路径
     /// （<c>/private/tmp/com.apple.launchd.XXX/org.xquartz:0</c>），
     /// 所以带 <c>/</c> 的值要按路径处理，不能按 <c>host:N</c> 切。
-    /// </para>
     /// </remarks>
-    public static X11Display? Parse(string? value)
+    public static bool TryParse([NotNullWhen(true)] string? value, [NotNullWhen(true)] out X11Display? display)
+    {
+        display = ParseOrNull(value);
+        return display is not null;
+    }
+
+    private static X11Display? ParseOrNull(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -134,7 +147,7 @@ public sealed record X11Display(string Host, int Number, int Screen, string? Uni
 
     /// <summary>从环境变量读。</summary>
     internal static X11Display? FromEnvironment() =>
-        Parse(Environment.GetEnvironmentVariable("DISPLAY"));
+        ParseOrNull(Environment.GetEnvironmentVariable("DISPLAY"));
 
     /// <summary>这个显示可以从哪些端点连上去，按优先顺序。</summary>
     /// <remarks>

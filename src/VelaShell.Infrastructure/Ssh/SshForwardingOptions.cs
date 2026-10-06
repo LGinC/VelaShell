@@ -64,7 +64,7 @@ internal static class SshForwardingOptions
                     ? fromEnvironment
                     : SshSessionOptions.DefaultX11Display;
 
-        if (X11Display.Parse(text) is not { } display)
+        if (!X11Display.TryParse(text, out X11Display? display))
         {
             notices.Add(new(Strings.Format("Ssh_X11ForwardFailed", Strings.Format("Ssh_X11BadDisplay", text)), true));
             return null;
