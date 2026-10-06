@@ -14,6 +14,7 @@
 //   Rasterization」(PolygonMode 与边界边)、§3.5.5「Depth Offset」、§3.10「Fog」(雾坐标取眼坐标到原点的距离的近似 |z_e|)。
 
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -381,8 +382,12 @@ internal sealed partial class GlContext
             }
             return;
         }
+        WorkBudget.Charge(VertexWork);
         _primitive.Add(Transform(obj));
     }
+
+    /// <summary>一个顶点(变换、光照)按这么多个工作量单位计(见 <see cref="WorkBudget" />;一个单位约等于画一个 2D 像素)。</summary>
+    private const int VertexWork = 16;
 
     private GlVertex Transform(Vector4 obj)
     {

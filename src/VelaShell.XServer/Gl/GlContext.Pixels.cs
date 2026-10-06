@@ -20,6 +20,7 @@
 
 using System.Buffers.Binary;
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -298,6 +299,7 @@ internal sealed partial class GlContext
         {
             return [];
         }
+        WorkBudget.Charge(2L * width * height);   // 逐个解码(先扣再分配)
         var result = new Vector4[width * height];
         Span<float> comp = stackalloc float[4];
         for (int j = 0; j < height; j++)
@@ -645,6 +647,7 @@ internal sealed partial class GlContext
         Span<float> comp = stackalloc float[4];
         for (int j = j0; j < j1; j++)
         {
+            WorkBudget.Charge(1L + i1 - i0);
             for (int i = i0; i < i1; i++)
             {
                 row[i - i0] = ReadGroup(data, layout, i, j, comp);
@@ -746,6 +749,7 @@ internal sealed partial class GlContext
                 int jFrom = (int)Math.Clamp(_clipY0 - y0, 0, height), jTo = (int)Math.Clamp(_clipY1 - y0, 0, height);
                 for (int j = jFrom; j < jTo; j++)
                 {
+                    WorkBudget.Charge(1L + iTo - iFrom);
                     for (int i = iFrom; i < iTo; i++)
                     {
                         int bit = i + skipPixels;
@@ -791,6 +795,7 @@ internal sealed partial class GlContext
             return;
         }
         int w = i1 - i0, h = j1 - j0;
+        WorkBudget.Charge(2L * w * h);
         uint[] source = new uint[w * h];
         for (int j = 0; j < h; j++)
         {

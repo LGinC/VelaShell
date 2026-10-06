@@ -14,6 +14,7 @@
 //   多级纹理的 LOD(总取第 0 级)、多边形 / 线的点画、3D 纹理。认识但没实现的渲染命令照规范当作合法命令吃掉,不报错。
 
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -203,7 +204,11 @@ internal sealed partial class GlContext
     private long _budget = ListCommandBudget;
 
     /// <summary>每个 GLX 请求开始时由服务端调用。</summary>
-    public void ResetBudget() => _budget = ListCommandBudget;
+    public void ResetBudget()
+    {
+        _budget = ListCommandBudget;
+        _workExhausted = false;
+    }
 
     public GlContext(bool doubleBuffered, bool hasAlpha, GlShared? share)
     {
@@ -281,11 +286,18 @@ internal sealed partial class GlContext
                 return index;
             }
             ExecuteOrCompile(opcode, commands.Slice(pos + 4, length - 4), bigEndian);
+            if (_workExhausted)
+            {
+                return -1;   // 这个请求的工作量花光了:余下的命令不执行(已记 OUT_OF_MEMORY)
+            }
             pos += (length + 3) & ~3;
             index++;
         }
         return pos == commands.Length ? -1 : index;
     }
+
+    /// <summary>这个请求的工作量预算已经花光(<see cref="WorkBudget" />):余下的渲染命令一律不执行。</summary>
+    private bool _workExhausted;
 
     /// <summary>执行(或记进正在编译的显示列表)一条渲染命令;<paramref name="body" /> 是头之后的参数。</summary>
     public void ExecuteOrCompile(int opcode, ReadOnlySpan<byte> body, bool bigEndian)
@@ -308,7 +320,21 @@ internal sealed partial class GlContext
                 return;
             }
         }
-        Execute(opcode, body, bigEndian);
+        if (_workExhausted)
+        {
+            return;
+        }
+        try
+        {
+            Execute(opcode, body, bigEndian);
+        }
+        catch (XWorkBudgetExhausted)
+        {
+            // 渲染命令没有回复、不报 X 错误:按 GL 的约定记 OUT_OF_MEMORY(§2.5),这个请求余下的命令不再执行。
+            // 显示列表的条数预算之外,这里按真正的工作量(片元、顶点、清屏、像素)兜底:一条 CallLists 不能把执行线程卡上几小时。
+            SetError(GlEnum.OUT_OF_MEMORY);
+            _workExhausted = true;
+        }
     }
 
     // ------------------------------------------------------------------ 显示列表

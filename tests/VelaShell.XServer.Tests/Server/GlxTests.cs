@@ -329,6 +329,35 @@ public sealed class GlxTests
     }
 
     [TestMethod]
+    public async Task 显示列表按真正的工作量计费_调很多次清屏会停下并记OUT_OF_MEMORY()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host) { RequestWorkBudget = 2_000_000 };
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        uint list = (await c.RequestAsync(glx, 104, b => b.U32(tag).I32(1))).U32(8);
+        Assert.IsLessThan(256u, list);
+
+        // 列表里只有一条 Clear(COLOR | DEPTH):条数只算 1,工作量却是整个表面。
+        await c.SendAsync(glx, 101, b => b.U32(tag).U32(list).U32(Compile));
+        await RenderAsync(c, glx, tag, new Commands().Add(127, b => b.U32(0x4100)));
+        await c.SendAsync(glx, 102, b => b.U32(tag));
+
+        // 调 6 万次:按条数远没到 400 万的上限,按工作量早就超了。
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        const int n = 60000;
+        await RenderAsync(c, glx, tag, new Commands().Add(2, b => b.I32(n).U32(UnsignedByteType).Bytes([.. Enumerable.Repeat((byte)list, n)])));
+        Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag), "工作量花光:OUT_OF_MEMORY");
+        Assert.IsLessThan(5_000, watch.ElapsedMilliseconds);
+
+        // 下一个请求有新的预算:照常执行。
+        await RenderAsync(c, glx, tag, new Commands().Add(1, b => b.U32(list)));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+    }
+
+    [TestMethod]
     public async Task GenLists与DeleteLists的range到2的31次方也立即返回()
     {
         using RecordingHost host = new();

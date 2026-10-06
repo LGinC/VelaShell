@@ -17,6 +17,7 @@
 //   帧缓冲按 X 的行序存(第 0 行在最上面):窗口坐标 y(GL,向上)落在第 H−1−y 行。
 
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -135,6 +136,7 @@ internal sealed partial class GlContext
         {
             return;
         }
+        WorkBudget.Charge((long)(maxX - minX + 1) * (maxY - minY + 1));   // 包围盒里每个像素都要算一遍边函数
         // 共享边只归一个三角形:边函数为 0 时只有「上边或左边」算在内。
         bool topLeft0 = IsTopLeft(b, c), topLeft1 = IsTopLeft(c, a), topLeft2 = IsTopLeft(a, b);
         float inv = 1 / area;
@@ -246,8 +248,12 @@ internal sealed partial class GlContext
     // ------------------------------------------------------------------ 片元
 
     /// <summary>一个片元:纹理、颜色求和、雾,然后逐片元测试、混合、写入(x、y 是 GL 窗口坐标,已在剪裁框内)。</summary>
+    /// <summary>一个片元(纹理、雾、逐片元测试、混合)按这么多个工作量单位计。</summary>
+    private const int FragmentWork = 8;
+
     private void Fragment(int x, int y, float z, Vector4 color, Vector3 spec, Vector4 tex, float fog)
     {
+        WorkBudget.Charge(FragmentWork);
         if (_activeTexture is { } texture)
         {
             color = ApplyTexture(texture, color, tex);
@@ -458,6 +464,7 @@ internal sealed partial class GlContext
         {
             return;
         }
+        WorkBudget.Charge(2L * (_clipX1 - _clipX0) * (_clipY1 - _clipY0));   // 颜色、深度、模板各扫一遍剪裁框
         uint color = Pack(State.ClearColor);
         if (!surface.HasAlpha)
         {
