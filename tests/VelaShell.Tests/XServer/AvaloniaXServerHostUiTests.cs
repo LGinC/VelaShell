@@ -243,6 +243,52 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// owner 级联关闭(Avalonia 关 owner 时先问它拥有的窗口,有一个不肯 owner 就关不掉):
+    /// 父窗口在 X 里取消映射、对话框还映射着 → 父窗口收掉,对话框不带 owner 重新显示;停服时一个都不留;
+    /// 弹层的关闭不转给客户端(没有 WM_DELETE_WINDOW 的弹层原先一关就断开了整个程序)。
+    /// </summary>
+    [TestMethod]
+    public async Task OwnerCascade_ReshowsStillMappedDialogs_LeavesNoGhosts_AndPopupCloseKeepsTheClient() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        uint parent = idBase | 1, dialog = idBase | 2, popup = idBase | 3;
+        await SendAsync(client, 1, 24, w => w.U32(parent).U32(root).I16(10).I16(10).U16(80).U16(60).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 1, 24, w => w.U32(dialog).U32(root).I16(20).I16(20).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 18, 0, w => w.U32(dialog).U32(68).U32(33).U8(32).Zero(3).U32(1).U32(parent));   // WM_TRANSIENT_FOR
+        await SendAsync(client, 8, 0, w => w.U32(parent));
+        await SendAsync(client, 8, 0, w => w.U32(dialog));
+        XNativeWindow parentNative = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == parent));
+        XNativeWindow dialogNative = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == dialog));
+        Assert.AreSame(parentNative, dialogNative.Owner, "对话框压在父窗口之上");
+
+        // 父窗口取消映射、对话框还在:父窗口收掉,对话框重新显示(原先对话框拦下关闭,父窗口成了关不掉的空壳)。
+        await SendAsync(client, 10, 0, w => w.U32(parent));
+        await WaitForAsync(() => !parentNative.IsVisible ? parentNative : null);
+        XNativeWindow reshown = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == dialog && w.IsVisible));
+        Assert.IsNull(reshown.Owner);
+
+        // 弹层(override-redirect):原生窗口被关(Alt+F4)不转给客户端,客户端不被断开。
+        await SendAsync(client, 1, 24, w => w.U32(popup).U32(root).I16(30).I16(30).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x200).U32(1));
+        await SendAsync(client, 8, 0, w => w.U32(popup));
+        XNativeWindow popupNative = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == popup));
+        popupNative.Close();
+        await Task.Delay(100);
+        Dispatcher.UIThread.RunJobs();
+        Assert.IsFalse(serve.IsCompleted, "客户端没有被断开");
+        Assert.IsTrue(popupNative.IsVisible);
+
+        // 停服:一个原生窗口都不留。
+        XNativeWindow[] all = [.. host.Windows];
+        host.Detach();
+        await WaitForAsync(() => all.All(w => !w.IsVisible) ? all : null);
+    });
+
+    /// <summary>
     /// 按钮按着的时候窗口失活(Alt+Tab、别的窗口抢走)或失去捕获:之后的松开不会再送到这个窗口,X 那边要替它松开 ——
     /// 否则那个按钮一直按着、自动抓取也一直不解除。之后真的松开时不再补一次。
     /// headless 平台不发 Deactivated / PointerCaptureLost,这里直接调那两个处理器都调的 <see cref="XNativeWindow.ReleaseHeldButtons" />。

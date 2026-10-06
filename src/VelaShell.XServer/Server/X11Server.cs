@@ -302,7 +302,7 @@ public sealed partial class X11Server : IAsyncDisposable
 
     /// <summary>
     /// 用户点了原生窗口的关闭按钮:客户端声明了 WM_DELETE_WINDOW 就礼貌地请它自己关(ICCCM §4.2.8),
-    /// 否则断开该客户端(与窗口管理器的 XKillClient 一致)。
+    /// 否则断开该客户端(与窗口管理器的 XKillClient 一致)。override-redirect 的窗口(弹出菜单、提示框)不归窗口管理器管,忽略。
     /// </summary>
     public void CloseTopLevel(XTopLevelWindow window)
     {

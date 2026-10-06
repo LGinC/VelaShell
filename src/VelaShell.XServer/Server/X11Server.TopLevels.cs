@@ -269,9 +269,9 @@ public sealed partial class X11Server
     /// <summary>关闭:声明了 WM_DELETE_WINDOW 就发 ClientMessage 请它自己关(ICCCM §4.2.8),否则断开它的客户端。</summary>
     private void ApplyClose(XWindow top)
     {
-        if (top.Owner is not { } owner)
+        if (top.Owner is not { } owner || top.OverrideRedirect)
         {
-            return;
+            return;   // override-redirect 的弹层不归窗口管理器管(同 FocusTopLevel):关它不会去断开整个客户端
         }
         if (SupportsProtocol(top, _wmDeleteWindowAtom))
         {

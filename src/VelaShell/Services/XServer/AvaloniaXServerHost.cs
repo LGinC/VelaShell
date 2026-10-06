@@ -93,11 +93,17 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         _server = null;
         Dispatcher.UIThread.Post(() =>
         {
-            foreach (XNativeWindow window in _windows.Values.ToArray())
+            XNativeWindow[] windows = [.. _windows.Values];
+            _windows.Clear();
+            // 先全部打上标记再关:关 owner 时 Avalonia 先问它的子窗口,子窗口不拦,owner 才关得掉(原先留下关不掉的空壳)。
+            foreach (XNativeWindow window in windows)
+            {
+                window.MarkClosingByHost();
+            }
+            foreach (XNativeWindow window in windows)
             {
                 window.CloseByHost();
             }
-            _windows.Clear();
         });
     }
 
@@ -213,9 +219,33 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     {
         if (_windows.Remove(window.Id, out XNativeWindow? native))
         {
-            native.CloseByHost();
+            CloseWithOwnedWindows(native);
         }
     });
+
+    /// <summary>
+    /// 收掉一个原生窗口:Avalonia 关 owner 时连带关掉它拥有的窗口(对话框、瞬态窗口)。它们在 X 里可能还映射着 ——
+    /// 主窗口先于对话框取消映射、程序只把主窗口藏起来 —— 那样就成了看不见的幽灵。所以先把它们一起收掉,
+    /// 再把 X 里还映射着的不带 owner 重新显示。
+    /// </summary>
+    private void CloseWithOwnedWindows(XNativeWindow native)
+    {
+        XNativeWindow[] owned = [.. _windows.Values.Where(w => ReferenceEquals(w.Owner, native))];
+        foreach (XNativeWindow child in owned)
+        {
+            _windows.Remove(child.Handle.Id);
+            child.MarkClosingByHost();
+        }
+        native.CloseByHost();
+        foreach (XNativeWindow child in owned)
+        {
+            child.CloseByHost();   // 已经随 owner 关了的,再关一次是空操作
+            if (child.Handle.Snapshot.IsMapped)
+            {
+                Map(child.Handle);
+            }
+        }
+    }
 
     /// <inheritdoc />
     public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes) => Dispatcher.UIThread.Post(() =>
@@ -359,11 +389,12 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         PlaceIfUnpositioned(handle, window);
         window.ApplyProperties(XTopLevelChanges.All);
 
-        // 对话框、瞬态窗口压在父窗口之上;弹出菜单跟着当前活动的 X 窗口走。
+        // 对话框、瞬态窗口(连同声明了 WM_TRANSIENT_FOR 的弹出菜单)压在父窗口之上。没声明的弹层不借用「当前活动的 X 窗口」当 owner:
+        // 那个窗口可能属于别的程序甚至别的会话,owner 关闭时会把它连带关掉(弹层本身照样置顶,不需要 owner)。
         XTopLevelSnapshot snapshot = handle.Snapshot;
         XNativeWindow? owner = snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent)
             ? parent
-            : snapshot.OverrideRedirect ? _windows.Values.FirstOrDefault(w => w.IsActive) : null;
+            : null;
         if (owner is not null && !ReferenceEquals(owner, window))
         {
             window.Show(owner);

@@ -107,6 +107,9 @@ public sealed class XServerToggleViewModel : ReactiveObject
         }
     }
 
+    /// <summary>停掉(没在运行时什么也不做)。主窗口真正关闭时调:X 窗口随之收掉,应用才退得出去。</summary>
+    public Task StopAsync() => _server is { State: XServerState.Running } server ? server.StopAsync() : Task.CompletedTask;
+
     private async Task ToggleAsync()
     {
         if (_server is null)

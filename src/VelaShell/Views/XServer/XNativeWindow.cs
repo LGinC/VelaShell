@@ -193,8 +193,17 @@ public sealed class XNativeWindow : Window
     public void CloseByHost()
     {
         _closingByHost = true;
-        Close();
+        if (!_closed)
+        {
+            Close();
+        }
     }
+
+    /// <summary>已经关了(随 owner 一起关、或宿主关过一次)。</summary>
+    private bool _closed;
+
+    /// <summary>只做标记、先不关(宿主一次收掉一批窗口时,先给全部打上标记,owner 级联关子窗口时子窗口才不会拦)。</summary>
+    public void MarkClosingByHost() => _closingByHost = true;
 
     /// <summary>客户端经 <c>_NET_WM_MOVERESIZE</c> 要求拖动 / 缩放:用系统的拖动循环(要一次还按着的按下事件)。</summary>
     public void BeginInteractive(XMoveResizeDirection direction)
@@ -376,14 +385,45 @@ public sealed class XNativeWindow : Window
         {
             return;
         }
-        // 关闭按钮 / Alt+F4:请客户端自己关(有 WM_DELETE_WINDOW 时),窗口等它取消映射再收。
-        e.Cancel = true;
-        Server?.CloseTopLevel(Handle);
+        switch (e.CloseReason)
+        {
+            case WindowCloseReason.WindowClosing:
+                // 关闭按钮 / Alt+F4:请客户端自己关(有 WM_DELETE_WINDOW 时),窗口等它取消映射再收。
+                // 弹层(override-redirect:菜单、提示框)不归窗口管理器管,它的关闭不转给客户端 —— 原先没有 WM_DELETE_WINDOW
+                // 的弹层一关就断开了整个 X 程序。
+                e.Cancel = true;
+                if (!Handle.Snapshot.OverrideRedirect)
+                {
+                    Server?.CloseTopLevel(Handle);
+                }
+                break;
+            case WindowCloseReason.OwnerWindowClosing when Owner is XNativeWindow { ClosingByHost: true }:
+                // owner 被宿主收掉(停服、它在 X 里取消映射了):跟着关。还映射着的,宿主随后会不带 owner 重新显示。
+                _closingByHost = true;
+                break;
+            case WindowCloseReason.OwnerWindowClosing:
+                // 用户点了 owner 的关闭键:Avalonia 先问各个子窗口,有一个不肯 owner 就关不了、它自己的 Closing 也不会来。
+                // 子窗口不能就这么跟着关(X 里它还映射着,就成了看不见的幽灵);改为替用户请 owner 的客户端自己关。
+                e.Cancel = true;
+                if (Owner is XNativeWindow owner && !owner.Handle.Snapshot.OverrideRedirect)
+                {
+                    Server?.CloseTopLevel(owner.Handle);
+                }
+                break;
+            default:
+                // 应用退出、系统注销 / 关机:不拦(原先一律取消,表现为「VelaShell 阻止关机」)。
+                _closingByHost = true;
+                break;
+        }
     }
+
+    /// <summary>宿主正在收掉这个窗口(<see cref="CloseByHost" />)。</summary>
+    public bool ClosingByHost => _closingByHost;
 
     /// <inheritdoc />
     protected override void OnClosed(EventArgs e)
     {
+        _closed = true;
         base.OnClosed(e);
         _surface.Release();
         _host.OnWindowClosed(this);
