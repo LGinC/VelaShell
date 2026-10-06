@@ -101,7 +101,7 @@ internal static class OpenSshKeyCipher
             }
             else if (cipherName.EndsWith("-ctr", StringComparison.Ordinal))
             {
-                DecryptCounterMode(ciphertext, keyBytes, iv, plaintext);
+                ApplyCounterMode(ciphertext, keyBytes, iv, plaintext);
             }
             else
             {
@@ -114,6 +114,23 @@ internal static class OpenSshKeyCipher
             throw;
         }
         return plaintext;
+    }
+
+    /// <summary>加密私钥区（写私钥文件用）。只做 <c>aes*-ctr</c> —— <c>ssh-keygen</c> 的默认，写出侧不需要更多。</summary>
+    /// <param name="cipherName">算法名，<c>aes128-ctr</c> / <c>aes192-ctr</c> / <c>aes256-ctr</c>。</param>
+    /// <param name="plaintext">明文私钥区（已按分组填充）。</param>
+    /// <param name="key">密钥 ‖ IV 的派生材料。</param>
+    /// <exception cref="ArgumentException">别的算法。</exception>
+    public static byte[] EncryptCounterMode(string cipherName, ReadOnlySpan<byte> plaintext, ReadOnlySpan<byte> key)
+    {
+        if (!cipherName.EndsWith("-ctr", StringComparison.Ordinal) || Describe(cipherName) is not { } shape)
+        {
+            throw new ArgumentException($"写私钥文件只支持 aes*-ctr，不支持 {cipherName}。", nameof(cipherName));
+        }
+
+        byte[] ciphertext = new byte[plaintext.Length];
+        ApplyCounterMode(plaintext, key[..shape.KeyBytes], key.Slice(shape.KeyBytes, shape.IvBytes), ciphertext);
+        return ciphertext;
     }
 
     /// <summary>把密钥交给 <see cref="Aes"/>;中转的那份副本用完清零。</summary>
@@ -136,7 +153,8 @@ internal static class OpenSshKeyCipher
     /// 计数器按**整个分组**当作大端整数递增(不是只动低 32 位)——
     /// 私钥区不长,两种做法在这里不会分岔,但写对的那种才与对端一致。
     /// </remarks>
-    private static void DecryptCounterMode(
+    /// <remarks>加密与解密是同一个运算（与密钥流异或），写出侧也用它。</remarks>
+    private static void ApplyCounterMode(
         ReadOnlySpan<byte> ciphertext, ReadOnlySpan<byte> key, ReadOnlySpan<byte> iv, Span<byte> plaintext)
     {
         using var aes = Aes.Create();

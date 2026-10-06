@@ -86,7 +86,130 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             SshPublicKey.Decode(blob), [SshAlgorithmNames.SshEd25519], seed, publicKey, null, null, 0);
     }
 
-    /// <summary>生成一把新的 Ed25519 密钥并构造签名器（测试与临时密钥用）。</summary>
+    /// <summary>生成一把新的 RSA 密钥并构造签名器。</summary>
+    /// <param name="bits">模数位数，2048–16384、8 的倍数；默认 3072（与 <c>ssh-keygen</c> 一致）。</param>
+    /// <exception cref="ArgumentOutOfRangeException">位数不在范围内。</exception>
+    /// <remarks>要写成文件，交给 <see cref="Keys.SshPrivateKeyFile.Format"/>。</remarks>
+    public static InMemorySshSigner GenerateRsa(int bits = 3072)
+    {
+        if (bits is < 2048 or > 16384 || bits % 8 != 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(bits), bits, "RSA 密钥要 2048–16384 位，且是 8 的倍数。");
+        }
+
+        RSA rsa = RSA.Create(bits);
+        try
+        {
+            return FromRsa(rsa);
+        }
+        catch
+        {
+            rsa.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>生成一把新的 ECDSA 密钥并构造签名器。</summary>
+    /// <param name="bits">曲线：256 / 384 / 521（NIST P-256 / P-384 / P-521，SSH 只定义了这三条）。</param>
+    /// <exception cref="ArgumentOutOfRangeException">别的位数。</exception>
+    public static InMemorySshSigner GenerateEcdsa(int bits = 256)
+    {
+        ECCurve curve = bits switch
+        {
+            256 => ECCurve.NamedCurves.nistP256,
+            384 => ECCurve.NamedCurves.nistP384,
+            521 => ECCurve.NamedCurves.nistP521,
+            _ => throw new ArgumentOutOfRangeException(nameof(bits), bits, "ECDSA 只支持 256 / 384 / 521 位（NIST P-256 / P-384 / P-521）。"),
+        };
+
+        ECDsa ecdsa = ECDsa.Create(curve);
+        try
+        {
+            return FromEcdsa(ecdsa);
+        }
+        catch
+        {
+            ecdsa.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 按 <c>openssh-key-v1</c> 私钥区的格式写出这把钥：从类型名起，到注释之前（私钥文件的写出用）。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.6〕字段顺序与读取一侧（<see cref="Keys.SshPrivateKeyFile"/>）是同一份规格：
+    /// Ed25519 是公钥 ‖ (种子 ‖ 公钥)；RSA 是 n、e、d、iqmp、p、q；ECDSA 是曲线名、公钥点、d。
+    /// 导出的私钥参数用完清零（只清得了数组，<see cref="RSAParameters"/> 的托管副本由这里负责）。
+    /// </remarks>
+    internal void WriteOpenSshPrivateFields(ref SshDataWriter writer)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        if (_ed25519Seed is not null)
+        {
+            writer.WriteUtf8String(SshAlgorithmNames.SshEd25519);
+            writer.WriteString(_ed25519Public);
+            byte[] secret = [.. _ed25519Seed, .. _ed25519Public!];
+            try
+            {
+                writer.WriteString(secret);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(secret);
+            }
+            return;
+        }
+
+        if (_rsa is not null)
+        {
+            RSAParameters p = _rsa.ExportParameters(includePrivateParameters: true);
+            try
+            {
+                writer.WriteUtf8String(SshAlgorithmNames.SshRsa);
+                writer.WriteMpint(p.Modulus);
+                writer.WriteMpint(p.Exponent);
+                writer.WriteMpint(p.D);
+                writer.WriteMpint(p.InverseQ);
+                writer.WriteMpint(p.P);
+                writer.WriteMpint(p.Q);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(p.D);
+                CryptographicOperations.ZeroMemory(p.P);
+                CryptographicOperations.ZeroMemory(p.Q);
+                CryptographicOperations.ZeroMemory(p.DP);
+                CryptographicOperations.ZeroMemory(p.DQ);
+                CryptographicOperations.ZeroMemory(p.InverseQ);
+            }
+            return;
+        }
+
+        ECParameters ec = _ecdsa!.ExportParameters(includePrivateParameters: true);
+        try
+        {
+            (string algorithm, string curveName, int coordinate) = NistCurveOf(ec.Curve)
+                ?? throw new InvalidOperationException("签名器里的 ECDSA 曲线不是 SSH 认得的那三条 —— 构造时就该被拒。");
+            byte[] point = new byte[1 + (coordinate * 2)];
+            point[0] = 0x04;
+            ec.Q.X!.CopyTo(point.AsSpan(1 + coordinate - ec.Q.X!.Length));
+            ec.Q.Y!.CopyTo(point.AsSpan(1 + (coordinate * 2) - ec.Q.Y!.Length));
+
+            writer.WriteUtf8String(algorithm);
+            writer.WriteUtf8String(curveName);
+            writer.WriteString(point);
+            writer.WriteMpint(ec.D);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(ec.D);
+        }
+    }
+
+    /// <summary>生成一把新的 Ed25519 密钥并构造签名器。</summary>
+    /// <remarks>要写成文件，交给 <see cref="Keys.SshPrivateKeyFile.Format"/>。</remarks>
     public static InMemorySshSigner GenerateEd25519()
     {
         // Ed25519 的私钥就是 32 个随机字节（RFC 8032 §5.1.5）。

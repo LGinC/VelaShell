@@ -150,6 +150,119 @@ public static class SshPrivateKeyFile
         return container.PublicSection;
     }
 
+    /// <summary>写私钥文件时口令派生的默认轮数（与 <c>ssh-keygen</c> 一致）。</summary>
+    public const int DefaultKdfRounds = 16;
+
+    /// <summary>写私钥文件时用的加密算法（<c>ssh-keygen</c> 的默认）。</summary>
+    private const string WriteCipher = "aes256-ctr";
+
+    /// <summary>把一把私钥写成 OpenSSH 私钥文件（<c>-----BEGIN OPENSSH PRIVATE KEY-----</c>），可以带口令。</summary>
+    /// <param name="key">私钥。</param>
+    /// <param name="passphrase">口令；空就不加密。调用方可以把它放在自己的 <c>char[]</c> 里，用完自己清零。</param>
+    /// <param name="comment">注释（写在私钥区里，<c>ssh-keygen -l</c> 显示的那一列）。</param>
+    /// <param name="kdfRounds"><c>bcrypt_pbkdf</c> 的轮数（只在有口令时用），1–<see cref="MaxKdfRounds"/>。</param>
+    /// <returns>可以直接写进文件的文本（<c>\n</c> 换行）。文件要只给属主读写（Unix 上 0600），那是调用方的事。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">轮数不在范围内。</exception>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/04 §4.6〕<c>openssh-key-v1</c> 容器，与读取一侧同一份规格：有口令时
+    /// <c>bcrypt</c> KDF（16 字节随机盐）+ <c>aes256-ctr</c>，没有时 <c>none</c> / <c>none</c>；私钥区以两个相同的随机校验字开头，
+    /// 末尾按分组（加密时 16、否则 8）填充 1、2、3……。正文按 70 列折行。
+    /// </para>
+    /// <para>
+    /// 写出侧只装配现成的 KDF 与加密：对不对，用例拿真 <c>ssh-keygen</c> 读本库写的文件来验，而不是本库自己读自己。
+    /// 曾经库只能读、不能写，宿主手写了一份只能写<b>未加密</b>私钥的容器。中间的明文私钥区、派生出的密钥都清零。
+    /// </para>
+    /// </remarks>
+    public static string Format(
+        InMemorySshSigner key, ReadOnlySpan<char> passphrase = default, string comment = "", int kdfRounds = DefaultKdfRounds)
+    {
+        ArgumentNullException.ThrowIfNull(key);
+        ArgumentNullException.ThrowIfNull(comment);
+        ArgumentOutOfRangeException.ThrowIfLessThan(kdfRounds, 1);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(kdfRounds, (int)MaxKdfRounds);
+
+        bool encrypt = !passphrase.IsEmpty;
+        int blockBytes = encrypt ? 16 : 8;
+
+        // 私钥区：校验字 ×2 ‖ 钥 ‖ 注释 ‖ 填充。
+        ArrayBufferWriter<byte> section = new(16 * 1024);   // 一次给够（16384 位 RSA 的私钥区也只有七八 KiB）：扩容会把明文留在旧缓冲里
+        byte[]? plain = null;
+        byte[]? material = null;
+        try
+        {
+            SshDataWriter fields = new(section);
+            uint check = BitConverter.ToUInt32(RandomNumberGenerator.GetBytes(4));
+            fields.WriteUInt32(check);
+            fields.WriteUInt32(check);
+            key.WriteOpenSshPrivateFields(ref fields);
+            fields.WriteUtf8String(comment);
+            for (byte pad = 1; section.WrittenCount % blockBytes != 0; pad++)
+            {
+                fields.WriteByte(pad);
+            }
+            plain = section.WrittenSpan.ToArray();
+
+            byte[] kdfOptions = [];
+            byte[] privateSection = plain;
+            if (encrypt)
+            {
+                byte[] salt = RandomNumberGenerator.GetBytes(16);
+                ArrayBufferWriter<byte> options = new();
+                SshDataWriter optionsWriter = new(options);
+                optionsWriter.WriteString(salt);
+                optionsWriter.WriteUInt32((uint)kdfRounds);
+                kdfOptions = options.WrittenSpan.ToArray();
+
+                OpenSshKeyCipher.CipherShape shape = OpenSshKeyCipher.Describe(WriteCipher)!.Value;
+                material = new byte[shape.KeyBytes + shape.IvBytes];
+                byte[] passphraseBytes = Utf8(passphrase);
+                try
+                {
+                    BcryptPbkdf.DeriveKey(passphraseBytes, salt, kdfRounds, material);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(passphraseBytes);
+                }
+                privateSection = OpenSshKeyCipher.EncryptCounterMode(WriteCipher, plain, material);
+            }
+
+            // 容器：魔数 ‖ cipher ‖ kdf ‖ kdfoptions ‖ 钥数 1 ‖ 公钥 ‖ 私钥区。
+            ArrayBufferWriter<byte> container = new();
+            SshDataWriter writer = new(container);
+            writer.WriteRaw(Encoding.ASCII.GetBytes(OpenSshMagic));
+            writer.WriteUtf8String(encrypt ? WriteCipher : "none");
+            writer.WriteUtf8String(encrypt ? "bcrypt" : "none");
+            writer.WriteString(kdfOptions);
+            writer.WriteUInt32(1);
+            writer.WriteString(key.PublicKey.Blob.Span);
+            writer.WriteString(privateSection);
+
+            string body = Convert.ToBase64String(container.WrittenSpan);
+            StringBuilder pem = new(body.Length + 128);
+            pem.Append("-----BEGIN OPENSSH PRIVATE KEY-----\n");
+            for (int offset = 0; offset < body.Length; offset += 70)
+            {
+                pem.Append(body.AsSpan(offset, Math.Min(70, body.Length - offset))).Append('\n');
+            }
+            pem.Append("-----END OPENSSH PRIVATE KEY-----\n");
+            return pem.ToString();
+        }
+        finally
+        {
+            section.Clear();   // ArrayBufferWriter.Clear 把写过的部分清零
+            if (plain is not null)
+            {
+                CryptographicOperations.ZeroMemory(plain);
+            }
+            if (material is not null)
+            {
+                CryptographicOperations.ZeroMemory(material);
+            }
+        }
+    }
+
     /// <summary>未加密的 PKCS#1 / SEC1 / PKCS#8：解出私钥、取它的公钥。传统加密 PEM 在这里被拒。</summary>
     private static byte[] DerivePublicBlob(string pem)
     {
