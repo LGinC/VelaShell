@@ -356,6 +356,11 @@ public sealed class PluginProtocolFileService(PluginProtocolRegistry registry)
     }
 
     /// <inheritdoc />
+    /// <remarks>插件的文件系统契约里没有用量:一律查不到。</remarks>
+    public Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) =>
+        Task.FromResult<RemoteSpaceInfo?>(null);
+
+    /// <inheritdoc />
     public Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         Session session = Require(sessionId);

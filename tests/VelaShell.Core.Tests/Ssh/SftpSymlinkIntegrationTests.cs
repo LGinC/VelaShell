@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
+using System.Globalization;
 using System.Net.Sockets;
+using VelaShell.Core.Sftp;
 using VelaShell.Core.Ssh;
 using VelaShell.Infrastructure.Ssh;
 using VelaShell.Ssh.Auth;
@@ -91,6 +93,34 @@ public class SftpSymlinkIntegrationTests
         }
     }
 
+    /// <summary>文件面板的剩余空间(statvfs@openssh.com)经宿主的 SFTP 包装取得到,与远端 stat -f 对得上总容量。</summary>
+    [TestMethod]
+    [TestCategory("DockerIntegration")]
+    [Timeout(60_000)]
+    public async Task FreeSpace_IsReadFromARealServer()
+    {
+        RequireDockerAndSsh();
+
+        VelaSshClientWrapper ssh = await ConnectAsync();
+        try
+        {
+            SshConnection inner = ssh.InnerConnection ?? throw new InvalidOperationException("SSH not connected.");
+            await using var sftp = new VelaSftpClientWrapper(
+                async ct => await SftpFileSystem.ConnectAsync(inner, cancellationToken: ct));
+            await sftp.ConnectAsync(CancellationToken.None);
+
+            RemoteSpaceInfo? space = await sftp.GetSpaceAsync("/tmp");
+
+            Assert.IsNotNull(space, "OpenSSH 的 sftp-server 支持 statvfs@openssh.com");
+            Assert.IsLessThanOrEqualTo(space.TotalBytes, space.AvailableBytes);
+            string[] df = (await ssh.RunCommandAsync("stat -f -c '%S %b' /tmp")).Trim().Split(' ');
+            Assert.AreEqual(ulong.Parse(df[0], CultureInfo.InvariantCulture) * ulong.Parse(df[1], CultureInfo.InvariantCulture), space.TotalBytes);
+        }
+        finally
+        {
+            await ssh.DisposeAsync();
+        }
+    }
     /// <summary>跳过记 Inconclusive 而不是"通过":全绿的报告里不能混着一行断言都没跑的用例。</summary>
     private static void RequireDockerAndSsh()
     {

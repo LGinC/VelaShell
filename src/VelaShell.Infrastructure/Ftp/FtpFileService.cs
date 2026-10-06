@@ -558,6 +558,11 @@ public sealed class FtpFileService(IProxyResolver? proxyResolver = null) : ISftp
     }
 
     /// <inheritdoc />
+    /// <remarks>FTP 没有查文件系统用量的标准命令:一律查不到。</remarks>
+    public Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) =>
+        Task.FromResult<RemoteSpaceInfo?>(null);
+
+    /// <inheritdoc />
     public async Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         using FtpConnectionPool.Lease lease = await RentAsync(sessionId, cancellationToken).ConfigureAwait(false);

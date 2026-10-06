@@ -23,6 +23,12 @@ public readonly record struct SftpDeleteProgress(int DeletedCount, int TotalCoun
 /// <param name="Groups">可选的组名。</param>
 public sealed record RemoteOwnerChoices(IReadOnlyList<string> Users, IReadOnlyList<string> Groups);
 
+/// <summary>远端某个目录所在文件系统的用量(SFTP 的 <c>statvfs@openssh.com</c>)。</summary>
+/// <param name="TotalBytes">总容量。</param>
+/// <param name="AvailableBytes">登录用户还能写多少(上传前预检看这个,不含只留给 root 的那部分)。</param>
+/// <param name="IsReadOnly">挂载成只读的。</param>
+public sealed record RemoteSpaceInfo(ulong TotalBytes, ulong AvailableBytes, bool IsReadOnly);
+
 /// <summary>
 /// 基于已有 SSH 会话的 SFTP 文件操作:目录列举、上传/下载、删除、创建、重命名、权限与元数据查询,以会话 id 为键。
 /// </summary>
@@ -147,6 +153,12 @@ public interface ISftpService : IAsyncDisposable
     /// 会话的 SFTP 工作目录(登录后即为账户的 home 目录),用于在该处打开浏览器而非文件系统根目录。
     /// </summary>
     Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 远端路径所在文件系统的用量;查不到(服务端不支持 <c>statvfs@openssh.com</c>、FTP、插件协议)时为 <see langword="null" />。
+    /// </summary>
+    /// <remarks>查不到不是错误:文件面板只是不显示剩余空间、上传前不预检。</remarks>
+    Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// 关闭并释放某个会话的 SFTP 通道(在其 SSH 标签页关闭时调用),使其不再持有活动连接或接受操作。

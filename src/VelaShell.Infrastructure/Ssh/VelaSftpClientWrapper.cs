@@ -262,6 +262,27 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         GuardedAsync(async () => await EnsureConnected().ExistsAsync(path, ct).ConfigureAwait(false), ct);
 
     /// <inheritdoc />
+    /// <remarks>服务端没有 <c>statvfs@openssh.com</c> 时不发请求;请求失败(路径不在了之类)也只是查不到。</remarks>
+    public async Task<Core.Sftp.RemoteSpaceInfo?> GetSpaceAsync(string path, CancellationToken ct = default)
+    {
+        SftpFileSystem fs = EnsureConnected();
+        if (!fs.Capabilities.HasStatVfs)
+        {
+            return null;
+        }
+
+        try
+        {
+            SftpFileSystemInfo info = await fs.GetFileSystemInfoAsync(path, ct).ConfigureAwait(false);
+            return new Core.Sftp.RemoteSpaceInfo(info.TotalBytes, info.AvailableBytes, info.IsReadOnly);
+        }
+        catch (SftpException)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
     /// <remarks>
     /// <paramref name="mode" /> 按契约是「把三个八进制数字写成十进制」(755、644),
     /// 所以要按 8 进制解回去,不能直接当数值用。

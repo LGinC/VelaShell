@@ -82,6 +82,92 @@ public class FileBrowserViewModelTests
         Assert.AreEqual("readme.txt", _vm.Files[3].Name);
     }
 
+    /// <summary>表头的剩余空间:进了目录就查(statvfs);查不到(FTP、服务端不支持)时不显示。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task FreeSpace_IsShownAfterNavigating_AndHiddenWhenUnknown()
+    {
+        _sftpService.ListDirectoryAsync(_sessionId, Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new List<RemoteFileInfo>()));
+        _sftpService.GetSpaceAsync(_sessionId, "/data", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<RemoteSpaceInfo?>(new RemoteSpaceInfo(50UL << 30, 12UL << 30, IsReadOnly: false)));
+        _sftpService.GetSpaceAsync(_sessionId, "/ftp", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<RemoteSpaceInfo?>(null));
+
+        await _vm.NavigateToCommand.Execute("/data").FirstAsync();
+        Assert.AreEqual(
+            Strings.Format("FileBrowser_FreeSpace", RemoteFileInfoViewModel.FormatSize(12L << 30), RemoteFileInfoViewModel.FormatSize(50L << 30)),
+            _vm.FreeSpaceText);
+
+        await _vm.NavigateToCommand.Execute("/ftp").FirstAsync();
+        Assert.IsNull(_vm.FreeSpaceText, "查不到用量时不显示,而不是留着上一个目录的数");
+    }
+
+    /// <summary>上传前预检:目标分区可能放不下时先问;用户说不传就一个都不传。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task Upload_AsksFirstWhenTheTargetMayRunOutOfSpace_AndStopsOnNo()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vela-space-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string file = Path.Combine(dir, "big.bin");
+            await File.WriteAllBytesAsync(file, new byte[4096]);
+            _sftpService.GetSpaceAsync(_sessionId, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult<RemoteSpaceInfo?>(new RemoteSpaceInfo(10_000, 1_000, IsReadOnly: false)));
+            string? asked = null;
+            _vm.ConfirmLowSpace = message =>
+            {
+                asked = message;
+                return Task.FromResult(false);
+            };
+
+            await _vm.UploadLocalPathsAsync([file]);
+
+            Assert.AreEqual(
+                Strings.Format("FileBrowser_LowSpaceMessage", RemoteFileInfoViewModel.FormatSize(1_000), RemoteFileInfoViewModel.FormatSize(4096)),
+                asked);
+            await _sftpService.DidNotReceiveWithAnyArgs().UploadFileAsync(default, default!, default!, default, default, default);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    /// <summary>放得下、或者查不到用量:不问。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    [DataRow(true, DisplayName = "放得下")]
+    [DataRow(false, DisplayName = "查不到用量")]
+    public async Task Upload_DoesNotAskWhenItFitsOrSpaceIsUnknown(bool known)
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "vela-space-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            string file = Path.Combine(dir, "small.bin");
+            await File.WriteAllBytesAsync(file, new byte[100]);
+            _sftpService.GetSpaceAsync(_sessionId, Arg.Any<string>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(known ? new RemoteSpaceInfo(10_000, 1_000, IsReadOnly: false) : null));
+            bool asked = false;
+            _vm.ConfirmLowSpace = _ =>
+            {
+                asked = true;
+                return Task.FromResult(false);
+            };
+
+            await _vm.UploadLocalPathsAsync([file]);
+
+            Assert.IsFalse(asked);
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [TestMethod]
     [TestCategory("FileBrowser")]
     public async Task NavigateIntoFolder_UpdatesCurrentPath()

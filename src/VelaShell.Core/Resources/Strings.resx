@@ -637,6 +637,18 @@
   <data name="Upload" xml:space="preserve">
     <value>Upload</value>
   </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>{0} free of {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>Not enough space?</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>The target file system has {0} free, but these files take {1}. They may not fit — running out of space midway leaves an incomplete file on the server. Upload anyway?</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>Upload anyway</value>
+  </data>
   <data name="Download" xml:space="preserve">
     <value>Download</value>
   </data>

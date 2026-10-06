@@ -78,6 +78,9 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// </summary>
     Task<bool> ExistsAsync(string path, CancellationToken cancellationToken = default);
 
+    /// <summary>路径所在文件系统的用量;服务端不支持或查不到时为 <see langword="null" />(不抛)。</summary>
+    Task<Sftp.RemoteSpaceInfo?> GetSpaceAsync(string path, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// 修改远端条目的权限。<paramref name="mode" /> 采用将三个八进制数字写作十进制数的约定
     /// (例如 755、644)。

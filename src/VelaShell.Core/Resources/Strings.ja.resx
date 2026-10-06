@@ -3654,6 +3654,18 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Upload" xml:space="preserve">
     <value>アップロード</value>
   </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>空き {0} / 全体 {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>空き容量が足りない可能性</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>転送先のファイルシステムの空きは {0} ですが、これらのファイルは {1} あります。収まらない可能性があります — 途中で容量が尽きるとサーバーに不完全なファイルが残ります。それでもアップロードしますか?</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>アップロードする</value>
+  </data>
   <data name="UploadHere" xml:space="preserve">
     <value>このフォルダーへアップロード</value>
   </data>

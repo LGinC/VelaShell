@@ -91,6 +91,7 @@ public partial class FileBrowserView : UserControl
             vm.CopyToClipboard = CopyToClipboardAsync;
             vm.ShowFileProperties = ShowFilePropertiesAsync;
             vm.ConfirmDelete = ConfirmAsync;
+            vm.ConfirmLowSpace = ConfirmLowSpaceAsync;
             vm.OpenLocalFile = OpenLocalFileAsync;
             vm.OpenInBuiltInEditor = OpenInBuiltInEditorAsync;
             vm.PromptConfigureEditor = PromptConfigureEditorAsync;
@@ -457,14 +458,14 @@ public partial class FileBrowserView : UserControl
     /// 跨会话中转只属于双栏远程文档;同一栏里拖来拖去(#474 否决过的拖动移动)一律不接。
     /// </para>
     /// </remarks>
-    private static PeerDrag? s_activeRemoteDrag;
+    private static PeerDrag? _activeRemoteDrag;
 
     /// <summary>一次远程行拖拽的来源栏与条目。</summary>
     private sealed record PeerDrag(FileBrowserViewModel Source, IReadOnlyList<RemoteFileInfoViewModel> Entries);
 
     /// <summary>这次拖放是不是双栏远程文档里另一栏拖过来的行;是则给出那次拖拽。</summary>
     private static PeerDrag? PeerDragFor(FileBrowserViewModel target, DragEventArgs e) =>
-        s_activeRemoteDrag is { } drag
+        _activeRemoteDrag is { } drag
         && target.AcceptsStreamedUploads
         && target.DualPeer is { } peer
         && ReferenceEquals(drag.Source, peer)
@@ -611,6 +612,22 @@ public partial class FileBrowserView : UserControl
             return null;
         }
         return await MessageDialog.PromptAsync(owner, title, initialValue);
+    }
+
+    /// <summary>上传前预检:目标分区可能放不下时问一句。</summary>
+    private async Task<bool> ConfirmLowSpaceAsync(string message)
+    {
+        if (TopLevel.GetTopLevel(this) is not Window owner)
+        {
+            return true;
+        }
+        return await MessageDialog.ConfirmAsync(
+            owner,
+            Strings.Get("FileBrowser_LowSpaceTitle"),
+            message,
+            Strings.Get("FileBrowser_UploadAnyway"),
+            kind: MessageDialogKind.Warning
+        );
     }
 
     /// <summary>用于危险操作(删除)的模态确认(是/否)。返回 true 表示继续。</summary>
@@ -840,15 +857,15 @@ public partial class FileBrowserView : UserControl
                     && !pointerArgs.KeyModifiers.HasFlag(KeyModifiers.Shift));
             DragSelectionResolver.SynchronizeSelection(vm.SelectedFiles, entries);
             string[] paths = [.. entries.Select(item => item.FullPath)];
-            // 登记这次拖拽的来源,供双栏远程文档的另一栏认领(见 s_activeRemoteDrag)。
-            s_activeRemoteDrag = new(vm, entries);
+            // 登记这次拖拽的来源,供双栏远程文档的另一栏认领(见 _activeRemoteDrag)。
+            _activeRemoteDrag = new(vm, entries);
             try
             {
                 await StartRemoteDragAsync(paths, pointerArgs);
             }
             finally
             {
-                s_activeRemoteDrag = null;
+                _activeRemoteDrag = null;
             }
             return;
         }

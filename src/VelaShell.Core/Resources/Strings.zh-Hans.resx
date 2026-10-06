@@ -690,6 +690,18 @@
   <data name="Upload" xml:space="preserve">
     <value>上传</value>
   </data>
+  <data name="FileBrowser_FreeSpace" xml:space="preserve">
+    <value>可用 {0} / 共 {1}</value>
+  </data>
+  <data name="FileBrowser_LowSpaceTitle" xml:space="preserve">
+    <value>空间可能不够</value>
+  </data>
+  <data name="FileBrowser_LowSpaceMessage" xml:space="preserve">
+    <value>目标分区还剩 {0}，这批文件共 {1}，可能放不下 —— 传到一半磁盘满会在服务器上留下不完整的文件。仍要上传吗？</value>
+  </data>
+  <data name="FileBrowser_UploadAnyway" xml:space="preserve">
+    <value>仍要上传</value>
+  </data>
   <data name="Download" xml:space="preserve">
     <value>下载</value>
   </data>

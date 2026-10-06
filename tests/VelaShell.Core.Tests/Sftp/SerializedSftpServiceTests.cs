@@ -299,6 +299,8 @@ public sealed class SerializedSftpServiceTests
         public Task<bool> ExistsAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) => InvokeAsync("Exists", true, cancellationToken);
         public Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default) => InvokeAsync("GetWorkingDirectory", "/", cancellationToken);
 
+        public Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) => InvokeAsync<RemoteSpaceInfo?>("GetSpace", null, cancellationToken);
+
         public Task CloseSessionAsync(Guid sessionId, CancellationToken cancellationToken = default)
         {
             CloseCalls++;
