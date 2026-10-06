@@ -324,6 +324,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 "请求了动态端口，但服务端的 REQUEST_SUCCESS 里没有带回实际端口号。");
         }
 
+        forwarder.TrackConnection(connection);
         return forwarder;
     }
 
@@ -383,6 +384,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 "请求了动态端口，但服务端的 REQUEST_SUCCESS 里没有带回实际端口号。");
         }
 
+        forwarder.TrackConnection(connection);
         return forwarder;
     }
 
@@ -439,6 +441,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 "那个路径已经存在，或者所在目录不可写。");
         }
 
+        forwarder.TrackConnection(connection);
         return forwarder;
     }
 
@@ -832,6 +835,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         {
             return;
         }
+        CompleteAsStopped();
 
         (string cancelRequest, ReadOnlyMemory<byte> payload) = EncodeCancelRequest();
 

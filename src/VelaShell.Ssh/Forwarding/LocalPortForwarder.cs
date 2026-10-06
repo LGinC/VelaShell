@@ -255,6 +255,7 @@ public sealed class LocalPortForwarder : PortForwarder
         {
             LocalPortForwarder forwarder = new(connection, options, kind, listener, targetHost, targetPort, targetSocketPath);
             forwarder.Run();
+            forwarder.TrackConnection(connection);
             return forwarder;
         }
         catch
@@ -647,6 +648,7 @@ public sealed class LocalPortForwarder : PortForwarder
             return;
         }
         _disposed = true;
+        CompleteAsStopped();
         await _disconnectedRegistration.DisposeAsync().ConfigureAwait(false);
 
         try

@@ -32,16 +32,16 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
     private readonly PortForwarder _forwarder;
     private bool _stopped;
 
-    private LibraryPortForwardHandle(SshConnection connection, PortForwarder forwarder)
+    private LibraryPortForwardHandle(PortForwarder forwarder)
     {
         _forwarder = forwarder;
         _forwarder.Error += OnError;
 
-        // 连接断了,转发也就没了 —— 但转发器自己不会为此发 Error(它只报单条连接的失败)。
+        // 转发器停了(连接断了,或者本端释放)—— 它不会为此发 Error(那只报单条连接的失败)。
         // 隧道面板靠这一条把「运行中」换成带原因的状态;不报的话,远程转发在掉线之后会一直显示得好好的。
-        // 报的是连接真实的结束原因(保活超时、服务端 DISCONNECT 带的原话……),按原因码本地化。
-        // 曾经挂 Disconnected 一律报「对端关闭」—— 连用户自己断开会话也是。本端释放(Aborted)不当成错误报。
-        _ = connection.Completion.ContinueWith(
+        // 报的是真实的停止原因(保活超时、服务端 DISCONNECT 带的原话……),按原因码本地化;本端释放(Aborted)不当成错误报。
+        // 曾经挂 Disconnected 一律报「对端关闭」,后来改挂连接的 Completion;现在用转发器自己的 Completion(F41)。
+        _ = forwarder.Completion.ContinueWith(
             static (ended, state) =>
             {
                 var self = (LibraryPortForwardHandle)state!;
@@ -97,7 +97,7 @@ internal sealed class LibraryPortForwardHandle : IPortForwardHandle
                 nameof(request), request.Kind, @"Unknown port forward kind."),
         };
 
-        return new(connection, forwarder);
+        return new(forwarder);
     }
 
     private static LocalPortForwardOptions LocalOptions(PortForwardRequest request) => new()

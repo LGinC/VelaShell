@@ -15,6 +15,7 @@ using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Config;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Protocol;
@@ -330,6 +331,32 @@ public sealed class PortForwardTests
         // curl 与浏览器会根据这个码决定要不要重试、报给用户哪句话。
         // 一律回 0x01 等于把信息丢了。
         Assert.AreEqual((byte)SocksReply.ConnectionRefused, connectReply[1]);
+    }
+
+    /// <summary>〔F41〕转发器交出自己的停止原因：连接断了是连接的结束原因，本端释放是 Aborted。</summary>
+    [TestMethod]
+    public async Task 转发器的Completion交出停止原因()
+    {
+        await using (Harness harness = await Harness.StartAsync(new TestChannelScript { DropConnectionOnTunnelOpen = true }))
+        {
+            await using var forwarder = LocalPortForwarder.Start(harness.Connection, "t", 80);
+            Assert.IsFalse(forwarder.Completion.IsCompleted);
+
+            using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
+            await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);   // 服务端收到开隧道就断开连接
+
+            SshException stopped = await forwarder.Completion.WaitAsync(harness.Token);
+            Assert.AreNotEqual(SshFailureReason.Aborted, stopped.Reason, "是连接断了，不是本端停的");
+            Assert.AreSame(await harness.Connection.Completion.WaitAsync(harness.Token), stopped);
+        }
+
+        await using (Harness harness = await Harness.StartAsync(new TestChannelScript()))
+        {
+            var forwarder = LocalPortForwarder.Start(harness.Connection, "t", 80);
+            await forwarder.DisposeAsync();
+            Assert.AreEqual(SshFailureReason.Aborted, (await forwarder.Completion.WaitAsync(harness.Token)).Reason);
+            Assert.IsNull(harness.Connection.CloseReason, "停的是转发器，连接照旧");
+        }
     }
 
     /// <summary>〔spec 07 §3.2〕服务端一直不应答开通道：到 ChannelOpenTimeout 放弃，动态转发回 SOCKS 0x06，本地转发重置本机连接。</summary>

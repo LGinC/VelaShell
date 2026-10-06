@@ -8,6 +8,8 @@
 using System.Collections.Concurrent;
 using System.Net;
 using VelaShell.Ssh.Channels;
+using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.Session;
 
 namespace VelaShell.Ssh.Forwarding;
 
@@ -41,6 +43,33 @@ public abstract class PortForwarder : IAsyncDisposable
     /// <summary>两个方向的限速；不限速时为 <see langword="null"/>。</summary>
     private ByteRateLimiter? _sendLimiter;
     private ByteRateLimiter? _receiveLimiter;
+
+    private readonly TaskCompletionSource<SshException> _completion = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
+    /// 转发器停下时完成，结果是停下的原因：SSH 连接结束了是连接的结束原因（与 <see cref="SshConnection.Completion"/> 同一个），
+    /// 本端释放是 <see cref="SshFailureReason.Aborted"/>，看哪个先到。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 转发器只会因为这两件事停下 —— 单条连接的失败报 <see cref="Error"/>，转发器照跑。
+    /// 以<b>成功</b>完成、结果是原因（与 <see cref="SshConnection.Completion"/> 同一个形状）：没人等也不会变成未观察的任务异常。
+    /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/07 §五〕曾经没有：宿主的隧道面板要把「运行中」换成带原因的状态，只好自己去挂连接的结束。
+    /// </para>
+    /// </remarks>
+    public Task<SshException> Completion => _completion.Task;
+
+    /// <summary>转发器建好了：连接结束时跟着停（子类的工厂在成功返回之前调一次）。</summary>
+    private protected void TrackConnection(SshConnection connection) =>
+        _ = connection.Completion.ContinueWith(
+            static (ended, state) => ((PortForwarder)state!)._completion.TrySetResult(ended.Result),
+            this, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+    /// <summary>本端在释放（子类的 <see cref="DisposeAsync"/> 一进来就调）。</summary>
+    private protected void CompleteAsStopped() =>
+        _completion.TrySetResult(new SshForwardException(SshFailureReason.Aborted, "转发器已由本端停止。"));
 
     /// <summary>只给本库的派生类型用。</summary>
     /// <param name="kind">转发的形态。</param>
