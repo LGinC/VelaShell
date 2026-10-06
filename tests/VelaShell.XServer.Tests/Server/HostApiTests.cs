@@ -215,6 +215,37 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 同一批里的窗口变化合并_映射了又取消的抵消()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+
+        // 3000 次改标题:原先每次一个 TopLevelChanged。
+        await c.SendManyAsync(Enumerable.Range(0, 3000).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        {
+            byte[] title = Encoding.Latin1.GetBytes($"t{i}");
+            return (18, 0, b => b.U32(top).U32(39).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)title.Length).Bytes(title).Pad());
+        }));
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.Title == "t2999");
+        await c.SyncAsync();
+        int changes = host.Log.Count(e => e.StartsWith($"changed {top:x}", StringComparison.Ordinal));
+        Assert.IsLessThan(300, changes, $"3000 次改标题交给宿主 {changes} 次");
+
+        // 2000 对映射 / 取消映射:同一批里成对抵消,宿主几乎不必建、关原生窗口。
+        uint other = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(other).U32(c.RootWindow).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendManyAsync(Enumerable.Range(0, 4000).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+            (i % 2 == 0 ? (byte)8 : (byte)10, 0, b => b.U32(other))));
+        await c.SyncAsync();
+        await Task.Delay(50);
+        int maps = host.Log.Count(e => e.StartsWith($"mapped {other:x}", StringComparison.Ordinal));
+        Assert.IsLessThan(200, maps, $"2000 次映射交给宿主 {maps} 次");
+        Assert.IsFalse(host.Mapped.ContainsKey(other), "最后是取消映射");
+    }
+
+    [TestMethod]
     public async Task 成批的响铃合并成一次_之后按时间节流()
     {
         using RecordingHost host = new();

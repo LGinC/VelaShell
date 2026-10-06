@@ -19,20 +19,66 @@ namespace VelaShell.XServer.Server;
 /// </remarks>
 internal sealed class DeferredHost(IX11ServerHost inner, Action<string> log) : IX11ServerHost
 {
-    private readonly List<Action> _pending = [];
-    private readonly List<Action> _running = [];
+    /// <summary>攒下的回调;被合并掉、抵消掉的位置置 null。</summary>
+    private readonly List<Action?> _pending = [];
+    private readonly List<Action?> _running = [];
 
-    public void TopLevelMapped(XTopLevelWindow window) => _pending.Add(() => inner.TopLevelMapped(window));
+    // 同一批里的合并(xs_plan WN-S8):一个客户端循环改标题、反复映射 / 取消映射、狂发窗口管理器请求,原先每一下都排一个回调,
+    // 宿主的 UI 线程就不停建、关原生窗口,队列无界增长。
+    private readonly Dictionary<XTopLevelWindow, (int Index, XTopLevelChanges Changes)> _changed = [];
+    private readonly Dictionary<XTopLevelWindow, int> _mapped = [];
+    private int _cursorAt = -1, _clipboardAt = -1, _requests;
+    private (XTopLevelWindow? Window, XCursor Cursor) _cursor;
+    private string _clipboard = "";
 
-    public void TopLevelUnmapped(XTopLevelWindow window) => _pending.Add(() => inner.TopLevelUnmapped(window));
+    /// <summary>一批里最多交这么多个窗口管理器请求,多的丢掉(真实程序一批里不过一两个)。</summary>
+    internal const int MaxRequestsPerBatch = 32;
 
-    public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes) =>
+    public void TopLevelMapped(XTopLevelWindow window)
+    {
+        _changed.Remove(window);   // 之后的变化不再并进映射之前的那一条
+        _mapped[window] = _pending.Count;
+        _pending.Add(() => inner.TopLevelMapped(window));
+    }
+
+    public void TopLevelUnmapped(XTopLevelWindow window)
+    {
+        _changed.Remove(window);
+        if (_mapped.Remove(window, out int mappedAt))
+        {
+            _pending[mappedAt] = null;   // 同一批里映射了又取消映射:宿主根本不必知道,两条一起抵消
+            return;
+        }
+        _pending.Add(() => inner.TopLevelUnmapped(window));
+    }
+
+    public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes)
+    {
+        if (_changed.TryGetValue(window, out (int Index, XTopLevelChanges Changes) earlier))
+        {
+            // 同一批里同一个窗口的变化或起来、并成一条(放在第一次的位置;快照本来就总是最新的)。
+            XTopLevelChanges merged = earlier.Changes | changes;
+            _changed[window] = (earlier.Index, merged);
+            _pending[earlier.Index] = () => inner.TopLevelChanged(window, merged);
+            return;
+        }
+        _changed[window] = (_pending.Count, changes);
         _pending.Add(() => inner.TopLevelChanged(window, changes));
+    }
 
     public void TopLevelDamaged(XTopLevelWindow window, IReadOnlyList<XRect> damage) =>
         _pending.Add(() => inner.TopLevelDamaged(window, damage));
 
-    public void CursorChanged(XTopLevelWindow? window, XCursor cursor) => _pending.Add(() => inner.CursorChanged(window, cursor));
+    /// <summary>光标只有最后一次有意义:同一批里只交最后一次(放在第一次的位置)。</summary>
+    public void CursorChanged(XTopLevelWindow? window, XCursor cursor)
+    {
+        _cursor = (window, cursor);
+        if (_cursorAt < 0)
+        {
+            _cursorAt = _pending.Count;
+            _pending.Add(() => inner.CursorChanged(_cursor.Window, _cursor.Cursor));
+        }
+    }
 
     /// <summary>
     /// 响铃合并、节流:一批里最多交一次(取最大音量),两次之间至少隔 <see cref="MinBellInterval" />。
@@ -66,9 +112,29 @@ internal sealed class DeferredHost(IX11ServerHost inner, Action<string> log) : I
     private int _pendingBellVolume = -1;
     private long _lastBell;
 
-    public void ClipboardChanged(string text) => _pending.Add(() => inner.ClipboardChanged(text));
+    /// <summary>剪贴板同样只交最后一次。</summary>
+    public void ClipboardChanged(string text)
+    {
+        _clipboard = text;
+        if (_clipboardAt < 0)
+        {
+            _clipboardAt = _pending.Count;
+            _pending.Add(() => inner.ClipboardChanged(_clipboard));
+        }
+    }
 
-    public void WindowManagerRequested(XWindowManagerRequest request) => _pending.Add(() => inner.WindowManagerRequested(request));
+    public void WindowManagerRequested(XWindowManagerRequest request)
+    {
+        if (++_requests > MaxRequestsPerBatch)
+        {
+            if (_requests == MaxRequestsPerBatch + 1)
+            {
+                log($"window manager requests over {MaxRequestsPerBatch} in one batch: the rest are dropped");
+            }
+            return;
+        }
+        _pending.Add(() => inner.WindowManagerRequested(request));
+    }
 
     /// <summary>调完攒下的回调。回调里再引起的回调(宿主同步调了注入方法 —— 那只是排工作项,不会同步回来)留到下一轮。</summary>
     public void Flush()
@@ -79,8 +145,15 @@ internal sealed class DeferredHost(IX11ServerHost inner, Action<string> log) : I
         }
         _running.AddRange(_pending);
         _pending.Clear();
-        foreach (Action call in _running)
+        _changed.Clear();
+        _mapped.Clear();
+        _requests = 0;
+        foreach (Action? call in _running)
         {
+            if (call is null)
+            {
+                continue;
+            }
             try
             {
                 call();
@@ -91,6 +164,8 @@ internal sealed class DeferredHost(IX11ServerHost inner, Action<string> log) : I
             }
         }
         _running.Clear();
+        _cursorAt = -1;
+        _clipboardAt = -1;
     }
 }
 
