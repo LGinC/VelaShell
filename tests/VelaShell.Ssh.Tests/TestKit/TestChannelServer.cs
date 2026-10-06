@@ -88,6 +88,9 @@ internal sealed record TestChannelScript
     /// <summary>收到隧道的 <c>CHANNEL_OPEN</c> 时不回话、直接把连接断掉（模拟跳板在开隧道时掉线）。</summary>
     public bool DropConnectionOnTunnelOpen { get; init; }
 
+    /// <summary>收到隧道的 <c>CHANNEL_OPEN</c> 时一直不应答（模拟服务端还在连一个不通的目标）。</summary>
+    public bool IgnoreTunnelOpens { get; init; }
+
     /// <summary>接受 <c>x11-req</c> 通道请求。</summary>
     public bool GrantX11Forward { get; init; }
 
@@ -710,6 +713,11 @@ internal sealed class TestChannelServer : IDisposable
         {
             _dropped = true;
             await _transport.DisposeAsync();
+            return;
+        }
+
+        if (isTunnel && _script.IgnoreTunnelOpens)
+        {
             return;
         }
 

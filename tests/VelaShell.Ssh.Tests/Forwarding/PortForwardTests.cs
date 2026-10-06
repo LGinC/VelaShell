@@ -224,8 +224,11 @@ public sealed class PortForwardTests
         using (Socket client = new(SocketType.Stream, ProtocolType.Tcp))
         {
             await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
-            byte[] buffer = new byte[16];
-            _ = await ReadAllAsync(client, buffer, harness.Token);
+
+            // 〔spec 07 §二〕拒绝也是出错：本机那条连接被重置（RST），不是一个像正常结束的 FIN。
+            SocketException reset = await Assert.ThrowsExactlyAsync<SocketException>(
+                async () => await ReadAllAsync(client, new byte[16], harness.Token));
+            Assert.AreEqual(SocketError.ConnectionReset, reset.SocketErrorCode);
         }
 
         await WaitUntilAsync(() => errors.Count > 0, harness.Token);
@@ -329,7 +332,99 @@ public sealed class PortForwardTests
         Assert.AreEqual((byte)SocksReply.ConnectionRefused, connectReply[1]);
     }
 
+    /// <summary>〔spec 07 §3.2〕服务端一直不应答开通道：到 ChannelOpenTimeout 放弃，动态转发回 SOCKS 0x06，本地转发重置本机连接。</summary>
+    [TestMethod]
+    public async Task 开通道等不到应答时到点放弃_动态转发回TTL到期_本地转发重置()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { IgnoreTunnelOpens = true });
+        LocalPortForwardOptions quick = new() { ChannelOpenTimeout = TimeSpan.FromMilliseconds(300) };
+
+        await using (var dynamic = LocalPortForwarder.StartDynamic(harness.Connection, quick))
+        {
+            List<ForwardErrorEventArgs> errors = [];
+            dynamic.Error += (_, e) => errors.Add(e);
+
+            using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
+            await client.ConnectAsync(dynamic.BoundEndPoint!, harness.Token);
+            await client.SendAsync(new byte[] { 0x05, 0x01, 0x00 }, harness.Token);
+            byte[] methodReply = new byte[2];
+            await client.ReceiveAsync(methodReply, harness.Token);
+            await client.SendAsync(new byte[] { 0x05, 0x01, 0x00, 0x01, 10, 0, 0, 1, 0x00, 0x50 }, harness.Token);
+
+            byte[] connectReply = new byte[10];
+            await client.ReceiveAsync(connectReply, harness.Token);
+            Assert.AreEqual((byte)SocksReply.TtlExpired, connectReply[1]);
+
+            await WaitUntilAsync(() => errors.Count > 0, harness.Token);
+            Assert.AreEqual(ForwardErrorReason.ChannelOpen, errors[0].Reason);
+            Assert.Contains("没有打开", errors[0].Message);
+        }
+
+        await using (var local = LocalPortForwarder.Start(harness.Connection, "slow", 80, quick))
+        {
+            using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
+            await client.ConnectAsync(local.BoundEndPoint!, harness.Token);
+            SocketException reset = await Assert.ThrowsExactlyAsync<SocketException>(
+                async () => await ReadAllAsync(client, new byte[16], harness.Token));
+            Assert.AreEqual(SocketError.ConnectionReset, reset.SocketErrorCode);
+        }
+
+        Assert.AreEqual(TimeSpan.FromSeconds(30), LocalPortForwardOptions.Default.ChannelOpenTimeout);
+        Assert.AreEqual(Timeout.InfiniteTimeSpan, new LocalPortForwardOptions { ChannelOpenTimeout = Timeout.InfiniteTimeSpan }.ChannelOpenTimeout);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { ChannelOpenTimeout = TimeSpan.Zero });
+    }
+
     // ------------------------------------------------------------ 远程转发
+
+    /// <summary>〔spec 07 §八〕远程转发撞上并发上限：回 RESOURCE_SHORTAGE，同时计入错误、发 ConnectionLimit 事件（曾经只拒、不报）。</summary>
+    [TestMethod]
+    public async Task 远程转发撞并发上限时回资源不足并报ConnectionLimit()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34571 });
+
+        using Socket target = new(SocketType.Stream, ProtocolType.Tcp);
+        target.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        target.Listen();
+        int targetPort = ((IPEndPoint)target.LocalEndPoint!).Port;
+
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartAsync(
+            harness.Connection, "127.0.0.1", targetPort,
+            new RemotePortForwardOptions { BindAddress = "localhost", BindPort = 34571, MaxConnections = 1 }, harness.Token);
+        List<ForwardErrorEventArgs> errors = [];
+        forwarder.Error += (_, e) =>
+        {
+            lock (errors)
+            {
+                errors.Add(e);
+            }
+        };
+
+        ArrayBufferWriter<byte> header = new();
+        SshDataWriter writer = new(header);
+        writer.WriteUtf8String("localhost");
+        writer.WriteUInt32(34571);
+        writer.WriteUtf8String("127.0.0.1");
+        writer.WriteUInt32(40003);
+
+        Stream? first = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+        Assert.IsNotNull(first);
+        using Socket held = await target.AcceptAsync(harness.Token);
+
+        Stream? second = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+        Assert.IsNull(second, "撞上限的那一条不该确认");
+        Assert.AreEqual(SshChannelOpenFailureReason.ResourceShortage, harness.Observed.LastClientOpenFailure);
+
+        await WaitUntilAsync(() =>
+        {
+            lock (errors)
+            {
+                return errors.Any(e => e.Reason == ForwardErrorReason.ConnectionLimit);
+            }
+        }, harness.Token);
+        await first.DisposeAsync();
+    }
 
     [TestMethod]
     public async Task 远程转发请求端口0时从应答载荷取实际端口()

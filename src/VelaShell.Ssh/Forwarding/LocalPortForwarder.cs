@@ -87,6 +87,21 @@ public sealed record LocalPortForwardOptions
         init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(SocksHandshakeTimeout), value, "SOCKS 握手时限必须为正。");
     } = TimeSpan.FromSeconds(30);
 
+    /// <summary>开隧道通道时等服务端应答最多等多久（服务端要先连上目标才确认）。</summary>
+    /// <remarks>
+    /// 〔决策 velashell-docs/zh/ssh/spec/07 §3.2〕到点就放弃这一条：动态转发回 SOCKS <c>0x06</c>（TTL expired），本地转发重置本机那条连接。
+    /// 服务端去连一个不通的目标时，要等它自己的 TCP 连接超时（常见的是两分钟上下）才回拒绝 —— 浏览器与 curl 等不了那么久，也看不出原因。
+    /// 迟到的确认由连接收尾（立刻关掉），不占服务端的会话名额。不限时写 <see cref="Timeout.InfiniteTimeSpan"/>。
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">不为正，也不是 <see cref="Timeout.InfiniteTimeSpan"/>。</exception>
+    public TimeSpan ChannelOpenTimeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero || value == Timeout.InfiniteTimeSpan
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(ChannelOpenTimeout), value, "开通道的时限必须为正；不限时写 Timeout.InfiniteTimeSpan。");
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>
     /// 每个方向每秒最多搬多少应用字节；<see langword="null"/>（默认）不限。这个转发器的全部连接共用这个额度。
     /// </summary>
@@ -455,14 +470,11 @@ public sealed class LocalPortForwarder : PortForwarder
             if (_targetSocketPath is { } socketPath)
             {
                 target = socketPath;
-                try
+                channel = await OpenTunnelAsync(
+                    token => _connection.OpenUnixSocketTunnelAsync(socketPath, _options.Channel, token),
+                    local, $"远端套接字 {target}", socksAddressType: null, cancellationToken).ConfigureAwait(false);
+                if (channel is null)
                 {
-                    channel = await _connection.OpenUnixSocketTunnelAsync(socketPath, _options.Channel, cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                catch (SshChannelException ex)
-                {
-                    Report(ForwardErrorReason.ChannelOpen, $"到远端套接字 {target} 的隧道打不开：{ex.Message}", ex);
                     return;
                 }
                 await RelayAsync(connectionId, source, target, local, channel, cancellationToken).ConfigureAwait(false);
@@ -513,27 +525,16 @@ public sealed class LocalPortForwarder : PortForwarder
 
             target = $"{host}:{port}";
 
-            try
-            {
-                channel = await _connection.OpenTcpTunnelAsync(
+            channel = await OpenTunnelAsync(
+                token => _connection.OpenTcpTunnelAsync(
                     host, port,
                     originatorHost: (source as IPEndPoint)?.Address.ToString() ?? "127.0.0.1",
                     originatorPort: (source as IPEndPoint)?.Port ?? 0,
                     _options.Channel,
-                    cancellationToken).ConfigureAwait(false);
-            }
-            catch (SshChannelException ex)
+                    token),
+                local, target, Kind == ForwardKind.Dynamic ? socksAddressType : null, cancellationToken).ConfigureAwait(false);
+            if (channel is null)
             {
-                if (Kind == ForwardKind.Dynamic)
-                {
-                    // 应答码对不对是有实际后果的：curl 与浏览器会据此决定要不要重试、
-                    // 以及报给用户哪句话。一律回 0x01 等于把信息丢了。
-                    await SocksHandshake.WriteReplyAsync(
-                        local.Output, SocksHandshake.MapFailure(ex.OpenFailureReason),
-                        socksAddressType, cancellationToken).ConfigureAwait(false);
-                }
-
-                Report(ForwardErrorReason.ChannelOpen, $"到 {target} 的隧道打不开：{ex.Message}", ex);
                 return;
             }
 
@@ -566,6 +567,64 @@ public sealed class LocalPortForwarder : PortForwarder
             await local.DisposeAsync().ConfigureAwait(false);
             _connectionSlots.Release();
         }
+    }
+
+    /// <summary>
+    /// 开隧道通道，带 <see cref="LocalPortForwardOptions.ChannelOpenTimeout"/>。开不成就地收尾这一条、返回 <see langword="null"/>：
+    /// 动态转发回 SOCKS 失败应答（<paramref name="socksAddressType"/> 不为空时），否则重置本机那条连接。
+    /// </summary>
+    /// <remarks>
+    /// 〔决策 velashell-docs/zh/ssh/spec/07 §二〕<b>拒绝也是出错</b>：本机应用该收到 RST，而不是一个像正常结束的 FIN（与 §2.2「出错不是 EOF」同一条规则）。
+    /// 曾经正常关闭，本机应用读到的是一个没有任何数据的结尾，分不出「服务端拒了」与「目标什么也没回」。
+    /// SOCKS 有自己的失败应答告诉客户端原因（§3.2），回完正常关闭。
+    /// </remarks>
+    private async ValueTask<SshChannel?> OpenTunnelAsync(
+        Func<CancellationToken, ValueTask<SshChannel>> open,
+        StreamRelayEndpoint local,
+        string description,
+        byte? socksAddressType,
+        CancellationToken cancellationToken)
+    {
+        using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (_options.ChannelOpenTimeout != Timeout.InfiniteTimeSpan)
+        {
+            limit.CancelAfter(_options.ChannelOpenTimeout);
+        }
+
+        SocksReply reply;
+        string message;
+        Exception? error;
+        try
+        {
+            return await open(limit.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // 服务端还在连目标。迟到的确认由连接收尾（立刻关掉），迟到的拒绝没人等。
+            reply = SocksReply.TtlExpired;
+            message = $"到 {description} 的隧道在 {_options.ChannelOpenTimeout.TotalSeconds:0.#} 秒内没有打开（服务端还没应答），这一条被放弃。";
+            error = null;
+        }
+        catch (SshChannelException ex)
+        {
+            // 应答码对不对是有实际后果的：curl 与浏览器会据此决定要不要重试、
+            // 以及报给用户哪句话。一律回 0x01 等于把信息丢了。
+            reply = SocksHandshake.MapFailure(ex.OpenFailureReason);
+            message = $"到 {description} 的隧道打不开：{ex.Message}";
+            error = ex;
+        }
+
+        if (socksAddressType is { } addressType)
+        {
+            await SocksHandshake.WriteReplyAsync(local.Output, reply, addressType, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            await local.AbortAsync().ConfigureAwait(false);
+        }
+
+        Report(ForwardErrorReason.ChannelOpen, message, error);
+        return null;
     }
 
     private static EndPoint? SafeRemoteEndPoint(Socket socket)

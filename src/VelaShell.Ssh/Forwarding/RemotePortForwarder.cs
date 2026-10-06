@@ -532,6 +532,8 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
 
         if (!_connectionSlots.Wait(0, CancellationToken.None))
         {
+            // 〔spec 07 §八〕与本地转发同一条：计入 errors、发 ConnectionLimit 事件（每秒至多一次）。曾经只拒掉那条通道，不发事件也不计数。
+            ReportConnectionLimit(_options.MaxConnections);
             throw new SshForwardException(
                 SshFailureReason.LimitExceeded, $"并发连接数已达上限 {_options.MaxConnections}。");
         }
