@@ -101,7 +101,29 @@ public sealed class SftpTests
             SshConnection connection = new(clientTransport, kex);
             connection.Start();
 
-            SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection, clientOptions, cts.Token);
+            SftpFileSystem sftp;
+            try
+            {
+                sftp = await SftpFileSystem.ConnectAsync(connection, clientOptions, cts.Token);
+            }
+            catch
+            {
+                // 握手失败的用例：把已经建好的收干净，别让连接的后台循环一直引用着失败的那条 SFTP 会话 ——
+                // 「失败之后有没有留下未观察的任务异常」要靠它被 GC 回收才查得出来。
+                await cts.CancelAsync();
+                await connection.DisposeAsync();
+                try
+                {
+                    await serverChannels;
+                }
+                catch (Exception)
+                {
+                }
+                channelServer.Dispose();
+                await server.DisposeAsync();
+                cts.Dispose();
+                throw;
+            }
 
             return new Harness(server, channelServer, serverChannels, connection, sftp, sftpServer, cts);
         }
@@ -231,12 +253,59 @@ public sealed class SftpTests
     public async Task sftp_server一直不回VERSION时握手超时()
     {
         // 登录 shell 的启动文件卡住时 sftp-server 永远不会回 VERSION；曾经只靠调用方的令牌，没给就一直挂着。
-        SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
-            async () => await Harness.StartAsync(
-                sftpOptions: new TestSftpOptions { NeverAnswerInit = true },
-                clientOptions: new SftpOptions { HandshakeTimeout = TimeSpan.FromMilliseconds(200) }));
+        // 只把原因码带出来：异常对象经 InnerException（WaitAsync 抛的 TaskCanceledException）一路引用着等 VERSION 的那个任务，
+        // 抓着它的话检查时那个任务还活着，GC 收不到，查不出来。
+        SshFailureReason reason = SshFailureReason.Unknown;
+        List<Exception> unobserved = await CollectUnobservedAsync(async () =>
+            reason = (await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+                async () => await Harness.StartAsync(
+                    sftpOptions: new TestSftpOptions { NeverAnswerInit = true },
+                    clientOptions: new SftpOptions { HandshakeTimeout = TimeSpan.FromMilliseconds(200) }))).Reason);
 
-        Assert.AreEqual(SshFailureReason.Timeout, error.Reason);
+        Assert.AreEqual(SshFailureReason.Timeout, reason);
+
+        // 超时之后流水线才收工：那时等 VERSION 的人已经走了，故障曾经落在一个没人看的任务上。
+        Assert.IsEmpty(unobserved, string.Join(Environment.NewLine, unobserved));
+    }
+
+    /// <summary>跑 <paramref name="action"/>，收集期间（以及之后几轮 GC）冒出来的未观察的任务异常。</summary>
+    /// <remarks>
+    /// 这是进程级的事件：之前留下的垃圾先收干净；别的用例留下的测试桩任务（服务端那一半）堆栈在 TestKit 里，不算。
+    /// </remarks>
+    private static async Task<List<Exception>> CollectUnobservedAsync(Func<Task> action)
+    {
+        GC.Collect();
+        GC.WaitForPendingFinalizers();
+
+        List<Exception> unobserved = [];
+        void Record(object? sender, UnobservedTaskExceptionEventArgs e)
+        {
+            if (e.Exception.ToString().Contains(".TestKit.", StringComparison.Ordinal))
+            {
+                return;
+            }
+            lock (unobserved)
+            {
+                unobserved.Add(e.Exception);
+            }
+        }
+
+        TaskScheduler.UnobservedTaskException += Record;
+        try
+        {
+            await action();
+            for (int i = 0; i < 3; i++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                await Task.Delay(50);
+            }
+        }
+        finally
+        {
+            TaskScheduler.UnobservedTaskException -= Record;
+        }
+        return unobserved;
     }
 
     [TestMethod]

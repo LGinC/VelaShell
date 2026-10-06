@@ -621,7 +621,12 @@ internal sealed class SftpRequestPipeline : IAsyncDisposable
 
         lock (_stateLock)
         {
-            _versionCompletion?.TrySetException(exception);
+            if (_versionCompletion is { } version && version.TrySetException(exception))
+            {
+                // 等 VERSION 的人可能已经走了：握手超时（WaitAsync 到点）之后流水线才收工，故障落在一个没人再看的任务上，
+                // GC 时成了未观察的任务异常。这里看一眼；还在等的人照样拿到它。
+                _ = version.Task.Exception;
+            }
         }
 
         // 还排在在途额度或发送锁上的调用方也要放出来（见 WaitOrStopAsync）。
