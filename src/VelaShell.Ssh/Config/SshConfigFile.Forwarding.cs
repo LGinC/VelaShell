@@ -112,12 +112,14 @@ public static partial class SshConfigFile
         }
     }
 
-    /// <summary>本地转发的监听地址：没写 → 环回（<c>GatewayPorts yes</c> 时全部网卡）；<c>*</c> → 全部网卡；<c>localhost</c> → 环回。</summary>
-    private static IPAddress LocalBindAddress(string? address, bool gatewayPorts) => address switch
+    /// <summary>
+    /// 本地转发的监听地址：没写 → 两个环回（<c>GatewayPorts yes</c> 时全部网卡）；<c>*</c> → 全部网卡；<c>localhost</c> → 两个环回（<see langword="null"/>，见 <see cref="LocalPortForwardOptions.BindAddress"/>）。
+    /// </summary>
+    private static IPAddress? LocalBindAddress(string? address, bool gatewayPorts) => address switch
     {
-        null => gatewayPorts ? IPAddress.Any : IPAddress.Loopback,
+        null => gatewayPorts ? IPAddress.Any : null,
         "*" => IPAddress.Any,
-        _ when address.Equals("localhost", StringComparison.OrdinalIgnoreCase) => IPAddress.Loopback,
+        _ when address.Equals("localhost", StringComparison.OrdinalIgnoreCase) => null,
         _ => IPAddress.TryParse(address, out IPAddress? parsed)
             ? parsed
             : throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,

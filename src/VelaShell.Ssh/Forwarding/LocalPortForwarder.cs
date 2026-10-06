@@ -24,18 +24,22 @@ namespace VelaShell.Ssh.Forwarding;
 public sealed record LocalPortForwardOptions
 {
     /// <summary>
-    /// 监听地址。
+    /// 监听地址；<see langword="null"/>（默认）是<b>两个环回</b>：<c>127.0.0.1</c> 与 <c>::1</c>，同一个端口。
     /// </summary>
     /// <remarks>
+    /// <para>
     /// 〔决策 velashell-docs/zh/ssh/spec/07 §2.3〕<b>默认绑环回。</b>
     /// 一条隧道的另一端往往是内网数据库或管理接口；默认绑 <c>0.0.0.0</c>
     /// 等于把它暴露给同网段的所有人。要对外开放，使用者得<b>显式</b>写出来。
+    /// </para>
+    /// <para>
+    /// 〔Q5〕<b>两个环回都听。</b>不少运行时把 <c>localhost</c> 先解析成 <c>::1</c>，只听 <c>127.0.0.1</c> 的话它们连不上、或者先去试 <c>::1</c>；
+    /// 而 <c>[::1]:同一端口</c> 空着，同机任何进程都能抢先绑上，先试 <c>::1</c> 的客户端就把数据库口令之类交给了它 ——
+    /// 正是「默认绑环回」想防的同机暴露。这台机器没有 IPv6 时只听 <c>127.0.0.1</c>；<c>[::1]</c> 上那个端口已经被别的进程占着时不起这个转发。
+    /// 曾经默认只听 <c>127.0.0.1</c>。只想听一个就显式给（<see cref="IPAddress.Loopback"/>）。
+    /// </para>
     /// </remarks>
-    public IPAddress BindAddress
-    {
-        get;
-        init => field = value ?? throw new ArgumentNullException(nameof(BindAddress));
-    } = IPAddress.Loopback;
+    public IPAddress? BindAddress { get; init; }
 
     /// <summary>监听端口。<c>0</c> 表示由系统分配，结果看 <see cref="LocalPortForwarder.BoundEndPoint"/>。</summary>
     /// <exception cref="ArgumentOutOfRangeException">不在 0–65535 之间。</exception>
@@ -134,7 +138,7 @@ public sealed class LocalPortForwarder : PortForwarder
 {
     private readonly SshConnection _connection;
     private readonly LocalPortForwardOptions _options;
-    private readonly Socket _listener;
+    private readonly Socket[] _listeners;
     private readonly CancellationTokenSource _lifetime = new();
     private readonly SemaphoreSlim _connectionSlots;
 
@@ -153,14 +157,14 @@ public sealed class LocalPortForwarder : PortForwarder
     /// <summary>连接断开时停下监听（见 <see cref="OnConnectionLost"/>）。</summary>
     private CancellationTokenRegistration _disconnectedRegistration;
 
-    private Task? _acceptLoop;
+    private Task[] _acceptLoops = [];
     private bool _disposed;
 
     private LocalPortForwarder(
         SshConnection connection,
         LocalPortForwardOptions options,
         ForwardKind kind,
-        Socket listener,
+        IReadOnlyList<Socket> listeners,
         string? targetHost,
         int targetPort,
         string? targetSocketPath)
@@ -168,18 +172,22 @@ public sealed class LocalPortForwarder : PortForwarder
     {
         _connection = connection;
         _options = options;
-        _listener = listener;
+        _listeners = [.. listeners];
         _targetHost = targetHost;
         _targetPort = targetPort;
         _targetSocketPath = targetSocketPath;
         _createdSocketPath = options.ListenSocketPath;
         ConfigureRateLimit(options.MaxBytesPerSecond);
-        BoundEndPoint = listener.LocalEndPoint;
+        BoundEndPoints = Array.AsReadOnly([.. listeners.Select(listener => listener.LocalEndPoint!)]);
+        BoundEndPoint = BoundEndPoints[0];
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
     }
 
-    /// <summary>实际监听的端点。<b>端口给 0 时，实际端口在这里。</b></summary>
+    /// <summary>实际监听的端点（同时听两个环回时是 <c>127.0.0.1</c> 那个）。<b>端口给 0 时，实际端口在这里。</b></summary>
     public EndPoint? BoundEndPoint { get; }
+
+    /// <summary>实际监听的全部端点：默认是 <c>127.0.0.1</c> 与 <c>::1</c> 上的同一个端口（没有 IPv6 时只有前一个）。</summary>
+    public IReadOnlyList<EndPoint> BoundEndPoints { get; }
 
     /// <inheritdoc />
     /// <remarks>SSH 连接断了之后是 <see langword="false"/>：那时监听已经关掉，端口也放出来了。</remarks>
@@ -250,47 +258,112 @@ public sealed class LocalPortForwarder : PortForwarder
         // IsActive = false 的转发器 —— 调用方以为转发生效了，连上来的只会被立刻关掉。
         connection.ThrowIfUnusable();
 
-        Socket listener = Bind(options);
+        IReadOnlyList<Socket> listeners = Bind(options);
         try
         {
-            LocalPortForwarder forwarder = new(connection, options, kind, listener, targetHost, targetPort, targetSocketPath);
+            LocalPortForwarder forwarder = new(connection, options, kind, listeners, targetHost, targetPort, targetSocketPath);
             forwarder.Run();
             forwarder.TrackConnection(connection);
             return forwarder;
         }
         catch
         {
-            listener.Dispose();
+            foreach (Socket listener in listeners)
+            {
+                listener.Dispose();
+            }
             DeleteSocketFile(options.ListenSocketPath);
             throw;
         }
     }
 
-    private static Socket Bind(LocalPortForwardOptions options)
+    private static IReadOnlyList<Socket> Bind(LocalPortForwardOptions options)
     {
         if (options.ListenSocketPath is { } socketPath)
         {
-            return BindUnixSocket(socketPath, options.AllowSocketReplacement);
+            return [BindUnixSocket(socketPath, options.AllowSocketReplacement)];
         }
 
-        Socket listener = new(
-            options.BindAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        return options.BindAddress is { } address
+            ? [BindTcp(address, options.BindPort)]
+            : BindBothLoopbacks(options.BindPort);
+    }
 
+    /// <summary>系统分的端口在 <c>::1</c> 上恰好被占时，换一个端口最多再试几次。</summary>
+    private const int LoopbackPortRetries = 8;
+
+    /// <summary>
+    /// 〔Q5，velashell-docs/zh/ssh/spec/07 §2.3〕默认同时听 <c>127.0.0.1</c> 与 <c>::1</c>，同一个端口（见 <see cref="LocalPortForwardOptions.BindAddress"/>）。
+    /// </summary>
+    private static IReadOnlyList<Socket> BindBothLoopbacks(int port)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            Socket v4 = BindTcp(IPAddress.Loopback, port);
+            int bound = ((IPEndPoint)v4.LocalEndPoint!).Port;
+            if (!Socket.OSSupportsIPv6)
+            {
+                return [v4];
+            }
+
+            try
+            {
+                return [v4, Listen(IPAddress.IPv6Loopback, bound)];
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressFamilyNotSupported
+                or SocketError.AddressNotAvailable or SocketError.ProtocolNotSupported)
+            {
+                return [v4];   // 这台机器没有 IPv6 环回：只听 IPv4
+            }
+            catch (SocketException ex) when (ex.SocketErrorCode == SocketError.AddressAlreadyInUse && port == 0 && attempt < LoopbackPortRetries)
+            {
+                v4.Dispose();   // 系统分的端口在 ::1 上恰好被占：换一个再来
+            }
+            catch (SocketException ex)
+            {
+                v4.Dispose();
+                throw new SshForwardException(SshFailureReason.ForwardBindFailed,
+                    $"在 [::1]:{bound} 上起监听失败：{ex.SocketErrorCode}。" +
+                    (ex.SocketErrorCode == SocketError.AddressAlreadyInUse
+                        ? "同一端口的 IPv6 环回被别的进程占着 —— 先试 ::1 的客户端（把 localhost 先解析成 ::1 的那些）会连到它那里，" +
+                          "所以不起这个转发。换一个端口，或者明确只听 127.0.0.1。"
+                        : ""),
+                    ex);
+            }
+        }
+    }
+
+    /// <summary>在一个 TCP 地址上起监听；起不来报 <see cref="SshFailureReason.ForwardBindFailed"/>。</summary>
+    private static Socket BindTcp(IPAddress address, int port)
+    {
         try
         {
-            listener.Bind(new IPEndPoint(options.BindAddress, options.BindPort));
-            listener.Listen(backlog: 128);
-            return listener;
+            return Listen(address, port);
         }
         catch (SocketException ex)
         {
-            listener.Dispose();
-
             // 不留半挂的监听。起不来就是起不来，别让调用方以为转发生效了。
             throw new SshForwardException(SshFailureReason.ForwardBindFailed,
-                $"在 {options.BindAddress}:{options.BindPort} 上起监听失败：{ex.SocketErrorCode}。" +
-                (options.BindPort != 0 ? "端口可能已被占用。" : ""),
+                $"在 {new IPEndPoint(address, port)} 上起监听失败：{ex.SocketErrorCode}。" +
+                (port != 0 ? "端口可能已被占用。" : ""),
                 ex);
+        }
+    }
+
+    /// <summary>绑定并监听；失败时套接字已经释放，原样抛 <see cref="SocketException"/>。</summary>
+    private static Socket Listen(IPAddress address, int port)
+    {
+        Socket listener = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+        try
+        {
+            listener.Bind(new IPEndPoint(address, port));
+            listener.Listen(backlog: 128);
+            return listener;
+        }
+        catch
+        {
+            listener.Dispose();
+            throw;
         }
     }
 
@@ -366,7 +439,7 @@ public sealed class LocalPortForwarder : PortForwarder
 
     private void Run()
     {
-        _acceptLoop = Task.Run(() => AcceptLoopAsync(_lifetime.Token));
+        _acceptLoops = [.. _listeners.Select(listener => Task.Run(() => AcceptLoopAsync(listener, _lifetime.Token)))];
 
         // 连接断了就不再监听：留着的话端口一直被占，重连之后同一个转发起不来（端口已被占用），
         // 而这里每接一条都只会换来一次「隧道打不开」。回调在线程池上跑（见 SshConnection.Disconnected）。
@@ -377,7 +450,10 @@ public sealed class LocalPortForwarder : PortForwarder
     private void OnConnectionLost()
     {
         // 先关监听再标记不在跑：看到 IsActive 为假的人，可以确信端口已经放出来了。
-        _listener.Dispose();
+        foreach (Socket listener in _listeners)
+        {
+            listener.Dispose();
+        }
         DeleteSocketFile(_createdSocketPath);
         Lifecycle.CancelInBackground(_lifetime);
     }
@@ -387,7 +463,7 @@ public sealed class LocalPortForwarder : PortForwarder
     /// <summary>接受失败之后最长退避多久。</summary>
     private static readonly TimeSpan MaxAcceptBackoff = TimeSpan.FromSeconds(1);
 
-    private async Task AcceptLoopAsync(CancellationToken cancellationToken)
+    private async Task AcceptLoopAsync(Socket listener, CancellationToken cancellationToken)
     {
         TimeSpan backoff = TimeSpan.Zero;
 
@@ -396,7 +472,7 @@ public sealed class LocalPortForwarder : PortForwarder
             Socket inbound;
             try
             {
-                inbound = await _listener.AcceptAsync(cancellationToken).ConfigureAwait(false);
+                inbound = await listener.AcceptAsync(cancellationToken).ConfigureAwait(false);
                 backoff = TimeSpan.Zero;
             }
             catch (OperationCanceledException)
@@ -660,19 +736,19 @@ public sealed class LocalPortForwarder : PortForwarder
             // 释放路径不抛。
         }
 
-        _listener.Dispose();
+        foreach (Socket listener in _listeners)
+        {
+            listener.Dispose();
+        }
         DeleteSocketFile(_createdSocketPath);
 
-        if (_acceptLoop is not null)
+        try
         {
-            try
-            {
-                await _acceptLoop.ConfigureAwait(false);
-            }
-            catch (Exception)
-            {
-                // 同上。
-            }
+            await Task.WhenAll(_acceptLoops).ConfigureAwait(false);
+        }
+        catch (Exception)
+        {
+            // 同上。
         }
 
         // 等每条连接收完尾，之后才能释放槽位信号量与令牌源：

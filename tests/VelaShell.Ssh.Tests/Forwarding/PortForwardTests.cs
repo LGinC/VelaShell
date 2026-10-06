@@ -246,6 +246,48 @@ public sealed class PortForwardTests
         await WaitUntilAsync(() => errors.Count > 1, harness.Token);
     }
 
+    /// <summary>
+    /// 〔Q5〕默认同时听 127.0.0.1 与 ::1（同一个端口）：先试 ::1 的客户端也连得上；同端口的 IPv6 环回被别的进程占着时不起这个转发，
+    /// IPv4 那个也不留。
+    /// </summary>
+    [TestMethod]
+    public async Task 默认同时监听IPv4与IPv6环回()
+    {
+        if (!Socket.OSSupportsIPv6)
+        {
+            Assert.Inconclusive("这台机器没有 IPv6：默认只听 127.0.0.1。");
+        }
+
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = UppercaseEchoAsync });
+        await using (var forwarder = LocalPortForwarder.Start(harness.Connection, "t", 80))
+        {
+            int port = ((IPEndPoint)forwarder.BoundEndPoint!).Port;
+            Assert.AreSequenceEqual(
+                new EndPoint[] { new IPEndPoint(IPAddress.Loopback, port), new IPEndPoint(IPAddress.IPv6Loopback, port) },
+                forwarder.BoundEndPoints.ToArray());
+
+            using Socket client = new(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
+            await client.ConnectAsync(new IPEndPoint(IPAddress.IPv6Loopback, port), harness.Token);
+            await client.SendAsync(Text("via v6"), harness.Token);
+            client.Shutdown(SocketShutdown.Send);
+            byte[] buffer = new byte[64];
+            int read = await ReadAllAsync(client, buffer, harness.Token);
+            Assert.AreEqual("VIA V6", Encoding.UTF8.GetString(buffer, 0, read));
+        }
+
+        using Socket squatter = new(AddressFamily.InterNetworkV6, SocketType.Stream, ProtocolType.Tcp);
+        squatter.Bind(new IPEndPoint(IPAddress.IPv6Loopback, 0));
+        squatter.Listen();
+        int taken = ((IPEndPoint)squatter.LocalEndPoint!).Port;
+
+        SshForwardException error = Assert.ThrowsExactly<SshForwardException>(
+            () => LocalPortForwarder.Start(harness.Connection, "t", 80, new LocalPortForwardOptions { BindPort = taken }));
+        Assert.Contains("IPv6 环回被别的进程占着", error.Message);
+
+        using Socket probe = new(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+        probe.Bind(new IPEndPoint(IPAddress.Loopback, taken));   // IPv4 那个没留下
+    }
+
     [TestMethod]
     public async Task 端口被占用时不留半挂的监听()
     {
@@ -789,7 +831,7 @@ public sealed class PortForwardTests
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { BindPort = -1 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { BindPort = 65536 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new LocalPortForwardOptions { SocksHandshakeTimeout = TimeSpan.Zero });
-        Assert.ThrowsExactly<ArgumentNullException>(() => new LocalPortForwardOptions { BindAddress = null! });
+        Assert.IsNull(new LocalPortForwardOptions().BindAddress, "默认不给地址：同时听 127.0.0.1 与 ::1（Q5）");
 
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new RemotePortForwardOptions { MaxConnections = -1 });
         Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new RemotePortForwardOptions { BindPort = 70000 });

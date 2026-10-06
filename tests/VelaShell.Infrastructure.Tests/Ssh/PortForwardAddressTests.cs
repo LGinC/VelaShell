@@ -34,10 +34,13 @@ public sealed class PortForwardAddressTests
         Assert.AreEqual(IPAddress.IPv6Any, LibraryPortForwardHandle.ParseBindAddress("::"));
 
     [TestMethod]
-    [DataRow("localhost")]
-    [DataRow("127.0.0.1")]
-    public void BindAddress_Loopback(string host) =>
-        Assert.AreEqual(IPAddress.Loopback, LibraryPortForwardHandle.ParseBindAddress(host));
+    public void BindAddress_Loopback() =>
+        Assert.AreEqual(IPAddress.Loopback, LibraryPortForwardHandle.ParseBindAddress("127.0.0.1"));
+
+    /// <summary>localhost 交给库的默认:同时听 127.0.0.1 与 ::1(Q5)。</summary>
+    [TestMethod]
+    public void BindAddress_Localhost_MeansBothLoopbacks() =>
+        Assert.IsNull(LibraryPortForwardHandle.ParseBindAddress("localhost"));
 
     [TestMethod]
     public void BindAddress_Explicit() =>

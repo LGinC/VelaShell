@@ -243,10 +243,10 @@ public class TunnelService(
     /// <summary>默认的占用探测:比对系统 TCP 监听表。</summary>
     private static bool IsLocalPortInUse(string host, uint port)
     {
-        IPAddress requested;
+        IPAddress[] requested;
         try
         {
-            requested = ParseBindAddress(host);
+            requested = ParseBindAddresses(host);
         }
         catch (FormatException)
         {
@@ -267,7 +267,7 @@ public class TunnelService(
         {
             return false;
         }
-        return listeners.Any(listener => listener.Port == port && Overlaps(listener.Address, requested));
+        return listeners.Any(listener => listener.Port == port && requested.Any(address => Overlaps(listener.Address, address)));
     }
 
     /// <summary>
@@ -280,12 +280,13 @@ public class TunnelService(
     private static bool IsAnyAddress(IPAddress address) =>
         address.Equals(IPAddress.Any) || address.Equals(IPAddress.IPv6Any);
 
-    /// <summary>把配置里的监听主机翻译成绑定地址(与转发句柄的解析保持一致)。</summary>
-    private static IPAddress ParseBindAddress(string host) =>
-        host is "0.0.0.0" or "*" ? IPAddress.Any :
-        host == "::" ? IPAddress.IPv6Any :
-        host is "localhost" or "127.0.0.1" ? IPAddress.Loopback :
-        IPAddress.Parse(host);
+    /// <summary>把配置里的监听主机翻译成要绑的地址(与转发句柄的解析保持一致:<c>localhost</c> 是两个环回)。</summary>
+    private static IPAddress[] ParseBindAddresses(string host) =>
+        host is "0.0.0.0" or "*" ? [IPAddress.Any] :
+        host == "::" ? [IPAddress.IPv6Any] :
+        host == "localhost" ? [IPAddress.Loopback, IPAddress.IPv6Loopback] :
+        host == "127.0.0.1" ? [IPAddress.Loopback] :
+        [IPAddress.Parse(host)];
 
     /// <summary>
     /// 把转发通道异常翻译成用户可理解的提示;最常见的是把目标填成了服务器的
