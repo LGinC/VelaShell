@@ -141,6 +141,35 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// <summary>接收方向的当前序号（下一个要收的报文用它）。</summary>
     public uint ReceiveSequenceNumber { get; private set; }
 
+    /// <summary>报文旁路（<see cref="Diagnostics.IPacketTap"/>）；<see langword="null"/> 时不调。</summary>
+    internal Diagnostics.IPacketTap? PacketTap { get; set; }
+
+    /// <summary>旁路拿不拿得到载荷（认证报文 50–79 无论如何都不给）。</summary>
+    internal bool PacketTapIncludesPayload { get; set; }
+
+    /// <summary>把一个报文交给旁路。旁路抛的异常吞掉：旁路出错不该弄坏连接。</summary>
+    private void Tap(Diagnostics.IPacketTap tap, Diagnostics.PacketDirection direction, ReadOnlySpan<byte> payload, uint sequence)
+    {
+        byte number = payload.IsEmpty ? (byte)0 : payload[0];
+
+        // 通道消息（CHANNEL_OPEN_CONFIRMATION 91 … CHANNEL_FAILURE 100）紧跟着就是接收方通道号。
+        uint? channel = number is >= 91 and <= 100 && payload.Length >= 5
+            ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32BigEndian(payload[1..5])
+            : null;
+
+        // 〔velashell-docs/zh/ssh/spec/08 §9 第 3 条〕认证报文（50–79）的载荷永远不给，没有开关。
+        bool includePayload = PacketTapIncludesPayload && number is not (>= 50 and <= 79);
+        try
+        {
+            tap.OnPacket(new Diagnostics.PacketTapRecord(
+                direction, number, payload.Length, sequence, channel, includePayload ? payload : default));
+        }
+        catch (Exception)
+        {
+            // 旁路是使用者的代码：它出错不该让连接断开。
+        }
+    }
+
     /// <summary>发送方向的当前序号（下一个要发的报文用它）。</summary>
     public uint SendSequenceNumber { get; private set; }
 
@@ -321,6 +350,10 @@ internal sealed class SshPacketTransport : IAsyncDisposable
                     {
                         throw new SshFrameFormatException("报文载荷为空，没有消息编号。");
                     }
+                    if (PacketTap is { } tap)
+                    {
+                        Tap(tap, Diagnostics.PacketDirection.Inbound, payload.Span, unchecked(ReceiveSequenceNumber - 1));
+                    }
                     return new SshInboundPacket(payload);
                 }
             }
@@ -351,6 +384,10 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     /// </remarks>
     public void WritePacket(ReadOnlySpan<byte> payload)
     {
+        if (PacketTap is { } tap)
+        {
+            Tap(tap, Diagnostics.PacketDirection.Outbound, payload, SendSequenceNumber);
+        }
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         if (_sendPacketsUnderKey >= MaxPacketsPerKey)

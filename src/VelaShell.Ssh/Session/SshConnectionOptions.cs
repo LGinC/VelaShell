@@ -6,6 +6,7 @@
 using System.Globalization;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Transport;
 
@@ -128,6 +129,19 @@ public sealed record SshConnectionOptions
     /// <summary>一次重协商最多等多久（见 <c>SshConnection.RekeyTimeout</c>）。</summary>
     /// <remarks>internal：同上，只有用例需要把它调小。</remarks>
     internal TimeSpan RekeyTimeout { get; init; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>报文旁路：每个收发的报文调一次（诊断面板、协议级排错）；<see langword="null"/>（默认）不启用。</summary>
+    /// <remarks>见 <see cref="IPacketTap"/>：回调跑在收发循环上，要快；抛的异常被吞掉。跳板各跳要看的话，各自的连接参数里各设一个。</remarks>
+    public IPacketTap? PacketTap { get; init; }
+
+    /// <summary>
+    /// 旁路拿不拿得到载荷。默认 <see langword="false"/>：只给方向、消息编号、长度、序号、通道号。
+    /// </summary>
+    /// <remarks>
+    /// ⚠️ <b>打开之后，通道数据里有什么就带出什么</b>：终端里敲的口令（<c>sudo</c>）、私钥文件的内容（传输时）、转发的流量。
+    /// 认证报文（50–79）的载荷无论如何都不给（velashell-docs/zh/ssh/spec/08 §9）。
+    /// </remarks>
+    public bool PacketTapIncludesPayload { get; init; }
 
     /// <summary>服务端横幅的回调。<b>文本来自未认证的对端，是注入面。</b></summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }

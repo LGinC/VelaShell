@@ -68,7 +68,11 @@ public sealed partial class SshConnection
                 .DialAsync(SshDialTarget.Direct(options.Host, options.Port) with { Deadline = connect }, connect.Token)
                 .ConfigureAwait(false);
 
-            transport = new SshPacketTransport(stream);
+            transport = new SshPacketTransport(stream)
+            {
+                PacketTap = options.PacketTap,
+                PacketTapIncludesPayload = options.PacketTapIncludesPayload,
+            };
             phase = SshPhase.VersionExchange;
 
             SshVersionExchangeResult versions = await SshVersionExchange
