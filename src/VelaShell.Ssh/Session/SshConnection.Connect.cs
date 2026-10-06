@@ -349,7 +349,7 @@ public sealed partial class SshConnection
             && phase is SshPhase.KeyExchange or SshPhase.Authenticating
             && DisconnectReasonFor(failure) is { } reason)
         {
-            await TrySendDisconnectAsync(transport, reason).ConfigureAwait(false);
+            await TrySendDisconnectAsync(transport, reason, failure).ConfigureAwait(false);
         }
     }
 
@@ -377,7 +377,7 @@ public sealed partial class SshConnection
     }
 
     /// <summary>建连期间（还没有发送泵）直接在传输上尽力发一个 <c>DISCONNECT</c>，最多等两秒；发不出去不报。</summary>
-    private static async ValueTask TrySendDisconnectAsync(SshPacketTransport transport, SshDisconnectReason reason)
+    private static async ValueTask TrySendDisconnectAsync(SshPacketTransport transport, SshDisconnectReason reason, Exception? failure = null)
     {
         try
         {
@@ -385,7 +385,7 @@ public sealed partial class SshConnection
             SshDataWriter writer = new(buffer);
             writer.WriteMessageNumber(SshMessageNumber.Disconnect);
             writer.WriteUInt32((uint)reason);
-            writer.WriteUtf8String(DisconnectDescription(reason));
+            writer.WriteUtf8String(DisconnectDescription(reason, failure));
             writer.WriteUtf8String("");
 
             transport.WritePacket(buffer.WrittenSpan);

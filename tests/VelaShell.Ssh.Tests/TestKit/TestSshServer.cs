@@ -62,6 +62,9 @@ internal sealed record TestSshServerOptions
     /// <summary>把签名故意弄坏，用来验证客户端确实在验签。</summary>
     public bool CorruptSignature { get; init; }
 
+    /// <summary>设了就把首次交换里发出去的服务端公开值换成它的返回值（造长度不对、点不在曲线上的应答）；交换哈希照原值算。</summary>
+    public Func<byte[], byte[]>? MangleServerPublicValue { get; init; }
+
     /// <summary>只在重协商时把签名弄坏（首次交换正常）。</summary>
     public bool CorruptRekeySignature { get; init; }
 
@@ -375,13 +378,16 @@ internal sealed class TestSshServer : IAsyncDisposable
         SshDataWriter replyWriter = new(reply);
         replyWriter.WriteByte(groupExchange ? (byte)33 : (byte)31);
         replyWriter.WriteString(hostKeyBlob);
+        byte[] onWire = isInitial && _options.MangleServerPublicValue is { } mangle
+            ? mangle([.. response.ServerPublicValue])
+            : response.ServerPublicValue;
         if (shape.PublicValueEncoding == Ssh.Crypto.Kex.SshKexValueEncoding.Mpint)
         {
-            replyWriter.WriteMpint(response.ServerPublicValue);
+            replyWriter.WriteMpint(onWire);
         }
         else
         {
-            replyWriter.WriteString(response.ServerPublicValue);
+            replyWriter.WriteString(onWire);
         }
         replyWriter.WriteString(signature);
 

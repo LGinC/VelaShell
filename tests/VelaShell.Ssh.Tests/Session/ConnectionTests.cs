@@ -731,6 +731,31 @@ public sealed class ConnectionTests
         Assert.AreEqual((uint)SshDisconnectReason.NoMoreAuthMethodsAvailable, server.AuthObservation?.ClientDisconnectReason);
     }
 
+    /// <summary>
+    /// 〔velashell-docs/zh/ssh/spec/03 §3.7.4〕密钥交换里服务端的公开值不合格：本端报 <c>ProtocolError</c>，
+    /// 告诉服务端的原因码是 KEY_EXCHANGE_FAILED（3）—— 所有方法一律这样（曾经发 2）。
+    /// </summary>
+    [TestMethod]
+    [DataRow("mlkem768nistp256-sha256")]
+    [DataRow("mlkem1024nistp384-sha384")]
+    [DataRow("mlkem768x25519-sha256")]
+    [DataRow("ecdh-sha2-nistp256")]
+    [DataRow("curve25519-sha256")]
+    public async Task 服务端公开值不合格时告诉服务端KEY_EXCHANGE_FAILED(string kex)
+    {
+        await using FakeServer server = new(serverOptions: new TestSshServerOptions { MangleServerPublicValue = value => value[..^1] });
+        SshConnectionOptions options = Options(server, new DangerousAcceptAnyHostKeyPolicy()) with
+        {
+            Algorithms = Ssh.Crypto.SshAlgorithmSet.Default with { KeyExchange = [kex] },
+        };
+
+        SshException error = await Assert.ThrowsAsync<SshException>(async () => await SshConnection.ConnectAsync(options));
+        Assert.AreEqual(SshFailureReason.ProtocolError, error.Reason, error.Message);
+
+        await WaitForAsync(() => server.LastServer?.ClientDisconnectReason is not null);
+        Assert.AreEqual((uint)SshDisconnectReason.KeyExchangeFailed, server.LastServer?.ClientDisconnectReason);
+    }
+
     /// <summary>主机密钥被拒：服务端收到 DISCONNECT(HOST_KEY_NOT_VERIFIABLE)。</summary>
     [TestMethod]
     public async Task 主机密钥被拒时告诉服务端原因()

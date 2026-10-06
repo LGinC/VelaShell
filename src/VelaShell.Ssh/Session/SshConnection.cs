@@ -942,7 +942,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
             // 套接字断了、对端在报文中途走了的，发了也没人收（DisconnectReasonFor 给 null）。
             if (Volatile.Read(ref _fault) is null && DisconnectReasonFor(ex) is { } reason)
             {
-                await TrySendDisconnectAsync(reason, DisconnectDescription(reason), CancellationToken.None)
+                await TrySendDisconnectAsync(reason, DisconnectDescription(reason, ex), CancellationToken.None)
                     .ConfigureAwait(false);
             }
             Fault(ex);
@@ -1726,15 +1726,21 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
     /// <summary>因这个失败断开时，告诉对端的原因码；不必（或者发了也没人收）时为 <see langword="null"/>。</summary>
     /// <remarks>
+    /// <para>
     /// 帧层的失败一律报 <see cref="SshDisconnectReason.ProtocolError"/>，不区分「完整性校验失败」与「格式不对」——
     /// 把校验细节回送给对端是侧信道（见 <c>SshFrameFormatException.IntegrityCheckFailed</c>）。
+    /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/03 §3.7.4〕密钥交换里对端的公开值不合格（<see cref="Crypto.Kex.SshKeyExchangeException"/>：长度、编码、
+    /// 不在曲线上、X25519 全零、DH 越界…）报 <see cref="SshDisconnectReason.KeyExchangeFailed"/>，所有方法一律这样 ——
+    /// RFC 10042 §2.1 对混合方法是「必须」，RFC 8731 对 curve25519 是「应当」。本端的原因照旧是 <c>ProtocolError</c>。曾经发 2。
+    /// </para>
     /// </remarks>
     internal static SshDisconnectReason? DisconnectReasonFor(Exception failure) => failure switch
     {
         Crypto.SshFrameFormatException { PeerClosedMidPacket: true } => null,
-        Crypto.SshFrameFormatException or SshWireFormatException or SshProtocolException
-            or Crypto.Kex.SshKeyExchangeException => SshDisconnectReason.ProtocolError,
-        SshNegotiationException => SshDisconnectReason.KeyExchangeFailed,
+        Crypto.SshFrameFormatException or SshWireFormatException or SshProtocolException => SshDisconnectReason.ProtocolError,
+        Crypto.Kex.SshKeyExchangeException or SshNegotiationException => SshDisconnectReason.KeyExchangeFailed,
         SshException { Reason: SshFailureReason.HostKeyRejected or SshFailureReason.HostKeyChanged } =>
             SshDisconnectReason.HostKeyNotVerifiable,
         Auth.SshAuthenticationException => SshDisconnectReason.NoMoreAuthMethodsAvailable,
@@ -1742,9 +1748,12 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     };
 
     /// <summary><c>DISCONNECT</c> 里给对端日志看的那句话（英文：对端的日志是给运维看的，不按本机界面语言）。</summary>
-    internal static string DisconnectDescription(SshDisconnectReason reason) => reason switch
+    /// <param name="reason">原因码。</param>
+    /// <param name="failure">断开的原因：同是 <see cref="SshDisconnectReason.KeyExchangeFailed"/>，协商不上与公开值不合格说的话不一样。</param>
+    internal static string DisconnectDescription(SshDisconnectReason reason, Exception? failure = null) => reason switch
     {
         SshDisconnectReason.ProtocolError => "protocol error",
+        SshDisconnectReason.KeyExchangeFailed when failure is Crypto.Kex.SshKeyExchangeException => "key exchange failed: invalid public value",
         SshDisconnectReason.KeyExchangeFailed => "no matching algorithms",
         SshDisconnectReason.HostKeyNotVerifiable => "host key not verifiable",
         SshDisconnectReason.NoMoreAuthMethodsAvailable => "no more authentication methods available",
