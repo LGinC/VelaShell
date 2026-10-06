@@ -106,19 +106,25 @@ public sealed class SshCommand : IAsyncDisposable
     /// <remarks>
     /// <b>只调用这个而不读 <see cref="StandardOutput"/> 会在输出较多时卡住。</b>
     /// 那不是 bug：接收窗口挂在消费上，没人读就不回补，远端自然停下来 ——
-    /// 这正是背压在起作用。要么读输出，要么用
-    /// <see cref="ReadToEndAsync"/>，要么把 stderr 设成
+    /// 这正是背压在起作用。要么读输出（两条流并发读），要么用
+    /// <see cref="Session.SshConnectionExtensions.RunAsync"/> 一次拿全，要么把 stderr 设成
     /// <see cref="SshStderrMode.Discard"/>。
     /// </remarks>
     public ValueTask<SshExitStatus> WaitAsync(CancellationToken cancellationToken = default) =>
         Channel.WaitForExitAsync(cancellationToken);
 
-    /// <summary>把 stdout 与 stderr 都读完，再等命令结束。</summary>
+    /// <summary>把 stdout 与 stderr 都读完，再等命令结束（<see cref="Session.SshConnectionExtensions.RunAsync"/> 的后半段）。</summary>
     /// <remarks>
+    /// <para>
     /// <b>两条流是并发读的。</b>先读完一条再读另一条会死锁：
     /// 先读的那条可能一直没数据，而远端正因为另一条的窗口被吃空而停住。
+    /// </para>
+    /// <para>
+    /// 〔AGENTS 4.3〕「跑命令拿全部输出」只有 <c>RunAsync</c> 一个公开入口；这里曾经也是公开的，与它重叠，
+    /// 宿主与 getting-started 都只用 <c>RunAsync</c>（4.1）。
+    /// </para>
     /// </remarks>
-    public async ValueTask<SshCommandResult> ReadToEndAsync(CancellationToken cancellationToken = default)
+    internal async ValueTask<SshCommandResult> ReadToEndAsync(CancellationToken cancellationToken = default)
     {
         Task<string> stdout = ReadAllTextAsync(StandardOutput, cancellationToken);
         Task<string> stderr = ReadAllTextAsync(StandardError, cancellationToken);
