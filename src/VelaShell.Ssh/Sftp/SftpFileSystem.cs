@@ -340,7 +340,17 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
                 $"服务端只支持 SFTP v{version}，本库要求至少 v{SftpProtocol.Version}。");
         }
 
-        // 版本更高就降到 3 —— 我们按 v3 工作，这是 OpenSSH 的实际口径。
+        if (version > SftpProtocol.Version)
+        {
+            // 〔Q9，velashell-docs/zh/ssh/spec/06 §一〕draft-02 §4：服务端回双方版本里较小的那个 —— 我们发的是 3，回得比 3 大的服务端要么有缺陷，
+            // 要么会按自己的版本说话（v4 起 ATTRS 的结构不同），按 v3 解析就是静默错位：大小、时间、权限读成别的字段。
+            // 曾经「降到 3 继续」。
+            throw new SftpUnavailableException(
+                SshFailureReason.ProtocolError,
+                $"服务端回的 SFTP 版本是 v{version}：按 draft-02 §4 它应当回双方版本里较小的那个（我们发的是 v{SftpProtocol.Version}）。" +
+                "按 v3 去解析一个说更高版本的服务端会把文件属性读错，所以不连。");
+        }
+
         return new SftpCapabilities(version, extensions);
     }
 

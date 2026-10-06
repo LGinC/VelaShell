@@ -32,7 +32,7 @@ public sealed class SftpCapabilities
         Limits = SftpLimits.Default;
     }
 
-    /// <summary>服务端宣告的版本号（我们按 3 工作，更高的会降级）。</summary>
+    /// <summary>服务端宣告的版本号（只认 3：更低、更高的都不连）。</summary>
     public uint ServerVersion { get; }
 
     /// <summary>服务端在 <c>SSH_FXP_VERSION</c> 里宣告的全部扩展，原样（只读视图）。</summary>

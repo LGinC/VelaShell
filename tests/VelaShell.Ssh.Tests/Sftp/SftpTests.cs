@@ -427,14 +427,15 @@ public sealed class SftpTests
     }
 
     [TestMethod]
-    public async Task 服务端版本高于3时降级继续()
+    public async Task 服务端回的版本高于3时不连()
     {
-        await using Harness harness = await Harness.StartAsync(
-            sftpOptions: new TestSftpOptions { Version = 6 });
+        // 〔Q9〕draft-02 §4：服务端回双方版本里较小的那个。回 6 的服务端会按 v6 说话（ATTRS 结构不同），按 v3 解析就是静默错位。
+        // 曾经「降到 3 继续」。
+        SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+            async () => await Harness.StartAsync(sftpOptions: new TestSftpOptions { Version = 6 }));
 
-        // 我们按 v3 工作 —— 这是 OpenSSH 的实际口径。
-        Assert.AreEqual(6U, harness.Sftp.Capabilities.ServerVersion);
-        Assert.AreEqual("/home/joe", harness.Sftp.WorkingDirectory);
+        Assert.AreEqual(SshFailureReason.ProtocolError, error.Reason);
+        Assert.Contains("v6", error.Message);
     }
 
     // ------------------------------------------------------------ 读写
