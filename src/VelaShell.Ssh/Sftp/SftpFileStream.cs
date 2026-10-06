@@ -78,6 +78,14 @@ public sealed class SftpFileStream : Stream
     /// <summary>下一个预读请求的偏移。</summary>
     private long _readAheadNext;
 
+    /// <summary>
+    /// 每个预读请求要多长：起初是块大小；服务端在已知长度之内也读不满一块时，降到它实际给的长度（不低于 <see cref="MinReadAheadLength"/>）。
+    /// </summary>
+    private int _readAheadLength;
+
+    /// <summary>学到的请求长度的下限：偶尔一次短得离谱的短读，不该把之后的每个请求都压成几个字节。</summary>
+    private const int MinReadAheadLength = 4096;
+
     /// <summary>取了一半的块：调用方的缓冲比块小时，剩下的留到下一次读。</summary>
     private SftpResponse? _partial;
     private ReadOnlySequence<byte> _partialData;
@@ -101,6 +109,7 @@ public sealed class SftpFileStream : Stream
         _handle = handle;
         Path = path;
         _blockSize = blockSize;
+        _readAheadLength = blockSize;
         _knownLength = initialLength;
         _readable = canRead;
         _writable = canWrite;
@@ -277,8 +286,18 @@ public sealed class SftpFileStream : Stream
 
         if (data.Length < head.Length)
         {
-            // 短读：后面已发的请求与读位置之间隔着一个洞。从读位置重来最简单也最不会错。
-            DiscardReadAhead();
+            // 〔Q11，velashell-docs/zh/ssh/spec/06 §5.5〕短读：读位置之后、下一个已发请求之前隔着一个洞。只为这个洞补发请求、插到队首，
+            // 后面已发的请求照用，窗口不动。曾经整队作废、窗口回到 1 —— 对每一块都短读的服务端（实际读上限比块小、又没宣告 limits），
+            // 吞吐塌到一块 / RTT，已经读回来的后面几块也白读了。洞那里要是到了文件末尾，补发的会回 EOF，照常当读完了。
+            if (head.Offset + head.Length <= _knownLength)
+            {
+                // 整块都在已知长度之内还读不满：服务端的读上限比块小。之后的请求按它实际给的长度发，不再每块都短读。
+                _readAheadLength = Math.Min(_readAheadLength, Math.Max(MinReadAheadLength, (int)data.Length));
+            }
+            if (_readAhead.Count > 0)
+            {
+                RequestGap(head.Offset + data.Length, head.Length - data.Length);
+            }
         }
         else
         {
@@ -300,17 +319,39 @@ public sealed class SftpFileStream : Stream
         while (_readAhead.Count < _readAheadDepth
                && (_readAhead.Count == 0 || _readAheadNext < _knownLength))
         {
-            long offset = _readAheadNext;
-            int length = _blockSize;
-
-            // 不带调用方的令牌：预读请求属于流，不属于这一次读。
-            Task<SftpResponse> response = _pipeline.SendAsync(
-                (output, id) => SftpWire.WriteRead(output, id, _handle, (ulong)offset, (uint)length),
-                cancellationToken: CancellationToken.None).AsTask();
-
-            _readAhead.Enqueue(new ReadAheadBlock(offset, length, response));
-            _readAheadNext += length;
+            ReadAheadBlock block = SendRead(_readAheadNext, _readAheadLength);
+            _readAhead.Enqueue(block);
+            _readAheadNext += block.Length;
         }
+    }
+
+    /// <summary>〔Q11〕为短读留下的洞补发请求（按当前的请求长度切开），排在队首；后面已发的请求原样留着。</summary>
+    private void RequestGap(long offset, long length)
+    {
+        List<ReadAheadBlock> requeued = [];
+        while (length > 0)
+        {
+            ReadAheadBlock block = SendRead(offset, (int)Math.Min(length, _readAheadLength));
+            requeued.Add(block);
+            offset += block.Length;
+            length -= block.Length;
+        }
+
+        requeued.AddRange(_readAhead);
+        _readAhead.Clear();
+        foreach (ReadAheadBlock block in requeued)
+        {
+            _readAhead.Enqueue(block);
+        }
+    }
+
+    /// <summary>发一个预读的 <c>READ</c>。不带调用方的令牌：预读请求属于流，不属于这一次读。</summary>
+    private ReadAheadBlock SendRead(long offset, int length)
+    {
+        Task<SftpResponse> response = _pipeline.SendAsync(
+            (output, id) => SftpWire.WriteRead(output, id, _handle, (ulong)offset, (uint)length),
+            cancellationToken: CancellationToken.None).AsTask();
+        return new ReadAheadBlock(offset, length, response);
     }
 
     private int TakeFromPartial(Span<byte> destination)

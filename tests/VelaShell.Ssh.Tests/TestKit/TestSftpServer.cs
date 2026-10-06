@@ -101,6 +101,9 @@ internal sealed record TestSftpOptions
     /// </remarks>
     public int ShortReadLimit { get; init; }
 
+    /// <summary>这个偏移上的 <c>READ</c> 只回一半（只这一次）—— 预读队伍建起来之后中间冒出一个短读。</summary>
+    public long? ShortReadAtOffset { get; init; }
+
     /// <summary>每批 <c>READDIR</c> 最多回这么多项。</summary>
     public int ReadDirBatchSize { get; init; } = 2;
 
@@ -231,6 +234,14 @@ internal sealed class TestSftpServer
 
     /// <summary>收到过的最长一个 <c>READ</c> 请求的长度。</summary>
     public long LargestReadRequest { get; private set; }
+
+    /// <summary>同一个文件里被 <c>READ</c> 回了不止一遍的字节数（预读作废后重读的浪费）。</summary>
+    public long RereadBytes { get; private set; }
+
+    /// <summary>每个文件已经回过的字节区间（算 <see cref="RereadBytes"/> 用）。</summary>
+    private readonly Dictionary<string, List<(long Start, long End)>> _servedReads = [];
+
+    private bool _shortReadAtOffsetUsed;
 
     /// <summary>最近一次 <c>OPEN</c> 里带来的 ATTRS。</summary>
     public SftpFileAttributes? LastOpenAttributes { get; private set; }
@@ -610,6 +621,18 @@ internal sealed class TestSftpServer
         {
             take = Math.Min(take, _options.ShortReadLimit);
         }
+        if (!_shortReadAtOffsetUsed && _options.ShortReadAtOffset == (long)offset)
+        {
+            _shortReadAtOffsetUsed = true;
+            take = Math.Max(1, take / 2);
+        }
+
+        List<(long Start, long End)> served = _servedReads.TryGetValue(state.Path, out List<(long Start, long End)>? list)
+            ? list
+            : _servedReads[state.Path] = [];
+        long start = (long)offset, end = start + take;
+        RereadBytes += served.Sum(range => Math.Max(0, Math.Min(end, range.End) - Math.Max(start, range.Start)));
+        served.Add((start, end));
 
         byte[] data = [.. node.Content.GetRange((int)offset, take)];
 

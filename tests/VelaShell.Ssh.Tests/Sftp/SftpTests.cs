@@ -538,6 +538,48 @@ public sealed class SftpTests
         }
     }
 
+    /// <summary>
+    /// 〔Q11〕每一块都短读的服务端（实际读上限比块小、又没宣告 limits）：学到它实际给的长度之后照样预读，一个字节都不重读。
+    /// 曾经每次短读都整队作废、窗口回到 1，吞吐塌到一块 / RTT —— 扣住的那条应答永远等不到更靠后的请求。
+    /// </summary>
+    [TestMethod]
+    public async Task 每块都短读的服务端照样预读()
+    {
+        byte[] payload = new byte[300_000];
+        Random.Shared.NextBytes(payload);
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/big.bin", payload),
+            new TestSftpOptions { ShortReadLimit = 10_000, HoldReadReplyAtOffset = 50_000 },
+            new SftpOptions { BlockSize = 32 * 1024 });
+
+        byte[] content = await harness.Sftp.ReadAllBytesAsync("/home/joe/big.bin", harness.Token)
+            .AsTask().WaitAsync(TimeSpan.FromSeconds(10), harness.Token);
+
+        Assert.AreSequenceEqual(payload, content);
+        Assert.IsTrue(harness.SftpServer.PipelinedReadObserved, "学到读上限之后应当又有好几个 READ 在途");
+        Assert.AreEqual(0L, harness.SftpServer.RereadBytes);
+    }
+
+    /// <summary>
+    /// 〔Q11〕预读队伍建起来之后中间一块短读：只为缺口补发请求插到队首，后面已发的请求照用 —— 一个字节都不重读。
+    /// 曾经整队作废、从读位置重来，已经读回来的后面几块都白读了。
+    /// </summary>
+    [TestMethod]
+    public async Task 中途短读只补缺口不作废后面的预读()
+    {
+        byte[] payload = new byte[1024 * 1024];
+        Random.Shared.NextBytes(payload);
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddFile("/home/joe/big.bin", payload),
+            new TestSftpOptions { ShortReadAtOffset = 8 * 32 * 1024 },
+            new SftpOptions { BlockSize = 32 * 1024 });
+
+        byte[] content = await harness.Sftp.ReadAllBytesAsync("/home/joe/big.bin", harness.Token);
+
+        Assert.AreSequenceEqual(payload, content);
+        Assert.AreEqual(0L, harness.SftpServer.RereadBytes, "缺口之后已发的请求照用，没有哪一段被读了两遍");
+    }
+
     [TestMethod]
     public async Task 预读的流读一半就关_句柄与在途应答都收拾干净()
     {
