@@ -118,6 +118,9 @@ internal sealed record TestChannelScript
     /// <summary>接受 <c>tcpip-forward</c> 全局请求，并回这个端口（<c>0</c> = 拒绝）。</summary>
     public int GrantRemoteForwardPort { get; init; }
 
+    /// <summary>服务端开过去的通道一被客户端确认，就立刻 EOF + CLOSE（端口扫描、健康检查就是这样）。</summary>
+    public bool CloseServerOpenedChannelOnConfirm { get; init; }
+
     /// <summary><c>tcpip-forward</c> 的应答等这么久才回（监听在收到请求时就已经开好）。</summary>
     public TimeSpan DelayRemoteForwardReply { get; init; }
 
@@ -225,6 +228,9 @@ internal sealed class TestChannelObservation
 
     /// <summary>是否收到过客户端的 <c>CHANNEL_CLOSE</c>。</summary>
     public bool ReceivedClose { get; set; }
+
+    /// <summary>客户端的 <c>CHANNEL_CLOSE</c> 各自指向的服务端通道号（按到达顺序）。</summary>
+    public List<uint> ClosedServerChannels { get; } = [];
 
     /// <summary>客户端宣告的初始窗口与最大报文长度。</summary>
     public (uint Window, uint MaxPacket) ClientAnnounced { get; set; }
@@ -677,6 +683,11 @@ internal sealed class TestChannelServer : IDisposable
 
             case SshMessageNumber.ChannelOpenConfirmation:
                 OnServerOpenAnswered(payload, accepted: true);
+                if (_script.CloseServerOpenedChannelOnConfirm && _peerIds.TryGetValue(ReadRecipient(payload), out uint confirmedClient))
+                {
+                    await SendSimpleAsync(SshMessageNumber.ChannelEof, confirmedClient, cancellationToken);
+                    await SendSimpleAsync(SshMessageNumber.ChannelClose, confirmedClient, cancellationToken);
+                }
                 return;
 
             case SshMessageNumber.ChannelOpenFailure:
@@ -820,6 +831,10 @@ internal sealed class TestChannelServer : IDisposable
     {
         uint serverChannel = ReadRecipient(payload);
         Observation.ReceivedClose = true;
+        lock (Observation.ClosedServerChannels)
+        {
+            Observation.ClosedServerChannels.Add(serverChannel);
+        }
 
         // 客户端关了通道：处理器那一侧也该读到结尾（CLOSE 蕴含不会再有数据），否则它会一直等。
         if (_channelInput.TryGetValue(serverChannel, out Pipe? handlerInput))

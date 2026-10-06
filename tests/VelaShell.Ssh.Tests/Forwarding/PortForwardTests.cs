@@ -333,6 +333,63 @@ public sealed class PortForwardTests
         Assert.AreEqual((byte)SocksReply.ConnectionRefused, connectReply[1]);
     }
 
+    /// <summary>
+    /// 〔T6 / CH-E2〕对端开过来的通道一确认就被关（端口扫描、健康检查）：决定开通道的后台任务恰好停在「确认入队之后、起泵之前」，
+    /// 接收循环先处理了对端的 CLOSE —— 回给对端的 CLOSE 要带着它的真实通道号。曾经先发确认、后设对端的号：
+    /// 回的 CLOSE 带着 0，关掉的是对端的 0 号通道（往往是用户的第一条 shell），真正那条通道永远收不到 CLOSE。
+    /// </summary>
+    [TestMethod]
+    public async Task 对端开过来的通道一确认就被关时_回的CLOSE带着对端的真实通道号()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript
+        {
+            GrantRemoteForwardPort = 34572,
+            CloseServerOpenedChannelOnConfirm = true,
+            CloseAfterScript = false,
+            ExitCode = null,
+        });
+
+        // 先开一条 session 通道，占住服务端的 0 号 —— 用户的第一条 shell 就在那里。
+        SshChannel firstShell = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        bool closedBetweenSteps = false;
+        harness.Connection.AfterIncomingOpenConfirmationQueued = channel =>
+            closedBetweenSteps = SpinWait.SpinUntil(() => channel.State == SshChannelState.Closed, TimeSpan.FromSeconds(10));
+
+        using Socket target = new(SocketType.Stream, ProtocolType.Tcp);
+        target.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        target.Listen();
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartAsync(
+            harness.Connection, "127.0.0.1", ((IPEndPoint)target.LocalEndPoint!).Port,
+            new RemotePortForwardOptions { BindAddress = "localhost", BindPort = 34572 }, harness.Token);
+
+        ArrayBufferWriter<byte> header = new();
+        SshDataWriter writer = new(header);
+        writer.WriteUtf8String("localhost");
+        writer.WriteUInt32(34572);
+        writer.WriteUtf8String("127.0.0.1");
+        writer.WriteUInt32(40004);
+        Stream? scan = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+        Assert.IsNotNull(scan);
+
+        await WaitUntilAsync(() =>
+        {
+            lock (harness.Observed.ClosedServerChannels)
+            {
+                return harness.Observed.ClosedServerChannels.Count > 0;
+            }
+        }, harness.Token);
+
+        Assert.IsTrue(closedBetweenSteps, "接收循环要在两步之间处理完对端的 CLOSE（这一刻摆出来了，用例才有意义）");
+        lock (harness.Observed.ClosedServerChannels)
+        {
+            Assert.DoesNotContain(0u, harness.Observed.ClosedServerChannels, "回的 CLOSE 不许指向对端的 0 号通道");
+        }
+        Assert.AreEqual(SshChannelState.Open, firstShell.State, "用户的第一条 shell 照旧开着");
+        await firstShell.DisposeAsync();
+    }
+
     /// <summary>〔F41〕转发器交出自己的停止原因：连接断了是连接的结束原因，本端释放是 Aborted。</summary>
     [TestMethod]
     public async Task 转发器的Completion交出停止原因()

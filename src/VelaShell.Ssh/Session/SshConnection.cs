@@ -163,6 +163,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <summary>保活策略。</summary>
     internal SshKeepAlivePolicy KeepAlive { get; init; } = SshKeepAlivePolicy.Disabled;
 
+    /// <summary>测试用：对端开过来的通道，确认入队之后、起泵之前调用（在决定开通道的后台任务上）。</summary>
+    /// <remarks>
+    /// 用例在这里停住，让接收循环先处理对端紧跟着确认发来的 <c>CLOSE</c> —— 把「后台任务恰好在两步之间被抢占」这一刻摆出来
+    /// （velashell-docs/zh/ssh/spec/05 §8.1）。
+    /// </remarks>
+    internal Action<Channels.SshChannel>? AfterIncomingOpenConfirmationQueued { get; set; }
+
     /// <summary>保活、重协商（时间阈值、期限）与通道号复用延迟用的时钟；建连时取 <see cref="SshConnectionOptions.TimeProvider"/>。</summary>
     /// <remarks>
     /// 只有测试会换成手动拨的时钟 —— 「复用延迟刚好到点」「闲了刚好一个保活间隔」这种时刻靠真实时钟摆不出来。
@@ -1460,6 +1467,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         //    对端一定先认得这条通道，再收到它的数据。
         channel.OnOpenAccepted(senderChannel, initialWindow, maxPacket);
         Post(buffer.WrittenMemory);
+        AfterIncomingOpenConfirmationQueued?.Invoke(channel);
         channel.StartPumps();
 
         // 交给处理器时**不等它** —— 它多半要去连一个本地目标，
