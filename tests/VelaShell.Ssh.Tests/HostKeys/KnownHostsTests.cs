@@ -10,7 +10,6 @@ using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Tests.TestKit;
-using VelaShell.Ssh.Transport;
 
 namespace VelaShell.Ssh.Tests.HostKeys;
 
@@ -30,7 +29,7 @@ public sealed class KnownHostsTests
         Port = port,
         Key = key,
         NegotiatedAlgorithm = key.KeyType,
-        HopKind = SshDialKind.Tcp,
+
     };
 
     // ------------------------------------------------------------ 解析

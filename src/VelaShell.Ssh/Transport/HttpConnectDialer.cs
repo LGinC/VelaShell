@@ -30,7 +30,7 @@ namespace VelaShell.Ssh.Transport;
 /// 换成一个在 TCP 上套 TLS 的拨号器即可。
 /// </para>
 /// </remarks>
-internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDialer
+internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDialer, ISshDialKindSource
 {
     /// <summary>响应头的上限 —— 防一个坏代理（或根本不是代理的东西）把内存吃光。</summary>
     internal const int MaxResponseHeaderBytes = 16 * 1024;

@@ -24,12 +24,14 @@ namespace VelaShell.Ssh.Transport;
 /// SSH 隧道流都是它），分帧层自己用 <c>PipeReader.Create</c> / <c>PipeWriter.Create</c>
 /// 包一层即可。反过来会让每个实现者都先学一遍 Pipelines。
 /// </para>
+/// <para>
+/// 〔velashell-docs/zh/ssh/spec/09 §2.2〕<b>不要求实现者声明「我是哪一类」。</b>曾经有一个 <c>Kind</c> 成员，
+/// 按每次拨号现选路的实现（这次直连、下次经代理）给不出真值，只好记「上一次」；它又只在作为代理的内层时才被读。
+/// 跳信息里，使用者实现的拨号器一律记 <see cref="SshDialKind.Custom"/>。
+/// </para>
 /// </remarks>
 public interface ISshTransportDialer
 {
-    /// <summary>这个拨号器属于哪一类。只用于诊断与日志。</summary>
-    SshDialKind Kind { get; }
-
     /// <summary>
     /// 连接到目标并返回双工字节流。
     /// </summary>

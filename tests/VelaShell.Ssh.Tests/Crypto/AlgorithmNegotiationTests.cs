@@ -336,8 +336,6 @@ public sealed class AlgorithmNegotiationTests
 
     private sealed class RecordingDialer(Action onDial) : ISshTransportDialer
     {
-        public SshDialKind Kind => SshDialKind.Tcp;
-
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
         {
             onDial();

@@ -30,25 +30,8 @@ namespace VelaShell.Infrastructure.Ssh;
 /// <param name="proxyResolver">代理解析器;为 <see langword="null" /> 时一律直连。</param>
 internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISshTransportDialer
 {
-    /// <summary>
-    /// 上一次拨号实际走的路由,给错误消息补上「经哪个代理去哪」。
-    /// </summary>
-    /// <remarks>
-    /// 写在拨号里、读在连接失败的 catch 里,两边不是同一个线程,所以要 volatile。
-    /// </remarks>
-    private volatile ProxyRoute? _lastRoute;
-
-    /// <inheritdoc />
-    /// <remarks>
-    /// 声明成 <see cref="SshDialKind.Tcp" /> 还是代理那两种,只影响诊断文本;
-    /// 但它得如实反映**上一次**拨号走的是什么,否则日志会骗人。
-    /// </remarks>
-    public SshDialKind Kind => _lastRoute?.Kind switch
-    {
-        ProxyKind.Http => SshDialKind.HttpConnect,
-        ProxyKind.Socks5 => SshDialKind.Socks5,
-        _ => SshDialKind.Tcp,
-    };
+    // 曾经还要声明拨号器的「种类」(库的接口要求),而这里每次拨号现选路,只好用一个 volatile 字段记「上一次」走的路由。
+    // 库的接口已经不要它了 —— 每一跳的种类由库的拨号器(DialerChain)自己记进跳信息。
 
     /// <inheritdoc />
     public async ValueTask<Stream> DialAsync(
@@ -68,7 +51,6 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
             // 而不是一个裸异常。原因码是配置错误 —— 曾经记成可重试的 ProxyRefused,自动重连只会一遍遍再失败。
             throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing, ex.Message, ex);
         }
-        _lastRoute = route;
 
         // 直连与两种代理的握手都用 SSH 库的拨号器(DialerChain),宿主只管「这次走哪条路」。
         // 直连把主机名交给库去解析(Happy Eyeballs),不在这里先解 —— 内网域名常常只有远端解析得了。

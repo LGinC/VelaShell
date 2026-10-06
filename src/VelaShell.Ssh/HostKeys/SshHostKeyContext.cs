@@ -9,6 +9,10 @@ using VelaShell.Ssh.Transport;
 namespace VelaShell.Ssh.HostKeys;
 
 /// <summary>裁决时能拿到的全部材料。</summary>
+/// <remarks>
+/// 曾经还有一个 <c>HopKind</c>（「这一跳在链路上的位置」），构造处从不赋值，经跳板或代理时也永远是 <c>Tcp</c> ——
+/// 一个不说真话的公开属性，删掉了。信任针对的是逻辑主机（<see cref="Host"/>、<see cref="Port"/>），与怎么连过去无关。
+/// </remarks>
 public sealed class SshHostKeyContext
 {
     /// <summary>
@@ -29,8 +33,6 @@ public sealed class SshHostKeyContext
     /// <summary>协商出的主机密钥算法名（可能与 <see cref="SshPublicKey.KeyType"/> 不同，见 RSA）。</summary>
     public required string NegotiatedAlgorithm { get; init; }
 
-    /// <summary>这一跳在链路上的位置。用于把「跳板机的密钥」与「目标机的密钥」区分开。</summary>
-    public SshDialKind HopKind { get; init; } = SshDialKind.Tcp;
 
     /// <summary>对端的版本标识串。</summary>
     public string PeerVersion { get; init; } = "";

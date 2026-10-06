@@ -29,7 +29,7 @@ namespace VelaShell.Ssh.Transport;
 /// 很多代理程序只在 stderr 上说明失败原因。
 /// </para>
 /// </remarks>
-internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTransportDialer
+internal sealed record ProxyCommandDialer(string CommandTemplate) : ISshTransportDialer, ISshDialKindSource
 {
     /// <summary><c>%r</c> 替换成什么（目标的登录用户名）。</summary>
     public string? UserName { get; init; }

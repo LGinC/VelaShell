@@ -270,9 +270,6 @@ public class ProxySupportTests
         Assert.AreEqual("hello", Encoding.ASCII.GetString(await ReadAsync(stream, 5, cts.Token)));
         await stream.WriteAsync(Encoding.ASCII.GetBytes("ping"), cts.Token);
         Assert.AreEqual("ping", Encoding.ASCII.GetString(await ReadAsync(stream, 4, cts.Token)));
-
-        // 走了代理，拨号器要如实报出自己这一跳的种类 —— 日志里靠它分辨直连与代理。
-        Assert.AreEqual(SshDialKind.Socks5, dialer.Kind);
     }
 
     // ———— 解析器 ————

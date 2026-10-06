@@ -33,7 +33,7 @@ namespace VelaShell.Ssh.Transport;
 /// 回调拿到的 <see cref="SshJumpContext"/> 带着外层的计时器，两种来法停表的行为一样。
 /// </para>
 /// </remarks>
-internal sealed class SshJumpDialer : ISshTransportDialer
+internal sealed class SshJumpDialer : ISshTransportDialer, ISshDialKindSource
 {
     private readonly Func<SshDialTarget, CancellationToken, ValueTask<SshConnection>> _connect;
     private readonly SshEndPoint _jump;

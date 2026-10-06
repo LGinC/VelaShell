@@ -207,8 +207,6 @@ internal sealed class TestSshServerHost : IAsyncDisposable
     {
         private Stream? _stream = stream;
 
-        public SshDialKind Kind => SshDialKind.Tcp;
-
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken)
         {
             Stream? taken = Interlocked.Exchange(ref _stream, null);

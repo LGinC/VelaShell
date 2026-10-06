@@ -26,7 +26,7 @@ namespace VelaShell.Ssh.Transport;
 /// 连接超时早就用得差不多了。
 /// </para>
 /// </remarks>
-internal sealed class TcpTransportDialer : ISshTransportDialer
+internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSource
 {
     /// <summary>一个可以共用的实例。</summary>
     public static TcpTransportDialer Shared { get; } = new();

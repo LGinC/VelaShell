@@ -55,8 +55,6 @@ public sealed class ConnectionTests
 
         private sealed class Dialer(FakeServer owner) : ISshTransportDialer
         {
-            public SshDialKind Kind => SshDialKind.Tcp;
-
             public ValueTask<Stream> DialAsync(
                 SshDialTarget target, CancellationToken cancellationToken)
             {
@@ -311,8 +309,6 @@ public sealed class ConnectionTests
     /// <summary>服务端在首次交换里发一段写好的「KEXINIT」。</summary>
     private sealed class RawKexInitDialer(byte[] kexInit, CancellationToken cancellationToken) : ISshTransportDialer
     {
-        public SshDialKind Kind => SshDialKind.Tcp;
-
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken ct)
         {
             (InMemoryDuplexStream client, InMemoryDuplexStream server) = InMemoryTransport.CreatePair();
@@ -845,8 +841,6 @@ public sealed class ConnectionTests
     private sealed class ClockAdvancingDialer(ISshTransportDialer inner, ManualTimeProvider clock, TimeSpan by)
         : ISshTransportDialer
     {
-        public SshDialKind Kind => inner.Kind;
-
         public async ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default)
         {
             Stream stream = await inner.DialAsync(target, cancellationToken);
@@ -1043,8 +1037,6 @@ public sealed class ConnectionTests
     /// <summary>发完版本串之后，再读就当成对端重置了连接。</summary>
     private sealed class ResettingDialer : ISshTransportDialer
     {
-        public SshDialKind Kind => SshDialKind.Tcp;
-
         public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken) =>
             ValueTask.FromResult<Stream>(new ResettingStream());
 

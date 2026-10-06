@@ -42,10 +42,10 @@ internal static class ProxyDialing
             throw DialHops.Rewrap(
                 ex,
                 $"连不上{kindName} {proxy}：{ex.Message}",
-                DialHops.FromInnerFailure(ex, inner.Kind, proxy, startedAt));
+                DialHops.FromInnerFailure(ex, DialHops.KindOf(inner), proxy, startedAt));
         }
 
-        SshHopInfo reachedProxy = DialHops.Hop(inner.Kind, proxy, succeeded: true, startedAt);
+        SshHopInfo reachedProxy = DialHops.Hop(DialHops.KindOf(inner), proxy, succeeded: true, startedAt);
         long handshakeStartedAt = Environment.TickCount64;
 
         try

@@ -67,7 +67,7 @@ public static class InMemoryTransport
 
     private sealed class InMemoryDialer(
         Func<InMemoryDuplexStream, SshDialTarget, CancellationToken, ValueTask> onAccepted,
-        InMemoryTransportOptions? options) : ISshTransportDialer
+        InMemoryTransportOptions? options) : ISshTransportDialer, ISshDialKindSource
     {
         public SshDialKind Kind => SshDialKind.InMemory;
 

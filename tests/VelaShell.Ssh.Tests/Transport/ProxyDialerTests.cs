@@ -127,6 +127,31 @@ public sealed class ProxyDialerTests
         Assert.AreEqual($"{TargetHost}:22", ex.Hops[1].Target);
     }
 
+    /// <summary>
+    /// 使用者自己实现的拨号器当代理的内层：到代理那一跳记 <see cref="SshDialKind.Custom"/>。
+    /// 曾经要实现者自己声明种类，按每次拨号现选路的实现给不出真值，只好记「上一次」。
+    /// </summary>
+    [TestMethod]
+    public async Task 使用者的拨号器当内层时那一跳记Custom()
+    {
+        await using var proxy = FakeSocks5Proxy.Start(replyCode: 5);
+
+        SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(DialerChain.Socks5("127.0.0.1", proxy.Port, via: new UserDialer())));
+
+        Assert.HasCount(2, ex.Hops);
+        Assert.AreEqual(SshDialKind.Custom, ex.Hops[0].Kind);
+        Assert.IsTrue(ex.Hops[0].Succeeded);
+        Assert.AreEqual(SshDialKind.Socks5, ex.Hops[1].Kind);
+    }
+
+    /// <summary>使用者自己实现的拨号器：直连。</summary>
+    private sealed class UserDialer : ISshTransportDialer
+    {
+        public ValueTask<Stream> DialAsync(SshDialTarget target, CancellationToken cancellationToken = default) =>
+            DialerChain.Tcp.DialAsync(target, cancellationToken);
+    }
+
     [TestMethod]
     public async Task 代理本身连不上时说清是哪一跳()
     {
