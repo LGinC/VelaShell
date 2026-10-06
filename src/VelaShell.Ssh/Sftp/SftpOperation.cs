@@ -79,4 +79,7 @@ public enum SftpOperation
 
     /// <summary>查文件系统用量（<c>statvfs@openssh.com</c>）。</summary>
     GetFileSystemInfo,
+
+    /// <summary>展开 <c>~</c>（<c>expand-path@openssh.com</c> / <c>home-directory</c>）。</summary>
+    ExpandPath,
 }

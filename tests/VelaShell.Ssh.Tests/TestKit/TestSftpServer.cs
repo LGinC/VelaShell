@@ -60,6 +60,11 @@ internal sealed record TestSftpOptions
     /// <summary><c>limits@openssh.com</c> 宣告的读写上限。</summary>
     public SftpLimits Limits { get; init; } = new(262_144, 261_120, 261_120, 0);
 
+    /// <summary>
+    /// 各用户的家目录（<c>home-directory</c> 与 <c>expand-path@openssh.com</c> 的 <c>~用户名</c> 查它；登录用户的是 <see cref="WorkingDirectory"/>）。
+    /// </summary>
+    public IReadOnlyDictionary<string, string> HomeDirectories { get; init; } = new Dictionary<string, string> { ["alice"] = "/srv/alice" };
+
     /// <summary><c>statvfs@openssh.com</c> 回的 11 个值（要在 <see cref="Extensions"/> 里列上它才回）。</summary>
     public ulong[] StatVfs { get; init; } = [4096, 1024, 1_000_000, 400_000, 300_000, 65_536, 60_000, 59_000, 0xABCD, 0x1, 255];
 
@@ -855,6 +860,28 @@ internal sealed class TestSftpServer
         if (name == SftpExtensionNames.Fsync)
         {
             return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.HomeDirectory)
+        {
+            string user = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            return _options.HomeDirectories.TryGetValue(user, out string? home)
+                ? BuildName(id, [new SftpNameEntry(home, home, AttributesOf(null))])
+                : BuildStatus(id, SftpStatusCode.Failure, $"没有用户 {user}");
+        }
+
+        if (name == SftpExtensionNames.ExpandPath)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            int slash = path.IndexOf('/', StringComparison.Ordinal);
+            string user = slash < 0 ? path[1..] : path[1..slash];
+            string? home = user.Length == 0 ? _options.WorkingDirectory : _options.HomeDirectories.GetValueOrDefault(user);
+            if (!path.StartsWith('~') || home is null)
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"展开不了 {path}");
+            }
+            string expanded = slash < 0 ? home : home.TrimEnd('/') + path[slash..];
+            return BuildName(id, [new SftpNameEntry(expanded, expanded, AttributesOf(_nodes.GetValueOrDefault(expanded)))]);
         }
 
         if (name == SftpExtensionNames.StatVfs)

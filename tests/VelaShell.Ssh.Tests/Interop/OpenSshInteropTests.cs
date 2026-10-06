@@ -683,6 +683,21 @@ public sealed class OpenSshInteropTests
         Assert.IsLessThanOrEqualTo(info.FreeBlocks, info.AvailableBlocks);
     }
 
+    /// <summary>展开 ~：真 OpenSSH 宣告 expand-path@openssh.com，~ 是登录用户的 $HOME，~root 是 /root。</summary>
+    [TestMethod]
+    public async Task SFTP展开波浪号与远端的HOME一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasExpandPath, "OpenSSH 的 sftp-server 宣告 expand-path@openssh.com");
+
+        string home = (await connection.RunAsync("printf %s \"$HOME\"")).StandardOutput;
+        Assert.AreEqual(home, await sftp.ExpandPathAsync("~"));
+        Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {

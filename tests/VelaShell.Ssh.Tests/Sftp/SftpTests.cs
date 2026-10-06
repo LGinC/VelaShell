@@ -1519,6 +1519,51 @@ public sealed class SftpTests
         Assert.IsTrue(error.IsUnsupported);
     }
 
+    // ------------------------------------------------------------ 展开 ~
+
+    /// <summary>有 expand-path@openssh.com：整条交给服务端，~ 与 ~用户名都认。</summary>
+    [TestMethod]
+    [DataRow("~", "/home/joe")]
+    [DataRow("~/projects", "/home/joe/projects")]
+    [DataRow("~alice", "/srv/alice")]
+    [DataRow("~alice/shared", "/srv/alice/shared")]
+    [DataRow("/etc", "/etc")]
+    public async Task 有expand_path时整条交给服务端(string input, string expected)
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.ExpandPath] });
+
+        Assert.AreEqual(expected, await harness.Sftp.ExpandPathAsync(input, harness.Token));
+    }
+
+    /// <summary>没有 expand-path：~ 与 ~/… 用登录时的工作目录拼，~用户名用 home-directory。</summary>
+    [TestMethod]
+    [DataRow("~", "/home/joe")]
+    [DataRow("~/projects", "/home/joe/projects")]
+    [DataRow("~alice", "/srv/alice")]
+    [DataRow("~alice/shared", "/srv/alice/shared")]
+    public async Task 没有expand_path时用工作目录与home_directory拼(string input, string expected)
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.HomeDirectory] });
+
+        Assert.AreEqual(expected, await harness.Sftp.ExpandPathAsync(input, harness.Token));
+    }
+
+    /// <summary>两个扩展都没有：~ 照样能展开（工作目录），~用户名如实报不支持。</summary>
+    [TestMethod]
+    public async Task 两个扩展都没有时用户名的家目录报不支持()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { Extensions = [SftpExtensionNames.Limits] });
+
+        Assert.AreEqual("/home/joe/x", await harness.Sftp.ExpandPathAsync("~/x", harness.Token));
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(
+            async () => await harness.Sftp.ExpandPathAsync("~alice", harness.Token));
+        Assert.IsTrue(error.IsUnsupported);
+        Assert.AreEqual(SftpOperation.ExpandPath, error.Operation);
+    }
+
     // ------------------------------------------------------------ 文件系统用量
 
     /// <summary>statvfs@openssh.com：11 个字段按顺序解出；字节数按 f_frsize 算，「还能写多少」看 f_bavail。</summary>
