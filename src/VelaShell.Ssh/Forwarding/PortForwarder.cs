@@ -5,6 +5,7 @@
 //   RFC 4254 §7    TCP/IP 端口转发
 //   行为规格:      velashell-docs/zh/ssh/spec/07-forwarding.md §五、§八
 
+using System.Collections.Concurrent;
 using System.Net;
 using VelaShell.Ssh.Channels;
 
@@ -30,8 +31,59 @@ public abstract class PortForwarder : IAsyncDisposable
     private long _bytesSent;
     private long _bytesReceived;
 
-    /// <summary>只给本库的两个派生类型用。</summary>
-    private protected PortForwarder(ForwardKind kind) => Kind = kind;
+    private readonly TimeProvider _time;
+    private readonly ThroughputMeter _sentMeter;
+    private readonly ThroughputMeter _receivedMeter;
+
+    /// <summary>正在搬的连接（<see cref="Connections"/> 的来源）。</summary>
+    private readonly ConcurrentDictionary<long, LiveConnection> _live = new();
+
+    /// <summary>两个方向的限速；不限速时为 <see langword="null"/>。</summary>
+    private ByteRateLimiter? _sendLimiter;
+    private ByteRateLimiter? _receiveLimiter;
+
+    /// <summary>只给本库的派生类型用。</summary>
+    /// <param name="kind">转发的形态。</param>
+    /// <param name="time">吞吐与限速用的时钟；只有测试会换。</param>
+    private protected PortForwarder(ForwardKind kind, TimeProvider? time = null)
+    {
+        Kind = kind;
+        _time = time ?? TimeProvider.System;
+        _sentMeter = new ThroughputMeter(_time);
+        _receivedMeter = new ThroughputMeter(_time);
+    }
+
+    /// <summary>每个方向每秒最多搬多少应用字节；<see langword="null"/> 不限（构造时由派生类按参数设）。</summary>
+    private protected void ConfigureRateLimit(long? bytesPerSecond)
+    {
+        if (bytesPerSecond is { } rate)
+        {
+            _sendLimiter = new ByteRateLimiter(rate, _time);
+            _receiveLimiter = new ByteRateLimiter(rate, _time);
+        }
+    }
+
+    /// <summary>
+    /// 此刻的吞吐（最近三个整秒的平均，应用字节 / 秒）。隧道面板的实时速率就是它。
+    /// </summary>
+    public ForwardThroughput Throughput => new(_sentMeter.PerSecond, _receivedMeter.PerSecond);
+
+    /// <summary>正在搬的连接（快照，按序号排）：来源、目标、开始时刻、到目前为止的字节数。</summary>
+    public IReadOnlyList<ForwardConnectionInfo> Connections =>
+        [.. _live.Values.OrderBy(c => c.Id).Select(c => c.Snapshot())];
+
+    /// <summary>一条正在搬的连接；字节数在搬运循环里累加。</summary>
+    private sealed class LiveConnection(long id, EndPoint? source, string target, DateTimeOffset startedAt)
+    {
+        public long Id => id;
+
+        public long Sent;
+
+        public long Received;
+
+        public ForwardConnectionInfo Snapshot() =>
+            new(id, source, target, startedAt, Interlocked.Read(ref Sent), Interlocked.Read(ref Received));
+    }
 
     /// <summary>转发的形态。</summary>
     public ForwardKind Kind { get; }
@@ -132,6 +184,8 @@ public abstract class PortForwarder : IAsyncDisposable
             }
         }
 
+        LiveConnection live = new(connectionId, source, target, _time.GetUtcNow());
+        _live[connectionId] = live;
         try
         {
             ForwardEvents.Raise(ConnectionOpened, this, new ForwardConnectionEventArgs(connectionId, source, target));
@@ -143,14 +197,20 @@ public abstract class PortForwarder : IAsyncDisposable
                 onBytesFromLeft: bytes =>
                 {
                     Interlocked.Add(ref _bytesSent, bytes);
+                    Interlocked.Add(ref live.Sent, bytes);
+                    _sentMeter.Record(bytes);
                     ForwardMetrics.Bytes.Add(bytes, ForwardEvents.KindTag(Kind), ForwardEvents.DirectionSent);
                 },
                 onBytesFromRight: bytes =>
                 {
                     Interlocked.Add(ref _bytesReceived, bytes);
+                    Interlocked.Add(ref live.Received, bytes);
+                    _receivedMeter.Record(bytes);
                     ForwardMetrics.Bytes.Add(bytes, ForwardEvents.KindTag(Kind), ForwardEvents.DirectionReceived);
                 },
-                cancellationToken).ConfigureAwait(false);
+                throttleFromLeft: _sendLimiter is { } send ? send.WaitAsync : null,
+                throttleFromRight: _receiveLimiter is { } receive ? receive.WaitAsync : null,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
 
             // 先减活跃数、再报「关了」：订阅者在事件里读到的 ActiveConnections 不该还算着这一条。
             // 曾经反过来 —— 在 ConnectionClosed 里刷新界面上的连接数，总比实际多一。
@@ -167,6 +227,7 @@ public abstract class PortForwarder : IAsyncDisposable
         }
         finally
         {
+            _live.TryRemove(connectionId, out _);
             Release();
         }
     }

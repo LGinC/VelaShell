@@ -1373,4 +1373,55 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
             harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = tooLong }));
         StringAssert.Contains(longPath.Message, "太长");
     }
+
+    // ------------------------------------------------------------ 计量与限速
+
+    /// <summary>
+    /// 限速 64 KiB/秒、一来一回各 192 KiB：先用掉一秒的突发额度，剩下 128 KiB 要两秒左右；数据一字节不差。
+    /// 搬运期间 Connections 里有这一条（来源、目标、已搬的字节）；搬完就没了。
+    /// </summary>
+    [TestMethod]
+    public async Task 限速的转发按额度放慢_连接快照里看得到这一条()
+    {
+        List<string> targets = [];
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
+        await using LocalPortForwarder forwarder = LocalPortForwarder.Start(
+            harness.Connection, "bulk.internal", 9000, new LocalPortForwardOptions { MaxBytesPerSecond = 64 * 1024 });
+
+        using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
+        await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
+
+        byte[] payload = new byte[192 * 1024];
+        Random.Shared.NextBytes(payload);
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        Task sending = client.SendAsync(payload, harness.Token).AsTask();
+
+        byte[] back = new byte[payload.Length];
+        int got = 0;
+        bool sawSnapshot = false;
+        while (got < back.Length)
+        {
+            got += await client.ReceiveAsync(back.AsMemory(got), harness.Token);
+            if (!sawSnapshot && forwarder.Connections is [{ } live])
+            {
+                sawSnapshot = true;
+                Assert.AreEqual("bulk.internal:9000", live.Target);
+                Assert.IsInstanceOfType<IPEndPoint>(live.Source);
+                Assert.IsGreaterThan(0L, live.BytesSent);
+            }
+        }
+        await sending;
+        elapsed.Stop();
+
+        Assert.AreSequenceEqual(payload, back);
+        Assert.IsTrue(sawSnapshot, "搬运期间连接快照里应当有这一条");
+        Assert.IsGreaterThan(TimeSpan.FromSeconds(1.5), elapsed.Elapsed, $"限速没起作用（{elapsed.Elapsed.TotalSeconds:0.00} 秒）");
+
+        client.Shutdown(SocketShutdown.Both);
+        for (int i = 0; i < 200 && forwarder.Connections.Count > 0; i++)
+        {
+            await Task.Delay(10, harness.Token);
+        }
+        Assert.IsEmpty(forwarder.Connections, "搬完就从快照里摘掉");
+    }
 }

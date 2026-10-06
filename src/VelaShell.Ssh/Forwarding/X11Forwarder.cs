@@ -263,7 +263,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 remoteEnd, localEnd,
                 onBytesFromLeft: static _ => { },
                 onBytesFromRight: static _ => { },
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken: cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {

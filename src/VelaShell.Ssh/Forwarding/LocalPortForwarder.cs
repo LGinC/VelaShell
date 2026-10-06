@@ -87,6 +87,17 @@ public sealed record LocalPortForwardOptions
         init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(SocksHandshakeTimeout), value, "SOCKS 握手时限必须为正。");
     } = TimeSpan.FromSeconds(30);
 
+    /// <summary>
+    /// 每个方向每秒最多搬多少应用字节；<see langword="null"/>（默认）不限。这个转发器的全部连接共用这个额度。
+    /// </summary>
+    /// <remarks>慢链路上开着好几条隧道时，不让一条下载把交互终端挤满。允许一秒额度的突发。</remarks>
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public long? MaxBytesPerSecond
+    {
+        get;
+        init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxBytesPerSecond), value, "限速必须为正；不限就给 null。");
+    }
+
     /// <summary>每条隧道通道的参数。</summary>
     public SshChannelOptions Channel { get; init; } = SshChannelOptions.Default with
     {
@@ -147,6 +158,7 @@ public sealed class LocalPortForwarder : PortForwarder
         _targetPort = targetPort;
         _targetSocketPath = targetSocketPath;
         _createdSocketPath = options.ListenSocketPath;
+        ConfigureRateLimit(options.MaxBytesPerSecond);
         BoundEndPoint = listener.LocalEndPoint;
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
     }

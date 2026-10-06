@@ -55,6 +55,14 @@ public sealed record RemotePortForwardOptions
         init => field = value >= 1 ? value : throw new ArgumentOutOfRangeException(nameof(MaxConnections), value, "并发连接数上限至少为 1。");
     } = 1024;
 
+    /// <summary>每个方向每秒最多搬多少应用字节；<see langword="null"/>（默认）不限。这个转发器的全部回连共用这个额度。</summary>
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public long? MaxBytesPerSecond
+    {
+        get;
+        init => field = value is null or > 0 ? value : throw new ArgumentOutOfRangeException(nameof(MaxBytesPerSecond), value, "限速必须为正；不限就给 null。");
+    }
+
     /// <summary>每条隧道通道的参数。</summary>
     public SshChannelOptions Channel { get; init; } = SshChannelOptions.Default with
     {
@@ -147,6 +155,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         RemoteSocketPath = remoteSocketPath;
         _targetSocketPath = targetSocketPath;
         _permitRemoteOpen = permitRemoteOpen;
+        ConfigureRateLimit(options.MaxBytesPerSecond);
         _boundPort = boundPort;
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
     }

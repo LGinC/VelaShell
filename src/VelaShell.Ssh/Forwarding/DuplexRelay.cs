@@ -98,6 +98,8 @@ internal static class DuplexRelay
     /// <param name="right">另一端（通常是 SSH 通道）。</param>
     /// <param name="onBytesFromLeft">左 → 右每搬一块的回调（计量用，可为空）。</param>
     /// <param name="onBytesFromRight">右 → 左每搬一块的回调。</param>
+    /// <param name="throttleFromLeft">左 → 右每读到一段、写出去之前等它（限速用，可为空）。</param>
+    /// <param name="throttleFromRight">右 → 左同上。</param>
     /// <param name="cancellationToken">取消令牌。取消按出错处理：两端一起中止。</param>
     /// <remarks>
     /// <para>
@@ -115,6 +117,8 @@ internal static class DuplexRelay
         IRelayEndpoint right,
         Action<int>? onBytesFromLeft = null,
         Action<int>? onBytesFromRight = null,
+        Func<int, CancellationToken, ValueTask>? throttleFromLeft = null,
+        Func<int, CancellationToken, ValueTask>? throttleFromRight = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(left);
@@ -129,8 +133,8 @@ internal static class DuplexRelay
         // 下载 500 MB 时链路断了，ConnectionClosed 报的是 0 / 0）。
         StrongBox<long> fromLeftCount = new();
         StrongBox<long> fromRightCount = new();
-        Task leftToRight = PumpAsync(left, right, onBytesFromLeft, fromLeftCount, abort);
-        Task rightToLeft = PumpAsync(right, left, onBytesFromRight, fromRightCount, abort);
+        Task leftToRight = PumpAsync(left, right, onBytesFromLeft, throttleFromLeft, fromLeftCount, abort);
+        Task rightToLeft = PumpAsync(right, left, onBytesFromRight, throttleFromRight, fromRightCount, abort);
 
         try
         {
@@ -149,10 +153,12 @@ internal static class DuplexRelay
     /// <param name="source">从这一端读。</param>
     /// <param name="destination">往这一端写。</param>
     /// <param name="onBytes">每搬一段调用一次。</param>
+    /// <param name="throttle">写出去之前等它（限速）；等的时候不再读，背压自然传回发送方。</param>
     /// <param name="total">搬过的字节数，边搬边记 —— 出错收场时也是准的。</param>
     /// <param name="abort">两个方向共用的中止。</param>
     private static async Task PumpAsync(
-        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes, StrongBox<long> total, RelayAbort abort)
+        IRelayEndpoint source, IRelayEndpoint destination, Action<int>? onBytes,
+        Func<int, CancellationToken, ValueTask>? throttle, StrongBox<long> total, RelayAbort abort)
     {
         bool finished = false;
 
@@ -172,6 +178,11 @@ internal static class DuplexRelay
 
                 if (!buffer.IsEmpty)
                 {
+                    if (throttle is not null)
+                    {
+                        await throttle((int)Math.Min(buffer.Length, int.MaxValue), cancellationToken).ConfigureAwait(false);
+                    }
+
                     bool destinationDone = false;
                     if (destination.DirectOutput is { } direct)
                     {
