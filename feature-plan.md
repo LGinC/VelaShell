@@ -41,7 +41,7 @@
 | --- | :---: | :---: | :---: | :---: | :---: |
 | 一、欠账 | 4 | 2 | 9 | 9 | **24** |
 | 二、路线图 | — | 5 | 16 | 15 | **36** |
-| 三、文档待同步 | — | — | — | — | **28** |
+| 三、文档待同步 | — | — | — | — | **27** |
 
 
 ---
@@ -234,8 +234,7 @@
 | `plan.md` §118 窗口外框 | `{zh,en}/host/architecture.md` §5「窗口壳」的 ⚠️ 限定为 Win32、新增「各平台的外框」；`交互与界面规格.md` §2 补 macOS 红绿灯与各平台外框；`design-specs.md` 补 macOS 红绿灯；标题栏统一 28 的口径（设置窗口与消息框保持 48 的例外） | [velashell-docs#70](https://github.com/VelaShellLabs/velashell-docs/pull/70) 已开，与宿主 PR 一起合；实机验收后改掉 architecture 里「验收」那一段 |
 | `plan.md` §74 / §75 目录比较与同步 | `SFTP双栏与WinSCP差距分析.md`（C1 改已实现、新增第七节）与 `交互与界面规格.md` §6（文档工具条、同步窗口、保持远端最新、SHA-256 优先比较） | [velashell-docs#35](https://github.com/VelaShellLabs/velashell-docs/pull/35) **待合入** |
 | `plan.md` §82 #474 | `交互与界面规格.md` 资源管理器补**置顶**与 SFTP 路径栏的**复制当前路径**；`设置项审计.md` 补 `General.CollapseGroupsByDefault`、`Transfer.UseRecursiveDeleteCommand`（写明只对有 exec 通道的 SSH 会话生效、失败自动回退、没有逐条进度） | 已在 `docs/474-explorer-sftp` 分支改好（中英各 3 个文件），**待开 PR** |
-| `plan.md` §161 / §162 SSH 库审查修复与质疑决策 | `ssh/spec/00`–`09`、`ssh/getting-started.md`、`ssh/design/architecture.md` 对上这一批的行为与公开面（中英两边）；host《交互与界面规格》的主机信任（按密钥类型分开记、主机密钥轮换补新钥也删旧钥） | 已在 `fix/ssh-review-fixes` 分支逐条提交（本地，189 个提交，含 §162 的 8 个），**待推送、开 PR**，与宿主 PR 互相引用 |
-| `plan.md` §163 agent 加钥的目的地约束 | `ssh/spec/07-forwarding.md` §7.3.2（新的一节，含对真 agent 的核对结果）、§7.3 的约束表与 §7.4 的指引；`ssh/getting-started.md` 的用法示例，以及「证书加钥暂不支持」这句过时的话（中英两边） | 已在 `feat/ssh-agent-restrict-destination` 分支提交（本地，2 个提交，基于 `fix/ssh-review-fixes`），**待推送、开 PR**，与宿主 PR 互相引用 |
+| `plan.md` §163 agent 加钥的目的地约束 | `ssh/spec/07-forwarding.md` §7.3.2（新的一节，含对真 agent 的核对结果）、§7.3 的约束表与 §7.4 的指引；`ssh/getting-started.md` 的用法示例，以及「证书加钥暂不支持」这句过时的话（中英两边） | [velashell-docs#90](https://github.com/VelaShellLabs/velashell-docs/pull/90) 已开，与宿主 [#563](https://github.com/joesdu/VelaShell/pull/563) 一起合（§161 / §162 的那一批已随 [velashell-docs#89](https://github.com/VelaShellLabs/velashell-docs/pull/89) 合并） |
 | `plan.md` §117 SSH 库 API 整改 | `ssh/getting-started.md` 示例改用新公开面；`ssh/design/architecture.md` §6、§8 对上代码；`ssh/spec/08-failures.md` 补新增的 `SshFailureReason` 值与 `SshHostKeyVerdict.Reason` | 已在 `fix/ssh-api-cleanup` 分支备好（本地工作树，未提交），**待开 PR** |
 | `plan.md` §129 插件文件协议进双栏（#524 后续） | `交互与界面规格.md` §3（能进双选的类型）、§6.2（插件栏、续传核实不了按冲突处理）；`SFTP双栏与WinSCP差距分析.md` 8.2；`sdk/sdk-reference.md` 版本表把 `IProtocolStreamUpload` 那行的 TBD 换成 2.0.6。中英两棵树都改了 | [velashell-docs#75](https://github.com/VelaShellLabs/velashell-docs/pull/75) 已开，与宿主 PR 一起合 |
 | `plan.md` §125 PTY 像素尺寸 | `{zh,en}/host/architecture.md` §9 连接时序图：`PtySizeChanged(cols,rows)` 那一行改成带物理像素、落到 `window-change` | [velashell-docs#72](https://github.com/VelaShellLabs/velashell-docs/pull/72) 已开，与宿主 PR 一起合 |
