@@ -97,9 +97,68 @@ public sealed class SshHostConfig
     [
         .. IdentityFiles
             .Where(static raw => !string.Equals(raw.Trim().Trim('"'), "none", StringComparison.OrdinalIgnoreCase))
-            .Select(raw => SshConfigFile.ExpandPath(raw, HostName, remoteUser ?? User))
+            .Select(raw => Expand(raw, remoteUser))
             .OfType<string>(),
     ];
+
+    /// <summary><c>CertificateFile</c>：与 <c>IdentityFile</c> 配对的证书，展开记号之后的路径（不管存在与否）。</summary>
+    /// <param name="remoteUser">登录用户（<c>%r</c>）；不给就用 <see cref="User"/>。</param>
+    public IReadOnlyList<string> ExpandCertificateFiles(string? remoteUser = null) =>
+    [
+        .. All("CertificateFile")
+            .Where(static raw => !string.Equals(raw.Trim().Trim('"'), "none", StringComparison.OrdinalIgnoreCase))
+            .Select(raw => Expand(raw, remoteUser))
+            .OfType<string>(),
+    ];
+
+    /// <summary>按这台主机展开路径里的记号（见 <c>SshConfigFile.ExpandPath</c>）。</summary>
+    internal string? Expand(string? raw, string? remoteUser = null) =>
+        SshConfigFile.ExpandPath(raw, HostName, remoteUser ?? User, Port, QueriedHost, ProxyJump, First("HostKeyAlias"));
+
+    /// <summary>
+    /// 会话要设的环境变量：<c>SetEnv 名=值</c>（可以多个、多行，先出现的赢），再加上 <c>SendEnv</c>
+    /// 通配（<c>*</c> / <c>?</c>，不分大小写）选中的本机环境变量（<c>SetEnv</c> 里有的不覆盖）。
+    /// </summary>
+    /// <remarks>
+    /// 服务端的 <c>AcceptEnv</c> 只放行少数变量，被拒是常态（velashell-docs/zh/ssh/spec/05 §5.2）。
+    /// <c>SendEnv -模式</c>（去掉之前的模式）这里不处理：一律只增不减。
+    /// </remarks>
+    public IReadOnlyDictionary<string, string> SessionEnvironment()
+    {
+        Dictionary<string, string> result = new(StringComparer.Ordinal);
+        foreach (string line in All("SetEnv"))
+        {
+            foreach (string pair in line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+            {
+                int equals = pair.IndexOf('=', StringComparison.Ordinal);
+                if (equals > 0)
+                {
+                    result.TryAdd(pair[..equals], pair[(equals + 1)..].Trim('"'));
+                }
+            }
+        }
+
+        string[] patterns = [.. All("SendEnv").SelectMany(static l => l.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))
+            .Where(static p => !p.StartsWith('-'))];
+        if (patterns.Length > 0)
+        {
+            foreach (System.Collections.DictionaryEntry variable in System.Environment.GetEnvironmentVariables())
+            {
+                if (variable.Key is string name && variable.Value is string value
+                    && patterns.Any(p => System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(p, name, ignoreCase: true)))
+                {
+                    result.TryAdd(name, value);
+                }
+            }
+        }
+        return result;
+    }
+
+    /// <summary><c>ConnectionAttempts</c>：拨号失败时一共试几次（每次隔一秒），默认 1。</summary>
+    public int ConnectionAttempts =>
+        int.TryParse(First("ConnectionAttempts"), NumberStyles.None, CultureInfo.InvariantCulture, out int value) && value >= 1
+            ? Math.Min(value, 100)
+            : 1;
 
     /// <summary>跳板（<c>ProxyJump</c>）。</summary>
     public string? ProxyJump => First("ProxyJump");
@@ -242,7 +301,7 @@ public sealed class SshHostConfig
             return endpoint is not null;
         }
 
-        endpoint = SshConfigFile.ExpandPath(value, HostName, User);
+        endpoint = Expand(value);
         return endpoint is not null;
     }
 
@@ -386,6 +445,19 @@ public sealed class SshHostConfig
                     FailureMode = ForwardFailureMode.Continue,
                 },
             };
+        }
+
+        // SetEnv / SendEnv：模板里显式给了环境变量就不动（显式的赢）。
+        if (options.Environment.Count == 0 && SessionEnvironment() is { Count: > 0 } environment)
+        {
+            options = options with { Environment = environment };
+        }
+
+        // RemoteCommand：在伪终端里跑这条命令而不是登录 shell（模板里显式给了命令就不动）。
+        if (options.Command is null && First("RemoteCommand") is { } remoteCommand
+            && !remoteCommand.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            options = options with { Command = remoteCommand };
         }
 
         if (ForwardX11 && options.X11Forwarding is null)

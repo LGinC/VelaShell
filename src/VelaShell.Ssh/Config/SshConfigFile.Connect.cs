@@ -192,6 +192,12 @@ public static partial class SshConfigFile
             options = options with { Dialer = dialer };
         }
 
+        // ConnectionAttempts：拨号失败时再试（每次隔一秒）—— 包在最外层，跳板链与代理命令一起重来。
+        if (config.ConnectionAttempts > 1)
+        {
+            options = options with { Dialer = new RetryingDialer(options.Dialer, config.ConnectionAttempts) };
+        }
+
         return settings.Configure?.Invoke(options) ?? options;
     }
 
@@ -394,7 +400,7 @@ public static partial class SshConfigFile
 
         // 〔FW-E13〕%h / %r 照这台主机与用户展开（每台主机一个 known_hosts 的写法要靠它）。曾经代入空串：
         // ~/.ssh/kh_%h 成了 ~/.ssh/kh_，所有主机挤进同一个文件。
-        return new KnownHostsPolicy(ExpandPath(knownHosts, config.HostName, user), AskOnlyWhenAsking())
+        return new KnownHostsPolicy(config.Expand(knownHosts, user), AskOnlyWhenAsking())
         {
             UnknownHost = unknown,
         };
@@ -409,6 +415,7 @@ public static partial class SshConfigFile
         CancellationToken cancellationToken)
     {
         List<SshCredential> credentials = [];
+        List<(string Path, ISshSigner Signer)> loaded = [];
 
         foreach (string path in config.ExpandIdentityFiles(user))
         {
@@ -437,11 +444,71 @@ public static partial class SshConfigFile
 
             if (signer is not null)
             {
-                credentials.Add(new PublicKeyCredential(signer, $"publickey ({Path.GetFileName(path)})"));
+                loaded.Add((path, signer));
             }
         }
 
+        // 证书：CertificateFile 写的，加上每把钥旁边的「钥-cert.pub」（ssh 的默认行为）。按里面的公钥与读出来的私钥配对，
+        // 证书排在那把钥前面 —— 与 ssh 一样先出示证书，服务端不认 CA 时再退到裸钥。
+        Dictionary<ISshSigner, List<SshCredential>> certificates = await LoadCertificatesAsync(config, user, settings, loaded, cancellationToken)
+            .ConfigureAwait(false);
+        foreach ((string path, ISshSigner signer) in loaded)
+        {
+            if (certificates.TryGetValue(signer, out List<SshCredential>? forThisKey))
+            {
+                credentials.AddRange(forThisKey);
+            }
+            credentials.Add(new PublicKeyCredential(signer, $"publickey ({Path.GetFileName(path)})"));
+        }
+
         return credentials;
+    }
+
+    /// <summary>读证书并与私钥配对；读不出来、配不上的报给 <see cref="SshConfigConnectOptions.IdentityFileSkipped"/>。</summary>
+    private static async ValueTask<Dictionary<ISshSigner, List<SshCredential>>> LoadCertificatesAsync(
+        SshHostConfig config, string user, SshConfigConnectOptions settings,
+        List<(string Path, ISshSigner Signer)> loaded, CancellationToken cancellationToken)
+    {
+        Dictionary<ISshSigner, List<SshCredential>> result = new(ReferenceEqualityComparer.Instance);
+        List<(string Path, bool Explicit)> candidates =
+        [
+            .. config.ExpandCertificateFiles(user).Select(static p => (p, true)),
+            .. loaded.Select(static l => (l.Path + "-cert.pub", false)),
+        ];
+        HashSet<string> seen = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+
+        foreach ((string path, bool isExplicit) in candidates)
+        {
+            if (!File.Exists(path) || !seen.Add(Path.GetFullPath(path)))
+            {
+                continue;
+            }
+            try
+            {
+                OpenSshCertificate certificate = await OpenSshCertificate.LoadAsync(path, cancellationToken).ConfigureAwait(false);
+                ISshSigner? key = loaded.FirstOrDefault(l => l.Signer.PublicKey.Blob.Span.SequenceEqual(certificate.Key.Blob.Span)).Signer;
+                if (key is null)
+                {
+                    if (isExplicit)
+                    {
+                        settings.IdentityFileSkipped?.Invoke(path, new SshCertificateException(SshFailureReason.KeyMismatch,
+                            $"证书 {Path.GetFileName(path)} 证的钥不在读出来的 IdentityFile 里，没法用它签名。"));
+                    }
+                    continue;
+                }
+                if (!result.TryGetValue(key, out List<SshCredential>? list))
+                {
+                    list = [];
+                    result[key] = list;
+                }
+                list.Add(new PublicKeyCredential(SshCertificateSigner.Create(certificate, key), $"publickey ({Path.GetFileName(path)})"));
+            }
+            catch (Exception ex) when (ex is SshCertificateException or IOException or UnauthorizedAccessException or FormatException)
+            {
+                settings.IdentityFileSkipped?.Invoke(path, ex);
+            }
+        }
+        return result;
     }
 
     private static async ValueTask<ISshSigner?> TryLoadKeyAsync(
@@ -465,8 +532,14 @@ public static partial class SshConfigFile
         }
     }
 
-    /// <summary>展开 <c>~</c> 与 <c>%d %u %h %r %%</c>。</summary>
-    internal static string? ExpandPath(string? raw, string? host, string? remoteUser)
+    /// <summary>
+    /// 展开 <c>~</c> 与记号：<c>%d</c>（本机家目录）<c>%u</c>（本机用户）<c>%h</c>（主机）<c>%r</c>（登录用户）<c>%p</c>（端口）
+    /// <c>%n</c>（输入的名字）<c>%l</c> / <c>%L</c>（本机主机名，完整 / 第一段）<c>%C</c>（<c>%l%h%p%r</c> 的 SHA-1）
+    /// <c>%j</c>（<c>ProxyJump</c>）<c>%k</c>（<c>HostKeyAlias</c>，没有就是主机）<c>%%</c>。不认识的原样留着。
+    /// </summary>
+    internal static string? ExpandPath(
+        string? raw, string? host, string? remoteUser,
+        int? port = null, string? originalHost = null, string? proxyJump = null, string? hostKeyAlias = null)
     {
         if (string.IsNullOrWhiteSpace(raw))
         {
@@ -497,12 +570,42 @@ public static partial class SshConfigFile
                 'u' => Environment.UserName,
                 'h' => host ?? "",
                 'r' => remoteUser ?? "",
+                'p' => port is { } p ? p.ToString(System.Globalization.CultureInfo.InvariantCulture) : "%p",
+                'n' => originalHost ?? host ?? "",
+                'l' => LocalHostName(),
+                'L' => LocalHostName().Split('.')[0],
+                'C' => ConnectionHash(host, port, remoteUser),
+                'j' => proxyJump ?? "",
+                'k' => hostKeyAlias ?? host ?? "",
                 '%' => "%",
                 _ => "%" + token,
             });
         }
 
         return result.ToString();
+    }
+
+    /// <summary>本机主机名（<c>%l</c>）；取不到时为空。</summary>
+    private static string LocalHostName()
+    {
+        try
+        {
+            return System.Net.Dns.GetHostName();
+        }
+        catch (System.Net.Sockets.SocketException)
+        {
+            return "";
+        }
+    }
+
+    /// <summary><c>%C</c>：<c>%l%h%p%r</c> 的 SHA-1（十六进制小写）—— 给 ControlPath 之类一个不含特殊字符、又对得上这条连接的名字。</summary>
+    private static string ConnectionHash(string? host, int? port, string? remoteUser)
+    {
+        byte[] input = Encoding.UTF8.GetBytes(
+            LocalHostName() + (host ?? "") + (port?.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "22") + (remoteUser ?? ""));
+#pragma warning disable CA5350 // %C 由 ssh_config(5) 规定就是 SHA-1；它只是给文件起名字，不承担任何安全职责
+        return Convert.ToHexStringLower(System.Security.Cryptography.SHA1.HashData(input));
+#pragma warning restore CA5350
     }
 }
 
