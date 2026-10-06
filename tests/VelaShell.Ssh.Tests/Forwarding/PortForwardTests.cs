@@ -1088,4 +1088,159 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
         // 才是真正危险的。
         Assert.IsNull(remote, "路径对不上的回连必须被拒绝");
     }
+
+    // ------------------------------------------------------------ 远程动态转发（-R 不给目标）
+
+    /// <summary>服务端开一条 forwarded-tcpip 回连（bind 对得上转发器），给出读写它的流。</summary>
+    private static async Task<Stream> OpenDynamicCallbackAsync(Harness harness, int boundPort)
+    {
+        ArrayBufferWriter<byte> header = new();
+        SshDataWriter writer = new(header);
+        writer.WriteUtf8String("localhost");
+        writer.WriteUInt32((uint)boundPort);
+        writer.WriteUtf8String("10.9.8.7");
+        writer.WriteUInt32(5555);
+        Stream? remote = await harness.ChannelServer.OpenChannelToClientAsync(
+            SshProtocolNames.ChannelForwardedTcpIp, header.WrittenMemory, harness.Token);
+        Assert.IsNotNull(remote, "回连应当被接下（动态转发先确认、再握手）");
+        return remote;
+    }
+
+    /// <summary>远端程序在回连上说 SOCKS5：方法协商 + CONNECT（IPv4 或域名），返回应答码。</summary>
+    private static async Task<byte> SocksConnectAsync(Stream remote, string host, int port, CancellationToken cancellationToken)
+    {
+        await remote.WriteAsync(new byte[] { 0x05, 0x01, 0x00 }, cancellationToken);
+        await remote.FlushAsync(cancellationToken);
+        byte[] method = new byte[2];
+        await remote.ReadExactlyAsync(method, cancellationToken);
+        Assert.AreEqual(0x00, method[1], "不认证");
+
+        byte[] request = IPAddress.TryParse(host, out IPAddress? ip)
+            ? [0x05, 0x01, 0x00, 0x01, .. ip.GetAddressBytes(), (byte)(port >> 8), (byte)port]
+            : [0x05, 0x01, 0x00, 0x03, (byte)host.Length, .. Encoding.ASCII.GetBytes(host), (byte)(port >> 8), (byte)port];
+        await remote.WriteAsync(request, cancellationToken);
+        await remote.FlushAsync(cancellationToken);
+
+        byte[] reply = new byte[10];
+        await remote.ReadExactlyAsync(reply, cancellationToken);
+        return reply[1];
+    }
+
+    /// <summary>
+    /// 名单里的目标：本机替远端连上，回成功，之后双向搬运（本机起一个回显服务当目标）；
+    /// 转发器的种类是 RemoteDynamic，连接事件的来源是回连里的 originator。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程动态转发_名单里的目标连得上并且双向搬运()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34580 });
+        using Socket echo = new(SocketType.Stream, ProtocolType.Tcp);
+        echo.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        echo.Listen(4);
+        int echoPort = ((IPEndPoint)echo.LocalEndPoint!).Port;
+        Task serving = Task.Run(async () =>
+        {
+            using Socket accepted = await echo.AcceptAsync(harness.Token);
+            byte[] buffer = new byte[4];
+            int read = await accepted.ReceiveAsync(buffer, harness.Token);
+            await accepted.SendAsync(buffer.AsMemory(0, read), harness.Token);
+        });
+
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartDynamicAsync(
+            harness.Connection, RemoteOpenPolicy.Allow($"127.0.0.1:{echoPort}"),
+            new RemotePortForwardOptions { BindPort = 0 }, harness.Token);
+        Assert.AreEqual(ForwardKind.RemoteDynamic, forwarder.Kind);
+        ForwardConnectionEventArgs? opened = null;
+        forwarder.ConnectionOpened += (_, e) => opened = e;
+
+        Stream remote = await OpenDynamicCallbackAsync(harness, forwarder.BoundPort);
+        Assert.AreEqual(0x00, await SocksConnectAsync(remote, "127.0.0.1", echoPort, harness.Token));
+
+        await remote.WriteAsync("ping"u8.ToArray(), harness.Token);
+        await remote.FlushAsync(harness.Token);
+        byte[] back = new byte[4];
+        await remote.ReadExactlyAsync(back, harness.Token);
+        Assert.AreEqual("ping", Encoding.ASCII.GetString(back));
+        await serving;
+
+        Assert.IsNotNull(opened);
+        Assert.AreEqual($"127.0.0.1:{echoPort}", opened.Target);
+        Assert.AreEqual(new IPEndPoint(IPAddress.Parse("10.9.8.7"), 5555), opened.Source);
+    }
+
+    /// <summary>
+    /// 名单外的目标回「规则不允许」（0x02）并报 TargetNotPermitted；按名字比、不先解析 ——
+    /// 名单写 127.0.0.1，远端给 localhost 同样不放。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程动态转发_名单外的目标回规则不允许()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34581 });
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartDynamicAsync(
+            harness.Connection, RemoteOpenPolicy.Allow("127.0.0.1:8080"),
+            new RemotePortForwardOptions { BindPort = 0 }, harness.Token);
+        List<ForwardErrorReason> errors = [];
+        forwarder.Error += (_, e) => { lock (errors) { errors.Add(e.Reason); } };
+
+        Stream other = await OpenDynamicCallbackAsync(harness, forwarder.BoundPort);
+        Assert.AreEqual(0x02, await SocksConnectAsync(other, "10.0.0.1", 22, harness.Token));
+        Assert.AreEqual(0, await other.ReadAsync(new byte[1], harness.Token), "拒了之后这一条就关了");
+
+        Stream byName = await OpenDynamicCallbackAsync(harness, forwarder.BoundPort);
+        Assert.AreEqual(0x02, await SocksConnectAsync(byName, "localhost", 8080, harness.Token));
+
+        lock (errors)
+        {
+            Assert.AreSequenceEqual([ForwardErrorReason.TargetNotPermitted, ForwardErrorReason.TargetNotPermitted], errors.ToArray());
+        }
+    }
+
+    /// <summary>名单里、但本机连不上：按原因回码（连接被拒 0x05），报 TargetConnect。</summary>
+    [TestMethod]
+    public async Task 远程动态转发_连不上按原因回码()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { GrantRemoteForwardPort = 34582 });
+        int closedPort;
+        using (Socket probe = new(SocketType.Stream, ProtocolType.Tcp))
+        {
+            probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            closedPort = ((IPEndPoint)probe.LocalEndPoint!).Port;
+        }
+
+        await using RemotePortForwarder forwarder = await RemotePortForwarder.StartDynamicAsync(
+            harness.Connection, RemoteOpenPolicy.Allow("127.0.0.1:*"),
+            new RemotePortForwardOptions { BindPort = 0 }, harness.Token);
+        ForwardErrorReason? reason = null;
+        forwarder.Error += (_, e) => reason = e.Reason;
+
+        Stream remote = await OpenDynamicCallbackAsync(harness, forwarder.BoundPort);
+        Assert.AreEqual((byte)SocksReply.ConnectionRefused, await SocksConnectAsync(remote, "127.0.0.1", closedPort, harness.Token));
+        Assert.AreEqual(ForwardErrorReason.TargetConnect, reason);
+    }
+
+    /// <summary>放行名单的写法与匹配：通配、IPv6 方括号、端口 *、不分大小写；any / none；写错当场报。</summary>
+    [TestMethod]
+    public void 放行名单的规则与匹配()
+    {
+        RemoteOpenPolicy policy = RemoteOpenPolicy.Allow("*.corp.example:443", "10.0.0.?:*", "[::1]:22", "Build:8080");
+
+        Assert.IsTrue(policy.Permits("git.corp.example", 443));
+        Assert.IsFalse(policy.Permits("git.corp.example", 80));
+        Assert.IsFalse(policy.Permits("corp.example", 443), "*. 要求前面还有一段");
+        Assert.IsTrue(policy.Permits("10.0.0.7", 5432));
+        Assert.IsFalse(policy.Permits("10.0.0.17", 5432));
+        Assert.IsTrue(policy.Permits("::1", 22));
+        Assert.IsTrue(policy.Permits("build", 8080), "主机名不分大小写");
+        Assert.AreEqual("*.corp.example:443 10.0.0.?:* [::1]:22 Build:8080", policy.ToString());
+
+        Assert.IsTrue(RemoteOpenPolicy.Any.Permits("anything", 1));
+        Assert.IsFalse(RemoteOpenPolicy.None.Permits("localhost", 22));
+        Assert.AreEqual("any", RemoteOpenPolicy.Any.ToString());
+        Assert.AreEqual("none", RemoteOpenPolicy.None.ToString());
+
+        Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow("localhost"));
+        Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow("localhost:0"));
+        Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow(":22"));
+        Assert.ThrowsExactly<ArgumentException>(() => RemoteOpenPolicy.Allow("[::1]22"));
+    }
 }

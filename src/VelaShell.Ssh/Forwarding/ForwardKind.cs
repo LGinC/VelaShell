@@ -22,4 +22,7 @@ public enum ForwardKind
 
     /// <summary>agent 转发（<c>-A</c>）：服务端为远端的 <c>ssh-add</c> / <c>ssh</c> 开回 agent 通道。</summary>
     Agent,
+
+    /// <summary>远程动态转发（<c>-R [bind:]port</c> 不给目标）：服务端监听，回连里跑 SOCKS5，由本机按放行名单去连。</summary>
+    RemoteDynamic,
 }

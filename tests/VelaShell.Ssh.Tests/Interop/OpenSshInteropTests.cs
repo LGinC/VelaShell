@@ -1231,6 +1231,56 @@ public sealed class OpenSshInteropTests
     /// 群交换（RFC 4419）：只开它时与真 OpenSSH 谈得成 —— 线上的 34 / 31 / 32 / 33 与交换哈希多出的五项都对，
     /// 否则签名验不过。再连一次（服务端多半换一个群）、重协商一次，都照常。
     /// </summary>
+    /// <summary>
+    /// 远程动态转发：真 sshd 上的程序（OpenBSD nc 的 SOCKS5 客户端）经它连回本机 —— 名单里的目标双向搬运，
+    /// 名单外的被拒（nc 退出码非 0）。目标写 127.0.0.1：在远端看是它自己，经这条转发就成了本机的环回。
+    /// </summary>
+    [TestMethod]
+    public async Task 远程动态转发_远端程序经SOCKS连回本机()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+
+        using Socket echo = new(SocketType.Stream, ProtocolType.Tcp);
+        echo.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+        echo.Listen(4);
+        int echoPort = ((IPEndPoint)echo.LocalEndPoint!).Port;
+        Task serving = Task.Run(async () =>
+        {
+            using Socket accepted = await echo.AcceptAsync();
+            byte[] buffer = new byte[64];
+            int read;
+            while ((read = await accepted.ReceiveAsync(buffer)) > 0)
+            {
+                await accepted.SendAsync(buffer.AsMemory(0, read));
+            }
+        });
+
+        RemotePortForwarder forwarder;
+        try
+        {
+            forwarder = await RemotePortForwarder.StartDynamicAsync(
+                connection, RemoteOpenPolicy.Allow($"127.0.0.1:{echoPort}"), new RemotePortForwardOptions { BindPort = 0 });
+        }
+        catch (SshForwardException ex) when (ex.Reason == SshFailureReason.ForwardRejected)
+        {
+            Assert.Inconclusive("服务端不许远程转发（AllowTcpForwarding no）。");
+            return;
+        }
+
+        await using (forwarder)
+        {
+            SshCommandResult allowed = await connection.RunAsync(
+                $"printf 'via-socks\\n' | nc -N -X 5 -x 127.0.0.1:{forwarder.BoundPort} -w 5 127.0.0.1 {echoPort}");
+            Assert.AreEqual("via-socks", allowed.StandardOutput.Trim(), allowed.StandardError);
+
+            SshCommandResult denied = await connection.RunAsync(
+                $"nc -X 5 -x 127.0.0.1:{forwarder.BoundPort} -w 5 10.0.0.1 22 </dev/null; echo rc=$?");
+            Assert.DoesNotContain("rc=0", denied.StandardOutput, "名单外的目标必须被拒");
+        }
+        await serving;
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

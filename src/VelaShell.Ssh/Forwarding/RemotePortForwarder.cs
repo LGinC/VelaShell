@@ -61,6 +61,14 @@ public sealed record RemotePortForwardOptions
         StderrMode = SshStderrMode.Discard,
     };
 
+    /// <summary>远程动态转发的 SOCKS 握手时限：从回连确认起，到读完 <c>CONNECT</c> 请求为止（与本地动态转发同一个口径）。</summary>
+    /// <exception cref="ArgumentOutOfRangeException">不为正。</exception>
+    public TimeSpan SocksHandshakeTimeout
+    {
+        get;
+        init => field = value > TimeSpan.Zero ? value : throw new ArgumentOutOfRangeException(nameof(SocksHandshakeTimeout), value, "SOCKS 握手时限必须为正。");
+    } = TimeSpan.FromSeconds(30);
+
     /// <summary>释放时等服务端回「取消监听」的应答最多多久。</summary>
     /// <remarks>只有测试会调短它（见 <see cref="RemotePortForwarder.DisposeAsync"/>）。</remarks>
     internal TimeSpan CancelReplyTimeout { get; init; } = TimeSpan.FromSeconds(5);
@@ -85,6 +93,9 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
 
     /// <summary>Unix 套接字变体：本机要连过去的那个套接字路径。</summary>
     private readonly string? _targetSocketPath;
+
+    /// <summary>远程动态转发的放行名单；不是动态转发时为 <see langword="null"/>。</summary>
+    private readonly RemoteOpenPolicy? _permitRemoteOpen;
     private readonly SemaphoreSlim _connectionSlots;
 
     /// <summary>
@@ -125,8 +136,9 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         int targetPort,
         int boundPort,
         string? remoteSocketPath = null,
-        string? targetSocketPath = null)
-        : base(ForwardKind.Remote)
+        string? targetSocketPath = null,
+        RemoteOpenPolicy? permitRemoteOpen = null)
+        : base(permitRemoteOpen is null ? ForwardKind.Remote : ForwardKind.RemoteDynamic)
     {
         _connection = connection;
         _options = options;
@@ -134,6 +146,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         _targetPort = targetPort;
         RemoteSocketPath = remoteSocketPath;
         _targetSocketPath = targetSocketPath;
+        _permitRemoteOpen = permitRemoteOpen;
         _boundPort = boundPort;
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
     }
@@ -209,8 +222,11 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     /// <summary>这是不是 Unix 套接字变体。</summary>
     private bool IsStreamLocal => RemoteSocketPath is not null;
 
-    /// <summary>本机目标的名字（进日志与事件）。</summary>
-    private string TargetName => _targetSocketPath ?? $"{_targetHost}:{_targetPort}";
+    /// <summary>本机目标的名字（进日志与事件）。动态转发的目标要等 SOCKS 握手才知道。</summary>
+    private string TargetName => _targetSocketPath ?? (_permitRemoteOpen is null ? $"{_targetHost}:{_targetPort}" : "SOCKS");
+
+    /// <summary>远程动态转发的放行名单；不是动态转发时为 <see langword="null"/>。</summary>
+    public RemoteOpenPolicy? PermitRemoteOpen => _permitRemoteOpen;
 
     /// <summary>
     /// Unix 套接字变体里，服务端监听的那个套接字路径；TCP 变体下是
@@ -294,6 +310,65 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
             // 端口给 0 时必须从应答载荷里取实际端口。
             // 取不到就按 (bind_addr, 0) 去路由回连 —— 一条都对不上，
             // 而症状是「转发看起来建好了，但连过来的全被拒」。
+            forwarder.Unregister();
+            throw new SshForwardException(SshFailureReason.ProtocolError,
+                "请求了动态端口，但服务端的 REQUEST_SUCCESS 里没有带回实际端口号。");
+        }
+
+        return forwarder;
+    }
+
+    /// <summary>
+    /// 远程动态转发（<c>ssh -R [bind:]port</c>，不给目标）：服务端监听，远端程序把它当 SOCKS5 代理用，
+    /// 本机按放行名单替它去连 —— 远端借本机的网络到达只有本机能到的地方（内网的包镜像、内部 API）。
+    /// </summary>
+    /// <param name="connection">会话。</param>
+    /// <param name="permitRemoteOpen">
+    /// 放行名单（<c>PermitRemoteOpen</c>）。<b>必须给</b>：本机能到的内网远端都能到，放哪些出去由调用方明说；
+    /// 全放就显式给 <see cref="RemoteOpenPolicy.Any"/>。
+    /// </param>
+    /// <param name="options">参数（绑定地址与端口、并发上限、SOCKS 握手时限）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="SshForwardException">服务端拒绝了监听请求。</exception>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/07 §4.6〕回连先确认，再在通道上跑 SOCKS5（与本地动态转发同一个子集：只有 <c>CONNECT</c>、
+    /// 不认证）；目标不在名单里回「规则不允许」（0x02），连不上按原因回码，连上了才回成功、开始搬运。
+    /// 域名在<b>本机</b>解析 —— 这正是它的用途。
+    /// </para>
+    /// <para>服务端那头只是一个普通的 <c>tcpip-forward</c>，所以它要 OpenSSH 7.6 之前也有的那几样：<c>AllowTcpForwarding</c> 开着。</para>
+    /// </remarks>
+    public static async ValueTask<RemotePortForwarder> StartDynamicAsync(
+        SshConnection connection,
+        RemoteOpenPolicy permitRemoteOpen,
+        RemotePortForwardOptions? options = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(connection);
+        ArgumentNullException.ThrowIfNull(permitRemoteOpen);
+
+        RemotePortForwardOptions effective = options ?? RemotePortForwardOptions.Default;
+
+        ArrayBufferWriter<byte> payload = new();
+        SshDataWriter writer = new(payload);
+        writer.WriteUtf8String(effective.BindAddress);
+        writer.WriteUInt32((uint)effective.BindPort);
+
+        RemotePortForwarder forwarder = new(
+            connection, effective, targetHost: "", targetPort: 0, effective.BindPort, permitRemoteOpen: permitRemoteOpen);
+
+        SshGlobalRequestReply reply = await forwarder
+            .RequestAsync(SshProtocolNames.RequestTcpIpForward, payload.WrittenMemory, cancellationToken).ConfigureAwait(false);
+
+        if (!reply.Success)
+        {
+            throw new SshForwardException(SshFailureReason.ForwardRejected,
+                $"服务端拒绝在 {effective.BindAddress}:{effective.BindPort} 上开监听（远程动态转发）。" +
+                "常见原因是 sshd_config 里 AllowTcpForwarding no，或者要绑非环回地址而 GatewayPorts 没打开，又或者端口已被占用。");
+        }
+
+        if (forwarder.BoundPort == 0)
+        {
             forwarder.Unregister();
             throw new SshForwardException(SshFailureReason.ProtocolError,
                 "请求了动态端口，但服务端的 REQUEST_SUCCESS 里没有带回实际端口号。");
@@ -452,6 +527,12 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
                 SshFailureReason.LimitExceeded, $"并发连接数已达上限 {_options.MaxConnections}。");
         }
 
+        // 动态转发的目标要等 SOCKS 握手才知道：先确认，握手在 HandleAsync 里跑。
+        if (_permitRemoteOpen is not null)
+        {
+            return _options.Channel;
+        }
+
         try
         {
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
@@ -513,7 +594,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     /// <remarks>还回 <c>GetOptionsAsync</c> 占的连接槽位，关掉为它连好的那个本机目标。</remarks>
     void IIncomingChannelHandler.OnOpenAborted(string channelType, ReadOnlyMemory<byte> typeSpecificPayload)
     {
-        if (_readyTargets.TryDequeue(out Socket? ready))
+        if (_permitRemoteOpen is null && _readyTargets.TryDequeue(out Socket? ready))
         {
             ready.Dispose();
         }
@@ -532,6 +613,20 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         using var linked =
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         cancellationToken = linked.Token;
+
+        if (_permitRemoteOpen is { } permit)
+        {
+            try
+            {
+                await HandleDynamicAsync(channel, connectionId, OriginatorOf(typeSpecificPayload), permit, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            finally
+            {
+                _connectionSlots.Release();
+            }
+            return;
+        }
 
         // 本机目标在确认之前已经连好（见 GetOptionsAsync）。取不到只会发生在转发器刚被释放、把队列清空了的时候 ——
         // 那这条通道本来也不该再转发了。
@@ -565,6 +660,108 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
             _connectionSlots.Release();
         }
     }
+
+    /// <summary>远程动态转发的一条回连：在通道上跑 SOCKS5，按名单放行，本机去连，连上了再搬运。</summary>
+    private async Task HandleDynamicAsync(
+        SshChannel channel, long connectionId, EndPoint? source, RemoteOpenPolicy permit, CancellationToken cancellationToken)
+    {
+        string target = "SOCKS";
+        try
+        {
+            // 握手有时限：连上来一句不说的客户端，每个都白占一个并发名额。
+            SocksTarget? socks;
+            using (var handshake = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            {
+                handshake.CancelAfter(_options.SocksHandshakeTimeout);
+                try
+                {
+                    socks = await SocksHandshake
+                        .ReadRequestAsync(channel.StandardOutput, channel.StandardInput, handshake.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    Report(ForwardErrorReason.SocksHandshake,
+                        $"远端的 SOCKS 握手在 {_options.SocksHandshakeTimeout.TotalSeconds:0.#} 秒内没有完成，这一条被关掉。", null);
+                    return;
+                }
+            }
+
+            if (socks is not { } parsed)
+            {
+                Report(ForwardErrorReason.SocksHandshake, "远端的 SOCKS 握手非法或命令不支持，这一条被关掉。", null);
+                await channel.SendEofAsync(cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            // 远端给的名字是对端的文本：进事件与日志之前清一下。
+            target = $"{PeerText.Sanitize(parsed.Host, 255)}:{parsed.Port}";
+
+            // 先记、再回：远端一收到应答就可能再来一条，事件不该落在它后面。
+            if (!permit.Permits(parsed.Host, parsed.Port))
+            {
+                Report(ForwardErrorReason.TargetNotPermitted, $"远端要连 {target}，不在放行名单（{permit}）里。", null);
+                await RefuseAsync(channel, SocksReply.NotAllowed, parsed.AddressType, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            Socket outbound = new(SocketType.Stream, ProtocolType.Tcp);
+            try
+            {
+                // 域名在本机解析 —— 远端要的正是本机能到的地方。
+                await outbound.ConnectAsync(parsed.Host, parsed.Port, cancellationToken).ConfigureAwait(false);
+            }
+            catch (SocketException ex)
+            {
+                outbound.Dispose();
+                Report(ForwardErrorReason.TargetConnect, $"替远端连 {target} 没连上：{ex.SocketErrorCode}。", ex);
+                await RefuseAsync(channel, ReplyFor(ex.SocketErrorCode), parsed.AddressType, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                await SocksHandshake.WriteReplyAsync(channel.StandardInput, SocksReply.Succeeded, parsed.AddressType, cancellationToken)
+                    .ConfigureAwait(false);
+
+                NetworkStream stream = new(outbound, ownsSocket: false);
+                Socket connected = outbound;
+                await using StreamRelayEndpoint local = new(
+                    stream, () => StreamRelayEndpoint.ShutdownSend(connected), ownsStream: true,
+                    abort: () => StreamRelayEndpoint.Reset(connected));
+
+                await RelayAsync(connectionId, source, target, local, channel, cancellationToken).ConfigureAwait(false);
+            }
+            finally
+            {
+                outbound.Dispose();
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 转发器在收工。
+        }
+        catch (Exception ex)
+        {
+            Report(ForwardErrorReason.Relay, $"到 {target} 的连接出错：{ex.Message}", ex);
+        }
+    }
+
+    /// <summary>回一个失败的 SOCKS 应答，并让它确实发出去（冲干净 stdin 再 EOF），之后由连接关掉通道。</summary>
+    private static async Task RefuseAsync(SshChannel channel, SocksReply reply, byte addressType, CancellationToken cancellationToken)
+    {
+        await SocksHandshake.WriteReplyAsync(channel.StandardInput, reply, addressType, cancellationToken).ConfigureAwait(false);
+        await channel.SendEofAsync(cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>本机连不上目标时回哪个 SOCKS 码（RFC 1928 §6）：curl 与浏览器据此决定怎么报。</summary>
+    private static SocksReply ReplyFor(SocketError error) => error switch
+    {
+        SocketError.ConnectionRefused => SocksReply.ConnectionRefused,
+        SocketError.NetworkUnreachable or SocketError.NetworkDown => SocksReply.NetworkUnreachable,
+        SocketError.HostUnreachable or SocketError.HostNotFound or SocketError.TryAgain or SocketError.NoData => SocksReply.HostUnreachable,
+        SocketError.TimedOut => SocksReply.TtlExpired,
+        _ => SocksReply.GeneralFailure,
+    };
 
     /// <summary>
     /// 是谁连上了服务端那个暴露出来的端口：<c>forwarded-tcpip</c> 载荷里的 originator 地址与端口（RFC 4254 §7.2）。

@@ -34,4 +34,7 @@ public enum ForwardErrorReason
     /// （<c>velashell-docs/zh/ssh/spec/07</c> §7.5.8）。是哪一项看 <see cref="ForwardKind"/> 标签。
     /// </summary>
     SetupSkipped,
+
+    /// <summary>远程动态转发：远端要连的目标不在放行名单（<see cref="RemoteOpenPolicy"/>）里，回了 SOCKS「规则不允许」。</summary>
+    TargetNotPermitted,
 }
