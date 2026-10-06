@@ -56,4 +56,21 @@ public sealed class InMemorySignerTests
         await Assert.ThrowsExactlyAsync<ObjectDisposedException>(
             async () => await signer.SignAsync(new byte[1], SshAlgorithmNames.SshEd25519));
     }
+
+    /// <summary>〔AGENTS 4.3〕接收可释放对象的参数配 <c>ownsXxx</c>，默认交进来就归它。</summary>
+    [TestMethod]
+    public void 交进来的RSA与ECDSA私钥按ownsKey决定释放不释放()
+    {
+        using RSA rsa = RSA.Create(2048);
+        InMemorySshSigner.FromRsa(rsa, ownsKey: false).Dispose();
+        _ = rsa.ExportParameters(includePrivateParameters: false);
+        InMemorySshSigner.FromRsa(rsa).Dispose();
+        Assert.ThrowsExactly<ObjectDisposedException>(() => rsa.ExportParameters(includePrivateParameters: false), "默认交进来就归签名器");
+
+        using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        InMemorySshSigner.FromEcdsa(ecdsa, ownsKey: false).Dispose();
+        _ = ecdsa.ExportParameters(includePrivateParameters: false);
+        InMemorySshSigner.FromEcdsa(ecdsa).Dispose();
+        Assert.ThrowsExactly<ObjectDisposedException>(() => ecdsa.ExportParameters(includePrivateParameters: false), "默认交进来就归签名器");
+    }
 }

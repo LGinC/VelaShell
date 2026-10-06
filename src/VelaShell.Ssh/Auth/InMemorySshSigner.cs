@@ -33,6 +33,9 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
     private readonly byte[]? _ed25519Public;
     private readonly ECDsa? _ecdsa;
     private readonly RSA? _rsa;
+
+    /// <summary>释放时是否一并释放 <see cref="_rsa"/> / <see cref="_ecdsa"/>（<see cref="FromRsa"/> / <see cref="FromEcdsa"/> 的 <c>ownsKey</c>）。</summary>
+    private readonly bool _ownsKey;
     private readonly int _coordinateBytes;
     private bool _disposed;
 
@@ -43,7 +46,8 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         byte[]? ed25519Public,
         ECDsa? ecdsa,
         RSA? rsa,
-        int coordinateBytes)
+        int coordinateBytes,
+        bool ownsKey = true)
     {
         PublicKey = publicKey;
         SignatureAlgorithms = algorithms;
@@ -52,6 +56,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         _ecdsa = ecdsa;
         _rsa = rsa;
         _coordinateBytes = coordinateBytes;
+        _ownsKey = ownsKey;
     }
 
     /// <inheritdoc />
@@ -225,7 +230,9 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
     }
 
     /// <summary>用一把 RSA 私钥构造。</summary>
-    public static InMemorySshSigner FromRsa(RSA rsa)
+    /// <param name="rsa">私钥。</param>
+    /// <param name="ownsKey">释放签名器时是否一并释放 <paramref name="rsa"/>。默认 <see langword="true"/>：交进来就归它；还要接着用的传 <see langword="false"/>。</param>
+    public static InMemorySshSigner FromRsa(RSA rsa, bool ownsKey = true)
     {
         ArgumentNullException.ThrowIfNull(rsa);
         RSAParameters p = rsa.ExportParameters(false);
@@ -244,12 +251,14 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         return new InMemorySshSigner(
             SshPublicKey.Decode(blob),
             [SshAlgorithmNames.RsaSha512, SshAlgorithmNames.RsaSha256, SshAlgorithmNames.SshRsa],
-            null, null, null, rsa, 0);
+            null, null, null, rsa, 0, ownsKey);
     }
 
     /// <summary>用一把 ECDSA 私钥构造。</summary>
+    /// <param name="ecdsa">私钥。</param>
+    /// <param name="ownsKey">释放签名器时是否一并释放 <paramref name="ecdsa"/>。默认 <see langword="true"/>：交进来就归它；还要接着用的传 <see langword="false"/>。</param>
     /// <exception cref="ArgumentException">曲线不是 NIST P-256 / P-384 / P-521（SSH 只定义了这三条，RFC 5656 §10.1）。</exception>
-    public static InMemorySshSigner FromEcdsa(ECDsa ecdsa)
+    public static InMemorySshSigner FromEcdsa(ECDsa ecdsa, bool ownsKey = true)
     {
         ArgumentNullException.ThrowIfNull(ecdsa);
         ECParameters p = ecdsa.ExportParameters(false);
@@ -272,7 +281,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             w.WriteString(point);
         });
 
-        return new InMemorySshSigner(SshPublicKey.Decode(blob), [name], null, null, ecdsa, null, coordinate);
+        return new InMemorySshSigner(SshPublicKey.Decode(blob), [name], null, null, ecdsa, null, coordinate, ownsKey);
     }
 
     /// <summary>
@@ -528,8 +537,11 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
         {
             CryptographicOperations.ZeroMemory(_ed25519Seed);
         }
-        _ecdsa?.Dispose();
-        _rsa?.Dispose();
+        if (_ownsKey)
+        {
+            _ecdsa?.Dispose();
+            _rsa?.Dispose();
+        }
     }
 
     /// <summary>私钥材料是否已经清零（测试用）。</summary>

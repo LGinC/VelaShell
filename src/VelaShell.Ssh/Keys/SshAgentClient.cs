@@ -52,33 +52,38 @@ public sealed class SshAgentClient : IAsyncDisposable
     /// <summary>由 <see cref="ConnectAsync"/> 连上的才能重开；<see cref="FromStream"/> 交来的流不知道怎么重开。</summary>
     private readonly bool _canReopen;
 
+    /// <summary>释放时是否一并释放流（<see cref="FromStream"/> 的 <c>ownsStream</c>；自己连上的总是）。</summary>
+    private readonly bool _ownsStream;
+
     // 已经声明过的会话。同一个会话只声明一次 —— 同一条 agent 连接上的几把钥共用一次声明。
     private byte[]? _declaredSessionId;
     private bool _declarationAccepted;
     private bool _disposed;
 
-    private SshAgentClient(Stream stream, string endpoint, bool canReopen)
+    private SshAgentClient(Stream stream, string endpoint, bool canReopen, bool ownsStream = true)
     {
         _stream = stream;
         Endpoint = endpoint;
         _canReopen = canReopen;
+        _ownsStream = ownsStream;
     }
 
     /// <summary>连到的是哪个端点（套接字路径或命名管道名）。</summary>
     public string Endpoint { get; }
 
     /// <summary>在一条现成的流上说 agent 协议。</summary>
-    /// <param name="stream">双工流。本对象释放时会一并释放它。</param>
-    /// <param name="label">给人看的端点名，进日志与异常。</param>
+    /// <param name="stream">双工流。</param>
+    /// <param name="label">给人看的端点名，进 <see cref="Endpoint"/>、日志与异常；<see langword="null"/> 时为 <c>(stream)</c>。</param>
+    /// <param name="ownsStream">释放本对象时是否一并释放 <paramref name="stream"/>。默认 <see langword="true"/>：交进来就归它。</param>
     /// <remarks>
     /// 不只是为了测试：agent 也可能在一条隧道的另一头，
     /// 或者由别的软件以自定义方式提供（1Password、YubiKey 代理…）。
     /// 那些情形下调用方自己把流准备好，交给我们说协议。
     /// </remarks>
-    public static SshAgentClient FromStream(Stream stream, string label = "(自定义流)")
+    public static SshAgentClient FromStream(Stream stream, string? label = null, bool ownsStream = true)
     {
         ArgumentNullException.ThrowIfNull(stream);
-        return new SshAgentClient(stream, label, canReopen: false);
+        return new SshAgentClient(stream, label ?? "(stream)", canReopen: false, ownsStream);
     }
 
     /// <summary>本机 agent 的默认端点。</summary>
@@ -919,7 +924,10 @@ public sealed class SshAgentClient : IAsyncDisposable
 
         try
         {
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            if (_ownsStream)
+            {
+                await _stream.DisposeAsync().ConfigureAwait(false);
+            }
         }
         catch (Exception)
         {

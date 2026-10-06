@@ -133,4 +133,21 @@ public sealed class AgentManagementTests
         Assert.AreEqual(@"\\.\pipe\agent-1password", SshAgentClient.DefaultEndpointFor(true, @"\\.\pipe\agent-1password", () => [Pageant], "joe"));
         Assert.AreEqual("/run/agent.sock", SshAgentClient.DefaultEndpointFor(false, "/run/agent.sock", () => [Pageant], "joe"));
     }
+
+    /// <summary>〔AGENTS 4.3〕交来的流按 <c>ownsStream</c> 决定释放不释放；不给标签时端点名是中性的占位，不是一句界面语言。</summary>
+    [TestMethod]
+    public async Task FromStream按ownsStream决定释放不释放流()
+    {
+        (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
+        await using (theirs)
+        {
+            SshAgentClient borrowed = SshAgentClient.FromStream(ours, ownsStream: false);
+            Assert.AreEqual("(stream)", borrowed.Endpoint);
+            await borrowed.DisposeAsync();
+            Assert.IsTrue(ours.CanRead, "没交出所有权，流不该被释放");
+
+            await SshAgentClient.FromStream(ours).DisposeAsync();
+            Assert.IsFalse(ours.CanRead, "默认交进来就归客户端");
+        }
+    }
 }
