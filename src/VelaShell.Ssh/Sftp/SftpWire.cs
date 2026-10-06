@@ -16,26 +16,6 @@ using VelaShell.Ssh.Protocol;
 
 namespace VelaShell.Ssh.Sftp;
 
-/// <summary>一个解出来的 SFTP 报文。</summary>
-/// <remarks>
-/// <see cref="Payload"/> 借的是调用方的缓冲，**只在这一轮处理期间有效**。
-/// 要留着就自己复制。
-/// </remarks>
-internal readonly ref struct SftpFrame
-{
-    internal SftpFrame(SftpMessageType type, ReadOnlySequence<byte> payload)
-    {
-        Type = type;
-        Payload = payload;
-    }
-
-    /// <summary>报文类型。</summary>
-    public SftpMessageType Type { get; }
-
-    /// <summary>类型之后的全部内容（<b>含 request-id</b>，若这个类型有的话）。</summary>
-    public ReadOnlySequence<byte> Payload { get; }
-}
-
 /// <summary>SFTP 的编解码。</summary>
 /// <remarks>
 /// <b>这一层与 SSH 的二进制报文无关</b> —— SFTP 有自己的分帧，
@@ -617,14 +597,3 @@ internal static class SftpWire
         }
     }
 }
-
-/// <summary><c>SSH_FXP_NAME</c> 里的一项。</summary>
-/// <param name="Name">文件名（<b>只是名字，不含路径</b>）。</param>
-/// <param name="LongName">
-/// <c>ls -l</c> 风格的一行文本。<b>格式未标准化，不要解析它。</b>
-/// </param>
-/// <param name="Attributes">属性。</param>
-internal readonly record struct SftpNameEntry(
-    string Name,
-    string LongName,
-    SftpFileAttributes Attributes);
