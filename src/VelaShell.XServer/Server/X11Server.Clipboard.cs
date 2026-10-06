@@ -100,6 +100,19 @@ public sealed partial class X11Server
         NotifySelectionChange(selection, 0, SelectionWindowId, now);
     }
 
+    /// <summary>
+    /// 同步的选区没了属主(属主 SetSelectionOwner(None)、属主窗口销毁、属主断开):服务端替宿主接管,内容是最近一次交给宿主的文本 ——
+    /// 相当于剪贴板管理器。原先 X 程序复制之后一退出,别的 X 程序就再也粘贴不到,宿主手里明明还有这段文本(两道防回声都拦着它)。
+    /// </summary>
+    private void OnSelectionOwnerLost(uint selection)
+    {
+        if (IsSyncedSelection(selection) && _lastDeliveredText is { } text && !_selections.ContainsKey(selection))
+        {
+            _hostClipboard = text;
+            TakeSelectionForHost(selection);
+        }
+    }
+
     private bool IsSyncedSelection(uint selection) =>
         _options.SyncClipboard && (selection == Intern("CLIPBOARD") || (_options.SyncPrimary && selection == XAtom.Primary));
 

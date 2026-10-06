@@ -560,6 +560,7 @@ public sealed partial class X11Server
             {
                 _selections.Remove(atom);
                 NotifySelectionChange(atom, 2, 0, owner.Time);
+                OnSelectionOwnerLost(atom);
             }
         }
         if (_fetch is { } fetch && !_selections.ContainsKey(fetch.Selection))

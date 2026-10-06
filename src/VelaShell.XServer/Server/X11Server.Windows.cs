@@ -301,6 +301,7 @@ public sealed partial class X11Server
             {
                 _selections.Remove(atom);
                 NotifySelectionChange(atom, 1, 0, owner.Time);
+                OnSelectionOwnerLost(atom);
             }
         }
         if (ReferenceEquals(_focus, window))

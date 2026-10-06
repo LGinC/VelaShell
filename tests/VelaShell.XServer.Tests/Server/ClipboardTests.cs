@@ -96,6 +96,43 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task X端复制之后属主退出_服务端替宿主接管_别的X程序照样粘贴得到()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        XTestClient copier = await XTestClient.ConnectAsync(server);
+        await using XTestClient paster = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(copier, "CLIPBOARD");
+        uint utf8 = await InternAsync(copier, "UTF8_STRING");
+        uint window = await CreateWindowAsync(copier);
+
+        await copier.SendAsync(22, 0, b => b.U32(window).U32(clipboard).U32(0));
+        XMessage request = await copier.NextEventAsync(SelectionRequest);
+        uint property = request.U32(24);
+        await ChangePropertyAsync(copier, request.U32(12), property, utf8, Encoding.UTF8.GetBytes("复制的文本"));
+        await SendSelectionNotifyAsync(copier, request, property);
+        await host.WaitForAsync(() => host.Clipboard == "复制的文本");
+
+        await copier.DisposeAsync();   // 复制的程序退出
+        uint requestor = await CreateWindowAsync(paster);
+        uint prop = await InternAsync(paster, "PASTED");
+        for (int i = 0; i < 50; i++)
+        {
+            XMessage owner = await paster.RequestAsync(23, 0, b => b.U32(clipboard));
+            if (owner.U32(8) != 0)
+            {
+                break;
+            }
+            await Task.Delay(20);
+        }
+        await paster.SendAsync(24, 0, b => b.U32(requestor).U32(clipboard).U32(utf8).U32(prop).U32(0));   // ConvertSelection
+        XMessage notify = await paster.NextEventAsync(SelectionNotify);
+        Assert.AreEqual(prop, notify.U32(20), "有人回应了");
+        XMessage value = await paster.RequestAsync(20, 1, b => b.U32(requestor).U32(prop).U32(0).U32(0).U32(1000));
+        Assert.AreEqual("复制的文本", Encoding.UTF8.GetString(value.Bytes, 32, (int)value.U32(16)));
+    }
+
+    [TestMethod]
     public async Task 大文本走INCR分块()
     {
         using RecordingHost host = new();

@@ -369,6 +369,10 @@ public sealed partial class X11Server
             _selections[selection] = (owner, c, time);
         }
         NotifySelectionChange(selection, 0, ownerId, time);
+        if (owner is null)
+        {
+            OnSelectionOwnerLost(selection);
+        }
         if (owner is not null)
         {
             OnClientTookSelection(c, owner, selection, time);
