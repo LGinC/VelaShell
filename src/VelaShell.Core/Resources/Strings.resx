@@ -4618,6 +4618,9 @@ Overwrite it?</value>
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>Proxy connection failed: {0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>Cannot reach the proxy server: {0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>Proxy authentication failed; check the proxy username and password.</value>
   </data>

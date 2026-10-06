@@ -4613,6 +4613,9 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>프록시 연결 실패: {0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>프록시 서버에 연결할 수 없습니다: {0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>프록시 인증에 실패했습니다. 사용자 이름과 비밀번호를 확인하세요.</value>
   </data>

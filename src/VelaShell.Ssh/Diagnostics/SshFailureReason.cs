@@ -38,6 +38,15 @@ public enum SshFailureReason
     /// <summary>网络不可达。</summary>
     TcpUnreachable,
 
+    /// <summary>
+    /// 连不上代理本身（代理的地址解析不了、端口没人听、超时、网络不可达）。具体是哪一种在 <see cref="Exception.InnerException"/> 与 <c>Hops</c> 里。
+    /// </summary>
+    /// <remarks>
+    /// 与直连的 <see cref="TcpRefused"/> 等分开：曾经沿用同一组码，调用方分不出没开的是目标还是代理 ——
+    /// 宿主于是把代理的失败一律改写成 <see cref="ProxyRefused"/>，又丢了「连不上」与「拒绝转发」的区别。
+    /// </remarks>
+    ProxyUnreachable,
+
     /// <summary>代理拒绝转发。消息里会带上代理类型、地址与目标。</summary>
     ProxyRefused,
 

@@ -4831,6 +4831,9 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>代理连接失败:{0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>连不上代理服务器:{0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>代理认证失败,请检查代理用户名与密码。</value>
   </data>

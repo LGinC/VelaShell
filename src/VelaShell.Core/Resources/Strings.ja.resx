@@ -4613,6 +4613,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="Msg_ProxyConnectFailed" xml:space="preserve">
     <value>プロキシ接続に失敗しました: {0}</value>
   </data>
+  <data name="Msg_ProxyUnreachable" xml:space="preserve">
+    <value>プロキシ サーバーに接続できません: {0}</value>
+  </data>
   <data name="Msg_ProxyAuthFailed" xml:space="preserve">
     <value>プロキシ認証に失敗しました。ユーザー名とパスワードを確認してください。</value>
   </data>

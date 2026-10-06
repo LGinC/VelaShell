@@ -84,9 +84,11 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
         }
         catch (SshConnectException ex)
         {
-            // 「没配凭据 / 凭据被拒 / 配置不成立」原样留着原因(都不可重试),其余一律记成代理拒绝 ——
-            // 包括连不上代理本身:那时库给的是 TcpRefused 之类,宿主会把它翻成「目标端口没开」,而没开的其实是代理。
-            SshFailureReason reason = ex.Reason is SshFailureReason.ProxyAuthRequired
+            // 「连不上代理 / 没配凭据 / 凭据被拒 / 配置不成立」原样留着原因,其余一律记成代理拒绝。
+            // 连不上代理本身由库报 ProxyUnreachable(具体是拒绝还是超时在内层异常里);曾经库给的是 TcpRefused 之类,
+            // 宿主会把它翻成「目标端口没开」,只好一律改写成 ProxyRefused,又丢了「连不上」与「拒绝转发」的区别(W6)。
+            SshFailureReason reason = ex.Reason is SshFailureReason.ProxyUnreachable
+                or SshFailureReason.ProxyAuthRequired
                 or SshFailureReason.ProxyAuthFailed
                 or SshFailureReason.InvalidConfiguration
                 ? ex.Reason
@@ -132,6 +134,12 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
         if (error is SshConnectException { Reason: SshFailureReason.ProxyAuthRequired or SshFailureReason.ProxyAuthFailed } auth)
         {
             return Strings.Get(auth.Reason == SshFailureReason.ProxyAuthFailed ? "Msg_ProxyAuthFailed" : "SshErr_ProxyAuthRequired") + via;
+        }
+        if (error is SshConnectException { Reason: SshFailureReason.ProxyUnreachable } unreachable)
+        {
+            // 具体原因(拒绝、超时、解析不了)在内层异常里,按原因码翻成界面语言。
+            string cause = unreachable.InnerException is SshException inner ? SshInterop.Localize(inner) : unreachable.Message;
+            return Strings.Format("Msg_ProxyUnreachable", cause) + via;
         }
         string hint = route.Kind == ProxyKind.Http && port == 22
             ? " If the proxy refuses CONNECT to port 22, switch Proxy to socks5 (e.g. 127.0.0.1:10808) or none for TUN."

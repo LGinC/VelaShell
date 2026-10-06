@@ -46,6 +46,7 @@ public abstract class SshException : Exception
         SshFailureReason.TcpRefused or
         SshFailureReason.TcpTimeout or
         SshFailureReason.TcpUnreachable or
+        SshFailureReason.ProxyUnreachable or
         SshFailureReason.ProxyRefused or
         SshFailureReason.Timeout or
         SshFailureReason.KeepAliveTimeout or

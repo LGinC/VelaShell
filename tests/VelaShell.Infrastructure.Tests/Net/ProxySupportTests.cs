@@ -164,6 +164,31 @@ public class ProxySupportTests
         Assert.IsFalse(contacted, "本机解析失败却去连了代理。");
     }
 
+    /// <summary>
+    /// 〔W6〕代理本身连不上:报 ProxyUnreachable,文案说的是「连不上代理」并带上具体原因与走的是哪个代理。
+    /// 曾经一律改写成 ProxyRefused(「代理拒绝转发」),而代理根本没连上。
+    /// </summary>
+    [TestMethod]
+    public async Task Socks5_ProxyItselfUnreachable_IsProxyUnreachable()
+    {
+        using CancellationTokenSource cts = Deadline();
+        int closedPort;
+        using (Socket probe = new(SocketType.Stream, ProtocolType.Tcp))
+        {
+            probe.Bind(new IPEndPoint(IPAddress.Loopback, 0));
+            closedPort = ((IPEndPoint)probe.LocalEndPoint!).Port;   // 绑了但不 Listen,随后释放 —— 连它会被拒
+        }
+
+        var route = new ProxyRoute(ProxyKind.Socks5, "127.0.0.1", closedPort);
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
+            DialThroughAsync(route, "target.example", 22, cts.Token));
+
+        Assert.AreEqual(SshFailureReason.ProxyUnreachable, error.Reason);
+        Assert.StartsWith(Strings.Format("Msg_ProxyUnreachable", ""), error.Message);
+        Assert.Contains(Strings.Get("SshErr_TcpRefused"), error.Message);
+        Assert.Contains($"via socks5 127.0.0.1:{closedPort} → target.example:22", error.Message);
+    }
+
     /// <summary>代理拒绝连接(REP != 0)必须抛错。</summary>
     [TestMethod]
     public async Task Socks5_ConnectRefusedByProxy_Throws()

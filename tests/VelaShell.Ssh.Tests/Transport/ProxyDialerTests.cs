@@ -160,10 +160,19 @@ public sealed class ProxyDialerTests
         SshConnectException ex = await Assert.ThrowsExactlyAsync<SshConnectException>(
             async () => await ConnectAsync(DialerChain.Socks5("127.0.0.1", closedPort)));
 
-        Assert.AreEqual(SshFailureReason.TcpRefused, ex.Reason);
+        // 〔W6〕没开的是代理，不是目标：ProxyUnreachable，「被拒」这个具体原因留在内层异常里。
+        Assert.AreEqual(SshFailureReason.ProxyUnreachable, ex.Reason);
+        Assert.IsTrue(ex.IsRetryable);
+        Assert.AreEqual(SshFailureReason.TcpRefused, ((SshException)ex.InnerException!).Reason);
         Assert.Contains("SOCKS5 代理", ex.Message);
         Assert.AreEqual(SshDialKind.Tcp, ex.Hops.Single().Kind);
         Assert.IsFalse(ex.Hops.Single().Succeeded);
+
+        // 嵌套时外层沿用内层已经说清的原因：HTTP 代理连不上，经它到 SOCKS5 的外层照样是 ProxyUnreachable，跳信息指着 HTTP 代理那一跳。
+        SshConnectException nested = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await ConnectAsync(DialerChain.Socks5("socks.internal", 1080, via: DialerChain.HttpConnect("127.0.0.1", closedPort))));
+        Assert.AreEqual(SshFailureReason.ProxyUnreachable, nested.Reason);
+        Assert.AreEqual($"127.0.0.1:{closedPort}", nested.Hops.Single().Target);
     }
 
     [TestMethod]

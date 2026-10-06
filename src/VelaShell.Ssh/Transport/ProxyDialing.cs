@@ -39,10 +39,17 @@ internal static class ProxyDialing
         }
         catch (SshException ex)
         {
-            throw DialHops.Rewrap(
-                ex,
-                $"连不上{kindName} {proxy}：{ex.Message}",
-                DialHops.FromInnerFailure(ex, DialHops.KindOf(inner), proxy, startedAt));
+            IReadOnlyList<SshHopInfo> hops = DialHops.FromInnerFailure(ex, DialHops.KindOf(inner), proxy, startedAt);
+            string message = $"连不上{kindName} {proxy}：{ex.Message}";
+
+            // 〔velashell-docs/zh/ssh/spec/09 §2.2〕直连代理时网络层的失败（解析、拒绝、超时、不可达）落在代理这一跳：报 ProxyUnreachable，
+            // 具体原因留在内层异常与跳信息里。内层本身是代理或跳板时（嵌套），那一跳已经说清了自己的原因，原样往外传。
+            if (DialHops.KindOf(inner) == SshDialKind.Tcp && ex.Reason is SshFailureReason.DnsFailure
+                or SshFailureReason.TcpRefused or SshFailureReason.TcpTimeout or SshFailureReason.TcpUnreachable)
+            {
+                throw new SshConnectException(SshFailureReason.ProxyUnreachable, SshPhase.Dialing, message, ex) { Hops = hops };
+            }
+            throw DialHops.Rewrap(ex, message, hops);
         }
 
         SshHopInfo reachedProxy = DialHops.Hop(DialHops.KindOf(inner), proxy, succeeded: true, startedAt);
