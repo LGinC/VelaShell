@@ -478,18 +478,18 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     }
 
     /// <summary>
-    /// 统一异常翻译:释放竞态导致的 NRE 归一为 <see cref="ObjectDisposedException" />,
-    /// 其余库异常经 <see cref="SshInterop.Translate" /> 翻译为 Core 中立异常。
+    /// 统一异常翻译:库异常经 <see cref="SshInterop.Translate" /> 翻译为 Core 中立异常。
     /// </summary>
-    private async Task<T> GuardedAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
+    /// <remarks>
+    /// 曾经还把「释放竞态下的 NRE」归一成 <see cref="ObjectDisposedException" /> —— 那是换库前留下的。
+    /// 现在的库在操作在途时被释放只以「已释放」或 SFTP / 通道的错误结束(库的 SftpTests 里有用例盯着),
+    /// 真冒出一个 NRE 就是 bug,该原样露出来,而不是被说成「已释放」。
+    /// </remarks>
+    private static async Task<T> GuardedAsync<T>(Func<Task<T>> operation, CancellationToken ct = default)
     {
         try
         {
             return await operation().ConfigureAwait(false);
-        }
-        catch (NullReferenceException) when (IsTornDown())
-        {
-            throw new ObjectDisposedException(nameof(VelaSftpClientWrapper));
         }
         catch (Exception ex) when (SshInterop.Translate(ex, ct) is { } translated)
         {
@@ -497,21 +497,13 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         }
     }
 
-    private async Task GuardedAsync(Func<Task> operation, CancellationToken ct = default) =>
+    private static async Task GuardedAsync(Func<Task> operation, CancellationToken ct = default) =>
         await GuardedAsync(async () =>
         {
             await operation().ConfigureAwait(false);
             return true;
         }, ct).ConfigureAwait(false);
 
-    private bool IsTornDown()
-    {
-        if (_disposed)
-        {
-            return true;
-        }
-        try { return _fs is null; } catch { return true; }
-    }
 
     private static async ValueTask DisposeQuietlyAsync(SftpFileSystem fs)
     {

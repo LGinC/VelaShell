@@ -1769,4 +1769,42 @@ public sealed class SftpTests
         Assert.IsNull(link.LinkTarget, "目标读不出来就是没有，不是整个列表失败");
         Assert.Contains(e => e.Name == "f.txt", entries);
     }
+
+    /// <summary>
+    /// 一堆操作还在途就把文件系统释放掉：在途的与之后的调用只以「已释放 / 通道或连接的错误 / 取消」结束，
+    /// 不出 <see cref="NullReferenceException"/>。宿主的 SFTP 包装曾经专门把 NRE 归一成「已释放」—— 那是换库前留下的。
+    /// </summary>
+    [TestMethod]
+    public async Task 操作在途时被释放_只以已释放或通道错误结束()
+    {
+        for (int round = 0; round < 10; round++)
+        {
+            await using Harness harness = await Harness.StartAsync(server => server.AddFile("/home/joe/a.txt", Text("hello")));
+
+            Task[] operations = [.. Enumerable.Range(0, 8).Select(i => Task.Run(async () =>
+            {
+                for (int j = 0; j < 40; j++)
+                {
+                    _ = i % 2 == 0
+                        ? await harness.Sftp.GetAttributesAsync("/home/joe/a.txt", cancellationToken: harness.Token)
+                        : (object)await harness.Sftp.ReadAllBytesAsync("/home/joe/a.txt", harness.Token);
+                }
+            }, harness.Token))];
+
+            await Task.Delay(round, harness.Token);
+            await harness.Sftp.DisposeAsync();
+
+            foreach (Task operation in operations)
+            {
+                try
+                {
+                    await operation;
+                }
+                catch (Exception ex) when (ex is ObjectDisposedException or SshException or OperationCanceledException)
+                {
+                    // 预期之内的结束方式；别的（尤其是 NRE）让用例失败。
+                }
+            }
+        }
+    }
 }
