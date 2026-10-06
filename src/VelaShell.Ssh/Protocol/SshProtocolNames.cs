@@ -118,6 +118,9 @@ internal static class SshProtocolNames
     /// <summary>给远端进程发信号。<b>RFC 要求 want_reply 为假。</b></summary>
     public const string RequestSignal = "signal";
 
+    /// <summary>发 BREAK（RFC 4335）。</summary>
+    public const string RequestBreak = "break";
+
     /// <summary>「这边不再要数据了」（OpenSSH <c>PROTOCOL</c> 的 channel write close 扩展）。<b>want_reply 为假。</b></summary>
     public const string RequestEndOfWrite = "eow@openssh.com";
 

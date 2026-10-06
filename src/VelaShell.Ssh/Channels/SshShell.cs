@@ -155,6 +155,30 @@ public sealed class SshShell : IAsyncDisposable
     public ValueTask SendSignalAsync(string signalName, CancellationToken cancellationToken = default) =>
         Channel.SendSignalAsync(signalName, cancellationToken);
 
+    /// <summary>发 BREAK（RFC 4335）：经 SSH 访问串口控制台服务器、网络设备的 console 时，靠它进 ROMMON / 引导菜单。</summary>
+    /// <param name="length">
+    /// BREAK 的长度；<see langword="null"/>（默认）发 0，让服务端用设备的默认长度。
+    /// RFC 4335 §3 建议服务端把它限在 500 ms–3 s 之间。
+    /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>服务端有没有执行（执行了任何一种 BREAK 都回 SUCCESS，没执行回 FAILURE —— RFC 4335 §3 要求必须回）。</returns>
+    /// <exception cref="ArgumentOutOfRangeException">长度为负，或超出 <c>uint32</c> 毫秒。</exception>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §5.2〕要应答：用户按了「发送 Break」，界面要能说一句服务端没执行（不支持、或者不是终端会话）。
+    /// </remarks>
+    public ValueTask<bool> SendBreakAsync(TimeSpan? length = null, CancellationToken cancellationToken = default)
+    {
+        double milliseconds = length?.TotalMilliseconds ?? 0;
+        if (milliseconds is < 0 or > uint.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(length), length, "BREAK 的长度要在 0 到 2^32-1 毫秒之间。");
+        }
+
+        byte[] payload = new byte[4];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(payload, (uint)milliseconds);
+        return Channel.SendRequestAsync(SshProtocolNames.RequestBreak, payload, wantReply: true, cancellationToken);
+    }
+
     /// <summary>告诉远端输入到此为止。</summary>
     public ValueTask CompleteStandardInputAsync(CancellationToken cancellationToken = default) =>
         Channel.SendEofAsync(cancellationToken);

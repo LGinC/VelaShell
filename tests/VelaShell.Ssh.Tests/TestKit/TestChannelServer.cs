@@ -48,6 +48,9 @@ internal sealed record TestChannelScript
     /// <summary>拒绝 <c>pty-req</c>。</summary>
     public bool RejectPty { get; init; }
 
+    /// <summary>对 <c>break</c> 回 FAILURE（没执行 BREAK）。</summary>
+    public bool RejectBreak { get; init; }
+
     /// <summary>拒绝 <c>CHANNEL_OPEN</c>，回这个原因码。</summary>
     public SshChannelOpenFailureReason? RejectOpenWith { get; init; }
 
@@ -171,6 +174,9 @@ internal sealed class TestChannelObservation
 
     /// <summary>收到的环境变量。</summary>
     public Dictionary<string, string> Environment { get; } = [];
+
+    /// <summary>收到的 <c>break</c> 请求里的长度（毫秒）。</summary>
+    public List<uint> BreakLengths { get; } = [];
 
     /// <summary>收到的 <c>pty-req</c>：终端类型与尺寸。</summary>
     public List<(string Term, SshTerminalSize Size, byte[] Modes)> PtyRequests { get; } = [];
@@ -827,6 +833,11 @@ internal sealed class TestChannelServer : IDisposable
             case SshProtocolNames.RequestSignal:
                 Observation.Signals.Add(reader.ReadUtf8String(MaxField));
                 return;   // want_reply 必为假，不回
+
+            case SshProtocolNames.RequestBreak:
+                Observation.BreakLengths.Add(reader.ReadUInt32());
+                success = !_script.RejectBreak;
+                break;
 
             case SshProtocolNames.RequestAuthAgent:
                 Observation.AgentForwardRequests++;

@@ -624,6 +624,19 @@ public sealed class OpenSshInteropTests
         Assert.IsTrue(exit.ExitSignalName == "PIPE" || exit.ExitCode == 141, $"yes 应当被 SIGPIPE 结束，实际：{exit}");
     }
 
+    /// <summary>BREAK（RFC 4335）：真 OpenSSH 在伪终端上执行，回 SUCCESS。</summary>
+    [TestMethod]
+    public async Task 伪终端上的Break真OpenSSH会执行()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshShell shell = await connection.OpenShellAsync();
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+        Assert.IsTrue(await shell.SendBreakAsync(cancellationToken: timeout.Token), "OpenSSH 对有伪终端的会话执行 BREAK");
+    }
+
     /// <summary>在伪终端里跑一条命令（<c>ssh -t host tty</c>）：命令看得到终端，跑完通道就关、退出码照常取。</summary>
     [TestMethod]
     public async Task 在伪终端里跑命令()

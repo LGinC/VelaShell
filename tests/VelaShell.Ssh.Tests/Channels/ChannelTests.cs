@@ -810,6 +810,22 @@ public sealed class ChannelTests
         Assert.AreEqual(expectSent ? 1 : 0, harness.ChannelServer.Observation.Requests.Count(r => r == SshProtocolNames.RequestEndOfWrite));
     }
 
+    /// <summary>BREAK（RFC 4335）：长度按毫秒放进请求，默认发 0（设备默认长度）；要应答，服务端执行了没有如实交回。</summary>
+    [TestMethod]
+    [DataRow(false, DisplayName = "服务端执行了")]
+    [DataRow(true, DisplayName = "服务端没执行")]
+    public async Task 发送Break带着长度且交回服务端执行了没有(bool reject)
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { RejectBreak = reject, CloseAfterScript = false });
+        await using SshShell shell = await harness.Connection.OpenShellAsync(cancellationToken: harness.Token);
+
+        Assert.AreEqual(!reject, await shell.SendBreakAsync(cancellationToken: harness.Token));
+        Assert.AreEqual(!reject, await shell.SendBreakAsync(TimeSpan.FromMilliseconds(1500), harness.Token));
+
+        Assert.AreSequenceEqual(new uint[] { 0, 1500 }, harness.ChannelServer.Observation.BreakLengths);
+        await Assert.ThrowsExactlyAsync<ArgumentOutOfRangeException>(async () => await shell.SendBreakAsync(TimeSpan.FromMilliseconds(-1)));
+    }
+
     /// <summary>服务端拒绝 exec（ForceCommand 之类）：说清楚是命令被拒，而不是 shell 被拒。</summary>
     [TestMethod]
     public async Task 在伪终端里跑命令被拒时说是命令被拒()
