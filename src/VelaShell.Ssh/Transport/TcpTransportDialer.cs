@@ -46,6 +46,19 @@ internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSour
     /// </remarks>
     public TimeSpan ConnectTimeout { get; init; } = Timeout.InfiniteTimeSpan;
 
+    /// <summary>只连这一族的地址（<c>ssh_config</c> 的 <c>AddressFamily inet / inet6</c>）；<see cref="AddressFamily.Unspecified"/>（默认）不限。</summary>
+    public AddressFamily AddressFamily { get; init; } = AddressFamily.Unspecified;
+
+    /// <summary>
+    /// 本机这一端从哪些地址发起（<c>BindAddress</c> / <c>BindInterface</c>）：每次发起挑与目标地址同一族的那个；
+    /// 没有同一族的就不连那个目标地址。空（默认）不绑，由系统挑。
+    /// </summary>
+    public IReadOnlyList<IPAddress> LocalAddresses
+    {
+        get;
+        init => field = value is null ? [] : Array.AsReadOnly([.. value]);
+    } = [];
+
     /// <inheritdoc />
     public async ValueTask<Stream> DialAsync(
         SshDialTarget target, CancellationToken cancellationToken = default)
@@ -72,11 +85,23 @@ internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSour
                 throw new SocketException((int)SocketError.HostNotFound);
             }
 
+            // 〔velashell-docs/zh/ssh/spec/09 §7〕AddressFamily / BindAddress 限定了地址族：只连那一族的目标地址。
+            addresses = [.. addresses.Where(IsUsable)];
+            if (addresses.Length == 0)
+            {
+                string message = $"{target.EndPoint.Host} 没有能连的地址：配置限定了地址族" +
+                    $"（{(AddressFamily == AddressFamily.Unspecified ? "本机绑定的地址" : AddressFamily.ToString())}），而它解析出来的都不是这一族。";
+                throw new SshConnectException(SshFailureReason.DnsFailure, SshPhase.Dialing, message)
+                {
+                    Hops = [DialHops.Hop(Kind, target.EndPoint, succeeded: false, startedAt, message)],
+                };
+            }
+
             // 操作系统那一层的 TCP keepalive 一律打开：与 SSH 的保活互不替代，开着没有代价。
             const bool keepAlive = true;
             Socket socket = await RaceAsync(
                     Interleave(addresses),
-                    (address, token) => AttemptAsync(address, target.EndPoint.Port, keepAlive, token),
+                    (address, token) => AttemptAsync(address, target.EndPoint.Port, keepAlive, LocalAddressFor(address), token),
                     AttemptDelay,
                     timeout.Token)
                 .ConfigureAwait(false);
@@ -100,6 +125,15 @@ internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSour
             };
         }
     }
+
+    /// <summary>这个目标地址能不能连：在限定的地址族里，绑了本机地址时还要有同一族的那个。</summary>
+    private bool IsUsable(IPAddress address) =>
+        (AddressFamily == AddressFamily.Unspecified || address.AddressFamily == AddressFamily)
+        && (LocalAddresses.Count == 0 || LocalAddresses.Any(local => local.AddressFamily == address.AddressFamily));
+
+    /// <summary>连这个目标地址时本机绑哪个地址；不绑为 <see langword="null"/>。</summary>
+    private IPAddress? LocalAddressFor(IPAddress address) =>
+        LocalAddresses.FirstOrDefault(local => local.AddressFamily == address.AddressFamily);
 
     /// <summary>把地址按族交替排好，从解析结果里的第一个族开始（RFC 8305 §4）。</summary>
     internal static IPAddress[] Interleave(IReadOnlyList<IPAddress> addresses)
@@ -223,11 +257,16 @@ internal sealed class TcpTransportDialer : ISshTransportDialer, ISshDialKindSour
         System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(exception);
 
     private static async Task<Socket> AttemptAsync(
-        IPAddress address, int port, bool keepAlive, CancellationToken cancellationToken)
+        IPAddress address, int port, bool keepAlive, IPAddress? local, CancellationToken cancellationToken)
     {
         Socket socket = new(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
         try
         {
+            if (local is not null)
+            {
+                socket.Bind(new IPEndPoint(local, 0));
+            }
+
             if (keepAlive)
             {
                 socket.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);

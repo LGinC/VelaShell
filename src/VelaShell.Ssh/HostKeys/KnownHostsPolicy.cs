@@ -94,13 +94,50 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
     /// </summary>
     public bool AllowHostKeyUpdates { get; init; }
 
+    /// <summary>
+    /// 只读的全局 known_hosts（<c>ssh_config</c> 的 <c>GlobalKnownHostsFile</c>，如 <c>/etc/ssh/ssh_known_hosts</c>）：
+    /// 查的时候与自己的那份一起看（<c>@revoked</c>、<c>@cert-authority</c> 照样算），记的时候只写自己的那份。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕默认空 —— 不去读系统目录里的那一份：给了才读。读不到的（不存在、没权限）照没有处理。
+    /// </remarks>
+    public IReadOnlyList<string> GlobalKnownHostsFiles
+    {
+        get;
+        init => field = value is null ? [] : Array.AsReadOnly([.. value]);
+    } = [];
+
+    /// <summary>自己的那份，加上全局的几份（读不到的跳过）。</summary>
+    private async ValueTask<IReadOnlyList<KnownHostEntry>> LoadEntriesAsync(CancellationToken cancellationToken)
+    {
+        IReadOnlyList<KnownHostEntry> own = await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+        if (GlobalKnownHostsFiles.Count == 0)
+        {
+            return own;
+        }
+
+        List<KnownHostEntry> all = [.. own];
+        foreach (string path in GlobalKnownHostsFiles)
+        {
+            try
+            {
+                all.AddRange(await KnownHostsFile.LoadAsync(path, cancellationToken).ConfigureAwait(false));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or SshException)
+            {
+                // 全局的那几份读不到（不存在、没权限）照没有处理：它们只是额外的信任来源。
+            }
+        }
+        return all;
+    }
+
     /// <inheritdoc />
     public async ValueTask<IReadOnlyList<string>> GetKnownHostKeyFingerprintsAsync(
         string host, int port, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(host);
         IReadOnlyList<KnownHostEntry> entries =
-            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
         return [.. KnownHostsFile.KnownHostKeys(entries, host, port).Select(key => key.Sha256Fingerprint)];
     }
 
@@ -129,7 +166,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
         ArgumentNullException.ThrowIfNull(context);
 
         IReadOnlyList<KnownHostEntry> entries =
-            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
 
         KnownHostLookup lookup = KnownHostsFile.Lookup(entries, context.Host, context.Port, context.Key);
 
@@ -162,7 +199,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
         string host, int port, CancellationToken cancellationToken = default)
     {
         IReadOnlyList<KnownHostEntry> entries =
-            _cache ??= await KnownHostsFile.LoadAsync(_path, cancellationToken).ConfigureAwait(false);
+            _cache ??= await LoadEntriesAsync(cancellationToken).ConfigureAwait(false);
         return KnownHostsFile.KnownKeyTypes(entries, host, port);
     }
 

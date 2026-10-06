@@ -20,6 +20,35 @@ public sealed class TcpDialerTests
     private static readonly IPAddress V4 = IPAddress.Parse("192.0.2.1");
     private static readonly IPAddress V4b = IPAddress.Parse("192.0.2.2");
 
+    /// <summary>〔F22〕AddressFamily 只连那一族的目标地址；BindAddress 从指定的本机地址发起。</summary>
+    [TestMethod]
+    public async Task 只连限定的地址族_从指定的本机地址发起()
+    {
+        using TcpListener listener = new(IPAddress.Loopback, 0);
+        listener.Start();
+        SshDialTarget target = SshDialTarget.Direct("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
+
+        // 目标只有 IPv4 地址，却只许 IPv6：没有能连的地址，不去试。
+        SshConnectException none = await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await new TcpTransportDialer { AddressFamily = AddressFamily.InterNetworkV6 }.DialAsync(target));
+        Assert.AreEqual(SshFailureReason.DnsFailure, none.Reason);
+        Assert.Contains("地址族", none.Message);
+
+        // 本机只绑了 IPv6 地址：IPv4 的目标同样不连。
+        await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await new TcpTransportDialer { LocalAddresses = [IPAddress.IPv6Loopback] }.DialAsync(target));
+
+        // 从 127.0.0.2 发起（整个 127/8 都是环回）：对面看到的来源就是它。
+        Task<Socket> accepting = listener.AcceptSocketAsync();
+        await using Stream stream = await new TcpTransportDialer
+        {
+            AddressFamily = AddressFamily.InterNetwork,
+            LocalAddresses = [IPAddress.Parse("127.0.0.2")],
+        }.DialAsync(target);
+        using Socket accepted = await accepting;
+        Assert.AreEqual(IPAddress.Parse("127.0.0.2"), ((IPEndPoint)accepted.RemoteEndPoint!).Address);
+    }
+
     /// <summary>一条真连上的套接字（连到本机的一个监听上）。</summary>
     private static async Task<Socket> ConnectedSocketAsync(TcpListener listener)
     {

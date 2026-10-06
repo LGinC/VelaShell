@@ -6,6 +6,7 @@
 //   行为规格:              velashell-docs/zh/ssh/spec/09-dialing.md §7
 
 using System.Globalization;
+using System.Net.Sockets;
 using System.Text;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Forwarding;
@@ -261,6 +262,65 @@ public sealed class SshHostConfig
 
     /// <summary><c>UserKnownHostsFile</c>。</summary>
     public string? UserKnownHostsFile => First("UserKnownHostsFile");
+
+    /// <summary>
+    /// <c>GlobalKnownHostsFile</c>：只读的全局 known_hosts（可以几个、空格分隔，展开记号）；没写或写 <c>none</c> 时为空。
+    /// </summary>
+    /// <remarks>写了才读 —— 不去找系统目录里默认的那一份。</remarks>
+    public IReadOnlyList<string> GlobalKnownHostsFiles =>
+        First("GlobalKnownHostsFile") is { } value && !string.Equals(value.Trim(), "none", StringComparison.OrdinalIgnoreCase)
+            ? [.. value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(path => Expand(path.Trim('"')))
+                .OfType<string>()]
+            : [];
+
+    /// <summary><c>HostKeyAlias</c>：查、记主机密钥时代替主机名的别名；没写为 <see langword="null"/>。</summary>
+    public string? HostKeyAlias =>
+        First("HostKeyAlias")?.Trim() is { Length: > 0 } alias && !string.Equals(alias, "none", StringComparison.OrdinalIgnoreCase)
+            ? alias
+            : null;
+
+    /// <summary><c>AddressFamily</c>：<c>inet</c> → IPv4、<c>inet6</c> → IPv6，其余（<c>any</c>、没写）→ 不限。</summary>
+    public AddressFamily AddressFamily => First("AddressFamily")?.Trim().ToLowerInvariant() switch
+    {
+        "inet" => AddressFamily.InterNetwork,
+        "inet6" => AddressFamily.InterNetworkV6,
+        _ => AddressFamily.Unspecified,
+    };
+
+    /// <summary><c>BindAddress</c>：本机这一端从哪个地址发起连接；没写为 <see langword="null"/>。</summary>
+    public string? BindAddress => First("BindAddress");
+
+    /// <summary><c>BindInterface</c>：本机这一端从哪块网卡（按名字）发起连接；没写为 <see langword="null"/>。</summary>
+    public string? BindInterface => First("BindInterface");
+
+    /// <summary>按 <c>IdentityAgent</c> 决定认证时用哪个 agent。</summary>
+    /// <param name="endpoint">agent 的端点；<see langword="null"/> 是默认的那个（<c>SSH_AUTH_SOCK</c> / Windows 的 OpenSSH agent 管道）。</param>
+    /// <returns>写着 <c>none</c>（或者给的环境变量没设）时为 <see langword="false"/>：不用 agent。</returns>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/09 §7〕ssh_config(5) 的写法：<c>none</c>、<c>SSH_AUTH_SOCK</c>、以 <c>$</c> 开头的环境变量（值是路径）、
+    /// 一个路径（展开 <c>~</c> 与记号）。本库不替调用方建 agent 凭据（不做隐式回退，spec/04 §2.2）—— 调用方照它连 agent。
+    /// </remarks>
+    public bool TryGetIdentityAgent(out string? endpoint)
+    {
+        endpoint = null;
+        string? value = First("IdentityAgent")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(value) || string.Equals(value, "SSH_AUTH_SOCK", StringComparison.Ordinal))
+        {
+            return true;
+        }
+        if (string.Equals(value, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+        if (value.StartsWith('$'))
+        {
+            endpoint = Environment.GetEnvironmentVariable(value[1..]);
+            return !string.IsNullOrEmpty(endpoint);
+        }
+        endpoint = Expand(value);
+        return true;
+    }
 
     /// <summary>是否只用显式给出的密钥（<c>IdentitiesOnly yes</c>）。</summary>
     public bool IdentitiesOnly => IsYes(First("IdentitiesOnly"));

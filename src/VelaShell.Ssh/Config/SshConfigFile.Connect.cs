@@ -5,6 +5,9 @@
 //   OpenSSH ssh_config(5)  各项的语义(只取行为描述)
 //   行为规格:              velashell-docs/zh/ssh/spec/09-dialing.md §7
 
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
 using System.Text;
 using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Diagnostics;
@@ -193,6 +196,18 @@ public static partial class SshConfigFile
 
             options = options with { Dialer = dialer };
         }
+        else if (config.AddressFamily != AddressFamily.Unspecified || IsSet(config.BindAddress) || IsSet(config.BindInterface))
+        {
+            // 〔velashell-docs/zh/ssh/spec/09 §7〕直连时才用得上：经跳板或代理命令时本机这一端不归这台主机的配置管。
+            options = options with
+            {
+                Dialer = new TcpTransportDialer
+                {
+                    AddressFamily = config.AddressFamily,
+                    LocalAddresses = ResolveBindAddresses(config, host),
+                },
+            };
+        }
 
         // ConnectionAttempts：拨号失败时再试（每次隔一秒）—— 包在最外层，跳板链与代理命令一起重来。
         if (config.ConnectionAttempts > 1)
@@ -358,10 +373,44 @@ public static partial class SshConfigFile
     private static IEnumerable<SshCredential> CallerCredentialsFor(SshConfigConnectOptions settings, bool isTarget) =>
         isTarget ? settings.Credentials : settings.Credentials.OfType<PublicKeyCredential>();
 
+    /// <summary><c>BindAddress</c>（一个 IP 地址）或 <c>BindInterface</c>（网卡名，取它的全部地址）；都没写为空。</summary>
+    /// <exception cref="SshConnectException">写的不是 IP 地址、或者没有那块网卡（<see cref="SshFailureReason.InvalidConfiguration"/>）。</exception>
+    private static IReadOnlyList<IPAddress> ResolveBindAddresses(SshHostConfig config, string host)
+    {
+        if (IsSet(config.BindAddress))
+        {
+            return IPAddress.TryParse(config.BindAddress!.Trim(), out IPAddress? address)
+                ? [address]
+                : throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                    $"{host} 的配置里 BindAddress 是「{PeerText.Sanitize(config.BindAddress, 64)}」，不是一个 IP 地址。");
+        }
+
+        if (IsSet(config.BindInterface))
+        {
+            string name = config.BindInterface!.Trim();
+            NetworkInterface? nic = NetworkInterface.GetAllNetworkInterfaces().FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase)
+                || string.Equals(candidate.Id, name, StringComparison.OrdinalIgnoreCase));
+            return nic is null
+                ? throw new SshConnectException(SshFailureReason.InvalidConfiguration, SshPhase.Dialing,
+                    $"{host} 的配置里 BindInterface 是「{PeerText.Sanitize(name, 64)}」，本机没有这块网卡。")
+                : [.. nic.GetIPProperties().UnicastAddresses.Select(unicast => unicast.Address)];
+        }
+
+        return [];
+    }
+
     private static bool IsSet(string? value) =>
         !string.IsNullOrWhiteSpace(value) && !string.Equals(value, "none", StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>主机密钥策略：按 <c>StrictHostKeyChecking</c> 与 known_hosts 定下来，<c>HostKeyAlias</c> 再把查、记的名字换成别名。</summary>
     private static IHostKeyPolicy MapHostKeyPolicy(SshHostConfig config, string user, SshConfigConnectOptions settings)
+    {
+        IHostKeyPolicy policy = MapKnownHostsPolicy(config, user, settings);
+        return config.HostKeyAlias is { } alias ? new HostKeyAliasPolicy(policy, alias) : policy;
+    }
+
+    private static IHostKeyPolicy MapKnownHostsPolicy(SshHostConfig config, string user, SshConfigConnectOptions settings)
     {
         string? strict = config.StrictHostKeyChecking?.ToLowerInvariant();
         string? knownHosts = config.UserKnownHostsFile?
@@ -378,7 +427,7 @@ public static partial class SshConfigFile
 
         if (strict is null && knownHosts is null)
         {
-            return new KnownHostsPolicy { UnknownHost = UnknownHostBehavior.Reject };
+            return new KnownHostsPolicy { UnknownHost = UnknownHostBehavior.Reject, GlobalKnownHostsFiles = config.GlobalKnownHostsFiles };
         }
 
         // 〔velashell-docs/zh/ssh/spec/09 §7〕yes → 没见过就拒；accept-new / no → 接受并记下；ask / 缺省 → 问。
@@ -405,6 +454,7 @@ public static partial class SshConfigFile
         return new KnownHostsPolicy(config.Expand(knownHosts, user), AskOnlyWhenAsking())
         {
             UnknownHost = unknown,
+            GlobalKnownHostsFiles = config.GlobalKnownHostsFiles,
         };
 
         // 询问回调只在「问」的时候交出去：yes / accept-new 下它不会被调用，策略会把「给了回调又不问」当成配置矛盾。

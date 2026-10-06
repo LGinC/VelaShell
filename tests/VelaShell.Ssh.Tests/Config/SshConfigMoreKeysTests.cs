@@ -9,6 +9,7 @@ using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Config;
 using VelaShell.Ssh.Diagnostics;
+using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Session;
 using VelaShell.Ssh.Transport;
@@ -117,6 +118,105 @@ public sealed class SshConfigMoreKeysTests
     }
 
     /// <summary>SetEnv（多个、先出现的赢）+ SendEnv 选中的本机变量；RemoteCommand 成了伪终端里的命令；模板里显式给的不动。</summary>
+    /// <summary>
+    /// 〔F22〕AddressFamily / BindAddress 落到直连的 TCP 拨号器上；HostKeyAlias 包住主机密钥策略；GlobalKnownHostsFile 交给 known_hosts 策略；
+    /// IdentityAgent 的几种写法；BindInterface 写了本机没有的网卡报配置错误。
+    /// </summary>
+    [TestMethod]
+    public async Task 地址族_本机地址_主机密钥别名_全局known_hosts与IdentityAgent()
+    {
+        string global = Path.Combine(Path.GetTempPath(), $"vela-global-kh-{Guid.NewGuid():N}");
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+            Host a
+                HostName 127.0.0.1
+                AddressFamily inet
+                BindAddress 127.0.0.2
+                HostKeyAlias shared-box
+                GlobalKnownHostsFile {global}
+                IdentityAgent none
+            Host b
+                IdentityAgent ~/agent.sock
+            Host c
+                BindInterface no-such-interface-velashell
+            Host d
+                BindAddress not-an-address
+            """);
+
+        SshHostConfig a = SshConfigFile.Resolve(blocks, "a");
+        Assert.AreEqual(System.Net.Sockets.AddressFamily.InterNetwork, a.AddressFamily);
+        Assert.AreEqual("shared-box", a.HostKeyAlias);
+        Assert.AreSequenceEqual([global], a.GlobalKnownHostsFiles.ToArray());
+        Assert.IsFalse(a.TryGetIdentityAgent(out _), "IdentityAgent none：不用 agent");
+        Assert.IsTrue(SshConfigFile.Resolve(blocks, "b").TryGetIdentityAgent(out string? agent));
+        Assert.IsTrue(agent!.EndsWith("agent.sock", StringComparison.Ordinal) && !agent.StartsWith('~'), agent);
+        Assert.IsTrue(SshConfigFile.Resolve(blocks, "zzz").TryGetIdentityAgent(out string? defaultAgent));
+        Assert.IsNull(defaultAgent, "没写：默认的那个 agent");
+
+        SshConnectionOptions options = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "a");
+        var dialer = (TcpTransportDialer)options.Dialer;
+        Assert.AreEqual(System.Net.Sockets.AddressFamily.InterNetwork, dialer.AddressFamily);
+        Assert.AreSequenceEqual([System.Net.IPAddress.Parse("127.0.0.2")], dialer.LocalAddresses.ToArray());
+        var alias = (HostKeyAliasPolicy)options.HostKeyPolicy;
+        Assert.AreEqual("shared-box", alias.Alias);
+        Assert.AreSequenceEqual([global], ((KnownHostsPolicy)alias.Inner).GlobalKnownHostsFiles.ToArray());
+
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, (await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "c"))).Reason);
+        Assert.AreEqual(SshFailureReason.InvalidConfiguration, (await Assert.ThrowsExactlyAsync<SshConnectException>(
+            async () => await SshConfigFile.CreateConnectionOptionsAsync(blocks, "d"))).Reason);
+    }
+
+    /// <summary>
+    /// 〔F22〕HostKeyAlias：查、记主机密钥用别名、端口不带（OpenSSH 10.5 黑盒核对过：连 2222 端口，记下的是别名本身）。
+    /// GlobalKnownHostsFile：只读 —— 查的时候认，记的时候只写自己的那份。
+    /// </summary>
+    [TestMethod]
+    public async Task 主机密钥别名按别名查记_全局known_hosts只读()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), $"vela-kh-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        try
+        {
+            using InMemorySshSigner hostKey = InMemorySshSigner.GenerateEd25519();
+            using InMemorySshSigner other = InMemorySshSigner.GenerateEd25519();
+            string own = Path.Combine(dir, "known_hosts");
+            string global = Path.Combine(dir, "global");
+            await File.WriteAllTextAsync(global, $"shared-box {hostKey.PublicKey.ToOpenSshFormat()}\n");
+
+            KnownHostsPolicy known = new(own) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, GlobalKnownHostsFiles = [global] };
+            HostKeyAliasPolicy policy = new(known, "shared-box");
+
+            SshHostKeyContext context = new()
+            {
+                Host = "10.0.0.5",
+                Port = 2222,
+                Key = hostKey.PublicKey,
+                NegotiatedAlgorithm = hostKey.PublicKey.KeyType,
+            };
+            Assert.AreEqual(SshHostKeyVerdict.Accept, await policy.EvaluateAsync(context), "全局那份里按别名记着它");
+            Assert.IsFalse(File.Exists(own), "认得的钥不写自己的那份");
+
+            SshHostKeyContext newcomer = new()
+            {
+                Host = "10.0.0.6",
+                Port = 2200,
+                Key = other.PublicKey,
+                NegotiatedAlgorithm = other.PublicKey.KeyType,
+            };
+            HostKeyAliasPolicy second = new(new KnownHostsPolicy(own) { UnknownHost = UnknownHostBehavior.AcceptAndPersist }, "other-alias");
+            Assert.AreEqual(SshHostKeyVerdict.AcceptAndPersist, await second.EvaluateAsync(newcomer));
+            await second.PersistAsync(newcomer);
+            string written = await File.ReadAllTextAsync(own);
+            Assert.StartsWith("other-alias ", written, "按别名记、不带端口");
+            Assert.DoesNotContain("10.0.0.6", written);
+            Assert.DoesNotContain("other-alias", await File.ReadAllTextAsync(global), "全局那份只读，没被写过");
+        }
+        finally
+        {
+            Directory.Delete(dir, recursive: true);
+        }
+    }
+
     [TestMethod]
     public void 会话的环境变量与远端命令()
     {
