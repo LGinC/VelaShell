@@ -27,7 +27,7 @@ namespace VelaShell.Ssh.Transport;
 /// </para>
 /// <para>
 /// 到达代理本身走 <see cref="Inner"/>，默认直连 TCP。连 HTTPS 代理时把 <see cref="Inner"/>
-/// 换成一个在 TCP 上套 TLS 的拨号器即可。
+/// 换成 <see cref="DialerChain.Tls"/> 即可。
 /// </para>
 /// </remarks>
 internal sealed record HttpConnectDialer(SshEndPoint Proxy) : ISshTransportDialer, ISshDialKindSource

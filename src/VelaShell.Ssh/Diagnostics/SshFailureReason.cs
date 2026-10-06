@@ -51,6 +51,9 @@ public enum SshFailureReason
     /// </remarks>
     ProxyAuthFailed,
 
+    /// <summary>TLS 握手失败（<c>DialerChain.Tls</c>）：服务端证书不可信或名字对不上，或者对端说的不是 TLS。</summary>
+    TlsFailed,
+
     // ---- 版本交换 ----
 
     /// <summary>对端不是 SSH 服务（没有发出合法的协议标识串）。</summary>
