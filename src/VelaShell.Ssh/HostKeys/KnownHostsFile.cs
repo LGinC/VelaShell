@@ -513,6 +513,7 @@ public static class KnownHostsFile
     /// <remarks>
     /// <b>只追加，不改写已有的行。</b>改写意味着要把整个文件读进来再写回去，
     /// 而那会在并发写时丢掉别的进程刚加的记录 —— OpenSSH 自己也是追加。
+    /// 要删记录的那两个场合另走 <see cref="RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/>。
     /// </remarks>
     public static async ValueTask AppendAsync(
         string host,
@@ -566,5 +567,228 @@ public static class KnownHostsFile
         stream.Seek(-1, SeekOrigin.End);
         byte[] last = new byte[1];
         return await stream.ReadAsync(last, cancellationToken).ConfigureAwait(false) == 1 && last[0] == (byte)'\n';
+    }
+
+    /// <summary>改写时文件被别的进程改了，最多重来几次。</summary>
+    private const int RewriteAttempts = 5;
+
+    /// <summary>从 <c>known_hosts</c> 里删掉这台主机记着的普通主机密钥。</summary>
+    /// <param name="host">主机。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="fingerprints">
+    /// 只删这几把（SHA-256 指纹；带不带 <c>=</c> 填充、有没有 <c>SHA256:</c> 前缀都认）；<see langword="null"/> 删这台主机的全部普通钥。
+    /// </param>
+    /// <param name="path"><c>known_hosts</c> 路径；<see langword="null"/> 为默认路径。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>删掉的钥的指纹（<see cref="SshPublicKey.Sha256Fingerprint"/> 的样子，不重复）。没有可删的为空，文件一个字节都不动。</returns>
+    /// <exception cref="SshConnectException">
+    /// 读不了、写不进，或者一直在被别的进程改动：<see cref="SshFailureReason.HostKeyStoreFailed"/>。
+    /// </exception>
+    /// <remarks>
+    /// <para>
+    /// 〔Q4，velashell-docs/zh/ssh/spec/03 §5.4〕平时照旧只追加（<see cref="AppendAsync"/>），只有两个场合改写：
+    /// 「密钥变了」确认是重装之后一键删掉旧的记录 —— 报错文案让人手工去做的那件事（<see cref="KnownHostsPolicy.RemoveHostKeysAsync"/>）；
+    /// 主机密钥轮换时删掉服务端不再出示的旧钥（<see cref="IHostKeyRotationPolicy.ForgetHostKeysAsync"/>）。
+    /// </para>
+    /// <para>
+    /// <b>只动专属于这台主机的记录。</b>散列行（一行只代表一个名字）对上了整行删；明文行把这台主机的名字拿掉 ——
+    /// 一行记着几个名字（<c>host,10.0.0.5</c>）时别的名字照旧受信，名字拿光了才整行删。
+    /// <c>@revoked</c>、<c>@cert-authority</c>、带通配或取反的行（<c>*.corp</c>）不动：它们管的不止这一台。
+    /// 别的行（注释、空行、写坏的行）连同各自的换行符原样保留。
+    /// </para>
+    /// <para>
+    /// <b>临时文件 + 原子替换 + 冲突重试。</b>新内容先写进同一目录下的临时文件；替换之前再读一次原文件，
+    /// 与改写所依据的内容不一样（多半是别的进程刚追加了一条）就按新内容重来，最多 5 次；一样才原子地换上去（Unix 上权限照旧）。
+    /// 中途失败原文件不受影响。比较与替换之间仍有一个极短的窗口，那时追加进来的一条会丢 —— 所以只在上面两个场合改写。
+    /// </para>
+    /// </remarks>
+    public static ValueTask<IReadOnlyList<string>> RemoveHostKeysAsync(
+        string host,
+        int port,
+        IReadOnlyCollection<string>? fingerprints = null,
+        string? path = null,
+        CancellationToken cancellationToken = default) =>
+        RemoveHostKeysAsync(host, port, fingerprints, path, beforeReplace: null, cancellationToken);
+
+    /// <param name="host">主机。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="fingerprints">只删这几把；<see langword="null"/> 全删。</param>
+    /// <param name="path">路径。</param>
+    /// <param name="beforeReplace">（测试用）每一轮比较之前调一次，参数是第几轮。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    internal static async ValueTask<IReadOnlyList<string>> RemoveHostKeysAsync(
+        string host,
+        int port,
+        IReadOnlyCollection<string>? fingerprints,
+        string? path,
+        Func<int, ValueTask>? beforeReplace,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        string actual = path ?? DefaultPath;
+        HashSet<string>? wanted = fingerprints is null
+            ? null
+            : new(fingerprints.Select(SshPublicKey.NormalizeFingerprint), StringComparer.Ordinal);
+        if (wanted is { Count: 0 })
+        {
+            return [];
+        }
+
+        for (int attempt = 1; ; attempt++)
+        {
+            byte[]? original = await ReadBytesAsync(actual, cancellationToken).ConfigureAwait(false);
+            if (original is null)
+            {
+                return [];   // 文件不存在：没什么可删的
+            }
+
+            List<string> removed = [];
+            byte[] rewritten = RemoveHostLines(original, host, port, wanted, removed);
+            if (removed.Count == 0)
+            {
+                return [];
+            }
+
+            if (beforeReplace is not null)
+            {
+                await beforeReplace(attempt).ConfigureAwait(false);
+            }
+            if (await TryReplaceAsync(actual, original, rewritten, cancellationToken).ConfigureAwait(false))
+            {
+                return removed;
+            }
+            if (attempt == RewriteAttempts)
+            {
+                throw new SshConnectException(SshFailureReason.HostKeyStoreFailed, SshPhase.KeyExchange,
+                    $"改写不了 {actual}：试了 {RewriteAttempts} 次，它一直在被别的进程改动。");
+            }
+            await Task.Delay(20 * attempt, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>按 <see cref="RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/> 的规则改写；<paramref name="removed"/> 收删掉的钥的指纹。</summary>
+    private static byte[] RemoveHostLines(byte[] content, string host, int port, HashSet<string>? wanted, List<string> removed)
+    {
+        string plain = FormatHostPattern(host, port);
+        using MemoryStream output = new(content.Length);
+        int start = 0;
+        for (int lineNumber = 1; start < content.Length; lineNumber++)
+        {
+            int newline = Array.IndexOf(content, (byte)'\n', start);
+            int end = newline < 0 ? content.Length : newline + 1;   // 带着这一行自己的换行
+            ReadOnlySpan<byte> raw = content.AsSpan(start, end - start);
+            start = end;
+
+            string text = Encoding.UTF8.GetString(raw);
+            KnownHostEntry? entry = ParseLine(text.Trim('\uFEFF', '\r', '\n', ' ', '\t'), lineNumber);
+            if (entry is null || entry.IsRevoked || entry.IsCertificateAuthority
+                || (!entry.IsHashed && entry.Patterns.Any(static p => p.StartsWith('!') || p.Contains('*') || p.Contains('?')))
+                || !MatchesHost(entry, host, port, plain))
+            {
+                output.Write(raw);
+                continue;
+            }
+
+            string fingerprint = FingerprintOf(entry.KeyBlob.Span);
+            if (wanted is not null && !wanted.Contains(fingerprint))
+            {
+                output.Write(raw);
+                continue;
+            }
+
+            if (!removed.Contains(fingerprint))
+            {
+                removed.Add(fingerprint);
+            }
+
+            string[] others = entry.IsHashed
+                ? []
+                : [.. entry.Patterns.Where(p => !string.Equals(p, plain, StringComparison.OrdinalIgnoreCase))];
+            if (others.Length > 0)
+            {
+                // 主机那一栏换成剩下的名字，其余（类型、公钥、注释、换行）原样。
+                int lead = text.Length - text.TrimStart('\uFEFF', ' ', '\t').Length;
+                int fieldEnd = text.IndexOfAny([' ', '\t'], lead);
+                output.Write(Encoding.UTF8.GetBytes(text[..lead] + string.Join(',', others) + text[fieldEnd..]));
+            }
+        }
+        return output.ToArray();
+    }
+
+    /// <summary>记录里那把钥的指纹：本库认得的按 <see cref="SshPublicKey.Sha256Fingerprint"/>（证书算证书里那把钥），认不得的按原样的 blob。</summary>
+    private static string FingerprintOf(ReadOnlySpan<byte> blob)
+    {
+        try
+        {
+            return SshPublicKey.Decode(blob.ToArray()).Sha256Fingerprint;
+        }
+        catch (SshPublicKeyException)
+        {
+            return SshPublicKey.Sha256FingerprintOf(blob);
+        }
+    }
+
+    /// <summary>写临时文件，确认原文件还是 <paramref name="original"/> 之后原子地换上去；原文件已经变了（或者正被别的进程开着）返回 <see langword="false"/>。</summary>
+    private static async ValueTask<bool> TryReplaceAsync(string path, byte[] original, byte[] rewritten, CancellationToken cancellationToken)
+    {
+        string temporary = $"{path}.{Guid.NewGuid():N}.tmp";   // 同一个目录：替换是同一个卷上的改名
+        try
+        {
+            await File.WriteAllBytesAsync(temporary, rewritten, cancellationToken).ConfigureAwait(false);
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(temporary, File.GetUnixFileMode(path));
+            }
+
+            // 改写所依据的已经不是文件现在的内容（多半是别的进程刚追加了一条）：直接换上去就把那一条丢了。
+            byte[]? current = await ReadBytesAsync(path, cancellationToken).ConfigureAwait(false);
+            if (current is null || !current.AsSpan().SequenceEqual(original))
+            {
+                return false;
+            }
+
+            File.Move(temporary, path, overwrite: true);
+            return true;
+        }
+        catch (IOException ex) when ((ex.HResult & 0xFFFF) is 32 or 33)
+        {
+            return false;   // ERROR_SHARING_VIOLATION / ERROR_LOCK_VIOLATION：别的进程正开着它，等一下重来
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw StoreFailed($"改写不了 {path}", ex);
+        }
+        finally
+        {
+            try
+            {
+                File.Delete(temporary);   // 换上去了就已经不在
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // 删不掉的临时文件不影响结果。
+            }
+        }
+    }
+
+    /// <summary>读整个文件（不挡别的进程同时读写）；不存在为 <see langword="null"/>。</summary>
+    private static async ValueTask<byte[]?> ReadBytesAsync(string path, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using FileStream stream = new(
+                path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, bufferSize: 1, useAsync: true);
+            byte[] content = new byte[stream.Length];
+            await stream.ReadExactlyAsync(content, cancellationToken).ConfigureAwait(false);
+            return content;
+        }
+        catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
+        {
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            throw StoreFailed($"读不了 {path}", ex);
+        }
     }
 }

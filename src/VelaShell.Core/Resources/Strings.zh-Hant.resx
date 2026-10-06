@@ -1545,6 +1545,9 @@
   <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
     <value>伺服器 {0} 證明了它還持有另一把主機金鑰,已補記為受信任:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>伺服器 {0} 不再出示這把主機金鑰,已從受信任記錄中刪除:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} 的主機指紋已變更,使用者選擇僅本次信任(不落盤):{1}</value>
   </data>

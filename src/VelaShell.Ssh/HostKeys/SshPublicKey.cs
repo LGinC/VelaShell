@@ -142,8 +142,11 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     /// 按证书 blob 算的话，每次重签指纹都变，而用户拿来对照的永远是那把钥。
     /// </para>
     /// </remarks>
-    public string Sha256Fingerprint =>
-        "SHA256:" + Convert.ToBase64String(SHA256.HashData(PlainKey._blob)).TrimEnd('=');
+    public string Sha256Fingerprint => Sha256FingerprintOf(PlainKey._blob);
+
+    /// <summary>一段公钥 blob 的 SHA-256 指纹（<see cref="Sha256Fingerprint"/> 的样子）；本库认不得的类型也算得出来。</summary>
+    internal static string Sha256FingerprintOf(ReadOnlySpan<byte> blob) =>
+        "SHA256:" + Convert.ToBase64String(SHA256.HashData(blob)).TrimEnd('=');
 
     /// <summary>归一成 <see cref="Sha256Fingerprint"/> 的样子：<c>SHA256:</c> + 不带填充的 base64。</summary>
     /// <remarks>

@@ -15,7 +15,8 @@ namespace VelaShell.Ssh.HostKeys;
 /// 也不用去手工删行 —— 那条告警才能重新变得有分量。
 /// </para>
 /// <para>
-/// 主机密钥策略实现它、并且 <see cref="AllowHostKeyUpdates"/> 为真时，连接才做轮换；只增不删（删掉不再出示的旧钥要改写 <c>known_hosts</c>，不做）。
+/// 主机密钥策略实现它、并且 <see cref="AllowHostKeyUpdates"/> 为真时，连接才做轮换：证实了的新钥补记（<see cref="RecordHostKeysAsync"/>），
+/// 服务端不再出示的旧钥忘掉（<see cref="ForgetHostKeysAsync"/>，Q4）。
 /// </para>
 /// </remarks>
 public interface IHostKeyRotationPolicy
@@ -40,4 +41,21 @@ public interface IHostKeyRotationPolicy
     /// <param name="keys">要记的钥。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     ValueTask RecordHostKeysAsync(string host, int port, IReadOnlyList<SshPublicKey> keys, CancellationToken cancellationToken = default);
+
+    /// <summary>忘掉服务端不再出示的旧钥（这台主机记着、这次宣告里却没有的那几把）。</summary>
+    /// <param name="host">主机。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="fingerprints">要忘掉的钥的 SHA-256 指纹（<see cref="SshPublicKey.Sha256Fingerprint"/> 的样子）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>真忘掉了的那几把的指纹；删不了的（记在只读的地方、写在管着好几台主机的通配行里）不算。</returns>
+    /// <remarks>
+    /// <para>
+    /// 〔Q4，velashell-docs/zh/ssh/spec/05 §6.4.1〕只在宣告完整（没超过一次看的上限）、要证明的新钥全都证明过了时才调；当前这条连接用的钥一定不在里面。
+    /// 不删的话，换下来的钥一直受信 —— 它的私钥哪天流出去，拿着它的人照样能冒充这台主机。
+    /// </para>
+    /// <para>默认什么都不删（曾经的行为）：删掉一条记录收不回来，没实现这一条的策略照旧只增不删。</para>
+    /// </remarks>
+    ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default) =>
+        ValueTask.FromResult<IReadOnlyList<string>>([]);
 }

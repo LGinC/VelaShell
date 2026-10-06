@@ -2,6 +2,7 @@ using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.Resources;
 using VelaShell.Core.Ssh;
+using VelaShell.Infrastructure.Persistence;
 using VelaShell.Ssh.HostKeys;
 
 namespace VelaShell.Infrastructure.Ssh;
@@ -68,9 +69,9 @@ internal sealed class VelaHostKeyPolicy(
 
     /// <inheritdoc />
     /// <remarks>
-    /// 开着(OpenSSH 的 <c>UpdateHostKeys</c> 默认也开):服务端证明持有的新主机密钥补记进信任库,
+    /// 开着(OpenSSH 的 <c>UpdateHostKeys</c> 默认也开):服务端证明持有的新主机密钥补记进信任库,不再出示的旧钥删掉(Q4),
     /// 运维给服务器加一把 Ed25519、或者轮换掉老的 RSA 钥之后,用户不会看到「指纹已变更」。
-    /// 只增不删;只在这次用的钥已经永久信任过时才做(库里核对),「仅本次信任」的不算。信任库按类型分开记(API-H4),补记的就是新类型的那几条。
+    /// 只在这次用的钥已经永久信任过时才做(库里核对),「仅本次信任」的不算。信任库按类型分开记(API-H4),补记的就是新类型的那几条。
     /// </remarks>
     public bool AllowHostKeyUpdates => true;
 
@@ -106,6 +107,39 @@ internal sealed class VelaHostKeyPolicy(
                     Strings.Format("KeySvc_AlertHostKeyLearned", target, $"{key.PlainKeyType} {key.Sha256Fingerprint}")).ConfigureAwait(false);
             }
         }
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// 〔Q4〕服务端不再出示的旧钥从信任库删掉(OpenSSH 的 <c>UpdateHostKeys</c> 也删),删一把告诉用户一声。
+    /// 信任库按类型记、按类型删:一种类型的记录全都在要忘掉的指纹里才删那一种 —— 这期间又信任了同类型的别的钥,就不动。
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        string target = port == 22 ? host : $"{host}:{port}";
+        IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+        List<string> forgotten = [];
+        foreach (IGrouping<string, KnownHost> type in known.GroupBy(entry => entry.KeyType, StringComparer.Ordinal))
+        {
+            if (!type.All(entry => fingerprints.Any(fingerprint => SonnetDbHostKeyService.SameFingerprint(entry.Fingerprint, fingerprint))))
+            {
+                continue;
+            }
+
+            await hostKey.RemoveKnownHostAsync(host, port, type.Key, cancellationToken).ConfigureAwait(false);
+            foreach (KnownHost entry in type)
+            {
+                forgotten.Add(entry.Fingerprint);
+                if (alerts is not null)
+                {
+                    await alerts.RaiseAsync("hostkey-forgotten",
+                        Strings.Format("KeySvc_AlertHostKeyForgotten", target, $"{type.Key} {entry.Fingerprint}")).ConfigureAwait(false);
+                }
+            }
+        }
+        return forgotten;
     }
 
     /// <inheritdoc />

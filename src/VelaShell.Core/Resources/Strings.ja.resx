@@ -1123,6 +1123,9 @@
   <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
     <value>サーバー {0} が別のホスト鍵の所持を証明したため、信頼済みとして追加しました:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>サーバー {0} がこのホスト鍵を提示しなくなったため、信頼済みの記録から削除しました:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} のホストフィンガープリントが変更され、ユーザーは今回のみ信頼を選択しました(保存されません):{1}</value>
   </data>

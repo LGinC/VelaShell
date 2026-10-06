@@ -55,6 +55,29 @@ public sealed class VelaHostKeyPolicyTests
         await alerts.Received(1).RaiseAsync("hostkey-learned", Arg.Is<string>(m => m.Contains(fresh.PublicKey.Sha256Fingerprint)), Arg.Any<object?>());
     }
 
+    /// <summary>
+    /// 〔Q4〕服务端不再出示的旧钥按类型从信任库删掉、告诉用户一声;要忘掉的指纹之外的类型不动。
+    /// </summary>
+    [TestMethod]
+    public async Task 轮换_删掉服务端不再出示的旧钥()
+    {
+        IHostKeyService store = Substitute.For<IHostKeyService>();
+        store.FindKnownHostKeysAsync("rot.example", 22, Arg.Any<CancellationToken>())
+            .Returns([
+                new KnownHost { Host = "rot.example", Port = 22, KeyType = "ssh-rsa", Fingerprint = "staleRsa" },
+                new KnownHost { Host = "rot.example", Port = 22, KeyType = "ssh-ed25519", Fingerprint = "SHA256:current" },
+            ]);
+        ISecurityAlertService alerts = Substitute.For<ISecurityAlertService>();
+        VelaHostKeyPolicy policy = new(store, settings: null, prompt: null, alerts);
+
+        IReadOnlyList<string> forgotten = await policy.ForgetHostKeysAsync("rot.example", 22, ["SHA256:staleRsa"]);
+
+        Assert.AreSequenceEqual(["staleRsa"], forgotten.ToArray());
+        await store.Received(1).RemoveKnownHostAsync("rot.example", 22, "ssh-rsa", Arg.Any<CancellationToken>());
+        await store.DidNotReceive().RemoveKnownHostAsync("rot.example", 22, "ssh-ed25519", Arg.Any<CancellationToken>());
+        await alerts.Received(1).RaiseAsync("hostkey-forgotten", Arg.Is<string>(m => m.Contains("staleRsa")), Arg.Any<object?>());
+    }
+
     [TestMethod]
     public async Task 没记过的主机返回空()
     {

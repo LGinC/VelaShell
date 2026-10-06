@@ -63,6 +63,13 @@ internal sealed class HostKeyAliasPolicy(IHostKeyPolicy inner, string alias)
             ? rotation.RecordHostKeysAsync(alias, AliasPort, keys, cancellationToken)
             : ValueTask.CompletedTask;
 
+    /// <inheritdoc />
+    public ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default) =>
+        inner is IHostKeyRotationPolicy rotation
+            ? rotation.ForgetHostKeysAsync(alias, AliasPort, fingerprints, cancellationToken)
+            : ValueTask.FromResult<IReadOnlyList<string>>([]);
+
     private SshHostKeyContext Aliased(SshHostKeyContext context) => new()
     {
         Host = alias,

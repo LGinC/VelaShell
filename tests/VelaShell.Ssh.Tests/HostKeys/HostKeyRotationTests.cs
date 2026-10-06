@@ -126,6 +126,75 @@ public sealed class HostKeyRotationTests
         Assert.HasCount(1, await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken), "只有 TOFU 记下的那一把");
     }
 
+    /// <summary>
+    /// 〔Q4〕服务端不再出示的旧钥从 known_hosts 删掉（有新钥时证明过了才删；没有新钥时直接删）；证明是假的就不补也不删。
+    /// </summary>
+    [TestMethod]
+    public async Task 服务端不再出示的旧钥从known_hosts删掉()
+    {
+        await using Rig rig = NewKnownHosts();
+        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
+        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        SshPublicKey rsaKey = SshPublicKey.Decode(rsa.PublicKeyBlob), ecdsaKey = SshPublicKey.Decode(ecdsa.PublicKeyBlob);
+        KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
+
+        await ConnectAsync(policy, ed25519, [ed25519, rsa]);
+        Assert.HasCount(2, await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken));
+
+        // 换了一把 ECDSA、证明却是假的：这次宣告整个不可信 —— 不补，也不删 RSA。
+        SshHostKeyUpdate? forged = await ConnectAsync(policy, ed25519, [ed25519, ecdsa], corruptProof: true);
+        Assert.IsNotNull(forged);
+        Assert.IsEmpty(forged.RemovedFingerprints);
+        Assert.HasCount(2, await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken));
+
+        SshHostKeyUpdate? rotated = await ConnectAsync(policy, ed25519, [ed25519, ecdsa]);
+        Assert.IsNotNull(rotated);
+        Assert.IsNull(rotated.Skipped, rotated.Skipped);
+        Assert.AreSequenceEqual([ecdsa.KeyType], [.. rotated.Added.Select(k => k.KeyType)]);
+        Assert.AreSequenceEqual([rsaKey.Sha256Fingerprint], rotated.RemovedFingerprints.ToArray());
+        string[] lines = await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken);
+        Assert.HasCount(2, lines);
+        Assert.IsFalse(lines.Any(l => l.Contains(Convert.ToBase64String(rsaKey.Blob.Span), StringComparison.Ordinal)));
+
+        // 没有新钥、只少了一把：直接删。
+        SshHostKeyUpdate? shrunk = await ConnectAsync(policy, ed25519, [ed25519]);
+        Assert.IsNotNull(shrunk);
+        Assert.IsEmpty(shrunk.Added);
+        Assert.AreSequenceEqual([ecdsaKey.Sha256Fingerprint], shrunk.RemovedFingerprints.ToArray());
+        Assert.HasCount(1, await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken));
+    }
+
+    /// <summary>〔Q4〕宣告超过一次看的上限（16 把）：后面没看的里也许就有记着的那把 —— 不删。</summary>
+    [TestMethod]
+    public async Task 宣告不完整时不删旧钥()
+    {
+        await using Rig rig = NewKnownHosts();
+        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        TestHostKey[] many = [.. Enumerable.Range(0, 16).Select(_ => TestHostKey.Create(SshAlgorithmNames.SshEd25519))];
+        try
+        {
+            KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
+            await ConnectAsync(policy, ed25519, [ed25519, rsa]);
+
+            SshHostKeyUpdate? update = await ConnectAsync(policy, ed25519, [ed25519, .. many]);
+            Assert.IsNotNull(update);
+            Assert.IsNull(update.Skipped, update.Skipped);
+            Assert.IsEmpty(update.RemovedFingerprints);
+            string rsaBlob = Convert.ToBase64String(rsa.PublicKeyBlob);
+            Assert.Contains(l => l.Contains(rsaBlob, StringComparison.Ordinal),
+                await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken));
+        }
+        finally
+        {
+            foreach (TestHostKey key in many)
+            {
+                key.Dispose();
+            }
+        }
+    }
+
     /// <summary>没打开 AllowHostKeyUpdates：宣告来了也不理；当前的钥没有记在 known_hosts 里（不用文件的策略）：不做。</summary>
     [TestMethod]
     public async Task 没打开或者当前的钥没记着就不做()

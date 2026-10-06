@@ -1420,6 +1420,7 @@ public sealed class OpenSshInteropTests
     /// 主机密钥轮换（UpdateHostKeys）对真 sshd：头一次连接按 TOFU 记下谈成的那把钥；sshd 认证之后宣告它的全部主机密钥，
     /// 我们请它证明没记过的那几把、验过签名、补记进 known_hosts。再连一次就没有新钥了。
     /// 证明里签的是什么（字段顺序、RSA 用哪种摘要）只有真 sshd 裁决得了：错一处签名就验不过、一把都不记。
+    /// 〔Q4〕记着、sshd 却不再有的旧钥，连上之后删掉。
     /// </summary>
     [TestMethod]
     public async Task 主机密钥轮换_真sshd宣告的新钥证实之后补记()
@@ -1443,6 +1444,17 @@ public sealed class OpenSshInteropTests
             SshHostKeyUpdate second = await ConnectAndAwaitRotationAsync(policy);
             Assert.IsEmpty(second.Added, "再连就都认得了");
             Assert.HasCount(lines.Length, await File.ReadAllLinesAsync(knownHosts));
+
+            // 〔Q4〕记着一把 sshd 没有的钥（换下来的旧钥）：真 sshd 的宣告里没有它，连上之后从 known_hosts 删掉，别的行不动。
+            using TestHostKey retired = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+            SshPublicKey retiredKey = SshPublicKey.Decode(retired.PublicKeyBlob);
+            await File.AppendAllTextAsync(knownHosts, $"{lines[0].Split(' ')[0]} {retiredKey.KeyType} {Convert.ToBase64String(retiredKey.Blob.Span)}\n");
+            // 新的策略实例：上面那个缓存着文件改动之前的内容。
+            SshHostKeyUpdate third = await ConnectAndAwaitRotationAsync(
+                new KnownHostsPolicy(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true });
+            Assert.IsNull(third.Skipped, third.Skipped);
+            Assert.AreSequenceEqual([retiredKey.Sha256Fingerprint], third.RemovedFingerprints.ToArray());
+            Assert.AreSequenceEqual(lines, await File.ReadAllLinesAsync(knownHosts));
         }
         finally
         {

@@ -39,12 +39,14 @@ public sealed partial class SshConnection
         }
 
         List<byte[]> blobs = [];
+        bool isComplete;
         try
         {
             while (!reader.IsEmpty && blobs.Count < MaxAnnouncedHostKeys)
             {
                 blobs.Add(reader.ReadStringAsArray(MaxFieldBytes));
             }
+            isComplete = reader.IsEmpty;
         }
         catch (SshWireFormatException)
         {
@@ -53,15 +55,15 @@ public sealed partial class SshConnection
         }
 
         SshRekeyContext context = RekeyContext;
-        HostKeyRotation = Task.Run(() => RotateHostKeysAsync(rotation, context.Host, context.Port, blobs, _lifetime.Token));
+        HostKeyRotation = Task.Run(() => RotateHostKeysAsync(rotation, context.Host, context.Port, blobs, isComplete, _lifetime.Token));
     }
 
     private async Task RotateHostKeysAsync(
-        IHostKeyRotationPolicy rotation, string host, int port, List<byte[]> blobs, CancellationToken cancellationToken)
+        IHostKeyRotationPolicy rotation, string host, int port, List<byte[]> blobs, bool isComplete, CancellationToken cancellationToken)
     {
         try
         {
-            LastHostKeyUpdate = await TryRotateAsync(rotation, host, port, blobs, cancellationToken).ConfigureAwait(false);
+            LastHostKeyUpdate = await TryRotateAsync(rotation, host, port, blobs, isComplete, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -74,8 +76,14 @@ public sealed partial class SshConnection
         }
     }
 
+    /// <param name="rotation">策略。</param>
+    /// <param name="host">主机。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="blobs">宣告里的公钥 blob。</param>
+    /// <param name="isComplete">宣告都看过了（没超过 <see cref="MaxAnnouncedHostKeys"/>）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
     private async Task<SshHostKeyUpdate> TryRotateAsync(
-        IHostKeyRotationPolicy rotation, string host, int port, List<byte[]> blobs, CancellationToken cancellationToken)
+        IHostKeyRotationPolicy rotation, string host, int port, List<byte[]> blobs, bool isComplete, CancellationToken cancellationToken)
     {
         // 〔决策〕CA 管的主机（出示的是证书）不做：它的信任来自 CA，不来自 known_hosts 里的某一把钥。
         if (HostKey.IsCertificate)
@@ -84,11 +92,13 @@ public sealed partial class SshConnection
         }
 
         List<SshPublicKey> offered = [];
+        HashSet<string> announced = new(StringComparer.Ordinal);
         foreach (byte[] blob in blobs)
         {
             try
             {
                 SshPublicKey key = SshPublicKey.Decode(blob);
+                announced.Add(key.Sha256Fingerprint);
                 if (!key.IsCertificate && key.SignatureAlgorithms.Count > 0
                     && !offered.Any(k => k.Blob.Span.SequenceEqual(key.Blob.Span)))
                 {
@@ -97,7 +107,8 @@ public sealed partial class SshConnection
             }
             catch (SshPublicKeyException)
             {
-                // 本库认不得的类型：不管它。
+                // 本库认不得的类型：不请它证明，但它是服务端还有的钥。
+                announced.Add(SshPublicKey.Sha256FingerprintOf(blob));
             }
         }
 
@@ -116,12 +127,30 @@ public sealed partial class SshConnection
             return new SshHostKeyUpdate([], "这次连接用的主机密钥没有作为普通钥记在 known_hosts 里，不做轮换。");
         }
 
+        // 〔Q4〕记着、这次宣告里却没有的旧钥：证明（如果要的话）都过了才忘掉。宣告不完整时不算 —— 后面没看的那几把里也许就有。
+        string[] stale = isComplete ? [.. known.Where(fingerprint => !announced.Contains(fingerprint))] : [];
+
         SshPublicKey[] fresh = [.. offered.Where(o => !known.Contains(o.Sha256Fingerprint))];
-        if (fresh.Length == 0)
+        if (fresh.Length > 0)
         {
-            return new SshHostKeyUpdate([], null);
+            string? failure = await ProveAndRecordAsync(rotation, host, port, fresh, cancellationToken).ConfigureAwait(false);
+            if (failure is not null)
+            {
+                return new SshHostKeyUpdate([], failure);
+            }
         }
 
+        IReadOnlyList<string> removed = stale.Length == 0
+            ? []
+            : [.. (await rotation.ForgetHostKeysAsync(host, port, stale, cancellationToken).ConfigureAwait(false))
+                .Select(SshPublicKey.NormalizeFingerprint)];
+        return new SshHostKeyUpdate(fresh, null) { RemovedFingerprints = removed };
+    }
+
+    /// <summary>请服务端证明持有 <paramref name="fresh"/>，全都验过了就记下；返回没做成的原因，做成了为 <see langword="null"/>。</summary>
+    private async Task<string?> ProveAndRecordAsync(
+        IHostKeyRotationPolicy rotation, string host, int port, SshPublicKey[] fresh, CancellationToken cancellationToken)
+    {
         // 请服务端证明持有这几把：每把一个签名，签的是 string "hostkeys-prove-00@openssh.com" ‖ string session_id ‖ string 公钥 blob。
         ArrayBufferWriter<byte> request = new();
         SshDataWriter writer = new(request);
@@ -133,7 +162,7 @@ public sealed partial class SshConnection
             SshProtocolNames.RequestHostKeysProve, request.WrittenMemory, cancellationToken: cancellationToken).ConfigureAwait(false);
         if (!reply.Success)
         {
-            return new SshHostKeyUpdate([], "服务端拒绝证明它宣告的主机密钥。");
+            return "服务端拒绝证明它宣告的主机密钥。";
         }
 
         SshDataReader signatures = new(new ReadOnlySequence<byte>(reply.Payload));
@@ -146,18 +175,18 @@ public sealed partial class SshConnection
             }
             catch (SshWireFormatException)
             {
-                return new SshHostKeyUpdate([], "服务端的证明少了签名，一把都不记。");
+                return "服务端的证明少了签名，一把都不记。";
             }
 
             // 〔决策〕一把签不过就一把都不记：同一个应答里有假的，其余的也不可信。RSA 只认 SHA-2 的签名。
             if (!VerifiesHostKeyProof(key, signature))
             {
-                return new SshHostKeyUpdate([], $"服务端对 {key.KeyType} {key.Sha256Fingerprint} 的证明签名验不过，一把都不记。");
+                return $"服务端对 {key.KeyType} {key.Sha256Fingerprint} 的证明签名验不过，一把都不记（旧钥也不删）。";
             }
         }
 
         await rotation.RecordHostKeysAsync(host, port, fresh, cancellationToken).ConfigureAwait(false);
-        return new SshHostKeyUpdate(fresh, null);
+        return null;
     }
 
     /// <summary>验一把钥的持有证明。</summary>

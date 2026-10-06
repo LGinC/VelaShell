@@ -1545,6 +1545,9 @@
   <data name="KeySvc_AlertHostKeyLearned" xml:space="preserve">
     <value>服务器 {0} 证明了它还持有另一把主机密钥,已补记为受信:{1}</value>
   </data>
+  <data name="KeySvc_AlertHostKeyForgotten" xml:space="preserve">
+    <value>服务器 {0} 不再出示这把主机密钥,已从受信记录里删掉:{1}</value>
+  </data>
   <data name="KeySvc_AlertChangedTrustOnce" xml:space="preserve">
     <value>{0} 的主机指纹已变更,用户选择仅本次信任(不落盘):{1}</value>
   </data>

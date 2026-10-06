@@ -89,8 +89,9 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
     public bool IsHashingHostNames { get; init; }
 
     /// <summary>
-    /// 主机密钥轮换（<c>UpdateHostKeys yes</c>，见 <see cref="IHostKeyRotationPolicy"/>）：服务端证明持有的新主机密钥补记进 <c>known_hosts</c>。
-    /// 默认 <see langword="false"/>。不用文件（<see cref="WithoutFile"/>）时打开了也不记。
+    /// 主机密钥轮换（<c>UpdateHostKeys yes</c>，见 <see cref="IHostKeyRotationPolicy"/>）：服务端证明持有的新主机密钥补记进 <c>known_hosts</c>，
+    /// 不再出示的旧钥从里面删掉（只删专属于这台主机的记录，见 <see cref="KnownHostsFile.RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/>）。
+    /// 默认 <see langword="false"/>。不用文件（<see cref="WithoutFile"/>）时打开了也不记、不删。
     /// </summary>
     public bool AllowHostKeyUpdates { get; init; }
 
@@ -157,6 +158,52 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
             await KnownHostsFile.AppendAsync(host, port, key, _path, IsHashingHostNames, cancellationToken).ConfigureAwait(false);
         }
         _cache = null;
+    }
+
+    /// <inheritdoc />
+    /// <remarks>只删自己那份文件里专属于这台主机的记录；全局的几份只读，记在那里的旧钥删不了，不算进返回值。</remarks>
+    public async ValueTask<IReadOnlyList<string>> ForgetHostKeysAsync(
+        string host, int port, IReadOnlyList<string> fingerprints, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(fingerprints);
+        if (_withoutFile || !AllowHostKeyUpdates || fingerprints.Count == 0)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync(host, port, fingerprints, _path, cancellationToken)
+            .ConfigureAwait(false);
+        _cache = null;
+        return removed;
+    }
+
+    /// <summary>
+    /// 删掉这台主机在自己那份 <c>known_hosts</c> 里记着的普通主机密钥 —— 「密钥变了」、确认是服务器重装之后一键删掉旧的记录，下次连接按「没见过」处理。
+    /// </summary>
+    /// <param name="host">主机（与裁决时同一个名字）。</param>
+    /// <param name="port">端口。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <returns>删掉的钥的指纹；不用文件时、没有可删的时为空。</returns>
+    /// <exception cref="SshConnectException">改写不了：<see cref="SshFailureReason.HostKeyStoreFailed"/>。</exception>
+    /// <remarks>
+    /// 〔Q4，velashell-docs/zh/ssh/spec/03 §5.4〕只删专属于这台主机的记录（规则见
+    /// <see cref="KnownHostsFile.RemoveHostKeysAsync(string, int, IReadOnlyCollection{string}?, string?, CancellationToken)"/>）：
+    /// <c>@revoked</c>、<c>@cert-authority</c>、通配行与全局的几份都不动 —— 冲突要是出在那些行上，删完再连照样报「变了」，消息里有行号。
+    /// 该不该删由调用方（使用者）决定：本库从不自己删，「变了」时的裁决照旧是拒绝。
+    /// </remarks>
+    public async ValueTask<IReadOnlyList<string>> RemoveHostKeysAsync(string host, int port, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        if (_withoutFile)
+        {
+            return [];
+        }
+
+        IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync(host, port, fingerprints: null, _path, cancellationToken)
+            .ConfigureAwait(false);
+        _cache = null;
+        return removed;
     }
 
     /// <inheritdoc />

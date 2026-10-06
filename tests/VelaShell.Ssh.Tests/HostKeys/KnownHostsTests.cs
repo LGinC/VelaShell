@@ -628,6 +628,159 @@ public sealed class KnownHostsTests
         }
     }
 
+    // ------------------------------------------------------------ 删记录（Q4）
+
+    /// <summary>
+    /// 〔Q4〕只动专属于这台主机的记录：散列行整行删，几个名字的行只拿掉这台主机的名字；
+    /// 吊销行、通配行、别的主机与别的端口、注释与写坏的行连同换行符原样留着。
+    /// </summary>
+    [TestMethod]
+    public async Task 删记录只动专属于这台主机的那几行()
+    {
+        SshPublicKey k1 = MakeKey(), k2 = MakeKey(), k3 = MakeKey(), k4 = MakeKey(), k5 = MakeKey(), k6 = MakeKey(), k7 = MakeKey();
+        string content =
+            "# 注释\r\n" +
+            Line("example.com", k1) + "\r\n" +
+            Line("example.com,10.0.0.5", k2) + "\n" +
+            KnownHostsFile.FormatEntry("example.com", 22, k3, hashHostName: true) + "\n" +
+            Line("*.com", k4) + "\n" +
+            "@revoked " + Line("example.com", k5) + "\n" +
+            Line("other.example", k1) + "\n" +
+            Line("[example.com]:2222", k6) + "\n" +
+            "写坏的行\n" +
+            Line("Example.COM", k7);
+        string path = Path.Combine(Path.GetTempPath(), $"kh-{Guid.NewGuid():N}");
+        await File.WriteAllTextAsync(path, content);
+
+        try
+        {
+            IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync("example.com", 22, path: path);
+
+            Assert.AreSequenceEqual(
+                new[] { k1, k2, k3, k7 }.Select(k => k.Sha256Fingerprint).ToArray(), removed.ToArray());
+            Assert.AreEqual(
+                "# 注释\r\n" +
+                Line("10.0.0.5", k2) + "\n" +
+                Line("*.com", k4) + "\n" +
+                "@revoked " + Line("example.com", k5) + "\n" +
+                Line("other.example", k1) + "\n" +
+                Line("[example.com]:2222", k6) + "\n" +
+                "写坏的行\n",
+                await File.ReadAllTextAsync(path));
+            Assert.IsEmpty(Directory.GetFiles(Path.GetDirectoryName(path)!, Path.GetFileName(path) + ".*.tmp"), "临时文件没留下");
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>〔Q4〕给了指纹只删那几把（带不带填充、有没有前缀都认）；非 22 端口按 [host]:port 认。</summary>
+    [TestMethod]
+    public async Task 删记录给了指纹只删那几把()
+    {
+        SshPublicKey k1 = MakeKey(), k2 = MakeKey();
+        string path = await WriteTempAsync(
+            Line("[example.com]:2222", k1) + "\n" + Line("[example.com]:2222", k2) + "\n" + Line("example.com", k1));
+
+        try
+        {
+            string bare = k1.Sha256Fingerprint["SHA256:".Length..] + "=";
+            IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync("example.com", 2222, [bare], path);
+
+            Assert.AreSequenceEqual([k1.Sha256Fingerprint], removed.ToArray());
+            Assert.AreEqual(Line("[example.com]:2222", k2) + "\n" + Line("example.com", k1) + "\n", await File.ReadAllTextAsync(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>〔Q4〕没有可删的：文件一个字节都不动（连写入时间都不变）；文件不存在不是错。</summary>
+    [TestMethod]
+    public async Task 删记录没有可删的时文件不动()
+    {
+        SshPublicKey key = MakeKey();
+        string path = await WriteTempAsync(Line("other.example", key));
+
+        try
+        {
+            DateTime written = File.GetLastWriteTimeUtc(path);
+            Assert.IsEmpty(await KnownHostsFile.RemoveHostKeysAsync("example.com", 22, path: path));
+            Assert.IsEmpty(await KnownHostsFile.RemoveHostKeysAsync("other.example", 22, [MakeKey().Sha256Fingerprint], path));
+            Assert.AreEqual(written, File.GetLastWriteTimeUtc(path));
+            Assert.AreEqual(Line("other.example", key) + "\n", await File.ReadAllTextAsync(path));
+
+            Assert.IsEmpty(await KnownHostsFile.RemoveHostKeysAsync("example.com", 22, path: path + ".none"));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// 〔Q4〕冲突重试：改写之后、替换之前别的进程追加了一条 —— 不能把它丢掉，按新内容重来一轮。
+    /// </summary>
+    [TestMethod]
+    public async Task 删记录时别的进程刚追加的那一条不丢()
+    {
+        SshPublicKey old = MakeKey(), late = MakeKey();
+        string path = await WriteTempAsync(Line("example.com", old));
+
+        try
+        {
+            List<int> attempts = [];
+            IReadOnlyList<string> removed = await KnownHostsFile.RemoveHostKeysAsync(
+                "example.com", 22, fingerprints: null, path,
+                beforeReplace: async attempt =>
+                {
+                    attempts.Add(attempt);
+                    if (attempt == 1)
+                    {
+                        await KnownHostsFile.AppendAsync("late.example", 22, late, path);
+                    }
+                },
+                CancellationToken.None);
+
+            Assert.AreSequenceEqual([1, 2], attempts.ToArray());
+            Assert.AreSequenceEqual([old.Sha256Fingerprint], removed.ToArray());
+            IReadOnlyList<KnownHostEntry> entries = KnownHostsFile.Parse(await File.ReadAllTextAsync(path));
+            Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(entries, "late.example", 22, late).Status);
+            Assert.AreEqual(KnownHostStatus.Unknown, KnownHostsFile.Lookup(entries, "example.com", 22, old).Status);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>〔Q4〕「密钥变了」、确认是重装之后一键删掉旧记录：下次按「没见过」处理（策略的缓存也作废了）。</summary>
+    [TestMethod]
+    public async Task 密钥变了确认之后一键删掉旧记录()
+    {
+        SshPublicKey old = MakeKey(), current = MakeKey();
+        string path = await WriteTempAsync(Line("example.com", old));
+
+        try
+        {
+            KnownHostsPolicy policy = new(path);
+            Assert.AreEqual(SshFailureReason.HostKeyChanged, (await policy.EvaluateAsync(Context("example.com", 22, current))).Reason);
+
+            Assert.AreSequenceEqual([old.Sha256Fingerprint], (await policy.RemoveHostKeysAsync("example.com", 22)).ToArray());
+
+            SshHostKeyVerdict after = await policy.EvaluateAsync(Context("example.com", 22, current));
+            Assert.AreNotEqual(SshFailureReason.HostKeyChanged, after.Reason);
+            Assert.Contains("没见过", after.Message!);
+            Assert.IsEmpty(await KnownHostsPolicy.WithoutFile().RemoveHostKeysAsync("example.com", 22));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
     [TestMethod]
     public async Task 文件末尾没有换行时追加不会把两条记录粘在一起()
     {
