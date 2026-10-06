@@ -437,6 +437,54 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
         Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
     }
 
+    /// <summary>
+    /// 跳板的主机密钥要用户确认（首次连跳板，确认框摆在那里等人看指纹）：确认的时间同样不算进外层的连接超时 ——
+    /// 直接拨号与回调建的跳板两种都是。曾经只测过跳板上输口令。
+    /// </summary>
+    [TestMethod]
+    [DataRow(false, DisplayName = "跳板拨号器")]
+    [DataRow(true, DisplayName = "回调建的跳板")]
+    public async Task 确认跳板主机密钥的时间不算进外层的连接超时(bool viaCallback)
+    {
+        List<string> tunnelTargets = [];
+        await using JumpHost jump = new(tunnelTargets);
+        ThinkingPolicy thinking = new(TimeSpan.FromSeconds(1.5));
+        SshConnectionOptions jumpOptions = jump.Options with { HostKeyPolicy = thinking };
+
+        ISshTransportDialer dialer = viaCallback
+            ? DialerChain.Jump(
+                new SshEndPoint(jumpOptions.Host, jumpOptions.Port),
+                (context, cancellationToken) => context.ConnectAsync(jumpOptions, cancellationToken))
+            : new SshJumpDialer(jumpOptions);
+
+        SshConnectionOptions options = new($"joe@{TargetHost}:22")
+        {
+            Dialer = dialer,
+            HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
+            Credentials = [new PasswordCredential("hunter2")],
+            ConnectTimeout = TimeSpan.FromSeconds(1),
+        };
+
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await using SshConnection connection = await SshConnection.ConnectAsync(options);
+        Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
+        Assert.AreEqual(1, thinking.Evaluations, "跳板的主机密钥要经过这个策略");
+        Assert.IsGreaterThan(TimeSpan.FromSeconds(1.4), elapsed.Elapsed, "前提：确认确实拖过了外层的连接超时");
+    }
+
+    /// <summary>想一会儿再信任：扮演摆在那里等人看指纹的确认框。</summary>
+    private sealed class ThinkingPolicy(TimeSpan thinking) : IHostKeyPolicy
+    {
+        public int Evaluations { get; private set; }
+
+        public async ValueTask<SshHostKeyVerdict> EvaluateAsync(SshHostKeyContext context, CancellationToken cancellationToken = default)
+        {
+            Evaluations++;
+            await Task.Delay(thinking, cancellationToken);
+            return SshHostKeyVerdict.Accept;
+        }
+    }
+
     [TestMethod]
     public async Task 外层计时器在跳板握手时到点_报超时并说清是哪一跳()
     {
