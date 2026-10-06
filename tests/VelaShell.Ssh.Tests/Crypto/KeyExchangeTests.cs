@@ -90,6 +90,38 @@ public sealed class KeyExchangeTests
             () => client.ComputeSharedSecret(new byte[32]));
     }
 
+    /// <summary>
+    /// 密钥交换的失败是建连阶段的失败（<see cref="Diagnostics.SshConnectException"/>），与协商失败同一层：
+    /// 按 getting-started 的说法分流的调用方曾经把它落进兜底分支。
+    /// </summary>
+    [TestMethod]
+    public void 密钥交换失败是建连阶段的失败()
+    {
+        using Curve25519KeyExchange client = new();
+        _ = client.CreateClientPublicValue();
+
+        SshKeyExchangeException error = Assert.ThrowsExactly<SshKeyExchangeException>(() => client.ComputeSharedSecret(new byte[31]));
+
+        Assert.IsInstanceOfType<Diagnostics.SshConnectException>(error);
+        Assert.AreEqual(Diagnostics.SshFailureReason.ProtocolError, error.Reason);
+        Assert.AreEqual(Diagnostics.SshPhase.KeyExchange, error.Phase);
+    }
+
+    /// <summary>算法清单与工厂表对不上是库自己的编程错误：<see cref="InvalidOperationException"/>，不借对端的名义报协议错误。</summary>
+    [TestMethod]
+    [DataRow("no-such-cipher@example.com", "hmac-sha2-256", DisplayName = "加密算法")]
+    [DataRow("aes128-ctr", "no-such-mac@example.com", DisplayName = "MAC 算法")]
+    [DataRow("aes128-ctr", null, DisplayName = "非 AEAD 却没有 MAC")]
+    public void 工厂表里没有的算法是编程错误(string encryption, string? mac)
+    {
+        SshNegotiatedAlgorithms algorithms = new(
+            "curve25519-sha256", "ssh-ed25519", encryption, encryption, mac, mac, "none", "none",
+            StrictKeyExchange: true, PeerSupportsExtensionInfo: false);
+
+        Assert.ThrowsExactly<InvalidOperationException>(() => SshSessionKeys.Derive(
+            algorithms, HashAlgorithmName.SHA256, new byte[32], SshKexValueEncoding.Mpint, new byte[32], new byte[32]));
+    }
+
     [TestMethod]
     public void Curve25519拒绝长度不对的公钥()
     {

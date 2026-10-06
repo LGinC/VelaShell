@@ -91,6 +91,12 @@ public sealed class SshInteropTests
     /// 主窗口的自动重连只该对前者生效:连不上值得再试一次,认证不过再试一百次也一样,
     /// 而且每次都会在服务端留一条失败登录。
     /// </remarks>
+    /// <summary>密钥交换的失败(对端公开值不合法)是建连失败,不是一般的客户端错误。</summary>
+    [TestMethod]
+    public void Translate_KeyExchangeFailure_MapsToConnectionException() =>
+        Assert.IsInstanceOfType<VelaSshConnectionException>(
+            SshInterop.Translate(new VelaShell.Ssh.Crypto.Kex.SshKeyExchangeException("公开值长度不对")));
+
     [TestMethod]
     [DataRow(SshFailureReason.TcpRefused)]
     [DataRow(SshFailureReason.DnsFailure)]

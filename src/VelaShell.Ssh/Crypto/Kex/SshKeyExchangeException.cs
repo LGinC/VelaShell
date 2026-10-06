@@ -9,12 +9,19 @@ namespace VelaShell.Ssh.Crypto.Kex;
 
 /// <summary>密钥交换失败。</summary>
 /// <remarks>
-/// 是 <see cref="SshException"/>：曾经直接继承 <see cref="Exception"/>，按 <c>catch (SshException)</c>
-/// 兜库的错误时漏掉它，建连时它原样漏给调用方。原因记成 <see cref="SshFailureReason.ProtocolError"/>：
-/// 它最常见于对端给的公开值不合法（长度不对、不在曲线上、弱值）；「算法名没实现」那一类在连接前的
-/// <c>SshAlgorithmSet.Validate()</c> 就挡住了。
+/// <para>
+/// 是 <see cref="SshConnectException"/>（建连阶段的失败），与 <see cref="SshNegotiationException"/> 同一层：
+/// 曾经直接继承 <see cref="SshException"/>，而 getting-started 写的是「握手阶段的失败是 <see cref="SshConnectException"/>」——
+/// 按那个类型分流的调用方（宿主的异常翻译）把它落进了兜底分支，建连失败被当成一般错误。重协商时失败也是它，
+/// 那时会话随之断开，与重协商时协商失败一样。
+/// </para>
+/// <para>
+/// 原因记成 <see cref="SshFailureReason.ProtocolError"/>：它报的是对端给的公开值不合法（长度不对、不在曲线上、弱值）。
+/// 「算法名没实现」那一类在连接前的 <c>SshAlgorithmSet.Validate()</c> 就挡住了；清单与实现表万一对不上，
+/// 那是库自己的编程错误，报 <see cref="InvalidOperationException"/>，不借这个异常的名义。
+/// </para>
 /// </remarks>
-public sealed class SshKeyExchangeException : SshException
+public sealed class SshKeyExchangeException : SshConnectException
 {
     /// <summary>用给定消息创建异常。</summary>
     public SshKeyExchangeException(string message)

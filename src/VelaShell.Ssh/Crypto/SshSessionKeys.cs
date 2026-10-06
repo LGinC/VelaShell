@@ -124,7 +124,8 @@ internal static class SshSessionKeys
                         };
                         if (mac is null)
                         {
-                            throw new SshKeyExchangeException($"{encryption} 不是 AEAD，必须协商出 MAC 算法。");
+                            // 协商对非 AEAD 的算法一定会选出 MAC（选不出是 SshNegotiationException）—— 到这里是库自己的错。
+                            throw new InvalidOperationException($"{encryption} 不是 AEAD，协商却没有给出 MAC 算法。");
                         }
 
                         (SshMacAlgorithm macAlgorithm, int macBytes, bool etm) = ParseMac(mac);
@@ -135,7 +136,9 @@ internal static class SshSessionKeys
                     }
 
                 default:
-                    throw new SshKeyExchangeException($"尚未实现的加密算法：{encryption}。");
+                    // 〔velashell-docs/zh/ssh/spec/08 §2〕没实现的算法名在连接前就被 Validate 挡住；
+                    // 到这里说明算法清单与这张工厂表对不上，是库自己的编程错误，不是对端的错。
+                    throw new InvalidOperationException($"算法清单里有、工厂表里没有的加密算法：{encryption}。");
             }
         }
         finally
@@ -164,7 +167,7 @@ internal static class SshSessionKeys
         SshAlgorithmNames.HmacSha512 => (SshMacAlgorithm.HmacSha512, 64, false),
         SshAlgorithmNames.HmacSha1Etm => (SshMacAlgorithm.HmacSha1, 20, true),
         SshAlgorithmNames.HmacSha1 => (SshMacAlgorithm.HmacSha1, 20, false),
-        _ => throw new SshKeyExchangeException($"尚未实现的 MAC 算法：{mac}。"),
+        _ => throw new InvalidOperationException($"算法清单里有、工厂表里没有的 MAC 算法：{mac}。"),
     };
 
     private static byte[] DeriveKey(
