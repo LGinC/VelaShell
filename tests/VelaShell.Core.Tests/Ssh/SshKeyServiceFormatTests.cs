@@ -39,19 +39,12 @@ public class SshKeyServiceFormatTests
             Assert.StartsWith("-----BEGIN OPENSSH PRIVATE KEY-----", pem,
                 "私钥必须是 OpenSSH 格式 —— 它还要给 ssh-copy-id 与别的客户端用");
 
-            // 真正加载一遍,并让它**签一次名、再用公钥验回去**。
-            // 只「加载不抛」是不够的:一把结构合法、内容错位的私钥照样加载得动,
-            // 要到真去连服务器才以签名验证失败告终(见下面那条 Ed25519 用例的说明)。
-            //
-            // 顺带把上一版这里的反射去掉了:原先要反射进底层库的 internal LoadKeyAsync
-            // 才验得了「格式被接受」—— 那种断言随上游改一个方法名就会静默失效。
+            // 真正加载一遍,并让它签一次名。「签出来的名用公钥验得回去」由 SSH 库的
+            // PrivateKeyWriteTests 把关 —— 生成与写出都在库里(InMemorySshSigner.Generate* 与
+            // SshPrivateKeyFile.Format),宿主只是把两者接起来;Ed25519 的字节布局另见下面那条用例。
             using InMemorySshSigner signer = await SshPrivateKeyFile.LoadAsync(info.PrivateKeyPath);
-            byte[] data = "velashell key self-check"u8.ToArray();
-            string sigAlgorithm = signer.SignatureAlgorithms[0];
-            byte[] signature = await signer.SignAsync(data, sigAlgorithm);
-
-            Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, sigAlgorithm),
-                "生成的私钥签的名,它自己的公钥验不过 —— 密钥材料写错位了");
+            byte[] signature = await signer.SignAsync("velashell key self-check"u8.ToArray(), signer.SignatureAlgorithms[0]);
+            Assert.IsNotEmpty(signature, "加载回来的私钥签不出名");
 
             // 公钥行也必须与私钥里的那一把一致,否则 authorized_keys 放上去照样登不上。
             byte[] publicLineBlob = Convert.FromBase64String(info.PublicKeyLine!.Split(' ')[1]);

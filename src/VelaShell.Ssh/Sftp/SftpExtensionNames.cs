@@ -7,8 +7,8 @@
 
 namespace VelaShell.Ssh.Sftp;
 
-/// <summary>我们会用到的 OpenSSH 扩展名。</summary>
-public static class SftpExtensionNames
+/// <summary>本库实现了的 SFTP 扩展名（公开面是 <see cref="SftpCapabilities"/> 的 <c>Has*</c> 与 <see cref="SftpCapabilities.RawExtensions"/>）。</summary>
+internal static class SftpExtensionNames
 {
     /// <summary>原子重命名（覆盖目标）。</summary>
     public const string PosixRename = "posix-rename@openssh.com";

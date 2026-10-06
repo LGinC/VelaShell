@@ -133,7 +133,7 @@ public sealed record X11Display(string Host, int Number, int Screen, string? Uni
         int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value);
 
     /// <summary>从环境变量读。</summary>
-    public static X11Display? FromEnvironment() =>
+    internal static X11Display? FromEnvironment() =>
         Parse(Environment.GetEnvironmentVariable("DISPLAY"));
 
     /// <summary>这个显示可以从哪些端点连上去，按优先顺序。</summary>
@@ -149,7 +149,7 @@ public sealed record X11Display(string Host, int Number, int Screen, string? Uni
     /// 都听 TCP <c>6000+N</c>，所以直接走 TCP。
     /// </para>
     /// </remarks>
-    public IReadOnlyList<EndPoint> GetCandidateEndPoints()
+    internal IReadOnlyList<EndPoint> GetCandidateEndPoints()
     {
         List<EndPoint> candidates = [];
 

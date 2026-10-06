@@ -368,7 +368,7 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
     /// 不比对就等于让对端自选签名算法，那是一条降级攻击路径。
     /// </param>
     /// <returns>验证是否通过。</returns>
-    public bool VerifySignature(
+    internal bool VerifySignature(
         ReadOnlySpan<byte> signatureBlob, ReadOnlySpan<byte> signedData, string expectedAlgorithm)
     {
         SshDataReader reader = new(new ReadOnlySequence<byte>(signatureBlob.ToArray()));

@@ -488,7 +488,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     /// <param name="options">通道参数。</param>
     /// <param name="cancellationToken">取消令牌。</param>
     /// <exception cref="SshChannelException">对端拒绝，或本端限额已满。</exception>
-    public async ValueTask<SshChannel> OpenChannelAsync(
+    internal async ValueTask<SshChannel> OpenChannelAsync(
         string channelType,
         ReadOnlyMemory<byte> typeSpecificPayload = default,
         SshChannelOptions? options = null,

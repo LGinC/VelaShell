@@ -32,7 +32,7 @@ public sealed class PrivateKeyWriteTests
     }
 
     [TestMethod]
-    public void 写出的文件本库读得回来_口令不对时报口令不对()
+    public async Task 写出的文件本库读得回来_口令不对时报口令不对()
     {
         foreach ((string name, Func<InMemorySshSigner> generate) in Keys())
         {
@@ -47,6 +47,13 @@ public sealed class PrivateKeyWriteTests
             using (InMemorySshSigner reread = SshPrivateKeyFile.Parse(plain))
             {
                 Assert.AreSequenceEqual(key.PublicKey.Blob.ToArray(), reread.PublicKey.Blob.ToArray(), name);
+
+                // 读回来的私钥签的名，原来那把的公钥要验得过：结构合法、材料错位的私钥照样读得进来
+                // （例如 Ed25519 只写了 32 字节种子），要到真去连服务器才以验签失败告终。
+                byte[] data = "velashell key self-check"u8.ToArray();
+                string algorithm = reread.SignatureAlgorithms[0];
+                byte[] signature = await reread.SignAsync(data, algorithm);
+                Assert.IsTrue(key.PublicKey.VerifySignature(signature, data, algorithm), $"{name}：读回来的私钥签的名验不过 —— 密钥材料写错位了");
             }
             using (InMemorySshSigner reread = SshPrivateKeyFile.Parse(sealedText, Passphrase))
             {

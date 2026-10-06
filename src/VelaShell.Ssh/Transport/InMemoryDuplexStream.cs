@@ -9,7 +9,7 @@ using System.IO.Pipelines;
 namespace VelaShell.Ssh.Transport;
 
 /// <summary>
-/// <see cref="InMemoryTransport.CreatePair"/> 的一端。
+/// <see cref="InMemoryTransport.CreatePair()"/> 的一端。
 /// </summary>
 /// <remarks>
 /// 除了 <see cref="Stream"/> 的常规读写，它还提供 <see cref="CompleteWrites"/> ——
