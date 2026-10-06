@@ -192,6 +192,29 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         }, ct);
     }
 
+    /// <inheritdoc />
+    public bool SupportsServerCopy => _fs is { } fs && fs.Capabilities.HasCopyData;
+
+    /// <inheritdoc />
+    public Task CopyOnServerAsync(string sourcePath, string destPath, Action<ulong>? copyCallback = null,
+        CancellationToken cancellationToken = default) =>
+        GuardedAsync(async () =>
+        {
+            SftpFileSystem fs = EnsureConnected();
+            if (!fs.Capabilities.HasCopyData)
+            {
+                throw new NotSupportedException("The server does not support copy-data.");
+            }
+            IProgress<long>? progress = copyCallback is null ? null : new CopyProgress(copyCallback);
+            await fs.CopyFileAsync(sourcePath, destPath, overwrite: true, progress, cancellationToken).ConfigureAwait(false);
+        }, cancellationToken);
+
+    /// <summary>把库按段报的累计字节数原样转给回调(同步,不经同步上下文)。</summary>
+    private sealed class CopyProgress(Action<ulong> callback) : IProgress<long>
+    {
+        public void Report(long value) => callback((ulong)value);
+    }
+
     /// <summary>关一个写到一半、已经不打算要了的远端流:CLOSE 照发,关流报的错不再往外抛。</summary>
     private static async ValueTask CloseQuietlyAsync(SftpFileStream remote)
     {

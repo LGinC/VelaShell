@@ -467,8 +467,8 @@ public class SftpService : ISftpService
     }
 
     /// <summary>
-    /// 经由临时本地文件复制单个远端文件,绝不在内存中缓冲整个文件。
-    /// 复用 DownloadFileAsync/UploadFileAsync 以进行限速与取消。
+    /// 复制单个远端文件:服务端支持 <c>copy-data</c> 时在服务端内复制(数据不出服务器);
+    /// 否则经由临时本地文件下载再上传,绝不在内存中缓冲整个文件(复用 DownloadFileAsync/UploadFileAsync 以进行限速与取消)。
     /// </summary>
     private async Task CopySingleFileAsync(
         Guid sessionId,
@@ -477,6 +477,11 @@ public class SftpService : ISftpService
         IProgress<TransferProgress>? progress,
         CancellationToken cancellationToken)
     {
+        if (await TryCopyOnServerAsync(sessionId, sourcePath, destPath, progress, cancellationToken).ConfigureAwait(false))
+        {
+            return;
+        }
+
         string tempDir = Path.Combine(Path.GetTempPath(), "VelaShell", "copy");
         Directory.CreateDirectory(tempDir);
         string tempPath = Path.Combine(tempDir, Guid.NewGuid().ToString("N"));
@@ -493,6 +498,54 @@ public class SftpService : ISftpService
         {
             try { File.Delete(tempPath); } catch { /* 尽力而为 */ }
         }
+    }
+
+    /// <summary>
+    /// 同一台服务器上在服务端内复制(SFTP 的 <c>copy-data</c>):省掉双倍的网络流量与本机的临时文件,
+    /// 几 GB 的文件从几分钟变成几秒。服务端不支持时返回 false,由调用方走下载再上传。
+    /// </summary>
+    /// <remarks>
+    /// 进度照常按字节报(库按段报,每段默认 64 MiB)。保留时间戳(设置 → 文件传输)时把目标的修改时间设成源的 ——
+    /// 下载再上传那条路本来就是这个结果,服务端内复制不该悄悄换成「现在」。尽力而为,设不上不算复制失败。
+    /// </remarks>
+    private async Task<bool> TryCopyOnServerAsync(
+        Guid sessionId,
+        string sourcePath,
+        string destPath,
+        IProgress<TransferProgress>? progress,
+        CancellationToken cancellationToken)
+    {
+        ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        if (!client.SupportsServerCopy)
+        {
+            return false;
+        }
+
+        SftpEntry? source = await client.GetEntryAsync(sourcePath, cancellationToken).ConfigureAwait(false);
+        long total = source?.Length ?? 0;
+        var reporter = new TransferProgressThrottle(progress, GetUnixFileName(destPath), total);
+        Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
+
+        await client.CopyOnServerAsync(sourcePath, destPath, onBytes, cancellationToken).ConfigureAwait(false);
+        reporter.ReportFinal(total);
+
+        (_, _, bool preserveTimestamps, _) = await GetTransferTuningAsync().ConfigureAwait(false);
+        if (preserveTimestamps && source is { LastWriteTime: var mtime } && mtime != default)
+        {
+            try
+            {
+                await client.SetLastWriteTimeAsync(destPath, new DateTimeOffset(mtime), cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                // 时间戳只是尽力而为(理由同 UploadFileAsync)。
+            }
+        }
+        return true;
     }
 
     /// <summary>

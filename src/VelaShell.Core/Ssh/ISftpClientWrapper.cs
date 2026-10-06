@@ -151,6 +151,19 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// </summary>
     Task CreateSymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken = default);
 
+    /// <summary>服务端能不能在自己那边复制文件(SFTP 的 <c>copy-data</c>):能的话复制不必下载再上传。</summary>
+    bool SupportsServerCopy { get; }
+
+    /// <summary>
+    /// 在服务端内把 <paramref name="sourcePath" /> 复制到 <paramref name="destPath" />(目标已存在就覆盖),数据不出服务器。
+    /// </summary>
+    /// <param name="sourcePath">源文件。</param>
+    /// <param name="destPath">目标文件。</param>
+    /// <param name="copyCallback">已复制的累计字节数(按段报)。</param>
+    /// <param name="cancellationToken">在两段之间生效。</param>
+    /// <exception cref="NotSupportedException">服务端不支持(先看 <see cref="SupportsServerCopy" />)。</exception>
+    Task CopyOnServerAsync(string sourcePath, string destPath, Action<ulong>? copyCallback = null, CancellationToken cancellationToken = default);
+
     /// <summary>上传,带着关闭句柄之前要做的事(见 <see cref="RemoteUploadOptions" />)。</summary>
     Task UploadAsync(Stream input, string path, RemoteUploadOptions options,
         Action<ulong>? uploadCallback = null, CancellationToken cancellationToken = default);

@@ -1133,6 +1133,24 @@ public class SftpServiceTests
         await _sftpClient.DidNotReceive().DownloadAsync(Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>服务端支持 copy-data:在服务端内复制,不下载也不上传;保留时间戳时目标的修改时间设成源的。</summary>
+    [TestMethod]
+    public async Task CopyAsync_UsesTheServerSideCopy_WhenSupported()
+    {
+        var mtime = new DateTime(2025, 1, 2, 3, 4, 5, DateTimeKind.Local);
+        SftpEntry file = CreateMockSftpFile("big.iso", "/data/big.iso", 4_000_000_000, false, "rw-r--r--") with { LastWriteTime = mtime };
+        _sftpClient.GetEntryAsync(file.FullName, Arg.Any<CancellationToken>()).Returns(file);
+        _sftpClient.SupportsServerCopy.Returns(true);
+        var service = new SftpService(_connectionService, _ => _sftpClient);   // 无设置服务 = 默认保留时间戳
+
+        await service.CopyAsync(_sessionId, file.FullName, "/data/big-copy.iso");
+
+        await _sftpClient.Received(1).CopyOnServerAsync("/data/big.iso", "/data/big-copy.iso", Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().DownloadAsync(Arg.Any<string>(), Arg.Any<Stream>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.DidNotReceive().UploadAsync(Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        await _sftpClient.Received(1).SetLastWriteTimeAsync("/data/big-copy.iso", new DateTimeOffset(mtime), Arg.Any<CancellationToken>());
+    }
+
     [TestMethod]
     public async Task ListDirectoryAsync_CarriesSymlinkFlagTargetAndLPermissionPrefix()
     {

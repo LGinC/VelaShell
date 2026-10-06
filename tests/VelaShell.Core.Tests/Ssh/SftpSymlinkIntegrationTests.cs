@@ -125,6 +125,17 @@ public class SftpSymlinkIntegrationTests
             Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
             Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
 
+            // 服务端内复制(copy-data):数据不出服务器,复制出来的内容一致。
+            Assert.IsTrue(sftp.SupportsServerCopy);
+            string copySource = $"/tmp/vela-copy-{Guid.NewGuid():N}.bin";
+            await ssh.RunCommandAsync($"head -c 200000 /dev/urandom > {copySource}");
+            ulong copied = 0;
+            await sftp.CopyOnServerAsync(copySource, copySource + ".copy", b => copied = b);
+            string sums = await ssh.RunCommandAsync($"sha256sum {copySource} {copySource}.copy | cut -c1-64; rm -f {copySource} {copySource}.copy");
+            string[] lines = sums.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+            Assert.AreEqual(lines[0], lines[1]);
+            Assert.AreEqual(200_000UL, copied);
+
             // 上传时保留修改时间并落盘:关闭之前按同一个句柄设(FSETSTAT)、fsync,远端 stat 看到的就是设下的时间。
             string uploaded = $"/tmp/vela-mtime-{Guid.NewGuid():N}.txt";
             DateTimeOffset mtime = new(2022, 3, 4, 5, 6, 7, TimeSpan.Zero);
