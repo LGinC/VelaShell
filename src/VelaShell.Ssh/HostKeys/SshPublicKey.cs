@@ -134,6 +134,26 @@ public sealed class SshPublicKey : IEquatable<SshPublicKey>
         "SHA256:" + Convert.ToBase64String(SHA256.HashData(PlainKey._blob)).TrimEnd('=');
 
     /// <summary>
+    /// OpenSSH 风格的指纹图（<c>ssh-keygen -lv</c> 画的那种）：17×9 的画布，按 SHA-256 指纹的摘要随机游走。
+    /// </summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/03 §5.4〕人眼比对一张图比比对 43 个 base64 字符可靠得多 —— 首次连接的确认框里放它。
+    /// 与 <see cref="Sha256Fingerprint"/> 同一个摘要：证书画的是证书里那把钥，标题也写那把钥的类型。
+    /// 行与行之间用 <c>\n</c>，要等宽字体才对得齐。
+    /// </remarks>
+    public string RandomArt =>
+        FingerprintArt.Render(SHA256.HashData(PlainKey._blob), $"{ArtLabel} {KeyBits}", "SHA256");
+
+    /// <summary>指纹图标题里的类型名，与 <c>ssh-keygen -lv</c> 一致。</summary>
+    private string ArtLabel => PlainKeyType switch
+    {
+        SshAlgorithmNames.SshEd25519 => "ED25519",
+        SshAlgorithmNames.SshRsa => "RSA",
+        _ when PlainKeyType.StartsWith("ecdsa-", StringComparison.Ordinal) => "ECDSA",
+        _ => PlainKeyType.ToUpperInvariant(),
+    };
+
+    /// <summary>
     /// OpenSSH 风格的 MD5 指纹：<c>MD5:</c> 前缀 + 冒号分隔的十六进制。
     /// </summary>
     /// <remarks>

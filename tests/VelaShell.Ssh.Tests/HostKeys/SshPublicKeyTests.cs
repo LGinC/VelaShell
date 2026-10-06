@@ -475,4 +475,22 @@ public sealed class SshPublicKeyTests
         Assert.IsFalse(key.VerifySignature([0, 0, 0, 99], data, SshAlgorithmNames.SshEd25519));
         Assert.IsFalse(key.VerifySignature(new byte[64], data, SshAlgorithmNames.SshEd25519));
     }
+
+    /// <summary>
+    /// 指纹图与真 ssh-keygen -lv 画的逐字节一致（样本：OpenSSH 10.0 生成的四把钥，Fixtures/randomart-*）。
+    /// 曾经 spec 里写着「提供」，全库却没有这个成员。
+    /// </summary>
+    [TestMethod]
+    [DataRow("ed25519")]
+    [DataRow("ecdsa384")]
+    [DataRow("ecdsa521")]
+    [DataRow("rsa3072")]
+    public void 指纹图与ssh_keygen画的一致(string name)
+    {
+        string directory = Path.Combine(AppContext.BaseDirectory, "HostKeys", "Fixtures");
+        SshPublicKey key = SshPublicKey.Parse(File.ReadAllText(Path.Combine(directory, $"randomart-{name}.pub")));
+        string expected = File.ReadAllText(Path.Combine(directory, $"randomart-{name}.txt")).Replace("\r\n", "\n").TrimEnd('\n');
+
+        Assert.AreEqual(expected, key.RandomArt);
+    }
 }
