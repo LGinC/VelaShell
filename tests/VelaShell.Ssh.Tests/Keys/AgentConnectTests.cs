@@ -16,6 +16,23 @@ namespace VelaShell.Ssh.Tests.Keys;
 [TestCategory("Keys")]
 public sealed class AgentConnectTests
 {
+    /// <summary>
+    /// 默认端点：Windows 上 SSH_AUTH_SOCK 是命名管道时采纳（1Password、KeePassXC），是 Unix 套接字（Git Bash / WSL）时不认、
+    /// 用 OpenSSH agent 服务的管道；其它平台照 SSH_AUTH_SOCK。曾经 Windows 上一律无视 SSH_AUTH_SOCK。
+    /// </summary>
+    [TestMethod]
+    public void 默认端点在Windows上认命名管道形式的SSH_AUTH_SOCK()
+    {
+        const string OpenSshPipe = @"\\.\pipe\openssh-ssh-agent";
+
+        Assert.AreEqual(@"\\.\pipe\agent-1password", SshAgentClient.DefaultEndpointFor(windows: true, @"\\.\pipe\agent-1password"));
+        Assert.AreEqual(@"\\.\PIPE\keepassxc", SshAgentClient.DefaultEndpointFor(windows: true, @"\\.\PIPE\keepassxc"));
+        Assert.AreEqual(OpenSshPipe, SshAgentClient.DefaultEndpointFor(windows: true, "/tmp/ssh-XXXX/agent.123"));
+        Assert.AreEqual(OpenSshPipe, SshAgentClient.DefaultEndpointFor(windows: true, null));
+        Assert.AreEqual("/run/user/1000/agent.sock", SshAgentClient.DefaultEndpointFor(windows: false, "/run/user/1000/agent.sock"));
+        Assert.IsNull(SshAgentClient.DefaultEndpointFor(windows: false, null));
+    }
+
     [TestMethod]
     public async Task 端点为空时报没在跑()
     {

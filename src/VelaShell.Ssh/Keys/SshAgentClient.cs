@@ -83,12 +83,24 @@ public sealed class SshAgentClient : IAsyncDisposable
 
     /// <summary>本机 agent 的默认端点。</summary>
     /// <remarks>
-    /// Windows 上是 OpenSSH 的命名管道；其它平台看 <c>SSH_AUTH_SOCK</c>。
+    /// <para>其它平台看 <c>SSH_AUTH_SOCK</c>。</para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/07 §7.1〕Windows 上 <c>SSH_AUTH_SOCK</c> 是命名管道（<c>\\.\pipe\…</c>）时采纳它 ——
+    /// 1Password、KeePassXC 这类 agent 会这样配；否则用 OpenSSH agent 服务的管道。它更常指向 Git Bash / WSL 的
+    /// Unix 套接字，那是另一套 agent，.NET 连不上，所以不是管道就不认。曾经在 Windows 上一律无视它，
+    /// 宿主只好自己再判断一遍。
+    /// </para>
     /// </remarks>
-    public static string? DefaultEndpoint =>
-        OperatingSystem.IsWindows()
-            ? @"\\.\pipe\openssh-ssh-agent"
-            : Environment.GetEnvironmentVariable("SSH_AUTH_SOCK");
+    public static string? DefaultEndpoint => DefaultEndpointFor(
+        OperatingSystem.IsWindows(), Environment.GetEnvironmentVariable("SSH_AUTH_SOCK"));
+
+    /// <summary><see cref="DefaultEndpoint"/> 的判断本身（平台与环境变量作参数，测试两个平台都能覆盖）。</summary>
+    internal static string? DefaultEndpointFor(bool windows, string? authSock) =>
+        !windows
+            ? authSock
+            : authSock is not null && authSock.StartsWith(@"\\.\pipe\", StringComparison.OrdinalIgnoreCase)
+                ? authSock
+                : @"\\.\pipe\openssh-ssh-agent";
 
     /// <summary>连本机 agent。</summary>
     /// <param name="endpoint">端点；<see langword="null"/> 表示用 <see cref="DefaultEndpoint"/>。</param>
