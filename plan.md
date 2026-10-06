@@ -1700,3 +1700,17 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 顺带:CH-E2 的竞态用例偶发失败(断言早于钩子跑完),改成等钩子真的跑完再断言。
 
 **三、验证**:`VelaShell.Ssh.Tests` 1354 例:不开互操作 1308 通过 / 46 跳过,开互操作(Docker 靶机 OpenSSH 10.3)的 46 例 38 通过 / 8 跳过(要另外环境的几条)。每条都做过变异检验:编得过的变异体(把修复退回去,或者绕开关键的那一步)让瞄准的用例变红 —— Q7 的按键在积压之后才上线、Q11 的读两遍与等不到更靠后的请求、Q4 的冲突时丢掉别人刚追加的那一条与宣告不完整时误删、Q5 的只听 IPv4。Q7 改了发送泵,全套连跑三遍没有新的偶发失败。宿主 `Infrastructure.Tests` 625 通过 / 4 跳过,本地化守门通过;全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`。
+
+## ✅ 163. 2026-10-07 SSH 库:agent 加钥可以带目的地约束(restrict-destination,`ssh-add -h`)
+
+**一、来由**:`ssh_plan.md` 第十节 F4 的最后一块。会话声明(`session-bind@openssh.com`)早就照发(§159),可本库自己往 agent 里加钥时给不出「这把钥只许登这几台」,使用者只能退回命令行。原来卡在 velashell-docs 没有规格 —— 净室规程要求实现依据先成文。这次按两阶段走:一个独立上下文的分析会话读 OpenSSH `PROTOCOL.agent`、RFC 9987(agent 草案的定稿)、设计说明与手册页,对真 `ssh-add` / `ssh-agent` 做黑盒核对,写出 07 §7.3.2;实现只照那一节写。
+
+**二、做了什么**:
+- `SshAgentKeyConstraints.AllowedHops`(`null` 为不限;空表不当「不限」,1–64 跳);新增 `SshAgentHop`(终点、用户名、经由)与 `SshAgentHopHost`(名字、主机钥、CA 公钥),属性只读、构造时校验、相等按内容。
+- `SshAgentHopHost.FromKnownHosts`:照 `known_hosts` 拼一台主机,匹配与 `KnownHostsFile.Lookup` 同一套规则;`@cert-authority` 进 CA 表;对得上的 `@revoked` 剔掉(这一点故意与 `ssh-add` 不同)。
+- 报文是 255 号扩展约束,四层各包一个 string;**有约束一定发 25** —— 接在 17 后面会被 agent 静默丢掉,钥就成了哪儿都能登。约束编码挪进新的 `SshAgentConstraintWriter`,不再往已经超长的 `SshAgentClient` 里加。
+- 被拒(5 或 28)就是 `AgentRefused`,消息点出目的地约束;绝不去掉约束重试。签名被拒的提示也加上这一条。
+- 一条 agent 连接只替一个会话做认证:由 `ConnectAsync` 连上的客户端在为另一个会话做认证声明之前重开连接 —— 按 ssh_config 的 `ProxyJump` 连时,跳板与目标用的是同一份 agent 凭据。
+- 顺带:主机证书那条互操作用例的原因码对上 `HostKeyChanged`(2026-09-26 起「只记着 CA、出示的证书没人担保」按「变了」拒绝,这条用例只在配了主机证书时跑,一直没跑到)。
+
+**三、验证**:单元测试钉住报文(规格里那个对过 `ssh-add` 的例子 12 / 74 / 98 / 102 / 147,外加带用户名、起点、两把钥、CA)、有约束必发 25、被拒不重试、校验与 `FromKnownHosts` 的规则、重开的条件。对真 OpenSSH 10.3 `ssh-agent` 的互操作用例:放行的主机连得上、用户名可带通配;主机钥或用户名对不上时 agent 拒签;经转发逐跳放行(A 上列得出、登 B 成功,少了 A → B 就都不行;B 是 `docker-compose.test.yml` 的多 shell 靶子);凭 CA 认主机(Start-TestServer.ps1 起的带主机证书的靶机);跳板时不重开确实在目标那一跳被拒,不带约束的钥不受影响。四处变异(不重开、CA 标志写反、只有目的地约束时发 17、不剔吊销的钥)都让瞄准的用例变红。反向用例给 agent 凭据之后配一个口令兜底:让认证整个失败的话,sshd 的 `PerSourcePenalties` 会把来源地址拒掉一阵,连累后面的用例(第一次全套跑时就这样红了两条)。`VelaShell.Ssh.Tests` 开互操作 1363 通过 / 9 跳过;带主机证书的靶机上互操作 46 通过 / 4 跳过;全解决方案零警告零错误。没核对的:Windows 的 OpenSSH agent 与 Pageant 收不收这个约束(要往使用者真在用的 agent 里加钥)。宿主还没接,记进 `feature-plan.md`「SSH 库已有、宿主还没接的能力」。
