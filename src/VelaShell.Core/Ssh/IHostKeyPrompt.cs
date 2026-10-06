@@ -29,6 +29,10 @@ public interface IHostKeyPrompt
     /// known_hosts 里已记录的旧指纹;首次连接(无记录)时为 <see langword="null" />。
     /// 指纹变更时必须摆出来 —— 用户要靠"原来是哪一把"才能判断这是自己重装的那台还是一次劫持。
     /// </param>
+    /// <param name="randomArt">
+    /// 本次主机密钥的指纹图(OpenSSH <c>ssh-keygen -lv</c> 那种 17×9 的图,行间 <c>\n</c>,要等宽字体);
+    /// 人眼比对一张图比比对 43 个字符可靠得多。没有时为 <see langword="null" />。
+    /// </param>
     Task<HostKeyDecision> DecideAsync(string host, int port, string keyType, string fingerprint,
-        HostKeyVerification verification, string? knownFingerprint = null);
+        HostKeyVerification verification, string? knownFingerprint = null, string? randomArt = null);
 }

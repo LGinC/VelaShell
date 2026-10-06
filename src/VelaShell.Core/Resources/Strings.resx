@@ -817,6 +817,9 @@
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>Recorded</value>
   </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>Fingerprint art</value>
+  </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>The server may have been reinstalled or replaced. If that is expected, accept the new key to overwrite the recorded one; if not, the connection may be intercepted — reject it.</value>
   </data>

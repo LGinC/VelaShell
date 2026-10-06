@@ -122,7 +122,7 @@ internal sealed class VelaHostKeyPolicy(
                        && (firstSeen ? security.ConfirmFirstFingerprint : !security.BlockOnFingerprintChange);
 
         HostKeyDecision decision = askUser
-            ? await prompt!.DecideAsync(host, port, keyType, fingerprint, verification, knownFingerprint)
+            ? await prompt!.DecideAsync(host, port, keyType, fingerprint, verification, knownFingerprint, context.Key.RandomArt)
                 .ConfigureAwait(false)
             // 不问的两条默认:首次连接按 TOFU 记下,指纹变更 fail-closed 拒掉。
             : firstSeen

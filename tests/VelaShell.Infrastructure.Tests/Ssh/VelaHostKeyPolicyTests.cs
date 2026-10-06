@@ -85,6 +85,33 @@ public sealed class VelaHostKeyPolicyTests
             "hostkey-persist-failed", Arg.Is<string>(m => m.Contains("数据库被锁")), Arg.Any<object?>());
     }
 
+    /// <summary>问用户时（这里是指纹变了），把这把钥的指纹图一并交给确认框（与 ssh-keygen -lv 同一张图）。</summary>
+    [TestMethod]
+    public async Task 问用户时交出指纹图()
+    {
+        IHostKeyService store = Substitute.For<IHostKeyService>();
+        store.VerifyHostKeyAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(HostKeyVerification.Changed);
+        IHostKeyPrompt prompt = Substitute.For<IHostKeyPrompt>();
+        prompt.DecideAsync(default!, default, default!, default!, default, default, default)
+            .ReturnsForAnyArgs(HostKeyDecision.Reject);
+
+        using InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        SshHostKeyContext context = new()
+        {
+            Host = $"art-{Guid.NewGuid():N}.example",
+            Port = 22,
+            Key = signer.PublicKey,
+            NegotiatedAlgorithm = signer.PublicKey.KeyType,
+        };
+
+        await new VelaHostKeyPolicy(store, settings: null, prompt, alerts: null).EvaluateAsync(context);
+
+        await prompt.Received(1).DecideAsync(
+            context.Host, 22, Arg.Any<string>(), signer.PublicKey.Sha256Fingerprint,
+            HostKeyVerification.Changed, Arg.Any<string?>(), signer.PublicKey.RandomArt);
+    }
+
     /// <summary>
     /// 端到端的那一半在库里：记着 RSA 时，RSA 的算法排到 Ed25519 前面 —— 协商以客户端的顺序为准。
     /// </summary>

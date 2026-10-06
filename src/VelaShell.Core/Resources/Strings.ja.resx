@@ -1093,6 +1093,9 @@
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>記録済み指紋</value>
   </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>指紋の図</value>
+  </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>サーバーが再構築または交換された可能性があります。想定内の変更であれば、新しいキーを受け入れて記録を上書きしてください。そうでない場合は通信が傍受されているおそれがあるため拒否してください。</value>
   </data>

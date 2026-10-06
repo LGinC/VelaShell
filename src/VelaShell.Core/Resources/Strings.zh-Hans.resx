@@ -882,6 +882,9 @@
   <data name="HostKeyKnownFingerprint" xml:space="preserve">
     <value>已记录指纹</value>
   </data>
+  <data name="HostKeyRandomArt" xml:space="preserve">
+    <value>指纹图</value>
+  </data>
   <data name="HostKeyChangedAdvice" xml:space="preserve">
     <value>服务器可能已重装或更换。若变更在预期内，接受新密钥即可覆盖原记录；否则连接可能正被劫持，请拒绝。</value>
   </data>
