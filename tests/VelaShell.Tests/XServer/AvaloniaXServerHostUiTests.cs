@@ -243,6 +243,29 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 原生窗口的尺寸变了而不是我们按服务端几何设的(Linux 上 Avalonia 的 X11 后端给的原因是 Unspecified 而不是 User):照样回报给服务端。
+    /// </summary>
+    [TestMethod]
+    public async Task NativeResizeWithoutUserReason_IsReportedToTheServer() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        await WaitForAsync(() => native.ClientSize.Width == 60 ? native : null);
+
+        native.Width = 90;   // 不经服务端改了原生窗口的尺寸(相当于用户在 Linux 上拖了边框)
+        await WaitForAsync(() => native.Handle.Snapshot.Width == 90 ? native : null);
+        host.Detach();
+    });
+
+    /// <summary>
     /// owner 级联关闭(Avalonia 关 owner 时先问它拥有的窗口,有一个不肯 owner 就关不掉):
     /// 父窗口在 X 里取消映射、对话框还映射着 → 父窗口收掉,对话框不带 owner 重新显示;停服时一个都不留;
     /// 弹层的关闭不转给客户端(没有 WM_DELETE_WINDOW 的弹层原先一关就断开了整个程序)。

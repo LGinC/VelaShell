@@ -38,6 +38,9 @@ public sealed class XNativeWindow : Window
     private readonly HashSet<int> _heldButtons = [];
     private (int X, int Y) _lastPointer;
     private bool _applying;
+
+    /// <summary>最后一次按服务端的几何设的内容区尺寸(物理像素):迟到的 Resized 与它相同就是我们自己设的(见 OnResized)。</summary>
+    private (int Width, int Height) _appliedSize;
     private bool _closingByHost;
     private Vector _wheelRemainder;
     private XFrameExtents _frame;
@@ -129,8 +132,9 @@ public sealed class XNativeWindow : Window
         {
             // 设 Width / Height(内容区的 DIP 尺寸)才会真的改原生窗口;显示之后再设 ClientSize 只改了属性值。
             XTopLevelSnapshot s = Handle.Snapshot;
-            Width = Math.Max(1, s.Width) / scale;
-            Height = Math.Max(1, s.Height) / scale;
+            _appliedSize = (Math.Max(1, s.Width), Math.Max(1, s.Height));
+            Width = _appliedSize.Width / scale;
+            Height = _appliedSize.Height / scale;
             (int ox, int oy) = _host.RootOrigin;
             (int x, int y) = (s.X, s.Y);
             if (_placed is { } placed)
@@ -286,16 +290,22 @@ public sealed class XNativeWindow : Window
     {
         UpdateFrameExtents();
         ReportStates();
-        // 只有用户拖边框、以及窗口状态变了(最大化 / 全屏 / 还原)才回报给服务端。我们自己按服务端的几何设 ClientSize
-        // 引起的 Resized 可能晚一拍才到,那时 _applying 早已复位 —— 再回报就会拿旧尺寸把客户端刚设的新尺寸改回去。
+        // 只把「不是我们自己按服务端的几何设出来的」尺寸回报给服务端:用户拖边框、窗口状态变了(最大化 / 全屏 / 还原)。
+        // 不靠 Reason 判断 —— Avalonia 的 X11 后端在 ConfigureNotify 里一律给 Unspecified(只有 XEmbed 给 User),原先 Linux 上
+        // 用户拖大窗口,X 缓冲还是原尺寸。我们自己设的尺寸引起的 Resized 可能晚一拍才到(那时 _applying 早已复位),
+        // 按「与最后一次按服务端几何设的尺寸相同(差一个像素以内,分数缩放的取整)」认出来:再回报就会拿旧尺寸把客户端刚设的新尺寸改回去。
         bool stateChanged = WindowState != _resizeState;
         _resizeState = WindowState;
-        if (_applying || (e.Reason != WindowResizeReason.User && !stateChanged)
-            || Server is not { } server || WindowState is WindowState.Minimized)
+        if (_applying || Server is not { } server || WindowState is WindowState.Minimized)
         {
             return;
         }
         int width = (int)Math.Round(e.ClientSize.Width * Scale), height = (int)Math.Round(e.ClientSize.Height * Scale);
+        bool ours = Math.Abs(width - _appliedSize.Width) <= 1 && Math.Abs(height - _appliedSize.Height) <= 1;
+        if (ours && e.Reason != WindowResizeReason.User && !stateChanged)
+        {
+            return;
+        }
         if (width > 0 && height > 0 && Handle.Snapshot is var s && (width != s.Width || height != s.Height))
         {
             server.ResizeTopLevel(Handle, width, height);
