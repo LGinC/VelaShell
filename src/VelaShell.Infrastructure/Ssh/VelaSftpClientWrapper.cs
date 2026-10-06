@@ -121,17 +121,15 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
     /// <inheritdoc />
     public Task UploadAsync(Stream input, string path, long resumeOffset,
         Action<ulong>? uploadCallback = null, CancellationToken ct = default) =>
-        UploadCoreAsync(input, path, resumeOffset, lastWriteTime: null, uploadCallback, ct);
+        UploadAsync(input, path, new RemoteUploadOptions(resumeOffset), uploadCallback, ct);
 
     /// <inheritdoc />
-    public Task UploadPreservingTimeAsync(Stream input, string path, long resumeOffset, DateTimeOffset lastWriteTime,
-        Action<ulong>? uploadCallback = null, CancellationToken ct = default) =>
-        UploadCoreAsync(input, path, resumeOffset, lastWriteTime, uploadCallback, ct);
-
-    private Task UploadCoreAsync(Stream input, string path, long resumeOffset, DateTimeOffset? lastWriteTime,
-        Action<ulong>? uploadCallback, CancellationToken ct)
+    public Task UploadAsync(Stream input, string path, RemoteUploadOptions options,
+        Action<ulong>? uploadCallback = null, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(options);
+        long resumeOffset = options.ResumeOffset;
 
         return GuardedAsync(async () =>
         {
@@ -155,7 +153,7 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
                 // 关闭之前用同一个句柄设修改时间(FSETSTAT,一次往返)。访问时间取「现在」:
                 // 新写的文件本来就是这个值,事后 STAT 取回来的也是它。尽力而为 —— 个别服务端禁 setstat。
-                if (lastWriteTime is { } mtime)
+                if (options.LastWriteTime is { } mtime)
                 {
                     try
                     {
@@ -165,6 +163,13 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
                     {
                         // 时间戳只是尽力而为(ArgumentOutOfRange:时间装不进 v3 的 32 位秒)。
                     }
+                }
+
+                // 落盘放在设时间之后:数据与刚设的时间一起落。服务端没有 fsync@openssh.com 就跳过;
+                // 落盘失败不吞 —— 要了「断电也不能丢」却没做到,不能报成功。
+                if (options.Fsync && fs.Capabilities.HasFsync)
+                {
+                    await remote.FsyncAsync(ct).ConfigureAwait(false);
                 }
             }
             catch (Exception) when (ct.IsCancellationRequested)

@@ -3240,6 +3240,12 @@ Paste anyway?</value>
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>Preserve file timestamps</value>
   </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>Flush uploads to disk</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>After an SFTP upload, ask the server to write the file to disk before closing it (fsync), so a power loss on the server cannot lose it. One more round trip per file; skipped on servers without fsync@openssh.com.</value>
+  </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>Bandwidth limit</value>
   </data>

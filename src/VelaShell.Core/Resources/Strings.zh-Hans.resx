@@ -3349,6 +3349,12 @@
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>保留文件时间戳</value>
   </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>上传后落盘</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>SFTP 上传完、关闭之前要求服务器把文件写到磁盘上(fsync),服务器断电也不会丢。每个文件多一次往返;服务器不支持 fsync@openssh.com 时跳过。</value>
+  </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>带宽限制</value>
   </data>

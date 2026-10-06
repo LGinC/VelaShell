@@ -1,5 +1,17 @@
 namespace VelaShell.Core.Ssh;
 
+/// <summary>一次上传在关闭句柄之前要做的事。</summary>
+/// <param name="ResumeOffset">大于 0 时从这里续传。</param>
+/// <param name="LastWriteTime">
+/// 设了就在关闭之前用同一个句柄把远端的修改时间设成它 —— 一次往返;上传完再
+/// <see cref="ISftpClientWrapper.SetLastWriteTimeAsync" /> 要多两次(先取回访问时间再设)。尽力而为:设不上不影响上传。
+/// </param>
+/// <param name="Fsync">
+/// 关闭之前要求服务端落盘(SFTP 的 <c>fsync@openssh.com</c>,服务端不支持时跳过)。落盘失败算上传失败 ——
+/// 要了「断电也不能丢」却没做到,不能报成功。
+/// </param>
+public sealed record RemoteUploadOptions(long ResumeOffset = 0, DateTimeOffset? LastWriteTime = null, bool Fsync = false);
+
 /// <summary>
 /// SFTP 客户端的库中立抽象(参见 <see cref="ISshClientWrapper" /> 的隔离说明):
 /// 目录条目以 <see cref="SftpEntry" /> 返回,失败以 SshClientException 层级抛出,
@@ -139,12 +151,8 @@ public interface ISftpClientWrapper : IAsyncDisposable
     /// </summary>
     Task CreateSymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken = default);
 
-    /// <summary>
-    /// 上传(<paramref name="resumeOffset" /> 大于 0 时从那里续传),并在关闭句柄之前把远端的修改时间设成
-    /// <paramref name="lastWriteTime" /> —— 同一个句柄设,一次往返;上传完再 <see cref="SetLastWriteTimeAsync" />
-    /// 要多两次往返(先取回访问时间再设)。设时间失败不影响上传(尽力而为)。
-    /// </summary>
-    Task UploadPreservingTimeAsync(Stream input, string path, long resumeOffset, DateTimeOffset lastWriteTime,
+    /// <summary>上传,带着关闭句柄之前要做的事(见 <see cref="RemoteUploadOptions" />)。</summary>
+    Task UploadAsync(Stream input, string path, RemoteUploadOptions options,
         Action<ulong>? uploadCallback = null, CancellationToken cancellationToken = default);
 
     /// <summary>

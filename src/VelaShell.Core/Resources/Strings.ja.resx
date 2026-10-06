@@ -3111,6 +3111,12 @@
   <data name="SetTransfer_PreserveTimestamps" xml:space="preserve">
     <value>ファイルのタイムスタンプを保持</value>
   </data>
+  <data name="SetTransfer_FsyncAfterUpload" xml:space="preserve">
+    <value>アップロード後にディスクへ書き込む</value>
+  </data>
+  <data name="SetTransfer_FsyncAfterUploadDesc" xml:space="preserve">
+    <value>SFTP のアップロード後、閉じる前にファイルをディスクへ書き込むようサーバーに要求します(fsync)。サーバーの電源が落ちても失われません。ファイルごとに往復が 1 回増えます。fsync@openssh.com に対応していないサーバーでは省略します。</value>
+  </data>
   <data name="SetTransfer_SectionBandwidth" xml:space="preserve">
     <value>帯域制限</value>
   </data>

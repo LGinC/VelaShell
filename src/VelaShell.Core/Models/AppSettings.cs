@@ -916,6 +916,16 @@ public class TransferOptions : ObservableOptions
         set => Set(ref field, value);
     } = true;
 
+    /// <summary>
+    /// SFTP 上传完、关闭之前要求服务端把文件落盘(<c>fsync@openssh.com</c>)。默认关:每个文件多一次往返,
+    /// 还要等服务端的磁盘;配置文件、备份这类「传完之后服务器断电也不能丢」的才值得。服务端不支持时跳过。
+    /// </summary>
+    public bool FsyncAfterUpload
+    {
+        get;
+        set => Set(ref field, value);
+    }
+
     /// <summary>传输完成时是否弹出通知。</summary>
     public bool NotifyOnComplete
     {

@@ -159,11 +159,10 @@ public class SftpServiceTests
             await service.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
 
             // 关闭之前按同一个句柄设(一次往返),不再上传完之后 STAT + SETSTAT 两次往返。
-            await _sftpClient.Received(1).UploadPreservingTimeAsync(
+            await _sftpClient.Received(1).UploadAsync(
                 Arg.Any<Stream>(),
                 "/home/user/up.txt",
-                0,
-                Arg.Is<DateTimeOffset>(d => d.UtcDateTime == knownUtc),
+                Arg.Is<RemoteUploadOptions>(o => o.ResumeOffset == 0 && o.LastWriteTime!.Value.UtcDateTime == knownUtc && !o.Fsync),
                 Arg.Any<Action<ulong>?>(),
                 Arg.Any<CancellationToken>());
             await _sftpClient.DidNotReceiveWithAnyArgs().SetLastWriteTimeAsync(default!, default, default);
@@ -191,7 +190,42 @@ public class SftpServiceTests
 
             await _sftpClient.DidNotReceive().SetLastWriteTimeAsync(
                 Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>());
-            await _sftpClient.DidNotReceiveWithAnyArgs().UploadPreservingTimeAsync(default!, default!, default, default);
+            await _sftpClient.DidNotReceive().UploadAsync(
+                Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<RemoteUploadOptions>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+        }
+        finally
+        {
+            File.Delete(localPath);
+        }
+    }
+
+    /// <summary>「上传后落盘」打开:带着落盘要求上传(关闭之前做);默认关时不带。</summary>
+    [TestMethod]
+    [DataRow(true)]
+    [DataRow(false)]
+    public async Task UploadFileAsync_FsyncAfterUpload_IsPassedToTheClient(bool fsync)
+    {
+        ISettingsService settings = Substitute.For<ISettingsService>();
+        settings.GetSettingsAsync().Returns(new AppSettings { Transfer = { PreserveTimestamps = false, FsyncAfterUpload = fsync } });
+        var service = new SftpService(_connectionService, _ => _sftpClient, settings);
+        string localPath = Path.Combine(Path.GetTempPath(), $"vela-fsync-{Guid.NewGuid():N}.txt");
+        await File.WriteAllTextAsync(localPath, "durable");
+        try
+        {
+            await service.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
+
+            if (fsync)
+            {
+                await _sftpClient.Received(1).UploadAsync(
+                    Arg.Any<Stream>(), "/home/user/up.txt",
+                    Arg.Is<RemoteUploadOptions>(o => o.Fsync && o.LastWriteTime == null),
+                    Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+            }
+            else
+            {
+                await _sftpClient.DidNotReceive().UploadAsync(
+                    Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<RemoteUploadOptions>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
+            }
         }
         finally
         {

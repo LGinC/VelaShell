@@ -120,10 +120,10 @@ public class SftpSymlinkIntegrationTests
             Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
             Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
 
-            // 上传时保留修改时间:关闭之前按同一个句柄设(FSETSTAT),远端 stat 看到的就是它。
+            // 上传时保留修改时间并落盘:关闭之前按同一个句柄设(FSETSTAT)、fsync,远端 stat 看到的就是设下的时间。
             string uploaded = $"/tmp/vela-mtime-{Guid.NewGuid():N}.txt";
             DateTimeOffset mtime = new(2022, 3, 4, 5, 6, 7, TimeSpan.Zero);
-            await sftp.UploadPreservingTimeAsync(new MemoryStream("payload"u8.ToArray()), uploaded, 0, mtime);
+            await sftp.UploadAsync(new MemoryStream("payload"u8.ToArray()), uploaded, new RemoteUploadOptions(LastWriteTime: mtime, Fsync: true));
             string seen = (await ssh.RunCommandAsync($"stat -c %Y {uploaded}; rm -f {uploaded}")).Trim();
             Assert.AreEqual(mtime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), seen);
         }

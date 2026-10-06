@@ -90,13 +90,13 @@ public class SftpService : ISftpService
 
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持取消。</summary>
     /// <summary>
-    /// 上传的三种形状只差两个参数:要保留时间戳的,关闭之前按同一个句柄把修改时间设上(一次往返);
+    /// 上传的几种形状只差几个参数:要保留时间戳或要落盘的,带着这些要求上传(关闭之前按同一个句柄做完);
     /// 其余按有没有续传起点选重载。
     /// </summary>
     private static Task UploadAsync(ISftpClientWrapper client, Stream input, string remotePath, long resumeOffset,
-        DateTimeOffset? lastWriteTime, Action<ulong>? onBytes, CancellationToken cancellationToken) =>
-        lastWriteTime is { } mtime
-            ? client.UploadPreservingTimeAsync(input, remotePath, resumeOffset, mtime, onBytes, cancellationToken)
+        DateTimeOffset? lastWriteTime, bool fsync, Action<ulong>? onBytes, CancellationToken cancellationToken) =>
+        lastWriteTime is not null || fsync
+            ? client.UploadAsync(input, remotePath, new RemoteUploadOptions(resumeOffset, lastWriteTime, fsync), onBytes, cancellationToken)
             : resumeOffset > 0
                 ? client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken)
                 : client.UploadAsync(input, remotePath, onBytes, cancellationToken);
@@ -115,7 +115,7 @@ public class SftpService : ISftpService
         string fileName = Path.GetFileName(localPath);
         var reporter = new TransferProgressThrottle(progress, fileName, totalBytes);
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
-        (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (long uploadBps, _, bool preserveTimestamps, bool fsync) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         // 以此刻的远端状态重新核实续传起点;核实不通过会抛错,核实为"无可续"则整份重传。
         long? durable = TakeDurableHint(sessionId, remotePath);
@@ -135,7 +135,7 @@ public class SftpService : ISftpService
                 // (下载方向的对等实现见 DownloadFileAsync)。关闭之前用同一个句柄设,一次往返;
                 // 尽力而为 —— 个别服务器禁 setstat,不能让一次时间戳设置失败把已完成的上传标成失败。
                 await UploadAsync(client, fileStream, remotePath, resumeOffset,
-                    preserveTimestamps ? new DateTimeOffset(fileInfo.LastWriteTimeUtc) : null, onBytes, cancellationToken).ConfigureAwait(false);
+                    preserveTimestamps ? new DateTimeOffset(fileInfo.LastWriteTimeUtc) : null, fsync, onBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (VelaSftpTransferInterruptedException interrupted)
             {
@@ -183,7 +183,7 @@ public class SftpService : ISftpService
         ISftpClientWrapper client = await GetTransferClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
         var reporter = new TransferProgressThrottle(progress, GetUnixFileName(remotePath), length);
         Action<ulong>? onBytes = reporter.IsEnabled ? bytes => reporter.Report((long)bytes) : null;
-        (long uploadBps, _, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (long uploadBps, _, bool preserveTimestamps, bool fsync) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         long? durable = TakeDurableHint(sessionId, remotePath);
         if (resumeOffset > 0)
@@ -206,7 +206,7 @@ public class SftpService : ISftpService
                 : null;
             try
             {
-                await UploadAsync(client, input, remotePath, resumeOffset, keepTime, onBytes, cancellationToken).ConfigureAwait(false);
+                await UploadAsync(client, input, remotePath, resumeOffset, keepTime, fsync, onBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (VelaSftpTransferInterruptedException interrupted)
             {
@@ -235,7 +235,7 @@ public class SftpService : ISftpService
         RemoteFileInfo fileInfo = await GetFileInfoAsync(sessionId, remotePath, cancellationToken).ConfigureAwait(false);
         long totalBytes = fileInfo.Size;
         var reporter = new TransferProgressThrottle(progress, fileName, totalBytes);
-        (_, long downloadBps, bool preserveTimestamps) = await GetTransferTuningAsync().ConfigureAwait(false);
+        (_, long downloadBps, bool preserveTimestamps, _) = await GetTransferTuningAsync().ConfigureAwait(false);
 
         // 以此刻本地残留文件的实际长度重新核实续传起点(理由同上传侧)。
         if (resumeOffset > 0)
@@ -940,22 +940,22 @@ public class SftpService : ISftpService
             FileOptions.Asynchronous | FileOptions.SequentialScan);
 
     /// <summary>带宽限制(设置 → 文件传输):返回字节/秒,0 = 不限速。</summary>
-    private async Task<(long UploadBps, long DownloadBps, bool PreserveTimestamps)> GetTransferTuningAsync()
+    private async Task<(long UploadBps, long DownloadBps, bool PreserveTimestamps, bool FsyncAfterUpload)> GetTransferTuningAsync()
     {
         if (_settingsService is null)
         {
-            return (0, 0, true);
+            return (0, 0, true, false);
         }
         try
         {
             TransferOptions t = (await _settingsService.GetSnapshotAsync().ConfigureAwait(false)).Transfer;
             long up = t.BandwidthLimitEnabled ? (long)Math.Max(0, t.UploadLimitMBps) * 1024 * 1024 : 0;
             long down = t.BandwidthLimitEnabled ? (long)Math.Max(0, t.DownloadLimitMBps) * 1024 * 1024 : 0;
-            return (up, down, t.PreserveTimestamps);
+            return (up, down, t.PreserveTimestamps, t.FsyncAfterUpload);
         }
         catch
         {
-            return (0, 0, true);
+            return (0, 0, true, false);
         }
     }
 
