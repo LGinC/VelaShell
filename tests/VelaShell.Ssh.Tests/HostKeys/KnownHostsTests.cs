@@ -209,6 +209,31 @@ public sealed class KnownHostsTests
             "端口不同就是不同的条目 —— 22 端口上的那台机器可能完全是另一台");
     }
 
+    /// <summary>
+    /// IPv6 字面量配非 22 端口：读写都是 <c>[::1]:2222</c> 这种方括号形式（端口前的冒号与地址里的冒号分得开）；
+    /// 22 端口写成不带括号的地址本身。十六进制大小写不同也是同一台。散列行同样按方括号形式算。
+    /// </summary>
+    [TestMethod]
+    public void IPv6配非默认端口按方括号形式读写()
+    {
+        SshPublicKey key = MakeKey();
+
+        IReadOnlyList<KnownHostEntry> parsed = KnownHostsFile.Parse(Line("[::1]:2222", key));
+        Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(parsed, "::1", 2222, key).Status);
+        Assert.AreEqual(KnownHostStatus.Unknown, KnownHostsFile.Lookup(parsed, "::1", 22, key).Status, "端口不同就是不同的条目");
+
+        Assert.StartsWith("[::1]:2222 ", KnownHostsFile.FormatEntry("::1", 2222, key));
+        Assert.StartsWith("::1 ", KnownHostsFile.FormatEntry("::1", 22, key));
+
+        string written = KnownHostsFile.FormatEntry("2001:DB8::5", 2222, key);
+        Assert.StartsWith("[2001:db8::5]:2222 ", written);
+        Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(KnownHostsFile.Parse(written), "2001:db8::5", 2222, key).Status);
+
+        string hashed = KnownHostsFile.FormatEntry("::1", 2222, key, hashHostName: true);
+        Assert.AreEqual(KnownHostStatus.Known, KnownHostsFile.Lookup(KnownHostsFile.Parse(hashed), "::1", 2222, key).Status);
+        Assert.AreEqual(KnownHostStatus.Unknown, KnownHostsFile.Lookup(KnownHostsFile.Parse(hashed), "::1", 22, key).Status);
+    }
+
     [TestMethod]
     public void 通配模式()
     {
