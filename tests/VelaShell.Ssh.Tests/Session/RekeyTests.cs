@@ -50,6 +50,7 @@ public sealed class RekeyTests
         Assert.AreEqual(0, after.ExitCode);
 
         Assert.AreEqual(1, host.Connection.RekeyCount, "应当记下发生过一次重协商");
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Peer), host.Connection.LastRekey, "对端发起的也要记 —— 曾经只记我们按阈值发起的");
         Assert.AreEqual(1, host.Connection.SendGateOpensPosted, "交换成功才开闸，开一次");
         Assert.IsTrue(host.Connection.IsAlive, "重协商不该把连接弄坏");
     }
@@ -268,6 +269,7 @@ public sealed class RekeyTests
             await Task.Delay(20, host.Token);
         }
         Assert.AreEqual(1, host.Connection.RekeyCount);
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Interval, 60_000, 60_000), host.Connection.LastRekey);
     }
 
     /// <summary>重协商钉住首次的主机密钥：不再问策略，换了钥就断（spec/03 §8.4）。</summary>
@@ -522,9 +524,12 @@ public sealed class RekeyTests
             ExitCode = 0,
         });
 
+        Assert.IsNull(host.Connection.LastRekey, "还没重协商过");
+
         // StartRekeyAsync 只负责把我们的 KEXINIT 发出去就返回 ——
         // 剩下的由接收循环在对端的 KEXINIT 到达时接着做。
         await host.Connection.StartRekeyAsync(host.Token);
+        Assert.AreEqual(SshRekeyTrigger.Requested, host.Connection.LastRekey?.Trigger);
 
         // 所以这里要等它真的谈完，而不是假设一返回就完事了。
         await WaitForRekeyAsync(host, expected: 1);
@@ -616,10 +621,11 @@ public sealed class RekeyTests
 
         await WaitForRekeyAsync(host, expected: 1);
 
-        Assert.IsNotNull(host.Connection.LastRekeyReason, "主动发起时要说清是哪条阈值触发的");
-        Assert.Contains(
-"报文数", host.Connection.LastRekeyReason!,
-            $"应当是报文数那条触发的，实际：{host.Connection.LastRekeyReason}");
+        SshRekeyCause? cause = host.Connection.LastRekey;
+        Assert.IsNotNull(cause, "主动发起时要说清是哪条阈值触发的");
+        Assert.AreEqual(SshRekeyTrigger.Packets, cause.Trigger, $"应当是报文数那条触发的，实际：{cause}");
+        Assert.AreEqual(SshRekeyPolicy.MinimumPackets, cause.Threshold);
+        Assert.IsGreaterThanOrEqualTo(cause.Threshold, cause.Observed);
 
         // 换完密钥连接还要能用。
         SshCommandResult after = await host.Connection.RunAsync("再来", cancellationToken: host.Token);
@@ -652,7 +658,7 @@ public sealed class RekeyTests
         Assert.AreEqual(0, output.ExitCode);
 
         await WaitForRekeyAsync(host, expected: 1);
-        Assert.Contains("硬线", host.Connection.LastRekeyReason!, $"实际：{host.Connection.LastRekeyReason}");
+        Assert.AreEqual(SshRekeyTrigger.PacketHardLimit, host.Connection.LastRekey?.Trigger, $"实际：{host.Connection.LastRekey}");
     }
 
     [TestMethod]

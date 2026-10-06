@@ -194,7 +194,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     private long _packetsReceivedAtLastKex;
     /// <summary>上一次密钥交换完成的时刻（<see cref="Time"/> 的时间戳）。</summary>
     private long _lastKexAt = TimeProvider.System.GetTimestamp();
-    private string? _lastRekeyReason;
+    private SshRekeyCause? _lastRekey;
 
     /// <summary>当前占着通道号的通道数。</summary>
     /// <remarks>

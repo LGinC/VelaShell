@@ -82,17 +82,20 @@ public sealed partial class SshConnection
     /// <inheritdoc cref="PacketsSent" />
     public long PacketsReceived => _transport.PacketsReceived;
 
-    /// <summary>我们最后一次**主动**发起重协商是哪条阈值触发的。</summary>
+    /// <summary>最近一次重协商是怎么来的；还没重协商过是 <see langword="null"/>。</summary>
     /// <remarks>
-    /// 形如「单向字节数达到 1073741824（阈值 1073741824）」。
-    /// 对端发起的重协商不会写它 —— 那不是我们的决定。
     /// <para>
     /// 它存在的理由和 <c>Algorithms</c> 一样：排障时要能回答
     /// 「这条连接刚才为什么换了密钥」，而库知道而不说，
     /// 使用者就只能去猜（架构原则 4）。
     /// </para>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/03 §8〕结构化的：触发方式是枚举，到阈值时的观测值与阈值是数字。
+    /// 曾经是一句自由书写的中文（<c>LastRekeyReason</c>，「单向报文数达到 1024（阈值 1024）」）—— 程序判断不了，
+    /// 界面也翻译不了；对端发起的、调用方显式请求的也不记，只记我们按阈值发起的那一种。
+    /// </para>
     /// </remarks>
-    public string? LastRekeyReason => Volatile.Read(ref _lastRekeyReason);
+    public SshRekeyCause? LastRekey => Volatile.Read(ref _lastRekey);
 
     /// <summary>重协商时只留下与钉住的主机密钥同类型的主机密钥算法；一个都不剩就原样返回。</summary>
     /// <remarks>
@@ -136,7 +139,11 @@ public sealed partial class SshConnection
     /// 已经在重协商中时这是一个空操作 —— 重复发 <c>KEXINIT</c> 是协议违规。
     /// </para>
     /// </remarks>
-    public async ValueTask StartRekeyAsync(CancellationToken cancellationToken = default)
+    public ValueTask StartRekeyAsync(CancellationToken cancellationToken = default) =>
+        StartRekeyCoreAsync(new SshRekeyCause(SshRekeyTrigger.Requested), cancellationToken);
+
+    /// <summary>发起一次重协商，真发出了 <c>KEXINIT</c> 才把 <paramref name="cause"/> 记进 <see cref="LastRekey"/>。</summary>
+    private async ValueTask StartRekeyCoreAsync(SshRekeyCause cause, CancellationToken cancellationToken)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
@@ -167,6 +174,7 @@ public sealed partial class SshConnection
                 RekeyAlgorithms(RekeyContext), includeIndicators: false, buffer);
             byte[] ourKexInit = buffer.WrittenSpan.ToArray();
             _ourPendingKexInit = ourKexInit;
+            Volatile.Write(ref _lastRekey, cause);
 
             // 关闸要在发 KEXINIT **之前** —— 反过来的话，两者之间发出去的
             // 通道数据就违反了 RFC 4253 §7.1。两者都走发送泵的队列，先后就是入队的先后。
@@ -228,10 +236,9 @@ public sealed partial class SshConnection
             {
                 await Task.Delay(tick, Time, cancellationToken).ConfigureAwait(false);
 
-                if (ShouldRekey(out string reason))
+                if (ShouldRekey() is { } cause)
                 {
-                    Volatile.Write(ref _lastRekeyReason, reason);
-                    await StartRekeyAsync(cancellationToken).ConfigureAwait(false);
+                    await StartRekeyCoreAsync(cause, cancellationToken).ConfigureAwait(false);
 
                     // 发起之后先歇一拍：等接收循环把这一轮谈完，
                     // 不然下一次 tick 会看到同一组还没归零的计数。
@@ -250,9 +257,8 @@ public sealed partial class SshConnection
         }
     }
 
-    /// <summary>到阈值了吗。</summary>
-    /// <param name="reason">到了的话，是哪一条到了（进日志与诊断）。</param>
-    private bool ShouldRekey(out string reason)
+    /// <summary>到阈值了吗：到了的话交回是哪一条（进 <see cref="LastRekey"/>），没到是 <see langword="null"/>。</summary>
+    private SshRekeyCause? ShouldRekey()
     {
         SshRekeyPolicy policy = RekeyPolicy;
 
@@ -270,20 +276,17 @@ public sealed partial class SshConnection
         long underKey = Math.Max(_transport.SendPacketsUnderKey, _transport.ReceivePacketsUnderKey);
         if (underKey >= RekeyHardPacketLimit)
         {
-            reason = $"同一套密钥下单向报文数达到 {underKey}（硬线 {RekeyHardPacketLimit}，与策略无关）";
-            return true;
+            return new SshRekeyCause(SshRekeyTrigger.PacketHardLimit, underKey, RekeyHardPacketLimit);
         }
 
         if (policy.MaxPackets > 0 && packets >= policy.MaxPackets)
         {
-            reason = $"单向报文数达到 {packets}（阈值 {policy.MaxPackets}）";
-            return true;
+            return new SshRekeyCause(SshRekeyTrigger.Packets, packets, policy.MaxPackets);
         }
 
         if (policy.MaxBytes > 0 && bytes >= policy.MaxBytes)
         {
-            reason = $"单向字节数达到 {bytes}（阈值 {policy.MaxBytes}）";
-            return true;
+            return new SshRekeyCause(SshRekeyTrigger.Bytes, bytes, policy.MaxBytes);
         }
 
         TimeSpan interval = policy.MaxInterval;
@@ -292,13 +295,12 @@ public sealed partial class SshConnection
             TimeSpan elapsed = Time.GetElapsedTime(Volatile.Read(ref _lastKexAt));
             if (elapsed >= interval)
             {
-                reason = $"距上次密钥交换已 {elapsed.TotalMilliseconds:0} ms（阈值 {interval.TotalMilliseconds} ms）";
-                return true;
+                return new SshRekeyCause(
+                    SshRekeyTrigger.Interval, (long)elapsed.TotalMilliseconds, (long)interval.TotalMilliseconds);
             }
         }
 
-        reason = "";
-        return false;
+        return null;
     }
 
     /// <summary>记下这一刻的计数，作为下一轮阈值的基准。</summary>
@@ -356,6 +358,12 @@ public sealed partial class SshConnection
         {
             ourKexInit = _ourPendingKexInit;
             _ourPendingKexInit = null;
+
+            // 我们没发过 KEXINIT：这一次是对端发起的。
+            if (ourKexInit is null)
+            {
+                Volatile.Write(ref _lastRekey, new SshRekeyCause(SshRekeyTrigger.Peer));
+            }
 
             // 从这里到开闸都算「在谈」—— StartRekeyAsync 看到它就不会再发一个 KEXINIT。
             _kexInProgress = true;
