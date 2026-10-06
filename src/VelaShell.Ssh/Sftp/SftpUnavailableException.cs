@@ -21,4 +21,16 @@ public sealed class SftpUnavailableException : SshException
         : base(reason, SshPhase.Open, message, innerException)
     {
     }
+
+    /// <summary>
+    /// sftp-server 没等 SFTP 建立就退出时（<see cref="SshFailureReason.CommandFailed"/>），服务端报来的退出码；
+    /// 没报、或者不是这种失败时为 <see langword="null"/>。
+    /// </summary>
+    public int? ServerExitStatus { get; init; }
+
+    /// <summary>
+    /// sftp-server 没等 SFTP 建立就退出时，它在 stderr 上说的最后一段（已按对端文本清洗，换行收成一行）；
+    /// 没说、或者不是这种失败时为 <see langword="null"/>。
+    /// </summary>
+    public string? ServerErrorOutput { get; init; }
 }

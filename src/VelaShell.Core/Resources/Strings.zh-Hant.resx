@@ -627,6 +627,9 @@
   <data name="SftpErr_Unavailable" xml:space="preserve">
     <value>伺服器的 SFTP 子系統無法使用(伺服器可能沒有啟用 SFTP)。</value>
   </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>伺服器的 sftp-server 沒等 SFTP 建立就結束了(結束代碼 {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>無法核實 {0} 的續傳起點(來源端不能回讀,或目標端不支援續傳),依同名衝突處理。</value>
   </data>

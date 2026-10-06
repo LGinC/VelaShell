@@ -53,6 +53,12 @@ public sealed record SshChannelOptions
     /// <summary>stderr 怎么处理。</summary>
     public SshStderrMode StderrMode { get; init; } = SshStderrMode.Buffer;
 
+    /// <summary>
+    /// <see cref="SshStderrMode.Discard"/> 时仍留住 stderr 最后这么多字节（<c>0</c> 不留），出错时拿来说明原因。
+    /// </summary>
+    /// <remarks>SFTP 用它：sftp-server 起不来时，它在 stderr 上说的那一句是唯一的线索（velashell-docs/zh/ssh/spec/06 §一）。</remarks>
+    internal int DiscardedStderrTailBytes { get; init; }
+
     /// <summary>默认参数。</summary>
     public static SshChannelOptions Default { get; } = new();
 }

@@ -368,6 +368,42 @@ public sealed class SftpTests
         Assert.Contains("Welc", error.Message);
     }
 
+    /// <summary>
+    /// 〔SF-M3〕sftp-server 起不来（Subsystem 指向的程序不存在）：通道在 VERSION 之前就关了。报 CommandFailed，
+    /// 带上退出码与它在 stderr 上说的话（清洗过）；曾经报「通道在还有在途请求时就关闭了」，两样都丢了。
+    /// </summary>
+    [TestMethod]
+    public async Task sftp_server起不来时报出退出码与它的stderr()
+    {
+        SftpUnavailableException error = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+            async () => await Harness.StartAsync(channelScript: script => script with
+            {
+                SubsystemHandler = null,
+                StandardError = "sh: 1: /usr/lib/sftp-server: not found\u001b[31m\n"u8.ToArray(),
+                ExitCode = 127,
+            }));
+
+        Assert.AreEqual(SshFailureReason.CommandFailed, error.Reason);
+        Assert.AreEqual(127, error.ServerExitStatus);
+        Assert.IsNotNull(error.ServerErrorOutput);
+        Assert.Contains("/usr/lib/sftp-server: not found", error.ServerErrorOutput);
+        Assert.DoesNotContain("\u001b", error.ServerErrorOutput, "对端文本要清洗");
+        Assert.Contains("退出码 127", error.Message);
+
+        // stderr 只留末尾：一大段输出之后，出错的那一句在最后。
+        byte[] noisy = [.. Enumerable.Repeat((byte)'.', 5000), .. "\nfinal: Permission denied\n"u8];
+        SftpUnavailableException noisyError = await Assert.ThrowsExactlyAsync<SftpUnavailableException>(
+            async () => await Harness.StartAsync(channelScript: script => script with
+            {
+                SubsystemHandler = null,
+                StandardError = noisy,
+                ExitSignal = "SEGV",
+            }));
+        Assert.Contains("final: Permission denied", noisyError.ServerErrorOutput);
+        Assert.IsNull(noisyError.ServerExitStatus, "被信号杀掉时没有退出码");
+        Assert.Contains("信号 SEGV", noisyError.Message);
+    }
+
     [TestMethod]
     public async Task 服务端拒绝sftp子系统时报SftpUnavailable()
     {

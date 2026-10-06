@@ -197,6 +197,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         _stdoutPipe = new Pipe(pipeOptions);
         _stderrPipe = options.StderrMode == SshStderrMode.Buffer ? new Pipe(pipeOptions) : null;
+        _stderrTailLimit = _stderrPipe is null ? options.DiscardedStderrTailBytes : 0;
         _stdinPipe = new Pipe(new PipeOptions(useSynchronizationContext: false));
 
         StandardOutput = new WindowedPipeReader(_stdoutPipe.Reader, NoteReaderConsumed);
@@ -802,6 +803,11 @@ public sealed class SshChannel : IAsyncDisposable
         // 保留值的语义未来可能被定义，为它断开会让我们无法与新实现共处。
         if (dataTypeCode != ExtendedDataStderr || _stderrPipe is null || !TryDeliver(_stderrPipe.Writer, data))
         {
+            if (dataTypeCode == ExtendedDataStderr && _stderrTailLimit > 0)
+            {
+                KeepStderrTail(data);
+            }
+
             // 丢弃也要立刻回补窗口 —— 不然「丢弃」就变成了死锁。
             NoteConsumed(length);
         }
@@ -810,6 +816,44 @@ public sealed class SshChannel : IAsyncDisposable
             Interlocked.Add(ref _unreadBytes, length);
         }
         return true;
+    }
+
+    /// <summary>丢弃 stderr 时留住的末尾上限（<see cref="SshChannelOptions.DiscardedStderrTailBytes"/>）；0 不留。</summary>
+    private readonly int _stderrTailLimit;
+
+    private readonly Lock _stderrTailLock = new();
+    private byte[]? _stderrTail;
+    private int _stderrTailLength;
+
+    /// <summary>把丢弃的 stderr 记进末尾缓冲：只留最后 <see cref="_stderrTailLimit"/> 字节。</summary>
+    private void KeepStderrTail(ReadOnlySequence<byte> data)
+    {
+        lock (_stderrTailLock)
+        {
+            _stderrTail ??= new byte[_stderrTailLimit];
+            ReadOnlySequence<byte> incoming = data.Length > _stderrTailLimit ? data.Slice(data.Length - _stderrTailLimit) : data;
+            int keep = Math.Min(_stderrTailLength, _stderrTailLimit - (int)incoming.Length);
+            _stderrTail.AsSpan(_stderrTailLength - keep, keep).CopyTo(_stderrTail);
+            incoming.CopyTo(_stderrTail.AsSpan(keep));
+            _stderrTailLength = keep + (int)incoming.Length;
+        }
+    }
+
+    /// <summary>丢弃的 stderr 的末尾，按 UTF-8 解、照对端文本清洗过；没留或没有时为 <see langword="null"/>。</summary>
+    internal string? DiscardedStderrTail
+    {
+        get
+        {
+            lock (_stderrTailLock)
+            {
+                if (_stderrTail is null || _stderrTailLength == 0)
+                {
+                    return null;
+                }
+                string text = System.Text.Encoding.UTF8.GetString(_stderrTail, 0, _stderrTailLength);
+                return Diagnostics.PeerText.SanitizeTail(text) is { Length: > 0 } clean ? clean : null;
+            }
+        }
     }
 
     /// <summary>收到 <c>CHANNEL_WINDOW_ADJUST</c>。</summary>

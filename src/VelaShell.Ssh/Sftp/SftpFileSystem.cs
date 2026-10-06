@@ -212,8 +212,12 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
         SshChannel channel;
         try
         {
+            // 丢弃 stderr 时也留住最后 1 KiB：sftp-server 起不来时，它在 stderr 上说的那一句是唯一的线索。
+            SshChannelOptions channelOptions = effective.Channel.StderrMode == SshStderrMode.Discard
+                ? effective.Channel with { DiscardedStderrTailBytes = StderrTailBytes }
+                : effective.Channel;
             channel = await connection
-                .OpenSubsystemAsync(SshProtocolNames.SubsystemSftp, effective.Channel, cancellationToken).ConfigureAwait(false);
+                .OpenSubsystemAsync(SshProtocolNames.SubsystemSftp, channelOptions, cancellationToken).ConfigureAwait(false);
         }
         catch (SshChannelException ex) when (ex.Reason == SshFailureReason.ChannelRequestRejected)
         {
@@ -243,9 +247,11 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
 
         using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(effective.HandshakeTimeout);
+        bool versionReceived = false;
         try
         {
             SftpCapabilities capabilities = await HandshakeAsync(pipeline, deadline.Token).ConfigureAwait(false);
+            versionReceived = true;
             SftpFileSystem fileSystem = new(channel, pipeline, effective, capabilities);
 
             await fileSystem.InitializeAsync(deadline.Token).ConfigureAwait(false);
@@ -260,12 +266,59 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
                 $"SFTP 握手在 {effective.HandshakeTimeout.TotalSeconds:0} 秒内没有完成：sftp-server 没有回应。" +
                 "常见原因是服务端登录 shell 的启动文件卡住了（等输入、挂在一个连不上的网络盘上）。", ex);
         }
+        catch (SftpTransferInterruptedException ex) when (!versionReceived && connection.CloseReason is null && !cancellationToken.IsCancellationRequested)
+        {
+            // 〔velashell-docs/zh/ssh/spec/06 §一〕连接好好的，通道却在 VERSION 之前就关了：sftp-server 没起来
+            // （Subsystem 指向的程序不存在、没有执行权限、被 ForceCommand 顶替……）。曾经报「SFTP 通道在还有在途请求时就关闭了」，
+            // 退出码与它在 stderr 上说的话都丢了 —— 而那是唯一的线索。
+            SftpUnavailableException exited = await DescribeServerExitAsync(channel, ex).ConfigureAwait(false);
+            await pipeline.DisposeAsync().ConfigureAwait(false);
+            await channel.DisposeAsync().ConfigureAwait(false);
+            throw exited;
+        }
         catch (Exception)
         {
             await pipeline.DisposeAsync().ConfigureAwait(false);
             await channel.DisposeAsync().ConfigureAwait(false);
             throw;
         }
+    }
+
+    /// <summary>丢弃 stderr 时为说明「sftp-server 为什么没起来」留住的末尾字节数。</summary>
+    private const int StderrTailBytes = 1024;
+
+    /// <summary>退出状态常在 EOF 之后才到（stdout 读完时还没来），等它的上限。</summary>
+    private static readonly TimeSpan ExitStatusGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>sftp-server 没等握手就退出了：取退出状态与 stderr 的末尾，拼成说得清原因的异常。</summary>
+    private static async ValueTask<SftpUnavailableException> DescribeServerExitAsync(SshChannel channel, Exception inner)
+    {
+        SshExitStatus exit;
+        using (CancellationTokenSource grace = new(ExitStatusGrace))
+        {
+            try
+            {
+                exit = await channel.WaitForExitAsync(grace.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                exit = new SshExitStatus(null, null, false, null);
+            }
+        }
+
+        string? stderr = channel.DiscardedStderrTail;
+        string how = exit.ExitCode is { } code ? $"退出码 {code}"
+            : exit.ExitSignalName is { } signal ? $"信号 {PeerText.Sanitize(signal, 32)}"
+            : "没有报退出码";
+        string said = stderr is null ? "" : $"它在 stderr 上说：{stderr}。";
+        return new SftpUnavailableException(
+            SshFailureReason.CommandFailed,
+            $"服务端的 sftp-server 没等 SFTP 建立就退出了（{how}）。{said}" +
+            "常见原因是 sshd_config 里「Subsystem sftp」指向的程序不存在或没有执行权限。", inner)
+        {
+            ServerExitStatus = exit.ExitCode,
+            ServerErrorOutput = stderr,
+        };
     }
 
     private static async ValueTask<SftpCapabilities> HandshakeAsync(

@@ -573,6 +573,9 @@
   <data name="SftpErr_Unavailable" xml:space="preserve">
     <value>The server&apos;s SFTP subsystem is not available (SFTP may be disabled on the server).</value>
   </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>The server&apos;s sftp-server exited before SFTP could start (exit status {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>Cannot verify where to resume {0} (the source cannot be read back, or the target cannot resume), so it is handled as a same-name conflict.</value>
   </data>

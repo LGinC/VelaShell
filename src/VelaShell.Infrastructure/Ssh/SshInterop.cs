@@ -158,9 +158,21 @@ internal static class SshInterop
         return $"{text} [{ex.Reason} @ {ex.Phase}]";
     }
 
-    /// <summary>SFTP 子系统起不来:握手超时与「服务端没开 SFTP」分开说;别的原因(库内收尾)按原因码。</summary>
+    /// <summary>SFTP 子系统起不来:握手超时、「服务端没开 SFTP」与「sftp-server 没起来就退出了」分开说;别的原因(库内收尾)按原因码。</summary>
     internal static string LocalizeUnavailable(SftpUnavailableException ex)
     {
+        if (ex.Reason == SshFailureReason.CommandFailed)
+        {
+            // 退出码与 sftp-server 在 stderr 上说的话都是结构化的(库已按对端文本清洗过),不解析消息句子。
+            string exited = Strings.Format("SftpErr_ServerExited",
+                ex.ServerExitStatus is { } code ? code.ToString(System.Globalization.CultureInfo.InvariantCulture) : "?");
+            if (!string.IsNullOrWhiteSpace(ex.ServerErrorOutput))
+            {
+                exited = Strings.Format("SftpErr_ServerSaid", exited, ex.ServerErrorOutput);
+            }
+            return $"{exited} [{ex.Reason} @ {ex.Phase}]";
+        }
+
         string? key = ex.Reason switch
         {
             SshFailureReason.Timeout => "SftpErr_HandshakeTimeout",

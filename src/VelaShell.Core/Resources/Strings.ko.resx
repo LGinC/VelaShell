@@ -1039,6 +1039,9 @@
   <data name="SftpErr_Unavailable" xml:space="preserve">
     <value>서버의 SFTP 하위 시스템을 사용할 수 없습니다(서버에서 SFTP가 비활성화되어 있을 수 있습니다).</value>
   </data>
+  <data name="SftpErr_ServerExited" xml:space="preserve">
+    <value>서버의 sftp-server가 SFTP 시작 전에 종료되었습니다(종료 코드 {0})</value>
+  </data>
   <data name="SftpSvc_ResumeUnverifiable" xml:space="preserve">
     <value>{0}의 이어받기 위치를 확인할 수 없어(원본을 다시 읽을 수 없거나 대상이 이어받기를 지원하지 않음) 같은 이름 충돌로 처리합니다.</value>
   </data>

@@ -195,7 +195,10 @@ public enum SshFailureReason
 
     // ---- 远端命令 ----
 
-    /// <summary>远端命令没有以退出码 0 结束（<c>SshCommandResult.EnsureSuccess</c>）。</summary>
+    /// <summary>
+    /// 远端命令没有以退出码 0 结束（<c>SshCommandResult.EnsureSuccess</c>）；
+    /// 或者 sftp-server 没等 SFTP 建立就退出了（<c>SftpUnavailableException</c>，带退出码与 stderr 的末尾）。
+    /// </summary>
     CommandFailed,
 
     // ---- 配置 ----
