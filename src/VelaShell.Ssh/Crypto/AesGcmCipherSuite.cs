@@ -61,15 +61,11 @@ internal sealed class AesGcmCipherSuite : ISshCipherSuite
     /// <inheritdoc />
     public CipherSuiteShape Shape { get; } = new()
     {
-        LengthIsEncrypted = false,
-        AadBytes = SshPacketFormat.LengthFieldBytes,
         TagBytes = TagBytes,
         BlockBytes = BlockBytes,
         // RFC 5647 §7.2：对齐的是 padding_length + payload + padding，**不含**长度字段。
         LengthInAlignment = false,
-        EncryptThenMac = true,
         IsEncrypted = true,
-        LengthProbeBytes = SshPacketFormat.LengthFieldBytes,
     };
 
     /// <inheritdoc />
@@ -135,13 +131,7 @@ internal sealed class AesGcmCipherSuite : ISshCipherSuite
 
         // 长度是明文，但它被 tag 保护 —— 不过 tag 要等整帧收齐才能验。
         // 所以这里先做**范围检查**再按它去等数据：不检查就等于让对端指定我们等多少字节。
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || packetLength % BlockBytes != 0)
-        {
-            throw new SshFrameFormatException(
-                $"AES-GCM 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}，须为 {BlockBytes} 的倍数）。");
-        }
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, BlockBytes, lengthInAlignment: false, "AES-GCM");
 
         long total = SshPacketFormat.LengthFieldBytes + packetLength + TagBytes;
         if (input.Length < total)

@@ -31,7 +31,7 @@ namespace VelaShell.Ssh.Crypto;
 ///   <item><b>两把独立密钥。</b>64 字节密钥材料切成两半：
 ///   前 32 字节加密载荷并产出 Poly1305 密钥，后 32 字节**只**加密那 4 字节长度。</item>
 ///   <item><b>长度字段被单独加密。</b>因此收包时要先用第二把钥解出长度，
-///   才知道这一帧有多长 —— 这就是 <see cref="CipherSuiteShape.LengthIsEncrypted"/>。</item>
+///   才知道这一帧有多长。</item>
 ///   <item><b>nonce 是 8 字节大端的报文序号</b>，配原始 ChaCha 的 64 位 nonce 布局，
 ///   不是 RFC 8439 的 96 位。</item>
 /// </list>
@@ -88,16 +88,11 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
     /// <inheritdoc />
     public CipherSuiteShape Shape { get; } = new()
     {
-        LengthIsEncrypted = true,
-        AadBytes = 0,
         TagBytes = TagBytes,
         BlockBytes = 8,
         // 对齐不含长度字段 —— 与 AES-GCM 同理。
         LengthInAlignment = false,
-        EncryptThenMac = true,
         IsEncrypted = true,
-        // 长度只有 4 字节，且 ChaCha20 是流密码，读 4 字节就能解出来。
-        LengthProbeBytes = SshPacketFormat.LengthFieldBytes,
     };
 
     /// <inheritdoc />
@@ -180,13 +175,7 @@ internal sealed class ChaCha20Poly1305CipherSuite : ISshCipherSuite
 
         // 长度此刻还**没有被认证**（tag 要等整帧收齐才能验）。所以必须先做范围检查 ——
         // 不检查就等于让一个还没被验证过的数字决定我们要等多少字节、分配多少内存。
-        if (packetLength > (uint)maxPacketLength
-            || packetLength < SshPacketFormat.PaddingLengthFieldBytes + SshPacketFormat.MinimumPadding
-            || packetLength % 8 != 0)
-        {
-            throw new SshFrameFormatException(
-                $"chacha20-poly1305 帧头非法：packet_length={packetLength}（上限 {maxPacketLength}，须为 8 的倍数）。");
-        }
+        SshPacketFormat.ValidateLength(packetLength, maxPacketLength, block: 8, lengthInAlignment: false, "chacha20-poly1305");
 
         long total = SshPacketFormat.LengthFieldBytes + packetLength + TagBytes;
         if (input.Length < total)

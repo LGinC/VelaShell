@@ -636,9 +636,6 @@ public sealed class CipherSuiteConformanceTests
                 CipherSuiteShape shape = sender.Shape;
                 Assert.IsGreaterThanOrEqualTo(8, shape.BlockBytes, $"{name}：块大小至少为 8（RFC 4253 §6）");
                 Assert.IsGreaterThanOrEqualTo(0, shape.TagBytes, name);
-                Assert.IsGreaterThanOrEqualTo(0, shape.AadBytes, name);
-                Assert.IsGreaterThanOrEqualTo(SshPacketFormat.LengthFieldBytes, shape.LengthProbeBytes,
-                    $"{name}：至少要读到 4 字节才谈得上解析长度");
                 Assert.AreEqual(shape.Shape(), receiver.Shape.Shape(), $"{name}：收发两侧形状必须一致");
             }
         }
@@ -649,6 +646,5 @@ internal static class ShapeAssertExtensions
 {
     /// <summary>把形状压成一个可比较的字符串，断言失败时一眼看出差在哪。</summary>
     public static string Shape(this CipherSuiteShape s) =>
-        $"lenEnc={s.LengthIsEncrypted} aad={s.AadBytes} tag={s.TagBytes} " +
-        $"block={s.BlockBytes} lenInAlign={s.LengthInAlignment} etm={s.EncryptThenMac} enc={s.IsEncrypted}";
+        $"tag={s.TagBytes} block={s.BlockBytes} lenInAlign={s.LengthInAlignment} enc={s.IsEncrypted}";
 }
