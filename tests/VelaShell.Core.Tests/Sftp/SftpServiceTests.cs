@@ -43,7 +43,12 @@ public class SftpServiceTests
         // 于是 GetClient 交回一个凭空出现的 SSH 客户端,目录删除会拐进 rm -rf 快路径(#474)。
         _connectionService.GetClient(_sessionId).Returns((ISshClientWrapper?)null);
         _sftpClient.IsConnected.Returns(true);
-        _sftpService = new SftpService(_connectionService, _ => _sftpClient);
+
+        // 这一组多数用例验的是续传起点、字节与取消,上传走不带时间戳的两个重载;
+        // 保留时间戳(关闭之前按同一个句柄设修改时间)另有专门的用例,自己建服务。
+        ISettingsService settings = Substitute.For<ISettingsService>();
+        settings.GetSettingsAsync().Returns(new AppSettings { Transfer = { PreserveTimestamps = false } });
+        _sftpService = new SftpService(_connectionService, _ => _sftpClient, settings);
     }
 
     /// <summary>
@@ -149,15 +154,19 @@ public class SftpServiceTests
         File.SetLastWriteTimeUtc(localPath, knownUtc);
         try
         {
-            _sftpClient.UploadAsync(Arg.Any<Stream>(), Arg.Any<string>(), Arg.Any<Action<ulong>>(), Arg.Any<CancellationToken>())
-                       .Returns(Task.CompletedTask);
+            var service = new SftpService(_connectionService, _ => _sftpClient);
 
-            await _sftpService.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
+            await service.UploadFileAsync(_sessionId, localPath, "/home/user/up.txt");
 
-            await _sftpClient.Received(1).SetLastWriteTimeAsync(
+            // 关闭之前按同一个句柄设(一次往返),不再上传完之后 STAT + SETSTAT 两次往返。
+            await _sftpClient.Received(1).UploadPreservingTimeAsync(
+                Arg.Any<Stream>(),
                 "/home/user/up.txt",
+                0,
                 Arg.Is<DateTimeOffset>(d => d.UtcDateTime == knownUtc),
+                Arg.Any<Action<ulong>?>(),
                 Arg.Any<CancellationToken>());
+            await _sftpClient.DidNotReceiveWithAnyArgs().SetLastWriteTimeAsync(default!, default, default);
         }
         finally
         {
@@ -182,6 +191,7 @@ public class SftpServiceTests
 
             await _sftpClient.DidNotReceive().SetLastWriteTimeAsync(
                 Arg.Any<string>(), Arg.Any<DateTimeOffset>(), Arg.Any<CancellationToken>());
+            await _sftpClient.DidNotReceiveWithAnyArgs().UploadPreservingTimeAsync(default!, default!, default, default);
         }
         finally
         {

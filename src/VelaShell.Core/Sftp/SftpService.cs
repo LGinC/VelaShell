@@ -89,6 +89,18 @@ public class SftpService : ISftpService
     }
 
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持取消。</summary>
+    /// <summary>
+    /// 上传的三种形状只差两个参数:要保留时间戳的,关闭之前按同一个句柄把修改时间设上(一次往返);
+    /// 其余按有没有续传起点选重载。
+    /// </summary>
+    private static Task UploadAsync(ISftpClientWrapper client, Stream input, string remotePath, long resumeOffset,
+        DateTimeOffset? lastWriteTime, Action<ulong>? onBytes, CancellationToken cancellationToken) =>
+        lastWriteTime is { } mtime
+            ? client.UploadPreservingTimeAsync(input, remotePath, resumeOffset, mtime, onBytes, cancellationToken)
+            : resumeOffset > 0
+                ? client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken)
+                : client.UploadAsync(input, remotePath, onBytes, cancellationToken);
+
     /// <summary>将本地文件上传到远端路径,可选限速与进度回报,支持断点续传(resumeOffset > 0 时追加上传)。</summary>
     public async Task UploadFileAsync(Guid sessionId,
         string localPath,
@@ -119,14 +131,11 @@ public class SftpService : ISftpService
         {
             try
             {
-                if (resumeOffset > 0)
-                {
-                    await client.UploadAsync(fileStream, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await client.UploadAsync(fileStream, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
-                }
+                // 保留时间戳(设置 → 文件传输,scp -p 语义):把远端 mtime 设回本地源文件的 mtime
+                // (下载方向的对等实现见 DownloadFileAsync)。关闭之前用同一个句柄设,一次往返;
+                // 尽力而为 —— 个别服务器禁 setstat,不能让一次时间戳设置失败把已完成的上传标成失败。
+                await UploadAsync(client, fileStream, remotePath, resumeOffset,
+                    preserveTimestamps ? new DateTimeOffset(fileInfo.LastWriteTimeUtc) : null, onBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (VelaSftpTransferInterruptedException interrupted)
             {
@@ -136,25 +145,6 @@ public class SftpService : ISftpService
 
             // 节流会丢弃最后一个时间片内的上报,不强制收尾进度条会停在 99%。
             reporter.ReportFinal(totalBytes);
-
-            // 保留时间戳(设置 → 文件传输,scp -p 语义):把远端 mtime 设回本地源文件的
-            // mtime(下载方向的对等实现见 DownloadFileAsync)。尽力而为——个别服务器
-            // 禁 setstat,不能让一次时间戳设置失败把已完成的上传标成失败。
-            if (preserveTimestamps)
-            {
-                try
-                {
-                    await client.SetLastWriteTimeAsync(remotePath, fileInfo.LastWriteTimeUtc, cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // 时间戳只是尽力而为。
-                }
-            }
         }
         catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is not OperationCanceledException)
         {
@@ -211,16 +201,12 @@ public class SftpService : ISftpService
         Stream input = uploadBps > 0 ? new ThrottledStream(source, uploadBps) : source;
         try
         {
+            DateTimeOffset? keepTime = preserveTimestamps && lastWriteTime is { } mtime && mtime != default
+                ? new DateTimeOffset(mtime.Kind == DateTimeKind.Utc ? mtime : mtime.ToUniversalTime())
+                : null;
             try
             {
-                if (resumeOffset > 0)
-                {
-                    await client.UploadAsync(input, remotePath, resumeOffset, onBytes, cancellationToken).ConfigureAwait(false);
-                }
-                else
-                {
-                    await client.UploadAsync(input, remotePath, onBytes, cancellationToken).ConfigureAwait(false);
-                }
+                await UploadAsync(client, input, remotePath, resumeOffset, keepTime, onBytes, cancellationToken).ConfigureAwait(false);
             }
             catch (VelaSftpTransferInterruptedException interrupted)
             {
@@ -228,22 +214,6 @@ public class SftpService : ISftpService
                 throw;
             }
             reporter.ReportFinal(length);
-            if (preserveTimestamps && lastWriteTime is { } mtime && mtime != default)
-            {
-                DateTime utc = mtime.Kind == DateTimeKind.Utc ? mtime : mtime.ToUniversalTime();
-                try
-                {
-                    await client.SetLastWriteTimeAsync(remotePath, new DateTimeOffset(utc), cancellationToken).ConfigureAwait(false);
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-                catch
-                {
-                    // 时间戳只是尽力而为(理由同 UploadFileAsync)。
-                }
-            }
         }
         catch (Exception ex) when (cancellationToken.IsCancellationRequested && ex is not OperationCanceledException)
         {

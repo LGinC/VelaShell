@@ -93,11 +93,11 @@ public class SftpSymlinkIntegrationTests
         }
     }
 
-    /// <summary>文件面板的剩余空间(statvfs@openssh.com)与路径栏的 ~用户名(expand-path)经宿主的 SFTP 包装取得到。</summary>
+    /// <summary>文件面板的剩余空间(statvfs)、路径栏的 ~用户名(expand-path)、上传时按句柄保留修改时间,经宿主的 SFTP 包装在真服务端上走通。</summary>
     [TestMethod]
     [TestCategory("DockerIntegration")]
     [Timeout(60_000)]
-    public async Task FreeSpaceAndTildeUser_WorkAgainstARealServer()
+    public async Task SftpExtensions_WorkAgainstARealServer()
     {
         RequireDockerAndSsh();
 
@@ -119,6 +119,13 @@ public class SftpSymlinkIntegrationTests
             // 路径栏的 ~用户名 同一条路:经宿主的包装请服务端展开。
             Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
             Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
+
+            // 上传时保留修改时间:关闭之前按同一个句柄设(FSETSTAT),远端 stat 看到的就是它。
+            string uploaded = $"/tmp/vela-mtime-{Guid.NewGuid():N}.txt";
+            DateTimeOffset mtime = new(2022, 3, 4, 5, 6, 7, TimeSpan.Zero);
+            await sftp.UploadPreservingTimeAsync(new MemoryStream("payload"u8.ToArray()), uploaded, 0, mtime);
+            string seen = (await ssh.RunCommandAsync($"stat -c %Y {uploaded}; rm -f {uploaded}")).Trim();
+            Assert.AreEqual(mtime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), seen);
         }
         finally
         {

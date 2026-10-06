@@ -91,7 +91,8 @@ public class RemoteRelayTests
             Status = SessionStatus.Connected,
         });
         byte[]? written = null;
-        client.UploadAsync(Arg.Any<Stream>(), "/b/y.txt", Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>())
+        // 没有设置服务时按默认「保留时间戳」:走关闭之前按句柄设修改时间的那个重载。
+        client.UploadPreservingTimeAsync(Arg.Any<Stream>(), "/b/y.txt", 0, Arg.Any<DateTimeOffset>(), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>())
               .Returns(call =>
               {
                   using var copy = new MemoryStream();
@@ -107,8 +108,9 @@ public class RemoteRelayTests
 
         Assert.AreSequenceEqual(new byte[] { 9, 8, 7, 6 }, written);
         Assert.IsFalse(source.Disposed, "流归调用方(契约),服务不能替它关掉。");
-        // 没有设置服务时按默认「保留时间戳」:目标的修改时间对齐源文件。
-        await client.Received(1).SetLastWriteTimeAsync("/b/y.txt", Arg.Is<DateTimeOffset>(d => d.UtcDateTime == mtime), Arg.Any<CancellationToken>());
+        // 目标的修改时间对齐源文件。
+        await client.Received(1).UploadPreservingTimeAsync(
+            Arg.Any<Stream>(), "/b/y.txt", 0, Arg.Is<DateTimeOffset>(d => d.UtcDateTime == mtime), Arg.Any<Action<ulong>?>(), Arg.Any<CancellationToken>());
     }
 
     [TestMethod]

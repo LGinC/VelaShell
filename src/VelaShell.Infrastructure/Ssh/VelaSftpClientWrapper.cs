@@ -120,7 +120,16 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
 
     /// <inheritdoc />
     public Task UploadAsync(Stream input, string path, long resumeOffset,
-        Action<ulong>? uploadCallback = null, CancellationToken ct = default)
+        Action<ulong>? uploadCallback = null, CancellationToken ct = default) =>
+        UploadCoreAsync(input, path, resumeOffset, lastWriteTime: null, uploadCallback, ct);
+
+    /// <inheritdoc />
+    public Task UploadPreservingTimeAsync(Stream input, string path, long resumeOffset, DateTimeOffset lastWriteTime,
+        Action<ulong>? uploadCallback = null, CancellationToken ct = default) =>
+        UploadCoreAsync(input, path, resumeOffset, lastWriteTime, uploadCallback, ct);
+
+    private Task UploadCoreAsync(Stream input, string path, long resumeOffset, DateTimeOffset? lastWriteTime,
+        Action<ulong>? uploadCallback, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(input);
 
@@ -143,6 +152,20 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
                 // **必须显式冲一次再关。** 流水线写入在 Flush 之前还有在途请求,
                 // 不等它们落地就关,表现是「上传显示完成,远端文件尾部却缺字节」。
                 await remote.FlushAsync(ct).ConfigureAwait(false);
+
+                // 关闭之前用同一个句柄设修改时间(FSETSTAT,一次往返)。访问时间取「现在」:
+                // 新写的文件本来就是这个值,事后 STAT 取回来的也是它。尽力而为 —— 个别服务端禁 setstat。
+                if (lastWriteTime is { } mtime)
+                {
+                    try
+                    {
+                        await remote.SetTimesAsync(DateTimeOffset.UtcNow, mtime, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is SftpException or ArgumentOutOfRangeException)
+                    {
+                        // 时间戳只是尽力而为(ArgumentOutOfRange:时间装不进 v3 的 32 位秒)。
+                    }
+                }
             }
             catch (Exception) when (ct.IsCancellationRequested)
             {

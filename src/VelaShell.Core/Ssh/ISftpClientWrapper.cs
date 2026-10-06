@@ -140,6 +140,14 @@ public interface ISftpClientWrapper : IAsyncDisposable
     Task CreateSymbolicLinkAsync(string linkPath, string targetPath, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 上传(<paramref name="resumeOffset" /> 大于 0 时从那里续传),并在关闭句柄之前把远端的修改时间设成
+    /// <paramref name="lastWriteTime" /> —— 同一个句柄设,一次往返;上传完再 <see cref="SetLastWriteTimeAsync" />
+    /// 要多两次往返(先取回访问时间再设)。设时间失败不影响上传(尽力而为)。
+    /// </summary>
+    Task UploadPreservingTimeAsync(Stream input, string path, long resumeOffset, DateTimeOffset lastWriteTime,
+        Action<ulong>? uploadCallback = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 将流上传到远端路径,写入前先定位到 <paramref name="resumeOffset"/> 字节处。
     /// 用于断点续传上传。
     /// </summary>
