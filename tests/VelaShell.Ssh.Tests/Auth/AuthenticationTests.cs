@@ -698,6 +698,11 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
             [SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms, "开关打开之后才肯用它 —— 为的是还能连上停在 OpenSSH 7.x 的老机器");
+
+        // 没有降级、直接挑中 SHA-1：尝试记录里同样写明（规格 04 §4.4）。
+        SshAuthAttempt attempt = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshRsa, attempt.SignatureAlgorithm);
+        Assert.Contains("SHA-1", attempt.Detail ?? "");
     }
 
     /// <summary>
@@ -727,6 +732,32 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.AreEqual(SshProtocolNames.AuthPublicKey, run.Succeeded.Method);
         Assert.AreSequenceEqual(
             [SshAlgorithmNames.RsaSha512, SshAlgorithmNames.SshRsa], run.Observation.PublicKeySignatureAlgorithms);
+
+        SshAuthAttempt attempt = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshRsa, attempt.SignatureAlgorithm, "记的是重试那一次的算法");
+        Assert.Contains("降级", attempt.Detail ?? "");
+    }
+
+    /// <summary>每一步 publickey 都记下用的签名算法；不是 SHA-1 时不附说明。</summary>
+    [TestMethod]
+    public async Task 尝试记录里写着用的签名算法()
+    {
+        using var signer = InMemorySshSigner.GenerateEd25519();
+
+        AuthRun run = await RunAsync(
+            [new PasswordCredential("wrong"), new PublicKeyCredential(signer)],
+            new TestAuthPolicy
+            {
+                AcceptPassword = "hunter2",
+                RequiredMethods = [SshProtocolNames.AuthPublicKey],
+                AcceptedPublicKeys = [signer.PublicKey.Blob.ToArray()],
+            });
+
+        SshAuthAttempt publicKey = run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey);
+        Assert.AreEqual(SshAlgorithmNames.SshEd25519, publicKey.SignatureAlgorithm);
+        Assert.IsNull(publicKey.Detail);
+        Assert.Contains($"（{SshAlgorithmNames.SshEd25519}）", publicKey.ToString());
+        Assert.IsNull(run.Succeeded.Attempts.Single(a => a.Method == SshProtocolNames.AuthPassword).SignatureAlgorithm);
     }
 
     [TestMethod]
@@ -1220,6 +1251,43 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         Assert.AreEqual(SshProtocolNames.AuthPassword, run.Succeeded.Method);
         Assert.AreSequenceEqual(["未经授权的访问将被记录。", "第二条横幅。"], received);
         Assert.AreSequenceEqual(received, run.Succeeded.Banner.ToArray());
+    }
+
+    /// <summary>
+    /// 证书被拒：按本机时钟已经过期这件事写进尝试记录（规格 04 §4.5）—— 不在本地拦，照样发出去由服务端判断。
+    /// 登录用户在 principals 里时不附 principals 的说法。
+    /// </summary>
+    [TestMethod]
+    public async Task 证书被拒时写明按本机时钟已过期()
+    {
+        SshCertificateSigner signer = await LoadCertificateSignerAsync("cert-expired");
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)], new TestAuthPolicy { RequiredMethods = [SshProtocolNames.AuthPublicKey] });
+
+        Assert.AreEqual(1, run.Observation.PublicKeySignedCount, "过期的证书照样发出去：判断是服务端的事");
+        string detail = run.Failed.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey).Detail ?? "";
+        Assert.Contains("按本机时钟已于 2020-01-02", detail);
+        Assert.Contains("expired@velashell", detail);
+        Assert.DoesNotContain("不含登录用户", detail);
+    }
+
+    /// <summary>证书被拒、登录用户不在 principals 里：写明证书签给了谁。agent 里的证书身份（签名器只交得出 blob）一样。</summary>
+    [TestMethod]
+    [DataRow(false, DisplayName = "证书签名器")]
+    [DataRow(true, DisplayName = "agent 那样只交得出 blob 的签名器")]
+    public async Task 证书被拒时写明登录用户不在principals里(bool opaque)
+    {
+        SshCertificateSigner certificateSigner = await LoadCertificateSignerAsync("cert-ed25519");
+        ISshSigner signer = opaque ? new ExpensiveSigner(certificateSigner) : certificateSigner;
+
+        AuthRun run = await RunAsync(
+            [new PublicKeyCredential(signer)],
+            new TestAuthPolicy { RequiredMethods = [SshProtocolNames.AuthPublicKey] },
+            userName: "alice");
+
+        string detail = run.Failed.Attempts.Single(a => a.Method == SshProtocolNames.AuthPublicKey).Detail ?? "";
+        Assert.Contains("证书签给的用户是 joe、deploy，不含登录用户 alice", detail);
     }
 
     // ------------------------------------------------------------ 测试替身

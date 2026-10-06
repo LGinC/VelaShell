@@ -353,7 +353,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             step = new AuthStepResult(SshAuthOutcome.SkippedNoMaterial, ex.Message);
         }
 
-        Record(credential, step.Outcome, step.Detail);
+        Record(credential, step.Outcome, step.Detail, step.SignatureAlgorithm);
         return step;
     }
 
@@ -488,6 +488,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         }
 
         AuthStepResult step = await TryPublicKeyWithAsync(credential, algorithm, cancellationToken).ConfigureAwait(false);
+        step = step with { SignatureAlgorithm = algorithm };
 
         // 〔velashell-docs/zh/ssh/spec/04 §4.4〕没收到 server-sig-algs 时先试的是 SHA-2；
         // 不认 rsa-sha2-* 的老服务器会拒，使用者允许 SHA-1 的话降级重试一次 ssh-rsa。
@@ -497,11 +498,77 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
             && Sha1FallbackFor(credential.Signer, algorithm) is { } sha1)
         {
             AuthStepResult retry = await TryPublicKeyWithAsync(credential, sha1, cancellationToken).ConfigureAwait(false);
-            string note = $"服务端没有宣告 server-sig-algs，{algorithm} 被拒后降级为 {sha1}（SHA-1）重试";
-            return retry with { Detail = retry.Detail is null ? note : $"{retry.Detail}（{note}）" };
+            step = retry with
+            {
+                Detail = WithNote(retry.Detail, $"服务端没有宣告 server-sig-algs，{algorithm} 被拒后降级为 {sha1}（SHA-1）重试"),
+                SignatureAlgorithm = sha1,
+            };
+        }
+        else if (HostKeys.SshPublicKey.StripCertificateSuffix(algorithm) == SshAlgorithmNames.SshRsa)
+        {
+            // 没有降级、直接挑中了 SHA-1（server-sig-algs 里能用的只有它，或这把钥只给得出它）：同样记一笔。
+            step = step with { Detail = WithNote(step.Detail, $"用的是 SHA-1 签名（{algorithm}）") };
+        }
+
+        // 〔§4.5〕证书被拒时，把本地看得出的线索写进记录：按本机时钟过期了、登录用户不在 principals 里……
+        // 客户端不因此拦着不发（那是服务端的判断，本机时钟也可能不准），只是让用户不必对着 Permission denied 猜。
+        if (step.Outcome == SshAuthOutcome.Failure && DescribeCertificateProblems(credential.Signer) is { } hints)
+        {
+            step = step with { Detail = WithNote(step.Detail, hints) };
         }
 
         return step;
+    }
+
+    private static string WithNote(string? detail, string note) => detail is null ? note : $"{detail}（{note}）";
+
+    /// <summary>证书被拒时本地看得出的线索；不是证书、或者看不出问题时为 <see langword="null"/>。</summary>
+    /// <remarks>只写事实：有效期按本机时钟判断（时钟不准时这条线索也不准，所以话里带着「按本机时钟」）。</remarks>
+    private string? DescribeCertificateProblems(ISshSigner signer)
+    {
+        if (!signer.PublicKey.IsCertificate)
+        {
+            return null;
+        }
+
+        OpenSshCertificate certificate;
+        if (signer is SshCertificateSigner certificateSigner)
+        {
+            certificate = certificateSigner.Certificate;
+        }
+        else
+        {
+            // agent 里的证书身份：签名器只交得出 blob。
+            try
+            {
+                certificate = OpenSshCertificate.Decode(signer.PublicKey.Blob);
+            }
+            catch (SshCertificateException)
+            {
+                return null;
+            }
+        }
+
+        string keyId = PeerText.Sanitize(certificate.KeyId, 128);
+        List<string> hints = [];
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        if (!certificate.IsTimeValid(now))
+        {
+            hints.Add(certificate.ValidBeforeTime is { } before && now >= before
+                ? $"证书（Key ID「{keyId}」）按本机时钟已于 {before:u} 过期"
+                : $"证书（Key ID「{keyId}」）按本机时钟要到 {certificate.ValidAfterTime:u} 才生效");
+        }
+        if (certificate.CertificateType != SshCertificateType.User)
+        {
+            hints.Add($"证书（Key ID「{keyId}」）是主机证书，不能用来登录");
+        }
+        if (certificate.ValidPrincipals.Count > 0 && !certificate.ValidPrincipals.Contains(_userName, StringComparer.Ordinal))
+        {
+            string principals = string.Join("、", certificate.ValidPrincipals.Take(8).Select(static p => PeerText.Sanitize(p, 64)));
+            hints.Add($"证书签给的用户是 {principals}{(certificate.ValidPrincipals.Count > 8 ? "……" : "")}，不含登录用户 {_userName}");
+        }
+
+        return hints.Count == 0 ? null : string.Join("；", hints);
     }
 
     /// <summary>该不该、能不能降级为 SHA-1 的 RSA 签名重试一次；能的话给出算法名。</summary>
@@ -770,7 +837,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// 「服务端要求先改密码」会退化成一句没有内容的「失败」——
     /// 而这正是用户最需要知道的那一句。
     /// </remarks>
-    private readonly record struct AuthStepResult(SshAuthOutcome Outcome, string? Detail = null);
+    private readonly record struct AuthStepResult(SshAuthOutcome Outcome, string? Detail = null, string? SignatureAlgorithm = null);
 
     /// <summary>读到一个认证结论（SUCCESS / FAILURE / 方法专用报文）。</summary>
     private async ValueTask<AuthStepResult> ReadAuthOutcomeAsync(
@@ -1031,9 +1098,9 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
         return usable[0];
     }
 
-    private void Record(SshCredential credential, SshAuthOutcome outcome, string? detail) =>
+    private void Record(SshCredential credential, SshAuthOutcome outcome, string? detail, string? signatureAlgorithm = null) =>
         _attempts.Add(new SshAuthAttempt(
-            credential.MethodName, credential.Label, outcome, _serverOffered, detail));
+            credential.MethodName, credential.Label, outcome, _serverOffered, detail, signatureAlgorithm));
 
     private SshAuthenticationResult BuildResult(string method) =>
         new(method, _attempts, _banner, _serverSignatureAlgorithms);
