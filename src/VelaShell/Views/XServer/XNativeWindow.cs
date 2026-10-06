@@ -272,6 +272,9 @@ public sealed class XNativeWindow : Window
             : [WindowTransparencyLevel.None];
     }
 
+    /// <summary>按原生窗口此刻的位置把 X 坐标报给服务端(显示器布局变了、根原点挪了之后由宿主调)。</summary>
+    public void ReportPosition() => OnMovedByUser();
+
     private void OnMovedByUser()
     {
         if (_applying || Server is not { } server || WindowState is WindowState.Minimized)
@@ -280,6 +283,10 @@ public sealed class XNativeWindow : Window
         }
         (int ox, int oy) = _host.RootOrigin;
         int x = Position.X + _frame.Left - ox, y = Position.Y + _frame.Top - oy;
+        if (x is < short.MinValue or > short.MaxValue || y is < short.MinValue or > short.MaxValue)
+        {
+            return;   // X 的坐标是 16 位:离谱的位置不报(服务端会当场拒绝)
+        }
         if (Handle.Snapshot is var s && (x != s.X || y != s.Y))
         {
             server.MoveTopLevel(Handle, x, y);

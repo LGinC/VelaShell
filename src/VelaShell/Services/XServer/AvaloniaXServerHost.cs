@@ -79,7 +79,17 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                     {
                         if (_server is { } current && _watchedScreens is { } screens)
                         {
+                            (int, int) before = RootOrigin;
                             ApplyLayout(current, screens);
+                            if (RootOrigin != before)
+                            {
+                                // 左侧 / 上方的显示器插拔:根原点挪了,原生窗口没动,X 坐标却整体差了这么多(菜单、对话框会摆到别处)。
+                                // 按每个窗口此刻的原生位置重报一次。
+                                foreach (XNativeWindow window in _windows.Values)
+                                {
+                                    window.ReportPosition();
+                                }
+                            }
                         }
                     };
                 }
