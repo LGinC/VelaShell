@@ -839,6 +839,33 @@ public sealed class ChannelTests
         Assert.Contains("命令", error.Message);
     }
 
+    /// <summary>〔可观测性缺口 5〕连接交出开着的通道的快照（类型、状态、开通时刻、字节数）；通道自己记开通时刻。</summary>
+    [TestMethod]
+    public async Task 连接交出开着的通道的快照()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { CloseAfterScript = false, ExitCode = null, EchoStandardInput = true });
+        Assert.IsEmpty(harness.Connection.Channels);
+
+        DateTimeOffset before = DateTimeOffset.UtcNow;
+        SshChannel first = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+        SshChannel second = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
+
+        IReadOnlyList<SshChannelSnapshot> channels = harness.Connection.Channels;
+        Assert.HasCount(2, channels);
+        Assert.AreEqual(first.LocalId, channels[0].LocalId);
+        Assert.AreEqual(second.LocalId, channels[1].LocalId);
+        Assert.AreEqual("session", channels[0].ChannelType);
+        Assert.AreEqual(SshChannelState.Open, channels[0].State);
+        Assert.IsNotNull(first.OpenedAt);
+        Assert.IsGreaterThanOrEqualTo(before, first.OpenedAt.Value);
+        Assert.AreEqual(first.OpenedAt, channels[0].OpenedAt);
+
+        await first.DisposeAsync();
+        await WaitUntilAsync(() => harness.Connection.Channels.Count == 1, harness.Token);
+        Assert.AreEqual(second.LocalId, harness.Connection.Channels.Single().LocalId);
+        await second.DisposeAsync();
+    }
+
     /// <summary>
     /// 关闭原因看的是谁先发的 CLOSE：本端先关、对端回 CLOSE 时是 <see cref="SshChannelCloseReason.ClosedLocally"/>；
     /// 对端先关时是 <see cref="SshChannelCloseReason.ClosedByPeer"/>。状态也照实走：本端先关才经过 Closing。

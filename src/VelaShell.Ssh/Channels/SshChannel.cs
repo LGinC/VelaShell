@@ -216,6 +216,14 @@ public sealed class SshChannel : IAsyncDisposable
     /// <summary>通道类型（<c>"session"</c> / <c>"direct-tcpip"</c> / …）。</summary>
     public string ChannelType { get; }
 
+    /// <summary>对端确认（或者我们确认对端开过来）的时刻；还在打开、或者没开成时为 <see langword="null"/>。</summary>
+    /// <remarks>连接信息里列「这条隧道开了多久」用它；曾经没有，每通道只有字节数。</remarks>
+    public DateTimeOffset? OpenedAt => Volatile.Read(ref _openedAtTicks) is var ticks and > 0
+        ? new DateTimeOffset(ticks, TimeSpan.Zero)
+        : null;
+
+    private long _openedAtTicks;
+
     /// <summary>通道<b>整个</b>结束（状态进入 <see cref="SshChannelState.Closed"/>）时被取消。</summary>
     /// <remarks>
     /// 回调在线程池上执行，不在接收循环上。
@@ -720,6 +728,7 @@ public sealed class SshChannel : IAsyncDisposable
             if (_state == SshChannelState.Opening)
             {
                 _state = SshChannelState.Open;
+                Volatile.Write(ref _openedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
                 opened = _activeMetered = MetricsHost is not null;
             }
         }

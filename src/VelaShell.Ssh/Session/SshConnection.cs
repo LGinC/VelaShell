@@ -288,6 +288,30 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         }
     }
 
+    /// <summary>这条连接上此刻开着的通道（快照：类型、状态、开通时刻、字节数），按通道号排。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/05 §一〕连接信息里列「这条连接上开着哪些 shell、隧道、SFTP」用它。交出的是快照而不是通道本身 ——
+    /// 通道归开它的那一方，别人拿到手就能关掉它。正在打开的那条也在里面（与 <see cref="ChannelCount"/> 一致）。
+    /// 曾经只有一个数。
+    /// </remarks>
+    public IReadOnlyList<SshChannelSnapshot> Channels
+    {
+        get
+        {
+            SshChannel[] channels;
+            lock (_stateLock)
+            {
+                channels = [.. _channels.Values];
+            }
+
+            // 通道自己的锁在连接的锁之外取（锁顺序：连接在前、通道在后，这里干脆不嵌套）。
+            return [.. channels
+                .OrderBy(channel => channel.LocalId)
+                .Select(channel => new SshChannelSnapshot(
+                    channel.LocalId, channel.ChannelType, channel.State, channel.OpenedAt, channel.BytesSent, channel.BytesReceived))];
+        }
+    }
+
     /// <summary>会话是否还活着。</summary>
     public bool IsAlive => Volatile.Read(ref _fault) is null && !_disposed;
 
