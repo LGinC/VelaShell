@@ -15,13 +15,13 @@ namespace VelaShell.Ssh.HostKeys;
 /// 也不用去手工删行 —— 那条告警才能重新变得有分量。
 /// </para>
 /// <para>
-/// 主机密钥策略实现它、并且 <see cref="UpdateHostKeys"/> 为真时，连接才做轮换；只增不删（删掉不再出示的旧钥要改写 <c>known_hosts</c>，不做）。
+/// 主机密钥策略实现它、并且 <see cref="AllowHostKeyUpdates"/> 为真时，连接才做轮换；只增不删（删掉不再出示的旧钥要改写 <c>known_hosts</c>，不做）。
 /// </para>
 /// </remarks>
 public interface IHostKeyRotationPolicy
 {
     /// <summary>做不做轮换。</summary>
-    bool UpdateHostKeys { get; }
+    bool AllowHostKeyUpdates { get; }
 
     /// <summary>这台主机记着的<b>普通</b>主机密钥（不含 CA、不含作废的）。</summary>
     /// <param name="host">主机（与裁决时同一个名字）。</param>

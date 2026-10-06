@@ -58,7 +58,7 @@ public sealed class PacketTapTests
             HostKeyPolicy = new DangerousAcceptAnyHostKeyPolicy(),
             Credentials = [new PasswordCredential("hunter2")],
             PacketTap = tap,
-            PacketTapIncludesPayload = includePayload,
+            AllowPacketTapPayload = includePayload,
         };
 
         SshCommandResult result;

@@ -31,7 +31,7 @@ public sealed record SshAgentKeyConstraints
     private static readonly TimeSpan MaxLifetime = TimeSpan.FromSeconds(uint.MaxValue);
 
     /// <summary>每次用这把钥签名时，由 agent 向使用者确认。</summary>
-    public bool ConfirmEachUse { get; init; }
+    public bool IsConfirmationRequired { get; init; }
 
-    internal bool IsEmpty => Lifetime is null && !ConfirmEachUse;
+    internal bool IsEmpty => Lifetime is null && !IsConfirmationRequired;
 }

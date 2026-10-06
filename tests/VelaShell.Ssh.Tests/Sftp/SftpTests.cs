@@ -918,7 +918,7 @@ public sealed class SftpTests
     {
         await using Harness harness = await Harness.StartAsync(
             sftpOptions: new TestSftpOptions { DelayWriteReplies = TimeSpan.FromMilliseconds(300) },
-            clientOptions: new SftpOptions { MaxInFlight = 1, AdaptivePipelineDepth = false });
+            clientOptions: new SftpOptions { MaxInFlight = 1, IsPipelineDepthAdaptive = false });
 
         int block = harness.Sftp.BlockSize;
         byte[] first = new byte[block];

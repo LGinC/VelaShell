@@ -252,7 +252,7 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
     /// <returns>换用的凭据；换不了返回 <see langword="null"/>。</returns>
     private KeyboardInteractiveCredential? TryBridgeToKeyboardInteractive(SshCredential credential)
     {
-        if (credential is not PasswordCredential { AlsoAnswerKeyboardInteractive: true } password
+        if (credential is not PasswordCredential { CanAnswerKeyboardInteractive: true } password
             || !_serverOffered.Contains(SshProtocolNames.AuthKeyboardInteractive, StringComparer.Ordinal))
         {
             return null;

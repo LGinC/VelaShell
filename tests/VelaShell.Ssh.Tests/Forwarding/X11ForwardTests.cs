@@ -42,7 +42,7 @@ public sealed class X11ForwardTests
 
         Assert.AreEqual(XAuthority.MitMagicCookie1, request.AuthProtocol);
         Assert.AreEqual(7, request.ScreenNumber, "屏幕号要按 DISPLAY 里的来");
-        Assert.IsFalse(request.SingleConnection, "默认允许多条 X11 连接");
+        Assert.IsFalse(request.IsSingleConnection, "默认允许多条 X11 连接");
 
         // **真 cookie 一个字节都不该出现在线上。**
         Assert.AreNotEqual(
@@ -231,7 +231,7 @@ public sealed class X11ForwardTests
             {
                 X11Forwarding = fixture.Options with
                 {
-                    Trusted = false,
+                    IsTrusted = false,
                     LocalConnector = _ => ValueTask.FromResult<Stream>(new MemoryStream()),
                     FailureMode = ForwardFailureMode.Continue,
                 },
@@ -445,11 +445,11 @@ public sealed class X11ForwardTests
 
         await using X11Forwarder forwarder = await X11Forwarder.RequestAsync(
             fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Display = xserver.Display, SingleConnection = true },
+            fixture.Options with { Display = xserver.Display, IsSingleConnection = true },
             fixture.Harness.Token);
 
         TestX11Request request = fixture.Harness.Channels.Observation.X11Requests.Single();
-        Assert.IsTrue(request.SingleConnection);
+        Assert.IsTrue(request.IsSingleConnection);
         byte[] cookie = Convert.FromHexString(request.AuthCookieHex);
 
         await using Stream first = await OpenX11Async(fixture);
@@ -481,7 +481,7 @@ public sealed class X11ForwardTests
 
         await using X11Forwarder forwarder = await X11Forwarder.RequestAsync(
             fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Display = xserver.Display, SingleConnection = true },
+            fixture.Options with { Display = xserver.Display, IsSingleConnection = true },
             fixture.Harness.Token);
 
         byte[] cookie = Convert.FromHexString(
@@ -603,7 +603,7 @@ public sealed class X11ForwardTests
     /// <summary>非受信模式 + 一个不存在的 <c>xauth</c>：在本机这一侧就失败。</summary>
     private static X11ForwardOptions UnrunnableXAuth(X11ForwardOptions options) => options with
     {
-        Trusted = false,
+        IsTrusted = false,
         XAuthLocation = Path.Combine(Path.GetTempPath(), $"velashell-no-xauth-{Guid.NewGuid():N}", "xauth"),
     };
 
@@ -722,7 +722,7 @@ public sealed class X11ForwardTests
             // 用例不该依赖本机装没装 X。
             X11ForwardOptions options = new()
             {
-                Trusted = true,
+                IsTrusted = true,
                 Display = X11Display.Parse(":0.7"),
                 XAuthorityPath = WriteXAuthority(),
             };

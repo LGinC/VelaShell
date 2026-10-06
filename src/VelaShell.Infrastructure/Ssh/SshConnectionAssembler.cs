@@ -348,7 +348,7 @@ internal static class SshConnectionAssembler
                 [
                     new PasswordCredential(info.Password ?? "")
                     {
-                        AlsoAnswerKeyboardInteractive = keyboard is null,
+                        CanAnswerKeyboardInteractive = keyboard is null,
                         NewPasswordProvider = keyboard is null ? null : keyboard.AskNewPasswordAsync,
                     }
                 ];

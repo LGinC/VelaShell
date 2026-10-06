@@ -133,7 +133,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         {
             ArrayBufferWriter<byte> payload = new();
             SshDataWriter writer = new(payload);
-            writer.WriteBoolean(effective.SingleConnection);
+            writer.WriteBoolean(effective.IsSingleConnection);
             writer.WriteUtf8String(XAuthority.MitMagicCookie1);
 
             // ⚠️ cookie 字段是**十六进制文本**，不是原始字节（RFC 4254 §6.3.1）。
@@ -191,7 +191,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         // ⚠️ 名额要**原子地认领**。以前是「看 _acceptedChannels 是否 > 0」，而计数要等建立报文
         // 发给本机显示之后才加一 —— 两条 x11 通道挨着到达时，第二条看到的还是 0，两条都被放行。
         bool claimedSingle = false;
-        if (_options.SingleConnection)
+        if (_options.IsSingleConnection)
         {
             if (Interlocked.Exchange(ref _singleConnectionClaimed, 1) != 0)
             {
@@ -334,7 +334,7 @@ public sealed class X11Forwarder : IAsyncDisposable
     private static async ValueTask<byte[]> ResolveRealCookieAsync(
         X11Display display, X11ForwardOptions options, CancellationToken cancellationToken)
     {
-        if (options.Trusted)
+        if (options.IsTrusted)
         {
             // 〔velashell-docs/zh/ssh/spec/07 §7.5.7〕受信模式**不跑外部程序** —— 读文件就够了，
             // 少跑一个外部程序就少一条攻击面。
@@ -491,7 +491,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         {
             throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
                 $"跑不起来 {xauth}：{ex.Message}。" +
-                "Windows 上通常没有 xauth —— 那里请用受信模式（Trusted = true）。", ex);
+                "Windows 上通常没有 xauth —— 那里请用受信模式（IsTrusted = true）。", ex);
         }
 
         using (process)
@@ -539,7 +539,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
                     $"{xauth} generate 失败（退出码 {process.ExitCode}）：{error.Trim()}。" +
                     "非受信 X11 转发需要本机有 xauth、且 X server 支持 SECURITY 扩展；" +
-                    "都没有的话请显式用受信模式（Trusted = true），但要清楚那等于把本机显示完全交给远端。");
+                    "都没有的话请显式用受信模式（IsTrusted = true），但要清楚那等于把本机显示完全交给远端。");
             }
         }
     }

@@ -90,7 +90,7 @@ public class SshSessionFeaturesTests
         Assert.IsNotNull(options);
         Assert.AreEqual("127.0.0.1", options.Display!.Host);
         Assert.AreEqual(1, options.Display.Number);
-        Assert.IsFalse(options.Trusted);
+        Assert.IsFalse(options.IsTrusted);
         Assert.AreEqual(TimeSpan.Zero, options.Timeout);
         Assert.IsEmpty(notices);
     }
@@ -208,7 +208,7 @@ public class SshSessionFeaturesTests
         AgentForwardOptions policy = SshForwardingOptions.Agent(new SshSessionOptions { AgentForwarding = true }, [])!;
 
         Assert.IsNull(policy.AllowedKeys, "没限定时交 null：整个 agent 可见（空列表在库里表示一把都不给）");
-        Assert.IsNull(policy.ConfirmEachSignature);
+        Assert.IsNull(policy.ApproveSignature);
     }
 
     /// <summary>
@@ -408,7 +408,7 @@ public class SshSessionFeaturesTests
         IAgentSignPrompt? prompt, TimeSpan? timeout = null, IHostKeyService? hostKeys = null) =>
         SshForwardingOptions.Agent(
             new SshSessionOptions { AgentForwarding = true, AgentForwardConfirm = true },
-            [], prompt, "joe@10.0.0.1:22", timeout, hostKeys)!.ConfirmEachSignature!;
+            [], prompt, "joe@10.0.0.1:22", timeout, hostKeys)!.ApproveSignature!;
 
     /// <summary>只答「全部已知主机」;别的用不上。</summary>
     private sealed class FakeKnownHosts(params KnownHost[] hosts) : IHostKeyService

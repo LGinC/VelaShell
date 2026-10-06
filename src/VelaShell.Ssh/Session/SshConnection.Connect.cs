@@ -100,7 +100,7 @@ public sealed partial class SshConnection
             transport = new SshPacketTransport(stream)
             {
                 PacketTap = options.PacketTap,
-                PacketTapIncludesPayload = options.PacketTapIncludesPayload,
+                AllowPacketTapPayload = options.AllowPacketTapPayload,
                 MetricsHost = metricsHost,
             };
             progress.Phase = phase = SshPhase.VersionExchange;

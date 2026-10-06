@@ -533,7 +533,7 @@ public sealed class SshAgentClient : IAsyncDisposable
                     writer.WriteByte(SshAgentMessage.ConstrainLifetime);
                     writer.WriteUInt32((uint)Math.Clamp(Math.Ceiling(lifetime.TotalSeconds), 1, uint.MaxValue));
                 }
-                if (constraints.ConfirmEachUse)
+                if (constraints.IsConfirmationRequired)
                 {
                     writer.WriteByte(SshAgentMessage.ConstrainConfirm);
                 }

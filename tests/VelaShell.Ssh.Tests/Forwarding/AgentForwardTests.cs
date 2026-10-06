@@ -400,7 +400,7 @@ public sealed class AgentForwardTests
 
         AgentForwardOptions policy = new()
         {
-            ConfirmEachSignature = (request, _) =>
+            ApproveSignature = (request, _) =>
             {
                 asked.Add(request);
                 return ValueTask.FromResult(approve);
@@ -447,7 +447,7 @@ public sealed class AgentForwardTests
         List<AgentSignatureRequest> asked = [];
         AgentForwardOptions policy = new()
         {
-            ConfirmEachSignature = (request, _) =>
+            ApproveSignature = (request, _) =>
             {
                 asked.Add(request);
                 return ValueTask.FromResult(true);

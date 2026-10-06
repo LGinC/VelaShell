@@ -53,6 +53,6 @@ public sealed class KeyboardInteractiveSupportTests
     {
         PasswordCredential credential = new("hunter2");
 
-        Assert.IsTrue(credential.AlsoAnswerKeyboardInteractive);
+        Assert.IsTrue(credential.CanAnswerKeyboardInteractive);
     }
 }

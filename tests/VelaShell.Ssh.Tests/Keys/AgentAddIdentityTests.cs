@@ -110,7 +110,7 @@ public sealed class AgentAddIdentityTests
         await rig.Client.AddIdentityAsync(
             key,
             "k",
-            new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(90.2), ConfirmEachUse = true },
+            new SshAgentKeyConstraints { Lifetime = TimeSpan.FromSeconds(90.2), IsConfirmationRequired = true },
             rig.Token);
 
         Assert.AreEqual((byte)25, rig.Agent.LastAddMessageType);

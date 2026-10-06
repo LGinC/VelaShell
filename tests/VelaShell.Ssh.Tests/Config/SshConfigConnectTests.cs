@@ -550,7 +550,7 @@ public sealed class SshConfigConnectTests
 
         Assert.IsNotNull(shell.AgentForwarding);
         Assert.IsNotNull(shell.X11Forwarding);
-        Assert.IsTrue(shell.X11Forwarding.Trusted);
+        Assert.IsTrue(shell.X11Forwarding.IsTrusted);
 
         // §7.5.8：连接级开关打开的 X11 是尽力而为的 —— 失败不该让 shell 起不来。
         Assert.AreEqual(ForwardFailureMode.Continue, shell.X11Forwarding.FailureMode);
@@ -598,7 +598,7 @@ public sealed class SshConfigConnectTests
                 ForwardX11 yes
             """);
 
-        X11ForwardOptions explicitX11 = new() { Trusted = true };
+        X11ForwardOptions explicitX11 = new() { IsTrusted = true };
         SshShellOptions shell = SshConfigFile.Resolve(blocks, "gui")
             .ApplyToShell(new SshShellOptions { X11Forwarding = explicitX11 });
 

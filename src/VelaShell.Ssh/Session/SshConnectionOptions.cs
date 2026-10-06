@@ -144,7 +144,7 @@ public sealed record SshConnectionOptions
     /// ⚠️ <b>打开之后，通道数据里有什么就带出什么</b>：终端里敲的口令（<c>sudo</c>）、私钥文件的内容（传输时）、转发的流量。
     /// 认证报文（50–79）的载荷无论如何都不给（velashell-docs/zh/ssh/spec/08 §9）。
     /// </remarks>
-    public bool PacketTapIncludesPayload { get; init; }
+    public bool AllowPacketTapPayload { get; init; }
 
     /// <summary>服务端横幅的回调。<b>文本来自未认证的对端，是注入面。</b></summary>
     public Func<string, CancellationToken, ValueTask>? BannerHandler { get; init; }

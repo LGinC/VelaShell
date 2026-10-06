@@ -174,12 +174,12 @@ internal sealed record TestChannelScript
 }
 
 /// <summary>测试服务端收到的一条 <c>x11-req</c>。</summary>
-/// <param name="SingleConnection">只允许一条 X11 连接。</param>
+/// <param name="IsSingleConnection">只允许一条 X11 连接。</param>
 /// <param name="AuthProtocol">授权协议名。</param>
 /// <param name="AuthCookieHex">cookie 的十六进制文本 —— <b>应当是假的那个</b>。</param>
 /// <param name="ScreenNumber">屏幕号。</param>
 internal sealed record TestX11Request(
-    bool SingleConnection, string AuthProtocol, string AuthCookieHex, int ScreenNumber);
+    bool IsSingleConnection, string AuthProtocol, string AuthCookieHex, int ScreenNumber);
 
 /// <summary>服务端在通道上观察到的事实。</summary>
 internal sealed class TestChannelObservation
@@ -878,7 +878,7 @@ internal sealed class TestChannelServer : IDisposable
 
             case SshProtocolNames.RequestX11:
                 Observation.X11Requests.Add(new TestX11Request(
-                    SingleConnection: reader.ReadBoolean(),
+                    IsSingleConnection: reader.ReadBoolean(),
                     AuthProtocol: reader.ReadUtf8String(MaxField),
                     AuthCookieHex: reader.ReadUtf8String(MaxField),
                     ScreenNumber: (int)reader.ReadUInt32()));

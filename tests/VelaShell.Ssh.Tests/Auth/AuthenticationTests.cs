@@ -988,7 +988,7 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
     public async Task 关掉开关之后密码不再自动填进键盘交互()
     {
         AuthRun run = await RunAsync(
-            [new PasswordCredential("hunter2") { AlsoAnswerKeyboardInteractive = false }],
+            [new PasswordCredential("hunter2") { CanAnswerKeyboardInteractive = false }],
             new TestAuthPolicy
             {
                 OfferedMethods = [SshProtocolNames.AuthKeyboardInteractive],
@@ -1071,7 +1071,7 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
 
         AuthRun run = await RunAsync(
             [
-                new PasswordCredential("hunter2") { AlsoAnswerKeyboardInteractive = false },
+                new PasswordCredential("hunter2") { CanAnswerKeyboardInteractive = false },
                 new PublicKeyCredential(signer),
             ],
             new TestAuthPolicy

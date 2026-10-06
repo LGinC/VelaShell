@@ -71,7 +71,7 @@ public abstract record SshSessionRequestOptions
     /// <remarks>
     /// <b>默认不请求。</b> agent 转发让远端能用本机 agent 里的钥签名 ——
     /// 远端的 root 同样能用。<see cref="AgentForwardOptions.AllowedKeys"/> /
-    /// <see cref="AgentForwardOptions.ConfirmEachSignature"/> 就是为这个存在的。
+    /// <see cref="AgentForwardOptions.ApproveSignature"/> 就是为这个存在的。
     /// 没开成（本机 agent 连不上、服务端拒绝）时与 X11 同一条规矩，看 <see cref="AgentForwardOptions.FailureMode"/>，
     /// 原因放在结果对象的 <c>AgentSetupFailure</c> 上。
     /// </remarks>

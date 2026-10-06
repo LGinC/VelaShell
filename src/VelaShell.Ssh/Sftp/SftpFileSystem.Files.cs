@@ -187,7 +187,7 @@ public sealed partial class SftpFileSystem
     /// 只有多个流并发时深度才会长。
     /// </para>
     /// </remarks>
-    private int StreamWindow => _options.AdaptivePipelineDepth ? _options.MaxPipelineDepth : _options.MaxInFlight;
+    private int StreamWindow => _options.IsPipelineDepthAdaptive ? _options.MaxPipelineDepth : _options.MaxInFlight;
 
     /// <summary>流水线的深度被调大过几次（诊断与测试用）。</summary>
     internal int PipelineDepthIncreases => _pipeline.DepthIncreases;

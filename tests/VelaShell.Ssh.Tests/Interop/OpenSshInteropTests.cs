@@ -1350,7 +1350,7 @@ public sealed class OpenSshInteropTests
         string knownHosts = Path.Combine(Path.GetTempPath(), $"vela-kh-{Guid.NewGuid():N}");
         try
         {
-            KnownHostsPolicy policy = new(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, UpdateHostKeys = true };
+            KnownHostsPolicy policy = new(knownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
             SshHostKeyUpdate first = await ConnectAndAwaitRotationAsync(policy);
             Assert.IsNull(first.Skipped, first.Skipped);
@@ -1561,7 +1561,7 @@ public sealed class OpenSshInteropTests
 
         SshCommandOptions options = new()
         {
-            X11Forwarding = new X11ForwardOptions { Trusted = true, Display = X11Display.Parse(":0") },
+            X11Forwarding = new X11ForwardOptions { IsTrusted = true, Display = X11Display.Parse(":0") },
         };
 
         await using SshCommand command = await connection.ExecuteAsync(
@@ -1598,7 +1598,7 @@ public sealed class OpenSshInteropTests
             {
                 X11Forwarding = new X11ForwardOptions
                 {
-                    Trusted = true,
+                    IsTrusted = true,
                     Display = xserver.Display,
                     XAuthorityPath = xauthority,
                 },

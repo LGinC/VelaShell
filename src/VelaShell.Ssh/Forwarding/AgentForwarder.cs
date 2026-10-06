@@ -382,7 +382,7 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
         CancellationToken cancellationToken)
     {
         // 只有确认框用得上：没开逐次确认就不花这次验签。
-        if (_options.ConfirmEachSignature is not null
+        if (_options.ApproveSignature is not null
             && AgentSignedData.TryReadSessionBinding(request) is { } binding)
         {
             if (bindings.Count == MaxSessionBindingsPerChannel)
@@ -471,7 +471,7 @@ public sealed class AgentForwarder : IIncomingChannelHandler, IAsyncDisposable
             return [SshAgentMessage.Failure];
         }
 
-        if (_options.ConfirmEachSignature is { } confirm)
+        if (_options.ApproveSignature is { } confirm)
         {
             IReadOnlyList<SshAgentIdentity> identities =
                 await agent.ListIdentitiesAsync(cancellationToken).ConfigureAwait(false);

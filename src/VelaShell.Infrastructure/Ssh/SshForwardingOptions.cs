@@ -73,7 +73,7 @@ internal static class SshForwardingOptions
         return new X11ForwardOptions
         {
             Display = display,
-            Trusted = features.X11Trusted,
+            IsTrusted = features.X11Trusted,
             Timeout = TimeSpan.Zero,
             FailureMode = ForwardFailureMode.Continue,
             LocalConnector = fromLocalServer && features.X11Trusted ? localServerConnector : null,
@@ -139,7 +139,7 @@ internal static class SshForwardingOptions
         {
             FailureMode = ForwardFailureMode.Continue,
             AllowedKeys = allowed,
-            ConfirmEachSignature = features.AgentForwardConfirm
+            ApproveSignature = features.AgentForwardConfirm
                 ? Confirmer(prompt, target, confirmTimeout ?? AgentConfirmTimeout, hostKeys)
                 : null,
         };

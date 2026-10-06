@@ -32,7 +32,7 @@ public sealed partial class SshConnection
     /// </summary>
     private void OnHostKeysAnnounced(ref SshDataReader reader)
     {
-        if (RekeyContext?.HostKeyPolicy is not IHostKeyRotationPolicy { UpdateHostKeys: true } rotation
+        if (RekeyContext?.HostKeyPolicy is not IHostKeyRotationPolicy { AllowHostKeyUpdates: true } rotation
             || Interlocked.Exchange(ref _hostKeysAnnounced, 1) != 0)
         {
             return;

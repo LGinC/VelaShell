@@ -14,7 +14,7 @@ namespace VelaShell.Ssh.Diagnostics;
 /// 回调跑在收发循环上，<b>必须很快、不能阻塞</b>；它抛的异常被吞掉 —— 旁路出错不该弄坏连接。
 /// </para>
 /// <para>
-/// <b>载荷默认不给</b>；打开 <c>PacketTapIncludesPayload</c> 之后，通道数据里有什么就带出什么：
+/// <b>载荷默认不给</b>；打开 <c>AllowPacketTapPayload</c> 之后，通道数据里有什么就带出什么：
 /// 终端里敲的口令（<c>sudo</c>）、传输的文件内容、转发的流量。<b>认证报文的载荷永远不给</b>（没有开关）——
 /// 没有哪种排错值得把密码打进日志。
 /// </para>

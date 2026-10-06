@@ -158,7 +158,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
     internal Diagnostics.IPacketTap? PacketTap { get; set; }
 
     /// <summary>旁路拿不拿得到载荷（认证报文 50–79 无论如何都不给）。</summary>
-    internal bool PacketTapIncludesPayload { get; set; }
+    internal bool AllowPacketTapPayload { get; set; }
 
     /// <summary>把一个报文交给旁路。旁路抛的异常吞掉：旁路出错不该弄坏连接。</summary>
     private void Tap(Diagnostics.IPacketTap tap, Diagnostics.PacketDirection direction, ReadOnlySpan<byte> payload, uint sequence)
@@ -171,7 +171,7 @@ internal sealed class SshPacketTransport : IAsyncDisposable
             : null;
 
         // 〔velashell-docs/zh/ssh/spec/08 §9 第 3 条〕认证报文（50–79）的载荷永远不给，没有开关。
-        bool includePayload = PacketTapIncludesPayload && number is not (>= 50 and <= 79);
+        bool includePayload = AllowPacketTapPayload && number is not (>= 50 and <= 79);
         try
         {
             tap.OnPacket(new Diagnostics.PacketTapRecord(

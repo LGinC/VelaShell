@@ -83,16 +83,16 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
     /// 这个开关存在只是为了「我知道我刚重装了那台机器」这一种情形，
     /// 而那种情形下更好的做法是去把 <c>known_hosts</c> 里那一行删掉。
     /// </remarks>
-    public bool DangerouslyAcceptChangedKeys { get; init; }
+    public bool DangerousAcceptChangedKeys { get; init; }
 
     /// <summary>写入时是否把主机名散列掉（对应 <c>HashKnownHosts yes</c>）。</summary>
-    public bool HashHostNames { get; init; }
+    public bool IsHashingHostNames { get; init; }
 
     /// <summary>
     /// 主机密钥轮换（<c>UpdateHostKeys yes</c>，见 <see cref="IHostKeyRotationPolicy"/>）：服务端证明持有的新主机密钥补记进 <c>known_hosts</c>。
     /// 默认 <see langword="false"/>。不用文件（<see cref="WithoutFile"/>）时打开了也不记。
     /// </summary>
-    public bool UpdateHostKeys { get; init; }
+    public bool AllowHostKeyUpdates { get; init; }
 
     /// <inheritdoc />
     public async ValueTask<IReadOnlyList<SshPublicKey>> GetKnownHostKeysAsync(
@@ -110,14 +110,14 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(keys);
-        if (_withoutFile || !UpdateHostKeys || !KnownHostsFile.IsRecordableHost(host))
+        if (_withoutFile || !AllowHostKeyUpdates || !KnownHostsFile.IsRecordableHost(host))
         {
             return;
         }
 
         foreach (SshPublicKey key in keys)
         {
-            await KnownHostsFile.AppendAsync(host, port, key, _path, HashHostNames, cancellationToken).ConfigureAwait(false);
+            await KnownHostsFile.AppendAsync(host, port, key, _path, IsHashingHostNames, cancellationToken).ConfigureAwait(false);
         }
         _cache = null;
     }
@@ -140,7 +140,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
                                 $"{context.Target} 出示的主机密钥在 {_path} 里被标记为 @revoked" +
                                 $"（第 {lookup.MatchedEntry?.LineNumber} 行）。" +
                                 "这把密钥已经作废 —— 不要连。"),
-            KnownHostStatus.Changed => DangerouslyAcceptChangedKeys
+            KnownHostStatus.Changed => DangerousAcceptChangedKeys
                                 ? SshHostKeyVerdict.Accept
                                 : SshHostKeyVerdict.RejectChanged(BuildChangedMessage(context, lookup)),
             KnownHostStatus.CertificateInvalid => SshHostKeyVerdict.Reject(
@@ -150,7 +150,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
                                 "请联系管理员重新签发主机证书。"),
             // 与「变了」同样处理：连接时已经把记着的类型排在最前，正常的服务端会谈成它；
             // 还落到这里，要么服务端不再有那把钥，要么路上有人。**不能**当成「没见过」去问、去记。
-            KnownHostStatus.OtherKeyTypesKnown => DangerouslyAcceptChangedKeys
+            KnownHostStatus.OtherKeyTypesKnown => DangerousAcceptChangedKeys
                                 ? SshHostKeyVerdict.Accept
                                 : SshHostKeyVerdict.RejectChanged(BuildOtherTypeMessage(context, lookup)),
             _ => await HandleUnknownAsync(context, cancellationToken).ConfigureAwait(false),
@@ -249,7 +249,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference, I
         }
 
         await KnownHostsFile.AppendAsync(
-            context.Host, context.Port, context.Key, _path, HashHostNames, cancellationToken)
+            context.Host, context.Port, context.Key, _path, IsHashingHostNames, cancellationToken)
             .ConfigureAwait(false);
 
         // 缓存作废 —— 下一次裁决要看到刚写进去的这一条。

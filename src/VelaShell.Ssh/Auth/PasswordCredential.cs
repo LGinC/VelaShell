@@ -53,7 +53,7 @@ public sealed class PasswordCredential : SshCredential
     /// 自动填密码只会白白消耗一次尝试（velashell-docs/zh/ssh/spec/04 §6.5）。
     /// </para>
     /// </remarks>
-    public bool AlsoAnswerKeyboardInteractive { get; init; } = true;
+    public bool CanAnswerKeyboardInteractive { get; init; } = true;
 
     /// <summary>服务端连续不接受新密码时，最多问几次（<see cref="NewPasswordProvider"/> 最多被调用的次数）。</summary>
     public const int MaxNewPasswordAttempts = 3;

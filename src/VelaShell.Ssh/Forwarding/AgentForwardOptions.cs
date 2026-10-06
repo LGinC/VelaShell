@@ -50,7 +50,7 @@ public sealed record AgentForwardOptions
     /// 返回 <see langword="false"/> 就拒签。对跳板场景这是唯一能让人安心的做法 ——
     /// 否则你根本不知道那台机器拿你的身份做了什么、做了几次。
     /// </remarks>
-    public Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>>? ConfirmEachSignature { get; init; }
+    public Func<AgentSignatureRequest, CancellationToken, ValueTask<bool>>? ApproveSignature { get; init; }
 
     /// <summary>同时允许几条 agent 通道。</summary>
     public int MaxConnections { get; init; } = 8;

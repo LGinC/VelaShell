@@ -52,7 +52,7 @@ public sealed record SftpOptions
     /// 关掉它可以得到确定性的内存占用（在途数 × 块大小），
     /// 代价是高 RTT 链路上吞吐被 <c>深度 × 块大小 / RTT</c> 封死。
     /// </remarks>
-    public bool AdaptivePipelineDepth { get; init; } = true;
+    public bool IsPipelineDepthAdaptive { get; init; } = true;
 
     /// <summary>自适应时在途请求数的上限；不能小于 <see cref="MaxInFlight"/>（连接时核对）。</summary>
     /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
@@ -64,7 +64,7 @@ public sealed record SftpOptions
 
     /// <summary>列目录时过滤掉 <c>.</c> 与 <c>..</c>。</summary>
     /// <remarks>它们**会**出现在服务端返回的结果里。</remarks>
-    public bool FilterDotEntries { get; init; } = true;
+    public bool IsFilteringDotEntries { get; init; } = true;
 
     /// <summary>服务端的文件名用什么编码；<see langword="null"/>（默认）为 UTF-8。</summary>
     /// <remarks>
@@ -232,7 +232,7 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
         SftpRequestPipeline pipeline;
         try
         {
-            pipeline = new(channel, effective.MaxInFlight, effective.AdaptivePipelineDepth, effective.MaxPipelineDepth);
+            pipeline = new(channel, effective.MaxInFlight, effective.IsPipelineDepthAdaptive, effective.MaxPipelineDepth);
         }
         catch (Exception)
         {

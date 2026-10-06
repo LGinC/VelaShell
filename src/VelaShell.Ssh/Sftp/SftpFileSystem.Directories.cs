@@ -191,7 +191,7 @@ public sealed partial class SftpFileSystem
         foreach (SftpNameEntry entry in batch)
         {
             // `.` 与 `..` **会**出现在服务端的结果里。
-            if (_options.FilterDotEntries && entry.Name is "." or "..")
+            if (_options.IsFilteringDotEntries && entry.Name is "." or "..")
             {
                 continue;
             }

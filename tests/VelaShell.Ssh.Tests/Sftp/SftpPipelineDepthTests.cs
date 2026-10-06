@@ -134,7 +134,7 @@ public sealed class SftpPipelineDepthTests
         {
             MaxInFlight = 4,
             BlockSize = 8 * 1024,
-            AdaptivePipelineDepth = true,
+            IsPipelineDepthAdaptive = true,
             MaxPipelineDepth = 64,
         };
 
@@ -160,7 +160,7 @@ public sealed class SftpPipelineDepthTests
         {
             MaxInFlight = 4,
             BlockSize = 8 * 1024,
-            AdaptivePipelineDepth = true,
+            IsPipelineDepthAdaptive = true,
             MaxPipelineDepth = 64,
         };
 
@@ -184,7 +184,7 @@ public sealed class SftpPipelineDepthTests
         {
             MaxInFlight = 8,
             BlockSize = 8 * 1024,
-            AdaptivePipelineDepth = false,
+            IsPipelineDepthAdaptive = false,
         };
 
         byte[] payload = new byte[200 * 1024];
@@ -197,7 +197,7 @@ public sealed class SftpPipelineDepthTests
         Assert.HasCount(payload.Length, content);
 
         // 需要确定性内存占用的场景（在途数 × 块大小）靠的就是这一条。
-        Assert.IsNotNull(SftpOptions.Default with { AdaptivePipelineDepth = false });
+        Assert.IsNotNull(SftpOptions.Default with { IsPipelineDepthAdaptive = false });
     }
 
     /// <summary>
@@ -213,7 +213,7 @@ public sealed class SftpPipelineDepthTests
         {
             MaxInFlight = 4,
             BlockSize = 8 * 1024,
-            AdaptivePipelineDepth = adaptive,
+            IsPipelineDepthAdaptive = adaptive,
             MaxPipelineDepth = 64,
         };
 
@@ -226,7 +226,7 @@ public sealed class SftpPipelineDepthTests
     public void 默认打开自适应()
     {
         // 高 RTT 链路上，固定深度是吞吐的硬上限 —— 默认该让它能长。
-        Assert.IsTrue(SftpOptions.Default.AdaptivePipelineDepth);
+        Assert.IsTrue(SftpOptions.Default.IsPipelineDepthAdaptive);
         Assert.AreEqual(64, SftpOptions.Default.MaxInFlight);
         Assert.AreEqual(256, SftpOptions.Default.MaxPipelineDepth);
     }
@@ -243,7 +243,7 @@ public sealed class SftpPipelineDepthTests
         {
             MaxInFlight = 2,
             BlockSize = 4 * 1024,
-            AdaptivePipelineDepth = true,
+            IsPipelineDepthAdaptive = true,
             MaxPipelineDepth = 32,
         };
 

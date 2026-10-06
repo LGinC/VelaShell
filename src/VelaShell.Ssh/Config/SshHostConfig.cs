@@ -482,7 +482,7 @@ public sealed class SshHostConfig
             {
                 X11Forwarding = new X11ForwardOptions
                 {
-                    Trusted = ForwardX11Trusted,
+                    IsTrusted = ForwardX11Trusted,
                     FailureMode = ForwardFailureMode.Continue,
                     Timeout = ForwardX11Timeout ?? X11ForwardOptions.Default.Timeout,
                 },

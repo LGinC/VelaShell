@@ -95,7 +95,7 @@ public sealed class HostKeyRotationTests
         using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
         using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
         using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
-        KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, UpdateHostKeys = true };
+        KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
         SshHostKeyUpdate? first = await ConnectAsync(policy, ed25519, [ed25519, ecdsa, rsa]);
         Assert.IsNotNull(first);
@@ -116,7 +116,7 @@ public sealed class HostKeyRotationTests
         using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
         using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
         using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
-        KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, UpdateHostKeys = true };
+        KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
         SshHostKeyUpdate? update = await ConnectAsync(policy, ed25519, [ed25519, ecdsa, rsa], corruptProof: true);
 
@@ -126,7 +126,7 @@ public sealed class HostKeyRotationTests
         Assert.HasCount(1, await File.ReadAllLinesAsync(rig.KnownHosts, TestContext.CancellationToken), "只有 TOFU 记下的那一把");
     }
 
-    /// <summary>没打开 UpdateHostKeys：宣告来了也不理；当前的钥没有记在 known_hosts 里（不用文件的策略）：不做。</summary>
+    /// <summary>没打开 AllowHostKeyUpdates：宣告来了也不理；当前的钥没有记在 known_hosts 里（不用文件的策略）：不做。</summary>
     [TestMethod]
     public async Task 没打开或者当前的钥没记着就不做()
     {
@@ -148,7 +148,7 @@ public sealed class HostKeyRotationTests
     /// <summary>接受一切、却什么都没记着的轮换策略：当前那把不在「记着的」里，轮换不该做。</summary>
     private sealed class RotatingWithoutRecord : IHostKeyPolicy, IHostKeyRotationPolicy
     {
-        public bool UpdateHostKeys => true;
+        public bool AllowHostKeyUpdates => true;
 
         public ValueTask<SshHostKeyVerdict> EvaluateAsync(SshHostKeyContext context, CancellationToken cancellationToken = default) =>
             ValueTask.FromResult(SshHostKeyVerdict.Accept);

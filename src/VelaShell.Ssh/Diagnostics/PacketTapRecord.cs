@@ -38,7 +38,7 @@ public readonly ref struct PacketTapRecord
     public uint? ChannelNumber { get; }
 
     /// <summary>
-    /// 载荷（含消息编号）。<b>默认为空</b>：要给得显式打开 <c>SshConnectionOptions.PacketTapIncludesPayload</c>；
+    /// 载荷（含消息编号）。<b>默认为空</b>：要给得显式打开 <c>SshConnectionOptions.AllowPacketTapPayload</c>；
     /// 认证报文（50–79）的载荷无论如何都不给。
     /// </summary>
     public ReadOnlySpan<byte> Payload { get; }

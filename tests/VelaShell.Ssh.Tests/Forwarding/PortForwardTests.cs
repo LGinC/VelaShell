@@ -1361,7 +1361,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
             Assert.AreEqual("someone else's", await File.ReadAllTextAsync(path, harness.Token));
 
             await using LocalPortForwarder replaced = LocalPortForwarder.Start(
-                harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = path, ReplaceExistingSocket = true });
+                harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = path, AllowSocketReplacement = true });
             Assert.IsTrue(replaced.IsActive);
         }
         finally

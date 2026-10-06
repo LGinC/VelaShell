@@ -29,7 +29,7 @@ public sealed record X11ForwardOptions
     /// Windows 上通常两者都没有，那里只能用受信模式。
     /// </para>
     /// </remarks>
-    public bool Trusted { get; init; }
+    public bool IsTrusted { get; init; }
 
     /// <summary>转发的有效期。默认 20 分钟；<see cref="TimeSpan.Zero"/> 表示不过期。</summary>
     /// <remarks>
@@ -67,7 +67,7 @@ public sealed record X11ForwardOptions
     /// 这一条同时发给服务端（<c>x11-req</c> 的 single connection 字段）
     /// <b>并在本端强制</b> —— 不把安全约束寄托在对端身上。
     /// </remarks>
-    public bool SingleConnection { get; init; }
+    public bool IsSingleConnection { get; init; }
 
     /// <summary>同时允许的 X11 通道数上限。</summary>
     public int MaxConnections { get; init; } = 16;
@@ -132,10 +132,10 @@ public sealed record X11ForwardOptions
     /// </remarks>
     internal void Validate()
     {
-        if (LocalConnector is not null && !Trusted)
+        if (LocalConnector is not null && !IsTrusted)
         {
             throw new ArgumentException(
-                "本机显示经连接器接入时只支持受信模式（Trusted = true）：非受信模式要 xauth 连上本机显示签受限 cookie，" +
+                "本机显示经连接器接入时只支持受信模式（IsTrusted = true）：非受信模式要 xauth 连上本机显示签受限 cookie，" +
                 "连接器后面没有可供它去连的显示。",
                 nameof(LocalConnector));
         }

@@ -64,7 +64,7 @@ public sealed record LocalPortForwardOptions
     /// <see cref="ListenSocketPath"/> 那里已经有文件时先删掉它再监听（OpenSSH 的 <c>StreamLocalBindUnlink yes</c>）。
     /// 默认 <see langword="false"/>：已经有文件就报错 —— 那多半是上一次没收拾干净，也可能是别人的套接字。
     /// </summary>
-    public bool ReplaceExistingSocket { get; init; }
+    public bool AllowSocketReplacement { get; init; }
 
     /// <summary>并发连接数上限。</summary>
     /// <exception cref="ArgumentOutOfRangeException">小于 1。</exception>
@@ -254,7 +254,7 @@ public sealed class LocalPortForwarder : PortForwarder
     {
         if (options.ListenSocketPath is { } socketPath)
         {
-            return BindUnixSocket(socketPath, options.ReplaceExistingSocket);
+            return BindUnixSocket(socketPath, options.AllowSocketReplacement);
         }
 
         Socket listener = new(
