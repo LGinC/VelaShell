@@ -40,8 +40,8 @@ internal sealed class VelaHostKeyPolicy(
     /// <inheritdoc />
     /// <remarks>
     /// <para>
-    /// 交出这台主机记着的那把钥的类型,库会把它的算法排到最前:协商以客户端的顺序为准,
-    /// 正常的服务端因此谈成已记下的那一种。
+    /// 交出这台主机记着的钥的类型(最近见过的在前),库会把它们的算法排到最前:协商以客户端的顺序为准,
+    /// 正常的服务端因此谈成已记下的那一种。信任库按类型分开记(API-H4),接受过的几种都在这里。
     /// </para>
     /// <para>
     /// 曾经没有实现它。服务端新增一把 Ed25519 钥(或系统升级后自动生成了一把)时,
@@ -56,8 +56,8 @@ internal sealed class VelaHostKeyPolicy(
     {
         try
         {
-            KnownHost? known = await hostKey.FindKnownHostAsync(host, port, cancellationToken).ConfigureAwait(false);
-            return string.IsNullOrEmpty(known?.KeyType) ? [] : [known.KeyType];
+            IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken).ConfigureAwait(false);
+            return [.. known.Select(entry => entry.KeyType).Where(type => !string.IsNullOrEmpty(type)).Distinct(StringComparer.Ordinal)];
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -108,8 +108,11 @@ internal sealed class VelaHostKeyPolicy(
         {
             try
             {
-                knownFingerprint = (await hostKey.FindKnownHostAsync(host, port, cancellationToken)
-                    .ConfigureAwait(false))?.Fingerprint;
+                // 摆同一种类型的那一把(真换了钥);没有这种类型的,摆最近见过的那一把(服务端换了类型)。
+                IReadOnlyList<KnownHost> known = await hostKey.FindKnownHostKeysAsync(host, port, cancellationToken)
+                    .ConfigureAwait(false);
+                knownFingerprint = (known.FirstOrDefault(entry => string.Equals(entry.KeyType, keyType, StringComparison.Ordinal))
+                                    ?? (known.Count > 0 ? known[0] : null))?.Fingerprint;
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {

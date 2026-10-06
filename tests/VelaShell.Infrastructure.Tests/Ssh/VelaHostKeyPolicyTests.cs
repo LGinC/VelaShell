@@ -18,22 +18,25 @@ namespace VelaShell.Infrastructure.Tests.Ssh;
 public sealed class VelaHostKeyPolicyTests
 {
     [TestMethod]
-    public async Task 交出这台主机记着的那把钥的类型()
+    public async Task 交出这台主机记着的钥的类型_最近见过的在前()
     {
         IHostKeyService store = Substitute.For<IHostKeyService>();
-        store.FindKnownHostAsync("old.example", 22, Arg.Any<CancellationToken>())
-            .Returns(new KnownHost { Host = "old.example", Port = 22, KeyType = "ssh-rsa", Fingerprint = "SHA256:x" });
+        store.FindKnownHostKeysAsync("old.example", 22, Arg.Any<CancellationToken>())
+            .Returns([
+                new KnownHost { Host = "old.example", Port = 22, KeyType = "ssh-ed25519", Fingerprint = "SHA256:y" },
+                new KnownHost { Host = "old.example", Port = 22, KeyType = "ssh-rsa", Fingerprint = "SHA256:x" },
+            ]);
 
         VelaHostKeyPolicy preference = new(store, settings: null, prompt: null, alerts: null);
 
-        Assert.AreSequenceEqual(["ssh-rsa"], (await preference.GetKnownKeyTypesAsync("old.example", 22)).ToArray());
+        Assert.AreSequenceEqual(["ssh-ed25519", "ssh-rsa"], (await preference.GetKnownKeyTypesAsync("old.example", 22)).ToArray());
     }
 
     [TestMethod]
     public async Task 没记过的主机返回空()
     {
         IHostKeyService store = Substitute.For<IHostKeyService>();
-        store.FindKnownHostAsync("new.example", 22, Arg.Any<CancellationToken>()).Returns((KnownHost?)null);
+        store.FindKnownHostKeysAsync("new.example", 22, Arg.Any<CancellationToken>()).Returns([]);
 
         VelaHostKeyPolicy preference = new(store, settings: null, prompt: null, alerts: null);
 
@@ -44,7 +47,7 @@ public sealed class VelaHostKeyPolicyTests
     public async Task 信任库出错时返回空而不阻断建连()
     {
         IHostKeyService store = Substitute.For<IHostKeyService>();
-        store.FindKnownHostAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
+        store.FindKnownHostKeysAsync(Arg.Any<string>(), Arg.Any<int>(), Arg.Any<CancellationToken>())
             .ThrowsAsync(new IOException("数据库被锁"));
 
         VelaHostKeyPolicy preference = new(store, settings: null, prompt: null, alerts: null);

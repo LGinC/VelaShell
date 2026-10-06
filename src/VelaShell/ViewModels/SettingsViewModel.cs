@@ -1677,7 +1677,8 @@ public partial class SettingsViewModel : ReactiveObject
         }
         try
         {
-            await _hostKeyService.RemoveKnownHostAsync(host.Host, host.Port);
+            // 一台主机的每种密钥类型各是一行,删的是这一行的那一种。
+            await _hostKeyService.RemoveKnownHostAsync(host.Host, host.Port, host.KeyType);
             KnownHosts.Remove(host);
         }
         catch

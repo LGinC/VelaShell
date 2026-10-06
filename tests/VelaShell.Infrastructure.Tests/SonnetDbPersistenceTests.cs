@@ -296,6 +296,58 @@ public sealed class SonnetDbPersistenceTests : IDisposable
     }
 
     /// <summary>
+    /// 〔API-H4〕一台主机的每种密钥类型各记一条:接受一把新类型的钥不覆盖原来那一把,谈成哪一种都认;
+    /// 同一种类型换了钥才是变更;删除只删那一种。
+    /// </summary>
+    [TestMethod]
+    public async Task HostKeyService_KeepsOneRecordPerKeyType()
+    {
+        var service = new SonnetDbHostKeyService(_engine);
+        await service.TrustHostKeyAsync("multi", 22, "ssh-rsa", "SHA256:rsa");
+        Assert.AreEqual(HostKeyVerification.Changed, await service.VerifyHostKeyAsync("multi", 22, "ssh-ed25519", "SHA256:ed"),
+            "记着钥、却没有这一种:仍是变更,由用户决定");
+
+        await service.TrustHostKeyAsync("multi", 22, "ssh-ed25519", "SHA256:ed");
+        Assert.AreEqual(HostKeyVerification.Trusted, await service.VerifyHostKeyAsync("multi", 22, "ssh-ed25519", "SHA256:ed"));
+        Assert.AreEqual(HostKeyVerification.Trusted, await service.VerifyHostKeyAsync("multi", 22, "ssh-rsa", "SHA256:rsa"),
+            "接受新类型的钥没有覆盖原来那一把");
+        Assert.AreEqual(HostKeyVerification.Changed, await service.VerifyHostKeyAsync("multi", 22, "ssh-rsa", "SHA256:other"));
+        Assert.HasCount(2, await service.FindKnownHostKeysAsync("multi", 22));
+
+        await service.TrustHostKeyAsync("multi", 22, "ssh-rsa", "SHA256:rsa2");
+        Assert.AreEqual(HostKeyVerification.Changed, await service.VerifyHostKeyAsync("multi", 22, "ssh-rsa", "SHA256:rsa"),
+            "同一种类型换了钥:旧的那一把不再受信");
+        Assert.HasCount(2, await service.FindKnownHostKeysAsync("multi", 22));
+
+        await service.RemoveKnownHostAsync("multi", 22, "ssh-rsa");
+        KnownHost left = (await service.FindKnownHostKeysAsync("multi", 22)).Single();
+        Assert.AreEqual("ssh-ed25519", left.KeyType);
+        await service.RemoveKnownHostAsync("multi", 22);
+        Assert.IsEmpty(await service.FindKnownHostKeysAsync("multi", 22));
+    }
+
+    /// <summary>〔API-H4〕按类型分开存之前的单条记录(<c>host:port</c>)照常认;信任一把别的类型的钥时,它搬成按类型的记录、照样受信。</summary>
+    [TestMethod]
+    public async Task HostKeyService_LegacySingleRecord_IsMigratedPerKeyType()
+    {
+        KnownHost legacy = new() { Host = "legacy2", Port = 2200, KeyType = "ssh-rsa", Fingerprint = "SHA256:rsa" };
+        await _engine.WithCollectionAsync<object?>(SonnetDbEngine.KnownHostsCollection, store =>
+        {
+            store.Upsert("legacy2:2200", SonnetDbJson.Serialize(legacy));
+            return null;
+        });
+
+        var service = new SonnetDbHostKeyService(_engine);
+        Assert.AreEqual(HostKeyVerification.Trusted, await service.VerifyHostKeyAsync("legacy2", 2200, "ssh-rsa", "SHA256:rsa"));
+
+        await service.TrustHostKeyAsync("legacy2", 2200, "ssh-ed25519", "SHA256:ed");
+        Assert.AreEqual(HostKeyVerification.Trusted, await service.VerifyHostKeyAsync("legacy2", 2200, "ssh-rsa", "SHA256:rsa"));
+        Assert.AreEqual(HostKeyVerification.Trusted, await service.VerifyHostKeyAsync("legacy2", 2200, "ssh-ed25519", "SHA256:ed"));
+        Assert.HasCount(2, await service.FindKnownHostKeysAsync("legacy2", 2200));
+        Assert.HasCount(2, (await service.GetKnownHostsAsync()).Where(h => h.Host == "legacy2").ToList(), "旧的单条记录不留重复");
+    }
+
+    /// <summary>
     /// 换库之前存下的指纹是裸 base64(上一版库不带 <c>SHA256:</c> 前缀),现在拿到的带前缀。
     /// 两者必须判为同一把钥 —— 否则换库之后每台已保存的主机都会弹「指纹已变更」。
     /// </summary>
