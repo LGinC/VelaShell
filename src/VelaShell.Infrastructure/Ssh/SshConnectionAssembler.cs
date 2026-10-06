@@ -251,32 +251,20 @@ internal static class SshConnectionAssembler
     /// </remarks>
     internal static SshAlgorithmSet Algorithms(VelaConnectionInfo info) => SshAlgorithmPreferences.Build(info.Ssh);
 
-    /// <summary>
-    /// 本机 agent 的端点:Windows 上默认是 OpenSSH Authentication Agent 服务的命名管道。
-    /// </summary>
-    /// <remarks>
-    /// Windows 上 <c>SSH_AUTH_SOCK</c> 只在它本身就是命名管道时才采用(1Password、KeePassXC
-    /// 之类会这样配);它更常指向 Git Bash / WSL 的 Unix 套接字,那是另一套 agent,.NET 连不上。
-    /// 其它平台交给库按 <c>SSH_AUTH_SOCK</c> 取。
-    /// </remarks>
-    internal static string? AgentEndpoint()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return null;
-        }
-        string? socket = Environment.GetEnvironmentVariable("SSH_AUTH_SOCK");
-        return socket is not null && socket.StartsWith(@"\\.\pipe\", StringComparison.Ordinal) ? socket : null;
-    }
 
     /// <summary>连本机 agent。</summary>
     /// <remarks>
     /// Windows 上 agent 服务没起时命名管道根本不存在 —— 等它出现的时限在库里
     /// (<c>SshAgentClient.PipeConnectTimeout</c>),到点以 <see cref="SshFailureReason.AgentNotRunning" /> 报出,
     /// agent 转发那一路也走同一个时限。宿主不再另套一层计时。
+    /// <para>
+    /// 端点交给库的默认值(<c>SshAgentClient.DefaultEndpoint</c>):Windows 上 <c>SSH_AUTH_SOCK</c> 是命名管道时采纳它
+    /// (1Password、KeePassXC),否则用 OpenSSH agent 服务的管道。曾经库在 Windows 上一律无视 <c>SSH_AUTH_SOCK</c>,
+    /// 宿主在这里另判断了一遍。
+    /// </para>
     /// </remarks>
     internal static ValueTask<SshAgentClient> ConnectLocalAgentAsync(CancellationToken cancellationToken) =>
-        SshAgentClient.ConnectAsync(AgentEndpoint(), cancellationToken);
+        SshAgentClient.ConnectAsync(endpoint: null, cancellationToken);
 
     private static async ValueTask<SshAgentClient> ConnectAgentAsync(CancellationToken cancellationToken)
     {

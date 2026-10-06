@@ -166,9 +166,8 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
             List<ShellStreamNotice> notices = [.. _banners?.TakeNotices() ?? []];
             XServerDisplayResolution? localServer = await ResolveLocalXServerAsync(notices, cancellationToken).ConfigureAwait(false);
             X11ForwardOptions? x11 = SshForwardingOptions.X11(_features, notices, localServer?.Display, localServer?.Connector);
-            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target, hostKeys: _hostKeys) is { } agentOptions
-                ? agentOptions with { AgentEndpoint = SshConnectionAssembler.AgentEndpoint() }
-                : null;
+            // agent 的端点交给库的默认值(Windows 上指向命名管道的 SSH_AUTH_SOCK 也认),与认证时连 agent 是同一个。
+            AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target, hostKeys: _hostKeys);
 
             // 转发是附带功能:两项都按「没开成就不开」请求(见 SshForwardingOptions),
             // 失败时库不抛、shell 照常一次开成,原因在结果对象上,这里转成提示。
