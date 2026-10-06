@@ -283,6 +283,9 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>CoordModePrevious 累加出来的坐标饱和在这个范围里(见 <see cref="ReadPoints" />)。</summary>
+    private const long MaxAccumulatedCoordinate = 1L << 30;
+
     private static List<(int X, int Y)> ReadPoints(XRequestReader r, bool relative)
     {
         List<(int X, int Y)> points = [];
@@ -292,8 +295,9 @@ public sealed partial class X11Server
             int x = r.I16(), y = r.I16();
             if (relative && points.Count > 0)
             {
-                x += px;
-                y += py;
+                // CoordModePrevious 一路累加:几百万个点能加出 int 范围之外,饱和在 ±2³⁰(早已远在任何可绘对象之外)。
+                x = (int)Math.Clamp((long)x + px, -MaxAccumulatedCoordinate, MaxAccumulatedCoordinate);
+                y = (int)Math.Clamp((long)y + py, -MaxAccumulatedCoordinate, MaxAccumulatedCoordinate);
             }
             points.Add((x, y));
             (px, py) = (x, y);

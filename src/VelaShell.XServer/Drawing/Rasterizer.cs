@@ -141,7 +141,7 @@ internal sealed class Rasterizer
     /// <summary>画一个像素(按填充样式)。</summary>
     public void PlotPixel(int dx, int dy, bool useBackground = false)
     {
-        WorkBudget.Charge(1 + _clip.Count);
+        WorkBudget.Charge(1);
         int bx = dx + _ox, by = dy + _oy;
         if (!InClip(bx, by) || !ClipMaskAllows(dx, dy))
         {
@@ -156,7 +156,7 @@ internal sealed class Rasterizer
     /// <summary>写一个给定的源像素(CopyArea / PutImage 用:不走填充样式)。</summary>
     public void PutPixel(int dx, int dy, uint src)
     {
-        WorkBudget.Charge(1 + _clip.Count);
+        WorkBudget.Charge(1);
         int bx = dx + _ox, by = dy + _oy;
         if (InClip(bx, by) && ClipMaskAllows(dx, dy))
         {
@@ -170,7 +170,7 @@ internal sealed class Rasterizer
     /// </summary>
     public void PutPixelCopy(int dx, int dy, uint src)
     {
-        WorkBudget.Charge(1 + _clip.Count);
+        WorkBudget.Charge(1);
         int bx = dx + _ox, by = dy + _oy;
         if (InClip(bx, by) && ClipMaskAllows(dx, dy))
         {
@@ -180,14 +180,32 @@ internal sealed class Rasterizer
 
     private bool InClip(int bx, int by)
     {
-        foreach (XRect r in _clip)
+        int i = FirstClipIndex(by, bx);
+        return i < _clip.Count && _clip[i].Y <= by && _clip[i].X <= bx;
+    }
+
+    /// <summary>
+    /// 第一块不在 (<paramref name="bx" />, <paramref name="by" />) 「之前」的裁剪矩形(二分):之前 = 整带在这一行之上,或者同一带里右边界不超过 bx。
+    /// 裁剪区域按 y 分带、先 y 后 x 存放(见 <see cref="Region" />),所以这个判断随下标单调 —— 盖住这一行、从 bx 往右的那几块就从这里开始,
+    /// 不必每个像素、每一段都把上万块矩形扫一遍。
+    /// </summary>
+    private int FirstClipIndex(int by, int bx)
+    {
+        int lo = 0, hi = _clip.Count;
+        while (lo < hi)
         {
-            if (r.Contains(bx, by))
+            int mid = (lo + hi) >>> 1;
+            XRect r = _clip[mid];
+            if (r.Bottom <= by || (r.Y <= by && r.Right <= bx))
             {
-                return true;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid;
             }
         }
-        return false;
+        return lo;
     }
 
     /// <summary>
@@ -283,12 +301,9 @@ internal sealed class Rasterizer
         int by = dy + _oy;
         int bx1 = x1 + _ox, bx2 = x2 + _ox;
         bool fast = _gc.ClipPixmap is null && (_gc.PlaneMask & _depthMask) == _depthMask;
-        foreach (XRect r in _clip)
+        for (int i = FirstClipIndex(by, bx1); i < _clip.Count && _clip[i].Y <= by && _clip[i].X < bx2; i++)
         {
-            if (by < r.Y || by >= r.Bottom)
-            {
-                continue;
-            }
+            XRect r = _clip[i];
             int s = Math.Max(bx1, r.X), e = Math.Min(bx2, r.Right);
             if (e <= s)
             {
@@ -360,12 +375,9 @@ internal sealed class Rasterizer
         int bx1 = x1 + _ox, bx2 = x2 + _ox;
         bool fastSolid = _gc.FillStyle == 0 && _gc.Function == 3 && _gc.ClipPixmap is null
                          && (_gc.PlaneMask & _depthMask) == _depthMask;
-        foreach (XRect r in _clip)
+        for (int i = FirstClipIndex(by, bx1); i < _clip.Count && _clip[i].Y <= by && _clip[i].X < bx2; i++)
         {
-            if (by < r.Y || by >= r.Bottom)
-            {
-                continue;
-            }
+            XRect r = _clip[i];
             int s = Math.Max(bx1, r.X), e = Math.Min(bx2, r.Right);
             if (e <= s)
             {
@@ -394,7 +406,7 @@ internal sealed class Rasterizer
 
     /// <summary>一行 [x1, x2) 的工作量:扫一遍裁剪矩形,再加上画得到的那几个像素(见 <see cref="WorkBudget" />)。</summary>
     private void ChargeSpan(int x1, int x2) =>
-        WorkBudget.Charge(1 + _clip.Count + Math.Max(0, (long)Math.Min(x2, ClipBounds.Right) - Math.Max(x1, ClipBounds.X)));
+        WorkBudget.Charge(1 + Math.Max(0, (long)Math.Min(x2, ClipBounds.Right) - Math.Max(x1, ClipBounds.X)));
 
     public void FillRect(int x, int y, int width, int height)
     {
@@ -402,9 +414,11 @@ internal sealed class Rasterizer
         {
             return;
         }
-        for (int row = y; row < y + height; row++)
+        // 先与可画区域求交:(0, −32768, 1, 65535) 这样的矩形原先要逐行走六万多行,一个请求塞几万个就是几十秒。
+        XRect visible = new XRect(x, y, width, height).Intersect(ClipBounds);
+        for (int row = visible.Y; row < visible.Bottom; row++)
         {
-            FillSpan(row, x, x + width);
+            FillSpan(row, visible.X, visible.Right);
         }
     }
 
@@ -442,33 +456,139 @@ internal sealed class Rasterizer
     /// 零宽线(Bresenham),含起点;<paramref name="drawLast" /> 为假时不画终点(CapNotLast、
     /// 或 PolyLine 中间的接缝 —— 接缝点由下一段的起点画,避免 GXxor 下画两次)。
     /// </summary>
+    /// <remarks>
+    /// 只走与可画区域相交的那几步:这种 Bresenham 每一步主轴(|Δ| 较大的那根)必走一格,第 k 步的位置与误差项有闭式解
+    /// (<see cref="MinorSteps" />),于是按主轴算出 k 的范围、再在其中二分出副轴也落在范围里的那一段,从那一段的起点接着走 ——
+    /// 画出来的像素与从头走一遍完全一样,代价却只与看得见的长度成正比(一条 65535 长、几乎全在窗口外的线原先要走六万多步)。
+    /// 虚线的走位照样按全程推进。
+    /// </remarks>
     public void ThinLine(int x1, int y1, int x2, int y2, bool drawLast, DashState? dash = null)
     {
-        int dx = Math.Abs(x2 - x1), sx = x1 < x2 ? 1 : -1;
-        int dy = -Math.Abs(y2 - y1), sy = y1 < y2 ? 1 : -1;
-        int err = dx + dy;
-        int x = x1, y = y1;
-        while (true)
+        long dx = Math.Abs((long)x2 - x1), dy = Math.Abs((long)y2 - y1);
+        int sx = x1 < x2 ? 1 : -1, sy = y1 < y2 ? 1 : -1;
+        bool xMajor = dx >= dy;
+        long major = xMajor ? dx : dy, minor = xMajor ? dy : dx;
+        long last = drawLast ? major : major - 1;   // 第 major 步是终点
+        if (last < 0)
         {
-            bool last = x == x2 && y == y2;
-            if (!last || drawLast)
+            return;
+        }
+        bool dashed = dash is not null && _gc.LineStyle != 0 && _gc.Dashes.Length != 0;
+
+        // 主轴落在可画区域里的 k:[majorLow, majorHigh]。
+        XRect clip = ClipBounds;
+        (long a0, int sa, long aLow, long aHigh) = xMajor ? (x1, sx, clip.X, clip.Right - 1L) : (y1, sy, clip.Y, clip.Bottom - 1L);
+        (long b0, int sb, long bLow, long bHigh) = xMajor ? (y1, sy, clip.Y, clip.Bottom - 1L) : (x1, sx, clip.X, clip.Right - 1L);
+        long k0 = 0, k1 = last;
+        if (clip.IsEmpty)
+        {
+            k1 = -1;
+        }
+        else
+        {
+            (long kLow, long kHigh) = sa > 0 ? (aLow - a0, aHigh - a0) : (a0 - aHigh, a0 - aLow);
+            k0 = Math.Max(k0, kLow);
+            k1 = Math.Min(k1, kHigh);
+            // 副轴随 k 单调:副轴步数 m(k) 要落在 [mLow, mHigh] 里。
+            (long mLow, long mHigh) = sb > 0 ? (bLow - b0, bHigh - b0) : (b0 - bHigh, b0 - bLow);
+            if (k0 <= k1)
             {
-                PlotDashed(x, y, dash);
+                k0 = FirstStepWith(k0, k1, k => MinorSteps(k, major, minor) >= mLow);
+                k1 = FirstStepWith(k0, k1 + 1, k => MinorSteps(k, major, minor) > mHigh) - 1;
             }
-            if (last)
+        }
+        if (k0 > k1)
+        {
+            if (dashed)
+            {
+                AdvanceDash(dash!, last + 1);
+            }
+            return;
+        }
+        if (dashed)
+        {
+            AdvanceDash(dash!, k0);
+        }
+
+        // 第 k0 步的位置与误差项(误差项的含义同下面的循环:初值 dx − dy,每步主轴 / 副轴各自加减)。
+        long m0 = MinorSteps(k0, major, minor);
+        long err = xMajor ? dx - dy - (k0 * dy) + (m0 * dx) : dx - dy + (k0 * dx) - (m0 * dy);
+        int x = (int)(xMajor ? x1 + (sx * k0) : x1 + (sx * m0));
+        int y = (int)(xMajor ? y1 + (sy * m0) : y1 + (sy * k0));
+        for (long k = k0; ; k++)
+        {
+            PlotDashed(x, y, dash);
+            if (k == k1)
             {
                 break;
             }
-            int e2 = 2 * err;
-            if (e2 >= dy)
+            long e2 = 2 * err;
+            if (e2 >= -dy)
             {
-                err += dy;
+                err -= dy;
                 x += sx;
             }
             if (e2 <= dx)
             {
                 err += dx;
                 y += sy;
+            }
+        }
+        if (dashed && k1 < last)
+        {
+            AdvanceDash(dash!, last - k1);
+        }
+    }
+
+    /// <summary>
+    /// 走完前 <paramref name="k" /> 步时副轴走了几格。误差项始终落在一个宽为主轴长度的半开区间里(主轴每步减副轴长、副轴走一格加主轴长),
+    /// 由此得到 m(k) = ⌊(k·副轴 − ⌈主轴 / 2⌉) / 主轴⌋ + 1 —— 与逐步走的结果逐格相同(对拍用例见 RasterizerTests)。
+    /// </summary>
+    internal static long MinorSteps(long k, long major, long minor) =>
+        major == 0 ? 0 : FloorDiv((k * minor) - ((major + 1) / 2), major) + 1;
+
+    private static long FloorDiv(long a, long b) => (a / b) - (((a % b) != 0 && ((a < 0) != (b < 0))) ? 1 : 0);
+
+    /// <summary>[<paramref name="low" />, <paramref name="high" />) 里第一个满足单调条件的 k;都不满足时返回 <paramref name="high" />。</summary>
+    private static long FirstStepWith(long low, long high, Func<long, bool> predicate)
+    {
+        while (low < high)
+        {
+            long mid = low + ((high - low) / 2);
+            if (predicate(mid))
+            {
+                high = mid;
+            }
+            else
+            {
+                low = mid + 1;
+            }
+        }
+        return low;
+    }
+
+    /// <summary>虚线的走位往前推 <paramref name="steps" /> 个像素(画不到的那几步也要推,下一段才接得上图案)。</summary>
+    private void AdvanceDash(DashState dash, long steps)
+    {
+        byte[] dashes = _gc.Dashes;
+        long period = 0;
+        foreach (byte d in dashes)
+        {
+            period += d;
+        }
+        if (period > 0)
+        {
+            steps %= period;
+        }
+        while (steps > 0)
+        {
+            int take = (int)Math.Min(steps, dash.Remaining);
+            steps -= take;
+            dash.Remaining -= take;
+            if (dash.Remaining <= 0)
+            {
+                dash.Index = (dash.Index + 1) % dashes.Length;
+                dash.Remaining = dashes[dash.Index];
             }
         }
     }

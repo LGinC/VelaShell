@@ -81,6 +81,37 @@ public sealed class WorkBudgetTests
         Assert.AreEqual(BadAlloc, composite.Detail);
     }
 
+    [TestMethod]
+    public async Task 几万条落在窗口外的长线与高矩形_按看得见的部分花工作量()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint pixmap, uint gc) = await PixmapWithGcAsync(c, 10, 0x00FF00);
+        const int count = 16000;
+
+        // PolySegment:每条 65535 长,几乎全在 10 × 10 的像素图之外。原先每条逐像素走完,一个请求就是几十秒。
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        await c.SendAsync(66, 0, b =>
+        {
+            b.U32(pixmap).U32(gc);
+            for (int i = 0; i < count; i++)
+            {
+                b.I16(-32768).I16((short)(i % 20)).I16(32767).I16((short)(i % 20));
+            }
+        });
+        // PolyFillRectangle:(3, −32768, 1, 65535) 这样的高矩形,原先逐行走六万多行。
+        await c.SendAsync(70, 0, b =>
+        {
+            b.U32(pixmap).U32(gc);
+            for (int i = 0; i < count; i++)
+            {
+                b.I16(3).I16(-32768).U16(1).U16(65535);
+            }
+        });
+        Assert.AreEqual(0x00FF00u, await PixelAsync(c, pixmap, 3, 9));
+        Assert.IsLessThan(10_000, watch.ElapsedMilliseconds, "两条请求都应当很快执行完");
+    }
+
     private static async Task<XTopLevelWindow> MapTopAsync(XTestClient c, RecordingHost host)
     {
         uint id = c.NewId();
