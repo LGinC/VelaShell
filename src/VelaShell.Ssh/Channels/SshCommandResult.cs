@@ -45,7 +45,8 @@ public readonly record struct SshCommandResult(
             return this;
         }
 
-        string what = commandLine is null ? "远端命令" : $"远端命令 `{commandLine}`";
+        // 消息是纯文本，不带 Markdown 记号（曾经用反引号括命令行，到了界面上原样显示成两个反引号）。
+        string what = commandLine is null ? "远端命令" : $"远端命令「{commandLine}」";
         string stderr = Diagnostics.PeerText.SanitizeTail(StandardError, MaxStandardErrorInMessage);
 
         throw new SshCommandFailedException(

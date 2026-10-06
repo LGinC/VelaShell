@@ -226,7 +226,7 @@ public sealed class SftpFileSystem : IAsyncDisposable
             // 回退等于在管理员明确禁用 subsystem 的情况下绕过他的配置。
             throw new SftpUnavailableException(
                 "服务端没有提供 sftp 子系统。常见原因是 sshd_config 里缺少或注释掉了 " +
-                "`Subsystem sftp ...` 那一行。（本库不会自动改用 `exec sftp-server` 绕开它 —— " +
+                "「Subsystem sftp ...」那一行。（本库不会自动改用「exec sftp-server」绕开它 —— " +
                 "那等于绕过管理员的配置。）", ex);
         }
 

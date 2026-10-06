@@ -141,6 +141,17 @@ public sealed class OptionValidationTests
         Assert.IsNull((new AgentForwardOptions { LocalConnector = Connector } with { AgentEndpoint = null }).AgentEndpoint);
     }
 
+    /// <summary>异常消息是纯文本，不带 Markdown 记号：到了界面上反引号会原样显示出来。</summary>
+    [TestMethod]
+    public void 异常消息里没有反引号()
+    {
+        SshCommandResult failed = new(new SshExitStatus(1, null, false, null), "", "boom");
+        SshCommandFailedException error = Assert.ThrowsExactly<SshCommandFailedException>(() => failed.EnsureSuccess("ls -la"));
+
+        Assert.DoesNotContain("`", error.Message);
+        Assert.Contains("ls -la", error.Message);
+    }
+
     /// <summary>终端模式只有一个入口：没有名字的操作码强转过来照样能设；结束标记与保留区当场就抛。</summary>
     [TestMethod]
     public void 终端模式的操作码()

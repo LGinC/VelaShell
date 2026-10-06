@@ -107,8 +107,8 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             throw new SshAgentException(SshFailureReason.AgentNotRunning,
                 OperatingSystem.IsWindows()
-                    ? "找不到 ssh-agent。Windows 上它是一个服务，用 " +
-                      "`Get-Service ssh-agent` 看状态，`Start-Service ssh-agent` 起它。"
+                    ? "找不到 ssh-agent。Windows 上它是一个服务，用" +
+                      "「Get-Service ssh-agent」看状态，「Start-Service ssh-agent」起它。"
                     : "环境变量 SSH_AUTH_SOCK 没有设 —— 本机没有在跑 ssh-agent，" +
                       "或者当前会话没继承到它。");
         }
@@ -165,7 +165,7 @@ public sealed class SshAgentClient : IAsyncDisposable
         {
             throw new SshAgentException(SshFailureReason.AgentNotRunning,
                 $"ssh-agent 的命名管道（{endpoint}）在 {PipeConnectTimeout.TotalSeconds:0} 秒内没有出现 —— agent 服务多半没在跑。" +
-                "用 `Get-Service ssh-agent` 看状态，`Start-Service ssh-agent` 起它。", ex);
+                "用「Get-Service ssh-agent」看状态，「Start-Service ssh-agent」起它。", ex);
         }
         catch (SocketException ex) when (ex.SocketErrorCode is SocketError.AddressNotAvailable or SocketError.ConnectionRefused)
         {

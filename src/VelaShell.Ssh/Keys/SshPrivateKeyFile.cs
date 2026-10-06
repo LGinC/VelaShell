@@ -671,7 +671,7 @@ public static class SshPrivateKeyFile
         {
             throw new SshPrivateKeyException(SshFailureReason.Unsupported,
                 $"这把私钥是过时的传统加密 PEM 格式（Proc-Type: 4,ENCRYPTED，口令只经一次 MD5 派生）{where}，本库不读。" +
-                "用 `ssh-keygen -p -f <私钥文件>` 改一次口令（新旧口令可以相同），它会转成 OpenSSH 格式。");
+                "用「ssh-keygen -p -f <私钥文件>」改一次口令（新旧口令可以相同），它会转成 OpenSSH 格式。");
         }
 
         bool needsPassphrase = format == SshPrivateKeyFormat.Pkcs8Encrypted
