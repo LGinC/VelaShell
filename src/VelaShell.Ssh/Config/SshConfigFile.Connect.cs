@@ -117,7 +117,9 @@ public static partial class SshConfigFile
         IdentityCache identities,
         CancellationToken cancellationToken)
     {
-        SshHostConfig config = Resolve(blocks, host);
+        // 〔spec 09 §7.1〕本机用户名总是知道的，Match localuser 照常判；跳板规格里写明的用户（ProxyJump bob@jump）也交给 Match user。
+        // 目标的远端用户要等配置求完才知道（User 本身就在配置里），对目标判不了 —— 信息不足就不匹配。曾经只给主机名，localuser 永远判不了。
+        SshHostConfig config = Resolve(blocks, new SshConfigMatchContext { Host = host, User = userOverride, LocalUser = Environment.UserName });
 
         // 跳板规格里显式写的用户与端口（ProxyJump bob@jump:2222）优先于那台主机的配置。
         string user = userOverride ?? config.User ?? settings.DefaultUserName ?? Environment.UserName;

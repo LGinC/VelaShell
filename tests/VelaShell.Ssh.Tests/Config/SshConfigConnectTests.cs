@@ -96,6 +96,34 @@ public sealed class SshConfigConnectTests
         Assert.AreEqual("me", options.UserName, "目标没写 User 时用调用方给的默认用户名");
     }
 
+    /// <summary>
+    /// 建连路径上 <c>Match localuser</c> 照本机用户名判；跳板规格里写明的用户交给 <c>Match user</c>；目标的远端用户判不了，不匹配。
+    /// 曾经只给主机名，<c>localuser</c> 永远判不了。
+    /// </summary>
+    [TestMethod]
+    public async Task 建连时Match_localuser按本机用户判_跳板写明的用户交给Match_user()
+    {
+        IReadOnlyList<SshConfigBlock> blocks = SshConfigFile.Parse($"""
+            Match host target localuser "{Environment.UserName}"
+                Port 2201
+            Match host other localuser nobody-at-all
+                Port 2202
+            Match host bastion user alice
+                Port 2203
+            Match host target user alice
+                Port 2204
+            Host target
+                ProxyJump alice@bastion
+            """);
+
+        SshConnectionOptions target = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "target");
+        Assert.AreEqual(2201, target.Port);
+        Assert.AreEqual(2203, ((SshJumpDialer)target.Dialer).JumpHost.Port, "跳板写明了 alice@，Match user alice 对那一跳成立");
+
+        SshConnectionOptions other = await SshConfigFile.CreateConnectionOptionsAsync(blocks, "other");
+        Assert.AreEqual(22, other.Port, "本机用户对不上");
+    }
+
     [TestMethod]
     public async Task 跳板规格里显式的用户与端口优先()
     {
