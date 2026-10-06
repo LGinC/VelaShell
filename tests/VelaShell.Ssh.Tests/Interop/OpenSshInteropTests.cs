@@ -1101,6 +1101,21 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual(rtt, connection.LastRoundTrip);
     }
 
+    /// <summary>FIPS 认可的清单与真 OpenSSH 谈得成，谈成的全是认可的算法。</summary>
+    [TestMethod]
+    public async Task FIPS清单与真OpenSSH谈得成()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options() with { Algorithms = SshAlgorithmSet.FipsApprovedOnly });
+        SshNegotiatedAlgorithms negotiated = connection.Algorithms;
+
+        Assert.Contains(negotiated.KeyExchange, SshAlgorithmSet.FipsApprovedOnly.KeyExchange);
+        Assert.Contains(negotiated.HostKey, SshAlgorithmSet.FipsApprovedOnly.HostKey);
+        Assert.Contains(negotiated.EncryptionClientToServer, SshAlgorithmSet.FipsApprovedOnly.EncryptionClientToServer);
+        Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim());
+    }
+
     [TestMethod]
     public async Task 保活探测能被真实服务端应答()
     {

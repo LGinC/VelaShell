@@ -202,6 +202,76 @@ public sealed record SshAlgorithmSet
     }
 
     /// <summary>
+    /// 只含 FIPS 认可算法的清单：与 RHEL 的 FIPS 加密策略对 SSH 放行的一致。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/00 §6〕合规环境要求客户端也只谈认可的算法时用它：密钥交换只用 NIST 曲线的 ECDH 与 DH 标准群，
+    /// 主机密钥只用 ECDSA 与 SHA-2 的 RSA（含对应的证书），加密只用 AES（GCM 与 CTR），MAC 只用 HMAC-SHA2。
+    /// 不含 X25519、Ed25519、ChaCha20-Poly1305 与后量子混合（sntrup761、带 X25519 的 ML-KEM）。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>这只限定了算法，不等于本库通过了 FIPS 140 验证。</b>AES、SHA-2、ECDH、ECDSA、RSA 走 BCL
+    /// （Windows 上是经过验证的 CNG，Linux / macOS 上取决于系统的 OpenSSL 与是否开了 FIPS 模式），
+    /// DH 标准群的模幂走 BouncyCastle。
+    /// </para>
+    /// <para>
+    /// 面向 FIPS 的后量子混合（<c>mlkem768nistp256-sha256</c> / <c>mlkem1024nistp384-sha384</c>）没有收进来：
+    /// 还没有能对照验证线上格式的服务端实现，写了也只能自己证明自己。
+    /// </para>
+    /// </remarks>
+    public static SshAlgorithmSet FipsApprovedOnly { get; } = CreateFipsApprovedOnly();
+
+    private static SshAlgorithmSet CreateFipsApprovedOnly()
+    {
+        string[] encryption =
+        [
+            SshAlgorithmNames.Aes256Gcm,
+            SshAlgorithmNames.Aes128Gcm,
+            SshAlgorithmNames.Aes256Ctr,
+            SshAlgorithmNames.Aes192Ctr,
+            SshAlgorithmNames.Aes128Ctr,
+        ];
+        string[] mac =
+        [
+            SshAlgorithmNames.HmacSha256Etm,
+            SshAlgorithmNames.HmacSha512Etm,
+            SshAlgorithmNames.HmacSha256,
+            SshAlgorithmNames.HmacSha512,
+        ];
+        return new SshAlgorithmSet
+        {
+            KeyExchange =
+            [
+                SshAlgorithmNames.EcdhSha2Nistp256,
+                SshAlgorithmNames.EcdhSha2Nistp384,
+                SshAlgorithmNames.EcdhSha2Nistp521,
+                SshAlgorithmNames.DiffieHellmanGroup16Sha512,
+                SshAlgorithmNames.DiffieHellmanGroup14Sha256,
+            ],
+            HostKey =
+            [
+                SshAlgorithmNames.EcdsaSha2Nistp256,
+                SshAlgorithmNames.EcdsaSha2Nistp384,
+                SshAlgorithmNames.EcdsaSha2Nistp521,
+                SshAlgorithmNames.RsaSha512,
+                SshAlgorithmNames.RsaSha256,
+                SshAlgorithmNames.EcdsaSha2Nistp256CertV01,
+                SshAlgorithmNames.EcdsaSha2Nistp384CertV01,
+                SshAlgorithmNames.EcdsaSha2Nistp521CertV01,
+                SshAlgorithmNames.RsaSha512CertV01,
+                SshAlgorithmNames.RsaSha256CertV01,
+            ],
+            EncryptionClientToServer = encryption,
+            EncryptionServerToClient = encryption,
+            MacClientToServer = mac,
+            MacServerToClient = mac,
+            CompressionClientToServer = [SshAlgorithmNames.None],
+            CompressionServerToClient = [SshAlgorithmNames.None],
+        };
+    }
+
+    /// <summary>
     /// 在现有清单之后**追加**老算法，用于连接不支持现代算法的设备。
     /// </summary>
     /// <remarks>

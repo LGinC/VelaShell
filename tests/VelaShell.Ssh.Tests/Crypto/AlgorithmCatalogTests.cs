@@ -48,6 +48,22 @@ public sealed class AlgorithmCatalogTests
         Assert.IsTrue(SshAlgorithmCatalog.IsImplemented(SshAlgorithmCategory.Compression, SshAlgorithmNames.ZlibOpenSsh));
     }
 
+    /// <summary>FIPS 认可的清单：全都实现了、校验放得过，而且一个不认可的都不在里面。</summary>
+    [TestMethod]
+    public void FIPS清单只含认可的算法()
+    {
+        SshAlgorithmSet fips = SshAlgorithmSet.FipsApprovedOnly;
+        fips.Validate();
+
+        string[] all = [.. fips.KeyExchange, .. fips.HostKey, .. fips.EncryptionClientToServer, .. fips.MacClientToServer];
+        string[] forbidden = ["25519", "chacha20", "sntrup", "ssh-rsa", "sha1", "-cbc", "zlib"];
+        foreach (string algorithm in all)
+        {
+            Assert.IsFalse(forbidden.Any(f => algorithm.Contains(f, StringComparison.Ordinal)), $"不认可的算法混进来了：{algorithm}");
+        }
+        Assert.IsTrue(fips.HostKey.All(a => SshAlgorithmCatalog.IsImplemented(SshAlgorithmCategory.HostKey, a)));
+    }
+
     [TestMethod]
     public void 认得却没实现的一个都不在实现里()
     {
