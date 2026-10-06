@@ -112,6 +112,40 @@ public sealed class WorkBudgetTests
         Assert.IsLessThan(10_000, watch.ElapsedMilliseconds, "两条请求都应当很快执行完");
     }
 
+    [TestMethod]
+    public async Task 线宽65535的圆帽折线_圆的顶点数封顶_很快画完()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(10).U16(10));
+        uint gc = c.NewId();
+        // Foreground(bit 2)、LineWidth(bit 4)、CapStyle(bit 6,Round = 2)。
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4 | 0x10 | 0x40).U32(0x0000FF).U32(65535).U32(2));
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        // 1000 个点的折线:每个接头一个半径 32767 的圆。原先每个圆按半径 × 4 取 13 万个顶点,一条请求要分配十几 GB。
+        XMessage? error = null;
+        ushort seq = await c.SendAsync(65, 0, b =>
+        {
+            b.U32(pixmap).U32(gc);
+            for (int i = 0; i < 1000; i++)
+            {
+                b.I16((short)(i % 2 == 0 ? 0 : 9)).I16((short)(i % 3));
+            }
+        });
+        await c.SyncAsync();
+        try
+        {
+            error = await c.NextAsync(m => m.IsError && m.Sequence == seq, timeoutMs: 100);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        Assert.IsNull(error, "不应当耗尽工作量预算");
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, pixmap, 5, 5));
+        Assert.IsLessThan(10_000, watch.ElapsedMilliseconds);
+    }
+
     private static async Task<XTopLevelWindow> MapTopAsync(XTestClient c, RecordingHost host)
     {
         uint id = c.NewId();

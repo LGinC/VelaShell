@@ -782,14 +782,27 @@ internal sealed class Rasterizer
         {
             bool first = i == 0 && !closed;
             bool last = i == points.Count - 2 && !closed;
-            AddWideSegment(polys, points[i], points[i + 1], half, first ? _gc.CapStyle : (byte)1, last ? _gc.CapStyle : (byte)1);
-            if (!last || closed)
+            // 整段(连同两端最多半个线宽的端帽)都碰不到可画区域就不必变成多边形:结果是并集,少了它看得见的像素不变。
+            if (Reaches(points[i], points[i + 1], half))
+            {
+                AddWideSegment(polys, points[i], points[i + 1], half, first ? _gc.CapStyle : (byte)1, last ? _gc.CapStyle : (byte)1);
+            }
+            if ((!last || closed) && Reaches(points[i + 1], points[i + 1], half))
             {
                 // 接头:圆形接头补一个圆;斜接 / 斜切统一近似为圆 —— 视觉差别在宽线的尖角处,M1 可接受。
                 polys.Add(Circle(points[i + 1].X, points[i + 1].Y, half));
             }
         }
         FillPolygons(polys, winding: true);
+    }
+
+    /// <summary>a–b 这一段向外扩 <paramref name="half" />(线宽的一半,端帽也不会更远)之后,外接矩形碰不碰得到可画区域。</summary>
+    private bool Reaches((int X, int Y) a, (int X, int Y) b, double half)
+    {
+        XRect clip = ClipBounds;
+        return !clip.IsEmpty
+               && Math.Max(a.X, b.X) + half >= clip.X && Math.Min(a.X, b.X) - half <= clip.Right
+               && Math.Max(a.Y, b.Y) + half >= clip.Y && Math.Min(a.Y, b.Y) - half <= clip.Bottom;
     }
 
     private static void AddWideSegment(
@@ -829,9 +842,12 @@ internal sealed class Rasterizer
         }
     }
 
+    /// <summary>圆帽 / 圆接头最多这么多个顶点:半径三万多时弦高也只有约 0.15 像素,再多只是白算(原先按半径 × 4,线宽 65535 时一个圆就是 13 万个顶点)。</summary>
+    private const int MaxCircleVertices = 1024;
+
     private static List<(double, double)> Circle(double cx, double cy, double r)
     {
-        int n = Math.Max(8, (int)(r * 4));
+        int n = Math.Clamp((int)(r * 4), 8, MaxCircleVertices);
         List<(double, double)> points = [with(n)];
         for (int i = 0; i < n; i++)
         {
