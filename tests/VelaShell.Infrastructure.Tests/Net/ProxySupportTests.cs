@@ -141,6 +141,29 @@ public class ProxySupportTests
             requestBytes);
     }
 
+    /// <summary>
+    /// 「不用代理做 DNS」而目标名在本机解析不了:报 DnsFailure,也根本不去连代理。
+    /// 曾经记成 ProxyRefused —— 那是可重试的「代理拒绝」,而代理根本没被碰过。
+    /// </summary>
+    [TestMethod]
+    public async Task LocalDns_FailureIsDnsFailure_AndTheProxyIsNeverContacted()
+    {
+        using CancellationTokenSource cts = Deadline();
+        bool contacted = false;
+        await using var server = new FakeServer(_ =>
+        {
+            contacted = true;
+            return Task.CompletedTask;
+        });
+
+        var route = new ProxyRoute(ProxyKind.Socks5, "127.0.0.1", server.Port, ProxyDns: false);
+        SshConnectException error = await Assert.ThrowsExactlyAsync<SshConnectException>(() =>
+            DialThroughAsync(route, "no-such-host.invalid", 22, cts.Token));
+
+        Assert.AreEqual(SshFailureReason.DnsFailure, error.Reason);
+        Assert.IsFalse(contacted, "本机解析失败却去连了代理。");
+    }
+
     /// <summary>代理拒绝连接(REP != 0)必须抛错。</summary>
     [TestMethod]
     public async Task Socks5_ConnectRefusedByProxy_Throws()

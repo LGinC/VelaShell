@@ -1,3 +1,4 @@
+using System.Net.Sockets;
 using VelaShell.Core.Net;
 using VelaShell.Core.Resources;
 using VelaShell.Infrastructure.Net;
@@ -76,17 +77,27 @@ internal sealed class ProxyTransportDialer(IProxyResolver? proxyResolver) : ISsh
             return await DialerChain.Tcp.DialAsync(target, cancellationToken).ConfigureAwait(false);
         }
 
+        // 库的代理拨号器把目标名交给代理解析;「不用代理做 DNS」时先在本机解析成 IP 再交出去。
+        // 用 with 改端点而不是新建目标:目标上挂着连接的计时器,跳板里等主机密钥裁决时要靠它停表。
+        SshDialTarget viaProxy = target;
+        if (!route.ProxyDns)
+        {
+            string address;
+            try
+            {
+                address = await LocalDnsResolver.ResolveAsync(host, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is SocketException or IOException or ArgumentException)
+            {
+                // 目标名在本机解析不了 —— 与代理无关,还没去连代理。曾经落进下面那个 catch,记成 ProxyRefused。
+                throw new SshConnectException(
+                    SshFailureReason.DnsFailure, SshPhase.Dialing, $"{Strings.Get("SshErr_DnsFailure")} ({host}: {ex.Message})", ex);
+            }
+            viaProxy = target with { EndPoint = new SshEndPoint(address, port) };
+        }
+
         try
         {
-            // 库的代理拨号器把目标名交给代理解析;「不用代理做 DNS」时先在本机解析成 IP 再交出去。
-            // 用 with 改端点而不是新建目标:目标上挂着连接的计时器,跳板里等主机密钥裁决时要靠它停表。
-            SshDialTarget viaProxy = route.ProxyDns
-                ? target
-                : target with
-                {
-                    EndPoint = new SshEndPoint(
-                        await LocalDnsResolver.ResolveAsync(host, cancellationToken).ConfigureAwait(false), port),
-                };
             return await ProxyDialer(route).DialAsync(viaProxy, cancellationToken).ConfigureAwait(false);
         }
         catch (SshConnectException ex)
