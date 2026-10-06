@@ -1728,3 +1728,7 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 顺带:`Rekeyed` 事件改在「可以再发起」之后才报。曾经在「在谈」的标记清掉之前就报,订阅者收到事件就再发起一次时被当成空操作吞掉 —— 连续重协商的互操作用例就卡在这里。
 
 **三、验证**:对真服务端:两种各自握手、跑命令、重协商;每种连续交换 1200 次(碰到 X 坐标前导零的概率约 99%);默认清单与 FIPS 清单在三种服务端上谈成的方法与规格一致;经改字节的中继记下线上长度(`C_INIT` 1249 / 1665、`S_REPLY` 1153 / 1665),改 EC 点得 `ProtocolError`、改 KEM 密文得 `HostKeyRejected`。内存里另有反复交换直到碰上前导零的用例,以及各种不合格公开值、断开码 3 的用例。变异检验:去掉前导零(内存用例与 1200 次的互操作用例都红)、SHA-384 落进 SHA-512、断开码退回 2、事件时序退回去,都让瞄准的用例变红。`VelaShell.Ssh.Tests` 开互操作 1396 通过 / 9 跳过;宿主 `Infrastructure.Tests` 625、`VelaShell.Tests` 1792 通过,`Core.Tests` 只有那条靶机镜像过时的 X11 用例失败(同 §159);全解决方案零警告零错误。没做:上游 OpenSSH 10.6 与 Apache MINA SSHD 这两个实现的对照。留给拍板:`FipsApprovedOnly` 的注释说它「与 RHEL 的 FIPS 加密策略对 SSH 放行的一致」,可 RHEL 10.2 的 FIPS 策略还放行 `diffie-hellman-group-exchange-sha256` 与 group18,这份清单没收 —— 说法不完全准。
+
+## ✅ 165. 2026-10-07 CI:去掉「VelaShell.Ssh · 压缩严格校验」作业
+
+维护者决定这一项现在不需要在 CI 里跑。`ci.yml` 的 `ssh-checks` 作业删掉 —— 它只做一件事:单开一个进程跑 `scripts/ssh/compression/verify-strict-validation.cs`,验 `System.IO.Compression.UseStrictValidation` 打开时 `zlib@openssh.com` 照常往返(那个 AppContext 开关只能在进程启动时设一次,进不了常规用例)。脚本留着,改动压缩那段代码时手动跑;velashell-docs 架构文档里「CI 里单跑一条」的说法同步改掉([velashell-docs#92](https://github.com/VelaShellLabs/velashell-docs/pull/92))。
