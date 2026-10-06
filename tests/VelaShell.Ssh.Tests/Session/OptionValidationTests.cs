@@ -3,8 +3,13 @@
 //
 // 被测规格: velashell-docs/zh/ssh/spec/05-connection.md §1、§2.2、§6.3
 
+using VelaShell.Ssh.Auth;
 using VelaShell.Ssh.Channels;
+using VelaShell.Ssh.Crypto;
+using VelaShell.Ssh.Forwarding;
+using VelaShell.Ssh.HostKeys;
 using VelaShell.Ssh.Session;
+using VelaShell.Ssh.Sftp;
 
 namespace VelaShell.Ssh.Tests.Session;
 
@@ -59,6 +64,60 @@ public sealed class OptionValidationTests
             options.Environment.ToArray(),
             "复制时保留原来的顺序，之后的改动不影响");
         Assert.ThrowsExactly<ArgumentNullException>(() => new SshCommandOptions { Environment = null! });
+    }
+
+    /// <summary>
+    /// 算法清单设值时抄一份只读的：调用方之后改自己的 List 不影响已经交出去的清单（连接把它存进重协商的上下文）；
+    /// 默认清单下转型也改不了。
+    /// </summary>
+    [TestMethod]
+    public void 算法清单设值后调用方再改也不影响()
+    {
+        List<string> kex = ["curve25519-sha256"];
+        SshAlgorithmSet set = SshAlgorithmSet.Default with { KeyExchange = kex };
+        kex.Add("diffie-hellman-group1-sha1");
+
+        Assert.AreSequenceEqual(new[] { "curve25519-sha256" }, set.KeyExchange.ToArray());
+        Assert.IsNotInstanceOfType<string[]>(SshAlgorithmSet.Default.EncryptionClientToServer, "下转型就能改默认清单");
+        Assert.IsNotInstanceOfType<List<string>>(set.KeyExchange);
+        Assert.ThrowsExactly<ArgumentNullException>(() => SshAlgorithmSet.Default with { HostKey = null! });
+    }
+
+    /// <summary>清单设值时会抄一份，相等比较因此按内容（含顺序）而不是按引用。</summary>
+    [TestMethod]
+    public void 算法清单按内容比较相等()
+    {
+        SshAlgorithmSet copy = SshAlgorithmSet.Default with { KeyExchange = [.. SshAlgorithmSet.Default.KeyExchange] };
+
+        Assert.AreEqual(SshAlgorithmSet.Default, copy);
+        Assert.AreEqual(SshAlgorithmSet.Default.GetHashCode(), copy.GetHashCode());
+        Assert.AreNotEqual(SshAlgorithmSet.Default, copy with { KeyExchange = [.. copy.KeyExchange.Reverse()] }, "顺序就是偏好");
+    }
+
+    /// <summary>agent 转发的「只给这几把钥」设值后，调用方再往自己的 List 里加钥不影响。</summary>
+    [TestMethod]
+    public void 只转发的钥设值后调用方再改也不影响()
+    {
+        using InMemorySshSigner first = InMemorySshSigner.GenerateEd25519();
+        using InMemorySshSigner second = InMemorySshSigner.GenerateEd25519();
+        List<SshPublicKey> keys = [first.PublicKey];
+        AgentForwardOptions options = new() { AllowedKeys = keys };
+        keys.Add(second.PublicKey);
+
+        Assert.HasCount(1, options.AllowedKeys!);
+        Assert.IsNull(new AgentForwardOptions { AllowedKeys = null }.AllowedKeys, "null 仍然表示不限");
+    }
+
+    /// <summary>SFTP 属性的扩展字段设值后，调用方再改自己的 List 不影响。</summary>
+    [TestMethod]
+    public void SFTP扩展属性设值后调用方再改也不影响()
+    {
+        List<SftpExtendedField> extended = [new("a@example.com", new byte[] { 1 })];
+        SftpFileAttributes attributes = new() { Flags = SftpAttributeFields.Extended, Extended = extended };
+        extended.Add(new("b@example.com", new byte[] { 2 }));
+
+        Assert.HasCount(1, attributes.Extended);
+        Assert.IsEmpty(default(SftpFileAttributes).Extended);
     }
 
     /// <summary>曾经超过约 24.8 天的间隔让保活循环里的 <c>(int)</c> 溢出，循环静默退出 —— 设了保活等于没设。</summary>

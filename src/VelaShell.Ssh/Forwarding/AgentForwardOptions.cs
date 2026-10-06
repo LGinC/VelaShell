@@ -33,8 +33,15 @@ public sealed record AgentForwardOptions
     /// 〔决策 velashell-docs/zh/ssh/spec/07 §7.2〕<b>必须支持「只转发指定的密钥」。</b>
     /// 一台跳板机没有理由能用到你所有的密钥 —— 它只需要下一跳那一把。
     /// 空列表曾经表示「不限」，于是「用户勾掉了所有钥」会悄悄变成「全部暴露」—— 现在两者分开。
+    /// <para>
+    /// 设值时抄一份只读的存下来：曾经原样存下调用方的集合，转发开着的时候往那个 <c>List</c> 里加一把钥，远端就能用上它。
+    /// </para>
     /// </remarks>
-    public IReadOnlyList<SshPublicKey>? AllowedKeys { get; init; }
+    public IReadOnlyList<SshPublicKey>? AllowedKeys
+    {
+        get;
+        init => field = value is null ? null : Array.AsReadOnly([.. value]);
+    }
 
     /// <summary>
     /// 每次远端请求签名时问一次使用者。

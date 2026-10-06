@@ -5,6 +5,7 @@
 //   RFC 4253 §7.1  协商规则:取客户端列表中第一个双方都支持的
 //   行为规格:      velashell-docs/zh/ssh/spec/00-overview.md §6(总表)、§7(优先级);velashell-docs/zh/ssh/spec/03 §2.2
 
+using System.Collections.ObjectModel;
 using VelaShell.Ssh.Crypto.Kex;
 using VelaShell.Ssh.Protocol;
 
@@ -27,32 +28,83 @@ namespace VelaShell.Ssh.Crypto;
 ///   <item>同等安全性下选有硬件加速的 —— 见 <see cref="Default"/> 对 AES 与 ChaCha 的运行期排序。</item>
 ///   <item>默认关闭的老算法不进默认列表，只在使用者显式配置时加入。</item>
 /// </list>
+/// <para>
+/// 〔velashell-docs/zh/ssh/spec/03 §2.2〕<b>每条清单在设值时抄一份只读的存下来</b>，之后调用方改自己手里那份不影响这里。
+/// 曾经原样存下调用方给的集合：传一个 <c>List</c> 进来、<c>Validate()</c> 之后再改，连接把这份清单存进重协商的上下文，
+/// 下一次重协商用的就是改过的、没校验过的清单；<see cref="Default"/> 里的数组下转型就能改，加密与 MAC 两个方向还共用同一个数组。
+/// </para>
 /// </remarks>
 public sealed record SshAlgorithmSet
 {
     /// <summary>密钥交换算法，按偏好排序。</summary>
-    public required IReadOnlyList<string> KeyExchange { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> KeyExchange { get; init => field = Freeze(value, nameof(KeyExchange)); }
 
     /// <summary>主机密钥算法，按偏好排序。</summary>
-    public required IReadOnlyList<string> HostKey { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> HostKey { get; init => field = Freeze(value, nameof(HostKey)); }
 
     /// <summary>加密算法（客户端 → 服务端）。</summary>
-    public required IReadOnlyList<string> EncryptionClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> EncryptionClientToServer { get; init => field = Freeze(value, nameof(EncryptionClientToServer)); }
 
     /// <summary>加密算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> EncryptionServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> EncryptionServerToClient { get; init => field = Freeze(value, nameof(EncryptionServerToClient)); }
 
     /// <summary>MAC 算法（客户端 → 服务端）。AEAD 加密下协商结果被忽略。</summary>
-    public required IReadOnlyList<string> MacClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> MacClientToServer { get; init => field = Freeze(value, nameof(MacClientToServer)); }
 
     /// <summary>MAC 算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> MacServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> MacServerToClient { get; init => field = Freeze(value, nameof(MacServerToClient)); }
 
     /// <summary>压缩算法（客户端 → 服务端）。</summary>
-    public required IReadOnlyList<string> CompressionClientToServer { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> CompressionClientToServer { get; init => field = Freeze(value, nameof(CompressionClientToServer)); }
 
     /// <summary>压缩算法（服务端 → 客户端）。</summary>
-    public required IReadOnlyList<string> CompressionServerToClient { get; init; }
+    /// <exception cref="ArgumentNullException">设成 <see langword="null"/>。</exception>
+    public required IReadOnlyList<string> CompressionServerToClient { get; init => field = Freeze(value, nameof(CompressionServerToClient)); }
+
+    /// <summary>抄一份只读的：之后调用方改它手里那份，这里不跟着变。</summary>
+    private static ReadOnlyCollection<string> Freeze(IReadOnlyList<string> value, string name) =>
+        value is null ? throw new ArgumentNullException(name) : Array.AsReadOnly([.. value]);
+
+    /// <summary>逐类、按顺序比较清单的内容。</summary>
+    /// <remarks>
+    /// 记录默认按成员的引用比较，而清单设值时会抄一份 —— 内容一样的两个清单引用不同，按引用比较就说不通了。
+    /// 顺序也算在内：顺序就是偏好。
+    /// </remarks>
+    public bool Equals(SshAlgorithmSet? other) =>
+        ReferenceEquals(this, other)
+        || (other is not null
+            && KeyExchange.SequenceEqual(other.KeyExchange)
+            && HostKey.SequenceEqual(other.HostKey)
+            && EncryptionClientToServer.SequenceEqual(other.EncryptionClientToServer)
+            && EncryptionServerToClient.SequenceEqual(other.EncryptionServerToClient)
+            && MacClientToServer.SequenceEqual(other.MacClientToServer)
+            && MacServerToClient.SequenceEqual(other.MacServerToClient)
+            && CompressionClientToServer.SequenceEqual(other.CompressionClientToServer)
+            && CompressionServerToClient.SequenceEqual(other.CompressionServerToClient));
+
+    /// <inheritdoc/>
+    public override int GetHashCode()
+    {
+        HashCode hash = new();
+        foreach (IReadOnlyList<string> list in (IReadOnlyList<string>[])[
+            KeyExchange, HostKey, EncryptionClientToServer, EncryptionServerToClient,
+            MacClientToServer, MacServerToClient, CompressionClientToServer, CompressionServerToClient])
+        {
+            hash.Add(list.Count);
+            foreach (string name in list)
+            {
+                hash.Add(name, StringComparer.Ordinal);
+            }
+        }
+        return hash.ToHashCode();
+    }
 
     /// <summary>
     /// 默认清单：安全、现代、不含任何已被弃用的算法。

@@ -49,11 +49,14 @@ public readonly record struct SftpFileAttributes
     internal const int MaxExtendedFields = 1024;
 
     /// <summary>厂商扩展属性。</summary>
-    /// <remarks><c>default(SftpFileAttributes)</c> 里它也是空列表而不是 <see langword="null"/>。</remarks>
+    /// <remarks>
+    /// <c>default(SftpFileAttributes)</c> 里它也是空列表而不是 <see langword="null"/>。
+    /// 设值时抄一份只读的存下来：曾经原样存下调用方的集合，值类型的「不可变」只到这一层为止。
+    /// </remarks>
     public IReadOnlyList<SftpExtendedField> Extended
     {
         get => field ?? [];
-        init;
+        init => field = value is null or { Count: 0 } ? null : Array.AsReadOnly([.. value]);
     }
 
     /// <summary>什么都没带的空属性（与 <c>default</c> 相同）。</summary>
@@ -256,8 +259,8 @@ public readonly record struct SftpFileAttributes
             Permissions = permissions,
             AccessTime = accessTime,
             ModifyTime = modifyTime,
-            // 只读视图交出去：曾经直接交出 List，下转型就能改一个「只读」属性背后的内容。
-            Extended = extended is null or { Count: 0 } ? [] : extended.AsReadOnly(),
+            // 只读视图交出去（init 里抄成只读的）：曾经直接交出 List，下转型就能改一个「只读」属性背后的内容。
+            Extended = extended ?? [],
         };
     }
 }
