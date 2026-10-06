@@ -867,8 +867,7 @@ public static class SshPrivateKeyFile
             needsPassphrase ? SshFailureReason.KeyPassphraseIncorrect : SshFailureReason.KeyFormatInvalid,
             needsPassphrase
                 ? $"私钥解不开{where} —— 口令多半不对。"
-                : $"私钥读不出来{where}。它可能是 Ed25519 的 PKCS#8 " +
-                  "（.NET 尚未支持导入这种），也可能文件已损坏。");
+                : $"私钥读不出来{where}，文件可能已损坏。");
     }
 
     /// <summary>读加密 PKCS#8 的 KDF 迭代数与密文长度（RFC 5958 §3、RFC 8018 §6.1 / §6.2 / A.2）。</summary>
@@ -970,8 +969,8 @@ public static class SshPrivateKeyFile
 
     /// <summary>按 PrivateKeyInfo 里的算法标识分派（RFC 5958 §2）。</summary>
     /// <remarks>
-    /// SSH 用得上的只有 RSA 与三条 NIST 曲线上的 ECDSA（RFC 5656 §10.1）；
-    /// Ed25519 / Ed448 / DSA 与别的曲线报「不支持」，并说出是什么 —— 不让人去怀疑口令或文件。
+    /// SSH 用得上的是 RSA、三条 NIST 曲线上的 ECDSA（RFC 5656 §10.1）与 Ed25519（RFC 8410）；
+    /// Ed448 / DSA 与别的曲线报「不支持」，并说出是什么 —— 不让人去怀疑口令或文件。
     /// </remarks>
     private static InMemorySshSigner LoadPkcs8(byte[] der, string where)
     {
@@ -1005,9 +1004,7 @@ public static class SshPrivateKeyFile
                 }
 
             case ed25519:
-                throw new SshPrivateKeyException(SshFailureReason.Unsupported,
-                    $"这是一把 PKCS#8 格式的 Ed25519 私钥{where}，本库暂不读 PKCS#8 里的 Ed25519。" +
-                    "请转成 OpenSSH 格式（BEGIN OPENSSH PRIVATE KEY）再用。");
+                return LoadPkcs8Ed25519(der, where);
 
             case ed448:
                 throw new SshPrivateKeyException(SshFailureReason.Unsupported, $"这是一把 Ed448 私钥{where}，SSH 不用 Ed448。");
@@ -1018,7 +1015,78 @@ public static class SshPrivateKeyFile
 
             default:
                 throw new SshPrivateKeyException(SshFailureReason.Unsupported,
-                    $"这把 PKCS#8 私钥的算法是 {algorithm}{where}，SSH 用不上（支持 RSA 与 NIST 曲线上的 ECDSA）。");
+                    $"这把 PKCS#8 私钥的算法是 {algorithm}{where}，SSH 用不上（支持 RSA、NIST 曲线上的 ECDSA 与 Ed25519）。");
+        }
+    }
+
+    /// <summary>PKCS#8 里的 Ed25519（RFC 8410 §7）：取出 32 字节种子；带着公钥（v2）时核对它是不是种子导出的那一把。</summary>
+    /// <remarks>
+    /// <code>
+    /// OneAsymmetricKey ::= SEQUENCE { version, privateKeyAlgorithm, privateKey OCTET STRING,
+    ///                                 attributes [0] IMPLICIT OPTIONAL, ..., [[2: publicKey [1] IMPLICIT BIT STRING OPTIONAL ]], ... }
+    /// privateKey 里装的是 CurvePrivateKey ::= OCTET STRING（32 字节，RFC 8032 的私钥）
+    /// </code>
+    /// 按 BER 读（RFC 5958 要求），属性与以后扩展的字段跳过。公钥对不上与 <c>openssh-key-v1</c>、<c>.ppk</c> 同一口径，
+    /// 报 <see cref="SshFailureReason.KeyFormatInvalid"/>。BCL 导入不了这种钥（.NET 11 仍没有独立的 Ed25519），曾经一律报「不支持」。
+    /// </remarks>
+    private static InMemorySshSigner LoadPkcs8Ed25519(byte[] der, string where)
+    {
+        Asn1Tag publicKeyTag = new(TagClass.ContextSpecific, 1);
+        byte[]? privateKey = null;
+        byte[]? seed = null;
+        byte[]? publicKey = null;
+        try
+        {
+            try
+            {
+                AsnReader info = new AsnReader(der, AsnEncodingRules.BER).ReadSequence();
+                _ = info.ReadInteger();   // version：v1（0）或 v2（1）
+                _ = info.ReadSequence();  // AlgorithmIdentifier：id-Ed25519，参数缺省（RFC 8410 §3）
+                privateKey = info.ReadOctetString();
+                AsnReader curvePrivateKey = new(privateKey, AsnEncodingRules.BER);
+                seed = curvePrivateKey.ReadOctetString();
+                curvePrivateKey.ThrowIfNotEmpty();
+
+                while (info.HasData)
+                {
+                    if (!info.PeekTag().HasSameClassAndValue(publicKeyTag))
+                    {
+                        _ = info.ReadEncodedValue();   // attributes [0] 与以后扩展的字段
+                        continue;
+                    }
+
+                    publicKey = info.ReadBitString(out int unusedBits, publicKeyTag);
+                    if (unusedBits != 0)
+                    {
+                        throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                            $"PKCS#8 里 Ed25519 的公钥不是整字节{where}，文件多半损坏了。");
+                    }
+                }
+            }
+            catch (AsnContentException ex)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid, $"PKCS#8 里 Ed25519 私钥的结构不对{where}。", ex);
+            }
+
+            if (seed.Length != 32)
+            {
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"Ed25519 私钥应当是 32 字节，实际 {seed.Length} 字节{where}。");
+            }
+
+            // 签名器复制一份归自己所有；这一份由这里清。
+            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(seed);
+            if (publicKey is not null && !signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
+            {
+                signer.Dispose();
+                throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
+                    $"PKCS#8 里 Ed25519 的公钥与私钥导出的不一致{where}，文件多半损坏了。");
+            }
+            return signer;
+        }
+        finally
+        {
+            Clear(privateKey, seed);
         }
     }
 

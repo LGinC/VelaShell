@@ -138,7 +138,20 @@ cp putty-ed25519-v3-hi.pub putty-ed25519-v3-hi-enc.pub
 ### PKCS#8（`pkcs8-*`）
 
 `EncryptedPkcs8KeyTests` 用的 PKCS#8 由**真的 `openssl`（3.5）**生成，默认的 PBES2（PBKDF2-HMAC-SHA256 + AES-256-CBC），口令同上。
-`-rsa-enc` / `-ecdsa-enc` 的 `.pub` 是 `ssh-keygen -y` 给的；Ed25519、DSA、brainpool 三份是「口令对、钥不受支持」的样本，没有 `.pub`。
+`-rsa-enc` / `-ecdsa-enc` 的 `.pub` 是 `ssh-keygen -y` 给的；DSA、brainpool 两份是「口令对、钥不受支持」的样本，没有 `.pub`。
+两份 Ed25519 的 `.pub` 由 WSL 里的 `ssh-keygen -y`（OpenSSH 10.0p2，链接 OpenSSL）给出 —— Windows 自带的那个读 PKCS#8 里的 Ed25519 报 `invalid format`。
+
+`pkcs8-ed25519-rfc8410*` 是 **RFC 8410 原文里的例子**（§10.3 与附录 A），逐字抄下、补上 PEM 头尾：
+
+| 文件 | 出处 | 内容 |
+| --- | --- | --- |
+| `pkcs8-ed25519-rfc8410` | §10.3 第一个 | v1，只有私钥 |
+| `pkcs8-ed25519-rfc8410-v2` | §10.3 第二个 | v2，带一个属性 `[0]` 与公钥 `[1]` |
+| `pkcs8-ed25519-rfc8410-ber` | 附录 A | 同一把钥的 BER 不定长编码（RFC 5958 要求接受 BER） |
+| `pkcs8-ed25519-rfc8410-badpub1` / `-badpub2` | 附录 A 末尾 | 「错误的钥」：公钥少了首 / 尾一个字节 |
+
+前三份是同一把钥，`.pub`（`pkcs8-ed25519-rfc8410.pub`）也是 WSL 的 `ssh-keygen -y` 给的，三份它都读得出、给的是同一行。
+两份错例它**照样读得出**，交出来的是文件里写的那个（错的）公钥 —— 本库按与 `openssh-key-v1`、`.ppk` 同一口径报 `KeyFormatInvalid`。
 
 ```bash
 PASS='correct horse battery staple'
@@ -150,4 +163,8 @@ openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:brainpoolP256r1 -aes-25
 openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-rsa-enc
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-384 -aes-256-cbc -pass "pass:$PASS" -out pkcs8-ecdsa-enc
 for n in pkcs8-rsa-enc pkcs8-ecdsa-enc; do chmod 600 $n; ssh-keygen -y -P "$PASS" -f $n > $n.pub; done
+# 在 WSL 里（OpenSSH 10.0p2）：
+ssh-keygen -y -f pkcs8-ed25519 > pkcs8-ed25519.pub
+ssh-keygen -y -P "$PASS" -f pkcs8-ed25519-enc > pkcs8-ed25519-enc.pub
+ssh-keygen -y -f pkcs8-ed25519-rfc8410 > pkcs8-ed25519-rfc8410.pub
 ```
