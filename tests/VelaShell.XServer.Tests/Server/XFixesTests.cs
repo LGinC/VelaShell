@@ -196,4 +196,37 @@ public sealed class XFixesTests
         Assert.IsTrue(error.IsError);
         Assert.AreEqual(11, error.Detail, "BadAlloc");
     }
+
+    [TestMethod]
+    public async Task SetCursorName把名字建成原子_受与InternAtom同一套上限()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        await c.RequestAsync(major, 0, b => b.U32(5).U32(0));
+        uint cursor = c.NewId();
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(pixmap).U32(c.RootWindow).U16(1).U16(1));
+        await c.SendAsync(93, 0, b => b.U32(cursor).U32(pixmap).U32(0).U16(0).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0).U16(0));
+
+        // 名字建成原子:GetCursorName 回的原子就是 InternAtom 查得到的那个。
+        byte[] text = Encoding.Latin1.GetBytes("text");
+        await c.SendAsync(major, 23, b => b.U32(cursor).U16((ushort)text.Length).U16(0).Bytes(text).Pad());
+        XMessage named = await c.RequestAsync(major, 24, b => b.U32(cursor));
+        XMessage interned = await c.RequestAsync(16, 1, b => b.U16((ushort)text.Length).U16(0).Bytes(text).Pad());   // only-if-exists
+        Assert.AreNotEqual(0u, named.U32(8));
+        Assert.AreEqual(interned.U32(8), named.U32(8));
+
+        // 每次一个 6 万多字节的新名字:原子名合计 16 MB 的上限对这条路同样有效(原先 GetCursorName 不设限地建原子)。
+        await c.SendManyAsync(Enumerable.Range(0, 300).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        {
+            byte[] name = new byte[65000];
+            BitConverter.TryWriteBytes(name, i);
+            name[4] = (byte)'x';
+            return (major, 23, b => b.U32(cursor).U16((ushort)name.Length).U16(0).Bytes(name).Pad());
+        }));
+        await c.SyncAsync();
+        XMessage error = await c.NextAsync(m => m.IsError, timeoutMs: 1000);
+        Assert.AreEqual(11, error.Detail, "BadAlloc");
+    }
 }

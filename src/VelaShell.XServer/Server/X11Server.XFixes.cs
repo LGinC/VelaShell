@@ -244,7 +244,12 @@ public sealed partial class X11Server
                     XCursorResource cursor = CursorRes(r.U32());
                     int length = r.U16();
                     r.Skip(2);
-                    SetCursorName(cursor, r.String8(length));
+                    string name = r.String8(length);
+                    if (name.Length != 0)
+                    {
+                        InternForClient(name);   // 规范:「interns name as an atom」—— 与 InternAtom 同一套上限(原先在 GetCursorName 时不设限地建)
+                    }
+                    SetCursorName(cursor, name);
                     break;
                 }
             case 26:  // ChangeCursor
@@ -253,7 +258,7 @@ public sealed partial class X11Server
             case 24:  // GetCursorName
                 {
                     string name = CursorRes(r.U32()).Name ?? "";
-                    uint atom = name.Length == 0 ? 0 : Intern(name);
+                    uint atom = name.Length == 0 ? 0 : _atomsByName.GetValueOrDefault(name);   // SetCursorName 时已经建好
                     byte[] bytes = XWire.Latin1.GetBytes(name);
                     c.Reply(0, w => w.U32(atom).U16((ushort)bytes.Length).Zero(18).Bytes(bytes));
                     break;

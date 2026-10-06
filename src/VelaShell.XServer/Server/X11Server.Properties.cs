@@ -75,16 +75,25 @@ public sealed partial class X11Server
         int length = r.U16();
         r.Skip(2);
         string name = r.String8(length);
-        uint atom = _atomsByName.GetValueOrDefault(name);
-        if (atom == 0 && !onlyIfExists)
-        {
-            if (_atomNames.Count >= MaxAtoms || _atomNameBytes + name.Length > MaxAtomNameBytes)
-            {
-                throw new XProtocolError(XErrorCode.Alloc);
-            }
-            atom = Intern(name);
-        }
+        uint atom = onlyIfExists ? _atomsByName.GetValueOrDefault(name) : InternForClient(name);
         c.Reply(0, w => w.U32(atom).Zero(20));
+    }
+
+    /// <summary>
+    /// 客户端要建的原子(InternAtom、XFIXES 的 SetCursorName):原子永不释放,超过 <see cref="MaxAtoms" /> 个或名字合计
+    /// <see cref="MaxAtomNameBytes" /> 回 Alloc。服务端自己用的名字走 <see cref="Intern" />,不受限。
+    /// </summary>
+    private uint InternForClient(string name)
+    {
+        if (_atomsByName.TryGetValue(name, out uint atom))
+        {
+            return atom;
+        }
+        if (_atomNames.Count >= MaxAtoms || _atomNameBytes + name.Length > MaxAtomNameBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
+        return Intern(name);
     }
 
     private void GetAtomName(XClient c, XRequestReader r)
