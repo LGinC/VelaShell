@@ -339,7 +339,7 @@ public sealed partial class X11Server
     {
         RemoveResource(counter.Id);
         // 挂着它的报警器进入 Inactive;等它的 Await 以 destroyed = True 的 CounterNotify 结束(规范 DestroyCounter)。
-        // 报警器先改:结束等待会就地执行那个客户端暂存的请求,那些请求可能增删报警器。
+        // 报警器先改,再结束等待(暂存的请求放回执行循环,之后才执行)。
         foreach (XSyncAlarm alarm in _alarms)
         {
             if (alarm.State != XSyncAlarm.Destroyed && ReferenceEquals(alarm.Trigger.Counter, counter))
@@ -422,10 +422,7 @@ public sealed partial class X11Server
         {
             return;
         }
-        foreach (WorkItem item in wait.Deferred)
-        {
-            RunItem(item);
-        }
+        Requeue(wait.Deferred);
     }
 
     /// <summary>执行循环在跑一项工作之前问一句:这个客户端是不是在 Await 里?是就把请求暂存。</summary>

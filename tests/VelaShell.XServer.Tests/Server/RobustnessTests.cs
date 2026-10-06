@@ -314,4 +314,38 @@ public sealed class RobustnessTests
         await observer.SendAsync(113, 0, b => b.U32(permanent));   // KillClient(那个资源):销毁它的客户端留下的全部资源
         Assert.IsFalse(await ExistsAsync(permanent));
     }
+
+    [TestMethod]
+    public async Task GrabServer期间别人的请求暂存_Ungrab后按原顺序执行()
+    {
+        await using X11Server server = new();
+        await using XTestClient grabber = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        await grabber.SendAsync(36, 0);   // GrabServer
+        await grabber.SyncAsync();
+
+        // 别人的请求:先写一个属性,再读回来。抓着的时候一条都不执行。
+        byte[] value = "ordered"u8.ToArray();
+        await other.SendAsync(18, 0, b => b.U32(other.RootWindow).U32(1).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)value.Length).Bytes(value).Pad());
+        ushort read = await other.SendAsync(20, 0, b => b.U32(other.RootWindow).U32(1).U32(0).U32(0).U32(100));
+        await Assert.ThrowsExactlyAsync<OperationCanceledException>(() => other.NextAsync(m => m.IsReply && m.Sequence == read, timeoutMs: 200));
+
+        await grabber.SendAsync(37, 0);   // UngrabServer:暂存的请求放回执行循环,按原顺序执行
+        XMessage reply = await other.NextAsync(m => m.IsReply && m.Sequence == read);
+        Assert.AreEqual((uint)value.Length, reply.U32(16), "读到的是先写进去的那个值");
+    }
+
+    [TestMethod]
+    public async Task 抓着服务端的客户端断开_抓取随之解除()
+    {
+        await using X11Server server = new();
+        XTestClient grabber = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        await grabber.SendAsync(36, 0);
+        await grabber.SyncAsync();
+        ushort sequence = await other.SendAsync(43, 0);   // GetInputFocus:被暂存
+        await grabber.DisposeAsync();
+        XMessage reply = await other.NextAsync(m => m.IsReply && m.Sequence == sequence);
+        Assert.IsTrue(reply.IsReply);
+    }
 }

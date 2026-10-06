@@ -141,13 +141,33 @@ public sealed partial class X11Server
         return true;
     }
 
+    /// <summary>
+    /// 放回来的暂存请求(GrabServer 结束、SYNC 的 Await 等到了、XTEST 的延迟到了):执行循环先取它,再取通道。
+    /// 原先就地一口气执行完 —— 最坏 255 个客户端 × 1024 条,全程持锁,绕过每批 4 毫秒的预算与对宿主的让行。
+    /// 先于通道取保证了顺序:同一个客户端还在通道里的请求都比暂存的这些来得晚。
+    /// </summary>
+    private readonly Queue<WorkItem> _ready = new();
+
+    /// <summary>把暂存的请求按原顺序放回执行循环(见 <see cref="_ready" />)。</summary>
+    private void Requeue(List<WorkItem> items)
+    {
+        foreach (WorkItem item in items)
+        {
+            _ready.Enqueue(item);
+        }
+    }
+
+    private bool TryTakeItem(ChannelReader<WorkItem> reader, out WorkItem item) =>
+        _ready.TryDequeue(out item) || reader.TryRead(out item);
+
     private async Task RunLoopAsync()
     {
         ChannelReader<WorkItem> reader = _work.Reader;
         try
         {
-            while (await reader.WaitToReadAsync(_lifetime.Token).ConfigureAwait(false))
+            while (_ready.Count != 0 || await reader.WaitToReadAsync(_lifetime.Token).ConfigureAwait(false))
             {
+                _lifetime.Token.ThrowIfCancellationRequested();
                 // lock 不公平:刚放锁就再拿,等着读像素的宿主线程可能一直抢不到。宿主在等就先让它读完。
                 _pixelGate.YieldToHost();
                 lock (_pixelGate.Lock)
@@ -156,7 +176,7 @@ public sealed partial class X11Server
                     try
                     {
                         long deadline = Stopwatch.GetTimestamp() + LockBudgetTicks;
-                        while (reader.TryRead(out WorkItem item))
+                        while (TryTakeItem(reader, out WorkItem item))
                         {
                             RunItem(item);
                             if (Stopwatch.GetTimestamp() >= deadline || _pixelGate.HostWaiting)
@@ -243,11 +263,7 @@ public sealed partial class X11Server
     private void ReleaseServerGrab()
     {
         _serverGrabber = null;
-        List<WorkItem> pending = [.. _deferred];
+        Requeue(_deferred);
         _deferred.Clear();
-        foreach (WorkItem item in pending)
-        {
-            RunItem(item);
-        }
     }
 }
