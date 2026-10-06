@@ -643,16 +643,37 @@ internal sealed partial class GlContext
         {
             return;
         }
-        var row = new Vector4[i1 - i0];
+        // 只解码放大之后真盖得住像素中心的源像素:列与行各自先挑出来,其余的不碰。PixelZoom 很小(1e-6)时一整行源像素
+        // 可能只落进一个像素 —— 原先照样逐个解码,而 ROW_LENGTH 比 width 小时各行在数据里重叠,16 KB 就能声称 8000 × 8000。
+        WorkBudget.Charge(1L + i1 - i0);
+        List<int> columns = [];
+        for (int i = i0; i < i1; i++)
+        {
+            (int x0, int x1) = PixelColumnSpan(i);
+            if (x0 < x1)
+            {
+                columns.Add(i);
+            }
+        }
+        if (columns.Count == 0)
+        {
+            return;
+        }
         Span<float> comp = stackalloc float[4];
         for (int j = j0; j < j1; j++)
         {
-            WorkBudget.Charge(1L + i1 - i0);
-            for (int i = i0; i < i1; i++)
+            WorkBudget.Charge(1);
+            (int y0, int y1) = PixelRowSpan(j);
+            if (y0 >= y1)
             {
-                row[i - i0] = ReadGroup(data, layout, i, j, comp);
+                continue;
             }
-            DrawRow(j, i0, row);
+            WorkBudget.Charge(columns.Count);
+            foreach (int i in columns)
+            {
+                (int x0, int x1) = PixelColumnSpan(i);
+                DrawZoomedPixel(x0, x1, y0, y1, ReadGroup(data, layout, i, j, comp));
+            }
         }
     }
 
@@ -683,26 +704,44 @@ internal sealed partial class GlContext
         return ((int)Math.Clamp(first, 0, count), (int)Math.Clamp(last, 0, count));
     }
 
+    /// <summary>第 j 行源像素放大之后盖住的窗口行 [Y0, Y1)(已裁到剪裁框;空的表示一个像素中心都没盖住)。</summary>
+    private (int Y0, int Y1) PixelRowSpan(int j)
+    {
+        float yr = State.RasterPos.Y, zy = State.ZoomY;
+        float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
+        return ((int)Math.Clamp(MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), _clipY0, _clipY1),
+            (int)Math.Clamp(MathF.Ceiling(MathF.Max(ya, yb) - 0.5f), _clipY0, _clipY1));
+    }
+
+    /// <summary>第 i 列源像素放大之后盖住的窗口列 [X0, X1)。</summary>
+    private (int X0, int X1) PixelColumnSpan(int i)
+    {
+        float xr = State.RasterPos.X, zx = State.ZoomX;
+        float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
+        return ((int)Math.Clamp(MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), _clipX0, _clipX1),
+            (int)Math.Clamp(MathF.Ceiling(MathF.Max(xa, xb) - 0.5f), _clipX0, _clipX1));
+    }
+
     /// <summary>画像素矩形的第 j 行里从第 i0 个起的一段(§3.6.5):每个源像素覆盖一块 zoom 大小的区域。</summary>
     private void DrawRow(int j, int i0, ReadOnlySpan<Vector4> colors)
     {
-        float xr = State.RasterPos.X, yr = State.RasterPos.Y, z = State.RasterPos.Z;
-        float zx = State.ZoomX, zy = State.ZoomY;
-        float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
-        int y0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), _clipY0, _clipY1);
-        int y1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(ya, yb) - 0.5f), _clipY0, _clipY1);
+        (int y0, int y1) = PixelRowSpan(j);
         for (int n = 0; n < colors.Length && y0 < y1; n++)
         {
-            int i = i0 + n;
-            float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
-            int x0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), _clipX0, _clipX1);
-            int x1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(xa, xb) - 0.5f), _clipX0, _clipX1);
-            for (int y = y0; y < y1; y++)
+            (int x0, int x1) = PixelColumnSpan(i0 + n);
+            DrawZoomedPixel(x0, x1, y0, y1, colors[n]);
+        }
+    }
+
+    /// <summary>一个源像素放大后的那一块:[x0, x1) × [y0, y1) 里每个像素一个片元。</summary>
+    private void DrawZoomedPixel(int x0, int x1, int y0, int y1, Vector4 color)
+    {
+        float z = State.RasterPos.Z;
+        for (int y = y0; y < y1; y++)
+        {
+            for (int x = x0; x < x1; x++)
             {
-                for (int x = x0; x < x1; x++)
-                {
-                    Fragment(x, y, z, colors[n], Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
-                }
+                Fragment(x, y, z, color, Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
             }
         }
     }

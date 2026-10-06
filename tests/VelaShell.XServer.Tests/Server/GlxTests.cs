@@ -405,6 +405,29 @@ public sealed class GlxTests
         b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(4).I32(width).I32(height).U32(Rgba).U32(UnsignedByte).Bytes(rgba);
 
     [TestMethod]
+    public async Task DrawPixels各行在数据里重叠_极小的放大倍数_只解码盖得住像素中心的源像素()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        // ROW_LENGTH = 1、对齐 1、LUMINANCE / UNSIGNED_BYTE:各行在数据里重叠,8000 × 8000 只要 15999 字节。
+        const int size = 8000;
+        byte[] data = new byte[size + size - 1];
+        Array.Fill(data, (byte)0x80);
+        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(34, b => F(b, -1, -1))                                                // 窗口 (0, 0)
+            .Add(165, b => F(b, 1e-6f, 1e-6f))                                         // PixelZoom:整张图缩成不到一个像素
+            .Add(173, b => b.U8(0).U8(0).U16(0).I32(1).I32(0).I32(0).I32(1).I32(size).I32(size).U32(0x1909).U32(UnsignedByte).Bytes(data)));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsLessThan(2_000, watch.ElapsedMilliseconds, "原先逐个解码 6400 万个源像素");
+    }
+
+    [TestMethod]
     public async Task DrawPixels与CopyPixels按放大倍数画出_只走裁剪范围里的那部分()
     {
         using RecordingHost host = new();
