@@ -112,9 +112,15 @@ public readonly record struct SshRekeyPolicy
     /// <remarks>报文数的硬线（<see cref="MaximumPackets"/>）不受它影响，到了照样主动发起。</remarks>
     public static SshRekeyPolicy Disabled => default;
 
-    /// <summary>默认：1 GiB / 1 小时 / 2³¹ 个报文（RFC 4253 §9 的建议 + 硬约束）。</summary>
+    /// <summary>默认：1 GiB / 2³¹ 个报文，<b>不按时长</b>（字节阈值是 RFC 4253 §9 的建议，报文数是硬约束）。</summary>
+    /// <remarks>
+    /// 〔Q1，velashell-docs/zh/ssh/spec/03 §8.1〕时长阈值默认不看：OpenSSH 的客户端与服务端默认也只按数据量换钥（<c>ssh -G</c> 是
+    /// <c>rekeylimit 0 0</c>，<c>sshd_config</c> 默认 <c>RekeyLimit default none</c>）。对处理不好客户端发起的重协商的老设备，
+    /// 每小时一次等于每小时断一次线（我们的 <c>KEXINIT</c> 发出去之后闸门已关、收不回，等到时限自判超时）。
+    /// 曾经默认 1 小时。要按时长换钥的显式给 <c>maxInterval</c>。
+    /// </remarks>
     public static SshRekeyPolicy Default =>
-        new(maxBytes: 1L << 30, maxInterval: TimeSpan.FromHours(1), maxPackets: 1L << 31);
+        new(maxBytes: 1L << 30, maxPackets: 1L << 31);
 
     /// <summary>有没有任何一条阈值是开着的。</summary>
     public bool IsEnabled => MaxBytes > 0 || MaxPackets > 0 || MaxInterval > TimeSpan.Zero;

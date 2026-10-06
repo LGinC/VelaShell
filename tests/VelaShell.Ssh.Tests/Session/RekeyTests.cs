@@ -696,6 +696,11 @@ public sealed class RekeyTests
         Assert.IsFalse(SshRekeyPolicy.Disabled.IsEnabled, "关掉之后不该有任何阈值是开的");
         Assert.IsTrue(SshRekeyPolicy.Default.IsEnabled, "默认必须是开着的 —— 它防的是 nonce 回绕");
 
+        // 〔Q1〕默认只按数据量（与 OpenSSH 的默认一致），不按时长：处理不好客户端发起重协商的老设备曾经每小时断一次。
+        Assert.AreEqual(1L << 30, SshRekeyPolicy.Default.MaxBytes);
+        Assert.AreEqual(1L << 31, SshRekeyPolicy.Default.MaxPackets);
+        Assert.AreEqual(TimeSpan.Zero, SshRekeyPolicy.Default.MaxInterval);
+
         // 全零的结构体就该是「什么都不做」。第一版不是这样：MaxInterval 的
         // default 被翻译成 1 小时，于是 Disabled 里的时长那一条根本关不掉。
         SshRekeyPolicy zeroed = default;
