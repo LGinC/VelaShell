@@ -1732,3 +1732,13 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 ## ✅ 165. 2026-10-07 CI:去掉「VelaShell.Ssh · 压缩严格校验」作业
 
 维护者决定这一项现在不需要在 CI 里跑。`ci.yml` 的 `ssh-checks` 作业删掉 —— 它只做一件事:单开一个进程跑 `scripts/ssh/compression/verify-strict-validation.cs`,验 `System.IO.Compression.UseStrictValidation` 打开时 `zlib@openssh.com` 照常往返(那个 AppContext 开关只能在进程启动时设一次,进不了常规用例)。脚本留着,改动压缩那段代码时手动跑;velashell-docs 架构文档里「CI 里单跑一条」的说法同步改掉([velashell-docs#92](https://github.com/VelaShellLabs/velashell-docs/pull/92))。
+
+## ✅ 166. 2026-10-07 CI:三条一直红着的 SSH 用例
+
+#563 合并前后,CI 的「构建与测试」在三个系统上都红(Windows 在最新一次已经过了)。本机全绿,三条都是 CI 环境才摆得出来的情形:
+
+- **`ppk截断到任意位置只报私钥异常`(v3 加密那个,三个系统)**:每截断一次都先跑一遍 Argon2(v3、参数重)才在 MAC 上发现文件不完整,CI 上超过 30 秒被掐。修在库里:`.ppk` 的结构在派生口令之前就核完 —— `Private-MAC` 在且长度对、各段行数够、加密私钥区是 16 的倍数,不满足当场报 `KeyFormatInvalid`;截断的文件也不再被报成「口令多半不对」。这条用例本机 0.4 秒。
+- **`只连限定的地址族_从指定的本机地址发起`(macOS)**:「整个 127/8 都是环回」只在 Linux 与 Windows 上成立,macOS 的 lo0 默认只有 127.0.0.1,绑 127.0.0.2 报 `AddressNotAvailable`。macOS 上改从 127.0.0.1 发起。
+- **`主机密钥被拒时告诉服务端原因` 与 `服务端公开值不合格时告诉服务端KEY_EXCHANGE_FAILED`(Ubuntu,偶发)**:客户端发了 DISCONNECT 就关连接,机器忙时这发生在测试服务端发自己的 NEWKEYS 之前,服务端写失败直接退出、没读到那条 DISCONNECT。测试服务端写失败时先尽力再读一个报文、记下原因码。在 NEWKEYS 之前人为加 200 ms 延迟能稳定摆出这个次序:改之前失败,改之后全过。
+
+「Code scanning AI findings」那一项是 GitHub 托管的 Copilot 任务,#562 之前就一直失败、日志里只有退出码,不在仓库的 CI 里,没有动。文档同步在 velashell-docs#92(规格 04 的 `.ppk` 决策)。
