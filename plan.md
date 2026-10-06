@@ -1657,3 +1657,28 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - 文档:velashell-docs `zh/` 与 `en/` 的 spec/03 §5.3、spec/09 §2.4,architecture.md 新 §11.2.26(含核对过不动的与考虑过不做的:「能不能交互」标志、认证期间停表、重协商换另一把受信任的钥)。
 
 **三、验证**:新 `ConnectDeadlineTests` 13 例,用 `TestKit/ManualTimeProvider`(手动拨的时钟,到点的回调先排队、可以晚些执行,摆得出「到点了、回调还没执行」那一刻):到点、不限时、停表续表、累计扣减不补满、嵌套停表、多余的续表、停表时已经用完 / 刚好用完、到点后停表续表、停着表时调用方取消不算到点、外层跟着停、外层用完时里面停表判外层超时、释放之后不抛。`ConnectionTests` 补 2 例端到端:拨通后把时钟拨过连接超时(回调不执行),策略一次也没被问、报 `Timeout` / `KeyExchange`;拨到还剩 1 秒,照常问一次、照常连上。变异检验:把「停表时用完就判超时」退回旧行为(剩 0 冻住),恰好是瞄准的 4 例变红。全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`;`VelaShell.Ssh.Tests` 799 通过 / 23 跳过(跳过的是要 Docker 靶机或环境变量的互操作用例)。
+
+## ✅ 161. 2026-10-05 ~ 10-06 SSH 库:按全库审查的结论逐条修复与补齐(`ssh_plan.md`)
+
+**一、来由**:2026-10-05 对 `src/VelaShell.Ssh` 做了一次分领域的全库审查(六个只读审查会话按传输与密码学、连接与通道、认证与密钥、转发 / 拨号 / ssh_config、SFTP、公开面与宿主分头读,主会话回到代码逐条复核;全程守净室规程,没有打开任何其它 SSH 实现的源码),结论写成仓库根的 `ssh_plan.md`(未入库的草案):164 条带编号的发现(错误 / 安全 / 规格漂移 / 设计 / 性能)、第七节宿主的 10 处绕路(W1–W10)与 7 条可观测性缺口、第八节 12 条待拍板的质疑决策(Q1–Q12)、第九节 14 条测试缺口(T1–T14)、第十节 42 项可以支持的功能(F1–F42)。照计划逐条修,一条一个本地提交:`dev` 上 253 个(库 216 个、宿主 64 个,有的两边都动),文档集中在 velashell-docs 的 `fix/ssh-review-fixes` 分支(约 180 个提交,`zh/` 与 `en/` 一起改)。每条提交信息里写着它对应哪一条、为什么、怎么验证的;这里只记全貌。
+
+**二、做了什么**(按批次):
+- **宿主正在踩、会打断整条连接的**:迟到的请求应答不再把整条连接判成协议错误(CH-E1);跳板上等人时外层计时器停表(FW-E1);取消与应答同时到达不再泄漏 SFTP 句柄(SF-E1);单文件传输管线深度能长、宿主续传回退盖住整个窗口(SF-E2 / SF-D7);远程转发建立途中取消撤销监听、释放时等应答有时限(FW-E3 / E4);断网时的 DNS 失败如实归类(FW-E5);宿主信任库交出已记下的钥类型、并按密钥类型分开记(API-H4);「允许老算法」放开 SHA-1 RSA 用户签名并补降级重试(API-H5);入站通道先设好对端号再发确认(CH-E2)。
+- **安全加固**:报文序号回绕成关不掉的硬线;退出状态 / 信号 / EOF 只收第一份;私钥、口令、Ed25519 种子用完清零;`.ppk` 的 MAC 与一致性;known_hosts 的大小写、未知 `@` 标记、主机名字符集;`Include` 总量上限;配置里的 `ProxyCommand` 要调用方批准、`%h` 以 `-` 开头不代入;HTTP CONNECT 校验主机名;命令失败的消息只带清洗过的 stderr 末尾;严格 KEX 的首包;重协商失败不放出暂存数据;PKCS#8 的 KDF 迭代上限。
+- **SFTP 健壮性**:握手与关闭有时限;按 `max-open-handles` 排队;READDIR 补 LSTAT、空批判错、名字不合法的项丢弃;文件名编码无损往返;应答类型核对、扩展属性越界、时间溢出、`NO_SUCH_PATH`;通道存活信号;宿主单开传输通道;sftp-server 没起来时报出退出码与它在 stderr 上说的话(SF-M3)。
+- **异常类型与原因码说真话**:内部异常不再从公开 API 漏出;代理 / 跳板 / ProxyCommand 的失败归到对的那一跳;连不上代理本身有了自己的 `ProxyUnreachable`,宿主不再把它改写成「代理拒绝」(W6);取消与超时分清;宿主按原因码本地化,不解析句子。
+- **规格漂移与协议细节**:失败与释放时发 DISCONNECT;认证期间对端发起的重协商就地做完;重协商时限;max packet 截断与越界;EXT_INFO 只在合法位置收;标识串按原始字节进交换哈希;ML-KEM 走 BCL;GCM / chacha 就地验解;背压与回补按需唤醒;spec/07 标着〔未实现〕的三处(开通道时限与 SOCKS 0x06、`-L` 被拒时重置本机连接、远程转发撞上限报事件)落地;建连路径上 `Match localuser` 照本机用户判。
+- **公开面**(第七节 API-P*,纯重构单独成提交):一个功能一个入口、矛盾参数构造时就抛、集合抄成只读快照、枚举零值、结构化的 `LastRekey`、异常消息去 Markdown;`CipherSuiteShape` 与长度校验合一(TR-D4);SFTP 与这一批新增的文件按「一个类型一个文件」整理(SF-D6);没有理由公开的成员降为 internal(API-P14);布尔开关按 Is / Has / Can / Allow 命名、`Dangerous` 前缀、`Parse` / `TryParse`、「不限时」只写 `InfiniteTimeSpan`、`ownsXxx`、`Default` 命名(API-P15)。
+- **宿主的绕路换成库的能力**(W1–W10):原因码本地化、agent 默认端点、`PeerText`、`IdentityFile` 与 `HostName %h` 的展开、密钥生成交给库、私钥导入由库认格式、横幅进终端、ssh_config 算法清单、连接的结束原因、通道与转发器交出自己的关闭 / 停止原因(W7 / F41)。
+- **可观测性**:报文旁路(`IPacketTap`)、度量(`VelaShell.Ssh` 的 Meter)、往返时间(PING / 保活)、标着 always_display 的 `SSH_MSG_DEBUG` 交给调用方、对端版本 / 认证方法 / server-sig-algs / 各阶段耗时、重协商事件与耗时、开着的通道的快照。
+- **第十节的功能**:GEX、agent 管理与 Pageant、FIDO 安全密钥经 agent、Windows CNG 签名器、主机密钥轮换(库与宿主两侧)、PING 与按键时序混淆、远程动态转发与放行名单、Unix 套接字转发、转发吞吐 / 连接快照 / 限速、SFTP 的 statvfs / expand-path / fsync / copy-data / users-groups-by-id / lsetstat / FSETSTAT / 厂商扩展、TLS 拨号器、BREAK、eow、xon-xoff、带伪终端跑命令、改密码、PKCS#8 Ed25519、私钥生成与写出、指纹图、算法目录、FIPS 清单,以及 ssh_config 的算法清单、转发项、记号、`CertificateFile`、`ConnectionAttempts`、`SetEnv` / `SendEnv` / `RemoteCommand`、`AddressFamily`、`BindAddress` / `BindInterface`、`HostKeyAlias`、`GlobalKnownHostsFile`、`IdentityAgent`。
+- **测试缺口**(T1–T14):KEX / MAC 互操作矩阵、AEAD 独立参照、真 puttygen 样本、畸形输入、收尾竞态(CH-E2 的那一刻用测试钩子摆出来)、恶意对端、跳板计时、ECDH 无效点、SFTP 的链接 / 改名 / 落盘对真 sftp-server。
+
+**三、没做的**(理由;要做的已记入 `feature-plan.md`):
+- **等拍板**:第八节 Q1、Q2、Q4、Q5、Q7、Q8、Q9、Q11、Q12(Q3、Q6、Q10 已随相关条目解决)。主机密钥轮换「删掉服务端不再出示的旧钥」要等 Q4(known_hosts 只追加还是允许改写)。
+- **有意不做**:SF-P3 小文件并发 FSTAT 与按已知长度收尾(Seek(End) 与下载中变长的文件,提交里写了理由);SF-P4 DATA 应答的那一次复制(要让接收循环直接写进调用方的缓冲,取消之后迟到的应答会写进已经还回去的内存);F16 宿主处理 xon-xoff(真 OpenSSH 不发);ssh_config 的 `RequestTTY`(shell 总带伪终端,不带的跑命令是另一个入口)与记号 `%i`(没有取 uid 的托管接口)。
+- **缺验证环境或硬件**:F7 gssapi-with-mic(要 KDC)、F12 后量子混合 KEX(没有服务端可对照)、F2 第二阶段(直接驱动 FIDO 硬件)、F3 的 PKCS#11 与 Secure Enclave、F4 的 `restrict-destination` 约束(velashell-docs 还没有规格)。
+- **宿主侧还没接的库能力**:连接信息面板(O7)、CNG 签名器、按键时序混淆、报文旁路、转发吞吐与限速、TLS 拨号器、远程动态转发、Unix 套接字转发、ssh_config 转发项的导入;成功建连时经过的每一跳(拨号器只在失败时记跳信息)。
+- **单独排期的纯重构**:拆 `SshConnection` / `SshChannel` 两个上帝类(`feature-plan.md` 已有,CH-D8 列了不能断的耦合点)。
+
+**四、验证**:`VelaShell.Ssh.Tests` 从 822 例(799 通过 / 23 按环境跳过)到 1341 例:不开互操作 1296 通过 / 45 跳过,开互操作(Docker 靶机 OpenSSH 10.3)1333 通过 / 8 跳过(要 X11、压缩重协商之类环境的几条)。大多数修复做过变异检验(把修复退回去,瞄准的用例变红);协议行为对真工具做过黑盒核对:GEX 与重协商、agent 的证书 / 删钥 / 锁、`nc -X 5` 经远程动态转发、Unix 套接字转发到 ssh-agent、`limits@openssh.com`、hostkeys-prove 的签名、sk 钥指纹与 `ssh-keygen -lf` 一致、CNG 不可导出的钥登录、PING / PONG、按键混淆下的真 shell、`HostKeyAlias` 的记法(OpenSSH 10.5 客户端)。全解决方案零警告零错误,改动的 C# 文件过了 `dotnet format --verify-no-changes`;宿主相关的用例(`Core.Tests` / `Infrastructure.Tests` / `VelaShell.Tests` 的 SSH、SFTP、主机密钥、本地化守门)通过。已知:`Core.Tests` 的 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 因靶机镜像建于 Dockerfile 那次改动之前而失败(同 §159,重建靶机即可),与这一批无关。

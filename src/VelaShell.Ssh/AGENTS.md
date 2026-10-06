@@ -299,7 +299,7 @@ TFM、`LangVersion`、`Nullable` 由仓库根 `Directory.Build.props` 统一给�
 
 审查查出来的问题里，下面几项**没有**在那一轮改：它们要么是纯重构、该单独开 PR，要么要先补结构化的数据。动到相关代码时优先处理。
 
-- **两个上帝类。** `SshConnection` 约 2,960 行（四个 partial，`SshConnection.cs` 自己 1,576 行），`SshChannel` 1,388 行，都远过 4.4 的 800 行。
+- **两个上帝类。** `SshConnection` 约 4,000 行（六个文件，`SshConnection.cs` 自己约 1,970 行），`SshChannel` 约 1,720 行，都远过 4.4 的 800 行（2026-10-06 计）。
   拆法：`SshChannel` 的收发窗口与 stdin 泵提成 internal 协作者；`SshConnection` 的收包分发、全局请求账本同理。
   纯重构，不混行为改动，单独开 PR（已记入仓库根 `feature-plan.md`）。
 - **还透传库原文的界面文案。** 宿主已按 `Reason` 翻了连接、超时、保活、私钥口令、agent 拒绝、通道请求被拒、转发被拒、认证失败的主句、SFTP 的状态码 / 中断 / 不可用、协议错误、并发上限与取消几类，代理失败由

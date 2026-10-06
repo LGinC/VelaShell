@@ -39,9 +39,9 @@
 
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
-| 一、欠账 | 4 | 2 | 7 | 9 | **22** |
-| 二、路线图 | — | 5 | 16 | 12 | **33** |
-| 三、文档待同步 | — | — | — | — | **26** |
+| 一、欠账 | 4 | 2 | 10 | 9 | **25** |
+| 二、路线图 | — | 5 | 16 | 16 | **37** |
+| 三、文档待同步 | — | — | — | — | **27** |
 
 
 ---
@@ -91,7 +91,10 @@
 
 | 状态 | 优先级 | 项 | 现状 | 要做什么 |
 | :---: | :---: | --- | --- | --- |
-| ⏳ | 🟡 P2 | **拆 SSH 库的两个上帝类** | `SshConnection` 约 2,960 行（四个 partial）、`SshChannel` 1,388 行，远过 `src/VelaShell.Ssh/AGENTS.md` 4.4 的 800 行（`plan.md` §117） | 拆成 internal 协作者而不是更多 partial：`SshChannel` 的收发窗口与 stdin 泵、`SshConnection` 的收包分发与全局请求账本。**纯重构，单独开 PR**，`VelaShell.Ssh.Tests` 与互操作用例是安全网 |
+| ⏳ | 🟡 P2 | **拆 SSH 库的两个上帝类** | `SshConnection` 约 4,000 行（六个文件，`SshConnection.cs` 自己约 1,970 行）、`SshChannel` 约 1,720 行，远过 `src/VelaShell.Ssh/AGENTS.md` 4.4 的 800 行（`plan.md` §117、§161） | 拆成 internal 协作者而不是更多 partial：`SshChannel` 的收发窗口与 stdin 泵、`SshConnection` 的收包分发与全局请求账本。**纯重构，单独开 PR**，`VelaShell.Ssh.Tests` 与互操作用例是安全网。⚠️ 拆的时候这几处耦合不能断（2026-10-05 审查的备忘）：①入队锁里的 admit 回调跨两个类 —— `MayStillSend` / `TryCommitClose` / `OnClose` / 账本 `Register` 必须与 `TryWriteFrame` 在同一把 `_enqueueLock` 里，不能拆成「先查后发」，也不能变异步；②锁顺序 `_enqueueLock` → 连接 `_stateLock` → 通道 `_stateLock`，`ReleaseId` 先放通道锁再进连接锁，新协作者不许持通道锁入队；③`FinishClose` 的步骤顺序：锁内改状态 → 事件 → 关账 → 管道 → stdin → 唤醒闸门 → `CancelAsync`；④接收分发会被重入（重协商期间 `RekeyKexTransport.ReadPacketAsync` 回调 `DispatchAsync`），拆出去后仍要能在 KEX 中被调用，且只许投递、不许等发送；⑤预算是两本账：连接的 `_windowBudgetUsed` 归连接锁，通道的 `_budgetCharged` / `_idReleased` 归通道锁，「先申请 → 通道锁里确认 → 失败回滚」三步要保持；⑥`_priority` 只在 `_enqueueLock` 下写、泵每次先读它（回补不越过 CLOSE 与闸门的前提）；⑦`WouldSendNow` 与 `Admit` 必须在泵线程上连续调用 |
+| ⏳ | 🟡 P2 | **SSH 连接信息面板** | 库已经交出这条连接谈成的算法、主机密钥、会话 ID、对端版本、认证方法与 server-sig-algs、各阶段耗时、往返时间、重协商次数 / 起因 / 耗时（`Rekeyed` 事件）、收发字节、开着的通道快照（`plan.md` §161），宿主一处都没显示 —— 排障时用户只能看连接诊断重新探一遍 | 会话标签的上下文菜单或状态栏点开一个只读面板，按块摆：对端、协商结果、认证、计时、通道列表（类型、开了多久、字节数）。令牌照 `DESIGN.md`，文案五份 resx；数据全在库的只读属性上，不新开探测 |
+| ⏳ | 🟡 P2 | **SSH 库已有、宿主还没接的能力** | `plan.md` §161 那一批在库里落地、宿主还没用上：Windows CNG 签名器（证书存储 / TPM / 智能卡里不可导出的钥）、按键时序混淆（`ObscureKeystrokeTiming`）、报文旁路（`IPacketTap`）、转发的实时吞吐 / 连接快照 / 限速、TLS 拨号器、远程动态转发（`-R` 不给目标）与放行名单、Unix 域套接字转发、ssh_config 转发项与 `IdentityAgent` 的导入 | 逐项接：CNG 进密钥选择（「系统密钥库」一类）；按键混淆作为连接的高级选项（默认关，说明带宽代价）；报文旁路接进连接诊断的协议轨迹；隧道面板显示速率与连接列表、可设限速；TLS 进代理设置；隧道类型加「远程动态」「Unix 套接字」；会话导入带上转发项。每项都要五份 resx 与交互规格 |
+| 💡 | 🟡 P2 | **SSH 库的九条质疑决策待拍板** | 2026-10-05 审查认为值得重新考虑的规格决策，**不拍板不动**：Q1 默认每小时主动重协商（OpenSSH 客户端只按数据量）；Q2 完全不实现 CBC（只剩 CBC 的老设备连不上）；Q4 known_hosts 只追加、不改写（挡住主机密钥轮换里删掉不再出示的旧钥，也挡住「密钥变了」时一键删旧行）；Q5 转发默认只绑 `127.0.0.1`（先试 `::1` 的客户端连不上，`[::1]:同一端口` 空着可被抢绑）；Q7 发送用 16 MiB 单队列 FIFO（按键排在大块上传之后）；Q8 SFTP 时间戳按有符号 32 位（2038 年之后读成 1901 年）；Q9 服务端版本 > 3 时降到 3 继续（不合 draft-02 §4）；Q11 SFTP 读到短读就整队作废；Q12 SYMLINK 建完不回读自检 | 逐条拍板；改的按规格先行（velashell-docs `zh/ssh/spec/`）、再改实现。Q4 拍板之后才做轮换的「删旧钥」 |
 | ⏳ | 🟡 P2 | **SSH 库剩余中文诊断文本的界面本地化** | 英 / 日 / 韩界面仍会看到库的中文原文：认证逐条尝试记录（`SshAuthAttempt.ToString` / `Detail`）、`SshChannelException` 的建议、`KnownHostLookup.CertificateProblem`、带路径 / 指纹 / 端口的私钥与证书消息（`plan.md` §117） | **先在库里补结构化出处**（`Detail` 的种类、证书问题的枚举），宿主 `SshInterop` 再按枚举出五语言文案 —— 不在宿主里解析句子（`AGENTS.md` 4.5） |
 
 ### 🪟 窗口与外观
@@ -196,6 +199,10 @@
 | ⏳ | 🟡 P2 | **主机证书（宿主侧）** | OpenSSH `@cert-authority` | **SSH 库已支持**（`plan.md` §113，velashell-docs `ssh/spec/03-key-exchange.md` §5.5）。宿主还用不上：`VelaHostKeyPolicy` 走自己的信任库（`IHostKeyService`），没有「受信 CA」的概念；证书目前按里面那把钥当普通主机密钥处理，默认算法清单里证书又排在后面，实际谈不成证书。要接：①信任库能存受信的主机 CA（手动添加，或从 `~/.ssh/known_hosts` 读 `@cert-authority`）；②`VelaHostKeyPolicy` 已实现 `IHostKeyTypePreference`（交出已记下的钥的类型，`ssh_plan.md` API-H4），还要在有对上的 CA 时把证书算法排前；③裁决时先用 `OpenSshCertificate.CheckHostCertificate` 验证书，CA 管的主机出示没有担保的钥**不退回 TOFU**（规格 §5.5 第 4 条）；④弹窗与设置页文案，五份 resx |
 | ⏳ | 🟡 P2 | **与 OpenSSH 互通：known_hosts 与 `~/.ssh/config`** | 各家都有 | known_hosts 现在只能在设置里看和删，导入 / 导出之后与命令行 ssh 共用一份信任基线（顺带喂给上一行的 `@cert-authority`）。`~/.ssh/config` 的导入已有（`plan.md` §58），反向的**导出**是同一条线 |
 | 💡 | 🟡 P2 | **团队共享配置（只读策略分发）** | Termius / Xshell 企业版 | 「运维组长发一份机器清单，组员只读订阅」。Gist 云同步的载荷格式与版本回溯现成，差的是**方向**：现在是「我的多设备漫游」，团队要的是「一处发布、多处只读」。⚠️ 这条会把产品推向企业形态，**先想清楚商业授权边界再动手** |
+| 💡 | 🟢 P3 | **后量子混合密钥交换 `mlkem768nistp256-sha256` / `mlkem1024nistp384-sha384`** | OpenSSH 10 | `mlkem768x25519-sha256` 已有；这两个混合方案的库代码不难（ML-KEM 已走 BCL），**卡在验证**：手头没有支持它们的服务端可对照，交换哈希错一个字节也只会表现为「签名验不过」。等 OpenSSH 正式版或别的可得的实现带上再做（`plan.md` §161） |
+| 💡 | 🟢 P3 | **FIDO 安全密钥直连硬件（第二阶段）** | OpenSSH `ssh-sk-helper` | 第一阶段（经 agent 用 `sk-ssh-ed25519` / `sk-ecdsa-sha2-nistp256`）已落地（`plan.md` §161）。第二阶段直接驱动硬件：Windows 走 `webauthn.dll`，其余平台要 libfido2 —— 新依赖要过 `src/VelaShell.Ssh/AGENTS.md` 3.3 的许可审查；还要有一把真钥做验证 |
+| 💡 | 🟢 P3 | **PKCS#11 与 macOS Secure Enclave 签名器** | OpenSSH `PKCS11Provider` | Windows 的 CNG 签名器已落地（`plan.md` §161），同一个 `ISshSigner` 形状。PKCS#11 要按平台加载厂商的 `.so` / `.dll`（P/Invoke，零反射照守）；Secure Enclave 要 macOS 的 Security 框架。都要真硬件验证 |
+| 💡 | 🟢 P3 | **agent 加钥的 `restrict-destination` 约束** | OpenSSH `ssh-add -h` | 把钥限定在「从哪台主机、经哪一跳、到哪台主机」用；会话声明（`session-bind@openssh.com`）已经做了（`plan.md` §159）。**先在 velashell-docs 写规格**（约束的线上格式、与转发的关系），再实现 —— 净室规程要求实现依据先成文 |
 | ⏳ | 🟢 P3 | **gssapi-with-mic（Kerberos）认证** | OpenSSH / PuTTY / SecureCRT | SSH 库还没实现（`plan.md` §113 评估）。协议面不大：RFC 4462 §3 的几种报文（60 / 61 / 63 / 64 / 65 / 66），MIC 覆盖 `session_id` 与认证请求头。GSS-API 本身走 BCL 的 `NegotiateAuthentication`（Windows 上是 SSPI，Linux / macOS 上是系统 GSSAPI 库），动手前先确认：①选 Kerberos 包时产出的是不是裸 krb5 机制令牌（不是 SPNEGO 包装），`host@主机名` 在两个平台上怎么写；②有没有可用的 MIC 接口；③凭据委派能否经 `TokenImpersonationLevel.Delegation` 拿到。**卡点在验证**：要 KDC + 配了 keytab 的 sshd + 拿得到票据的客户端，建议用 Docker 起 MIT krb5 KDC + sshd，Windows 域环境另找一台。`gssapi-keyex` 不在范围内 |
 
 ### F. 性能与稳定
@@ -229,6 +236,7 @@
 | `plan.md` §118 窗口外框 | `{zh,en}/host/architecture.md` §5「窗口壳」的 ⚠️ 限定为 Win32、新增「各平台的外框」；`交互与界面规格.md` §2 补 macOS 红绿灯与各平台外框；`design-specs.md` 补 macOS 红绿灯；标题栏统一 28 的口径（设置窗口与消息框保持 48 的例外） | [velashell-docs#70](https://github.com/VelaShellLabs/velashell-docs/pull/70) 已开，与宿主 PR 一起合；实机验收后改掉 architecture 里「验收」那一段 |
 | `plan.md` §74 / §75 目录比较与同步 | `SFTP双栏与WinSCP差距分析.md`（C1 改已实现、新增第七节）与 `交互与界面规格.md` §6（文档工具条、同步窗口、保持远端最新、SHA-256 优先比较） | [velashell-docs#35](https://github.com/VelaShellLabs/velashell-docs/pull/35) **待合入** |
 | `plan.md` §82 #474 | `交互与界面规格.md` 资源管理器补**置顶**与 SFTP 路径栏的**复制当前路径**；`设置项审计.md` 补 `General.CollapseGroupsByDefault`、`Transfer.UseRecursiveDeleteCommand`（写明只对有 exec 通道的 SSH 会话生效、失败自动回退、没有逐条进度） | 已在 `docs/474-explorer-sftp` 分支改好（中英各 3 个文件），**待开 PR** |
+| `plan.md` §161 SSH 库审查修复 | `ssh/spec/00`–`09`、`ssh/getting-started.md`、`ssh/design/architecture.md` 对上这一批的行为与公开面（中英两边）；host《交互与界面规格》的主机信任（按密钥类型分开记、主机密钥轮换） | 已在 `fix/ssh-review-fixes` 分支逐条提交（本地，约 180 个提交），**待推送、开 PR**，与宿主 PR 互相引用 |
 | `plan.md` §117 SSH 库 API 整改 | `ssh/getting-started.md` 示例改用新公开面；`ssh/design/architecture.md` §6、§8 对上代码；`ssh/spec/08-failures.md` 补新增的 `SshFailureReason` 值与 `SshHostKeyVerdict.Reason` | 已在 `fix/ssh-api-cleanup` 分支备好（本地工作树，未提交），**待开 PR** |
 | `plan.md` §129 插件文件协议进双栏（#524 后续） | `交互与界面规格.md` §3（能进双选的类型）、§6.2（插件栏、续传核实不了按冲突处理）；`SFTP双栏与WinSCP差距分析.md` 8.2；`sdk/sdk-reference.md` 版本表把 `IProtocolStreamUpload` 那行的 TBD 换成 2.0.6。中英两棵树都改了 | [velashell-docs#75](https://github.com/VelaShellLabs/velashell-docs/pull/75) 已开，与宿主 PR 一起合 |
 | `plan.md` §125 PTY 像素尺寸 | `{zh,en}/host/architecture.md` §9 连接时序图：`PtySizeChanged(cols,rows)` 那一行改成带物理像素、落到 `window-change` | [velashell-docs#72](https://github.com/VelaShellLabs/velashell-docs/pull/72) 已开，与宿主 PR 一起合 |
