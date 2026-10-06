@@ -9,6 +9,18 @@ namespace VelaShell.Tests.ViewModels;
 [TestClass]
 public class RemotePathInputTests
 {
+    /// <summary>~用户名 要请服务端展开;~、~/… 与别的输入本地就能处理。</summary>
+    [TestMethod]
+    public void UserHomeReference_RecognizesOnlyTildeUser()
+    {
+        Assert.AreEqual("~alice", RemotePathInput.UserHomeReference("~alice"));
+        Assert.AreEqual("~alice/shared", RemotePathInput.UserHomeReference("  \"~alice/shared\" "));
+        Assert.IsNull(RemotePathInput.UserHomeReference("~"));
+        Assert.IsNull(RemotePathInput.UserHomeReference("~/projects"));
+        Assert.IsNull(RemotePathInput.UserHomeReference("/srv/~alice"));
+        Assert.IsNull(RemotePathInput.UserHomeReference("  "));
+    }
+
     [TestMethod]
     public void AbsolutePath_PassesThroughNormalized()
     {

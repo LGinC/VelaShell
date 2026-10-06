@@ -93,11 +93,11 @@ public class SftpSymlinkIntegrationTests
         }
     }
 
-    /// <summary>文件面板的剩余空间(statvfs@openssh.com)经宿主的 SFTP 包装取得到,与远端 stat -f 对得上总容量。</summary>
+    /// <summary>文件面板的剩余空间(statvfs@openssh.com)与路径栏的 ~用户名(expand-path)经宿主的 SFTP 包装取得到。</summary>
     [TestMethod]
     [TestCategory("DockerIntegration")]
     [Timeout(60_000)]
-    public async Task FreeSpace_IsReadFromARealServer()
+    public async Task FreeSpaceAndTildeUser_WorkAgainstARealServer()
     {
         RequireDockerAndSsh();
 
@@ -115,6 +115,10 @@ public class SftpSymlinkIntegrationTests
             Assert.IsLessThanOrEqualTo(space.TotalBytes, space.AvailableBytes);
             string[] df = (await ssh.RunCommandAsync("stat -f -c '%S %b' /tmp")).Trim().Split(' ');
             Assert.AreEqual(ulong.Parse(df[0], CultureInfo.InvariantCulture) * ulong.Parse(df[1], CultureInfo.InvariantCulture), space.TotalBytes);
+
+            // 路径栏的 ~用户名 同一条路:经宿主的包装请服务端展开。
+            Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
+            Assert.IsNull(await sftp.ExpandPathAsync("~no-such-user-vela"), "展开不了时是 null,不抛");
         }
         finally
         {

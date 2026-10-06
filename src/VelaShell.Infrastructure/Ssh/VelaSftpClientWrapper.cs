@@ -262,6 +262,20 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
         GuardedAsync(async () => await EnsureConnected().ExistsAsync(path, ct).ConfigureAwait(false), ct);
 
     /// <inheritdoc />
+    /// <remarks>服务端没有 <c>expand-path@openssh.com</c> 与 <c>home-directory</c>、用户或路径不存在时都只是展开不了。</remarks>
+    public async Task<string?> ExpandPathAsync(string path, CancellationToken ct = default)
+    {
+        try
+        {
+            return await EnsureConnected().ExpandPathAsync(path, ct).ConfigureAwait(false);
+        }
+        catch (SftpException)
+        {
+            return null;
+        }
+    }
+
+    /// <inheritdoc />
     /// <remarks>服务端没有 <c>statvfs@openssh.com</c> 时不发请求;请求失败(路径不在了之类)也只是查不到。</remarks>
     public async Task<Core.Sftp.RemoteSpaceInfo?> GetSpaceAsync(string path, CancellationToken ct = default)
     {

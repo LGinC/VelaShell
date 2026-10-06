@@ -2340,6 +2340,25 @@ public class FileBrowserViewModelTests
         Assert.IsFalse(_vm.IsPathEditing, "导航成功后应退回面包屑。");
     }
 
+    /// <summary>路径栏里敲 ~用户名/…:请服务端展开(本地读不到远端的 passwd),跳到展开后的目录。</summary>
+    [TestMethod]
+    [TestCategory("FileBrowser")]
+    public async Task PathEdit_ExpandsTildeUserOnTheServer()
+    {
+        _sftpService.ExpandPathAsync(_sessionId, "~alice/shared", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<string?>("/srv/alice/shared"));
+        _sftpService.ListDirectoryAsync(_sessionId, "/srv/alice/shared", Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult(new List<RemoteFileInfo>()));
+        _vm.CurrentPath = "/home/user";
+
+        await _vm.BeginPathEditCommand.Execute().FirstAsync();
+        _vm.PathEditText = "~alice/shared";
+        await _vm.CommitPathEditCommand.Execute().FirstAsync();
+
+        Assert.AreEqual("/srv/alice/shared", _vm.CurrentPath);
+        Assert.IsFalse(_vm.IsPathEditing);
+    }
+
     [TestMethod]
     [TestCategory("FileBrowser")]
     public async Task PathEdit_KeepsEditorOpen_WhenTargetIsUnreadable()

@@ -35,7 +35,8 @@ public static class RemotePathInput
             return null;
         }
 
-        // ~ / ~/sub → 家目录。~user 形式无法在本地解析(需要读远端 passwd),原样透传。
+        // ~ / ~/sub → 家目录。~user 形式本地解析不了(需要读远端 passwd):视图模型先请服务端展开
+        // (UserHomeReference),展开不了才走到这里,原样透传,让服务端给出真实的错误。
         if (
             !string.IsNullOrWhiteSpace(homePath)
             && (text == "~" || text.StartsWith("~/", StringComparison.Ordinal))
@@ -51,6 +52,20 @@ public static class RemotePathInput
             : (string.IsNullOrEmpty(currentPath) ? "/" : currentPath).TrimEnd('/') + "/" + text;
 
         return Collapse(combined);
+    }
+
+    /// <summary>
+    /// 输入是不是 <c>~用户名</c>(<c>~alice</c>、<c>~alice/shared</c>)—— 本地展开不了(要读远端的 passwd),得请服务端展开。
+    /// </summary>
+    /// <returns>是的话交回去掉引号、首尾空白之后的那一串;<c>~</c>、<c>~/…</c> 与别的输入为 null。</returns>
+    public static string? UserHomeReference(string? input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+        {
+            return null;
+        }
+        string text = Unquote(input.Trim());
+        return text.Length > 1 && text[0] == '~' && text[1] != '/' ? text : null;
     }
 
     /// <summary>去掉整体包裹的一层成对引号(粘贴 <c>"/var/log"</c> 这类内容时常见)。</summary>

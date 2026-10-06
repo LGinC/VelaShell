@@ -161,6 +161,12 @@ public interface ISftpService : IAsyncDisposable
     Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// 请服务端展开 <c>~用户名</c> 这类本地展开不了的路径(要读远端的 passwd),交回绝对路径;
+    /// 展开不了(服务端没有相应的扩展、用户不存在、FTP、插件协议)时为 <see langword="null" />。
+    /// </summary>
+    Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 关闭并释放某个会话的 SFTP 通道(在其 SSH 标签页关闭时调用),使其不再持有活动连接或接受操作。
     /// 若会话未打开 SFTP 通道则为空操作。
     /// </summary>

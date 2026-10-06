@@ -722,6 +722,13 @@ public class SftpService : ISftpService
         return await client.GetSpaceAsync(remotePath, cancellationToken).ConfigureAwait(false);
     }
 
+    /// <inheritdoc />
+    public async Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default)
+    {
+        ISftpClientWrapper client = await GetOrCreateSftpClientAsync(sessionId, cancellationToken).ConfigureAwait(false);
+        return await client.ExpandPathAsync(remotePath, cancellationToken).ConfigureAwait(false);
+    }
+
     /// <summary>返回该会话 SFTP 客户端的当前工作目录。</summary>
     public async Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {

@@ -524,7 +524,11 @@ public class FileBrowserViewModel : ReactiveObject
         {
             await EnsureHomePathAsync();
         }
-        string? target = RemotePathInput.Normalize(PathEditText, CurrentPath, _homePath);
+        // ~用户名 本地展开不了:请服务端展开(SFTP 的 expand-path / home-directory);展开不了照旧原样透传。
+        string? target = RemotePathInput.UserHomeReference(PathEditText) is { } reference
+            && await TryExpandOnServerAsync(reference) is { } expanded
+                ? expanded
+                : RemotePathInput.Normalize(PathEditText, CurrentPath, _homePath);
         if (target is null)
         {
             IsPathEditing = false;
@@ -537,6 +541,22 @@ public class FileBrowserViewModel : ReactiveObject
         if (string.IsNullOrEmpty(ErrorMessage))
         {
             IsPathEditing = false;
+        }
+    }
+
+    private async Task<string?> TryExpandOnServerAsync(string path)
+    {
+        if (_sftpService is null || _sessionId == Guid.Empty)
+        {
+            return null;
+        }
+        try
+        {
+            return await _sftpService.ExpandPathAsync(_sessionId, path, _lifetime.Token);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            return null;
         }
     }
 

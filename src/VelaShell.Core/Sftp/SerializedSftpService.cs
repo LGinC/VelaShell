@@ -96,6 +96,9 @@ public sealed class SerializedSftpService(ISftpService inner, Guid sessionId) : 
     /// <summary>查文件系统用量的串行化透传。</summary>
     public Task<RemoteSpaceInfo?> GetSpaceAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.GetSpaceAsync(sessionId, remotePath, token), cancellationToken);
 
+    /// <summary>展开 ~ 的串行化透传。</summary>
+    public Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.ExpandPathAsync(sessionId, remotePath, token), cancellationToken);
+
     /// <summary>获取远端工作目录的串行化透传。</summary>
     public Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default) => ExecuteAsync(sessionId, token => _inner.GetWorkingDirectoryAsync(sessionId, token), cancellationToken);
 

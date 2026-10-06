@@ -361,6 +361,11 @@ public sealed class PluginProtocolFileService(PluginProtocolRegistry registry)
         Task.FromResult<RemoteSpaceInfo?>(null);
 
     /// <inheritdoc />
+    /// <remarks>插件的文件系统契约里没有展开 ~用户名:一律展开不了。</remarks>
+    public Task<string?> ExpandPathAsync(Guid sessionId, string remotePath, CancellationToken cancellationToken = default) =>
+        Task.FromResult<string?>(null);
+
+    /// <inheritdoc />
     public Task<string> GetWorkingDirectoryAsync(Guid sessionId, CancellationToken cancellationToken = default)
     {
         Session session = Require(sessionId);
