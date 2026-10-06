@@ -19,8 +19,12 @@ namespace VelaShell.Ssh.Auth;
 /// <para>
 /// 〔注意〕它也**可能成功**（服务端配了无认证）。不能假设它一定失败。
 /// </para>
+/// <para>
+/// <c>internal</c>：认证器开头总会自己发一次 <c>none</c>，使用者没有理由把它放进凭据列表 ——
+/// 曾经是公开的，放进去也只会被跳过。
+/// </para>
 /// </remarks>
-public sealed class NoneCredential : SshCredential
+internal sealed class NoneCredential : SshCredential
 {
     /// <inheritdoc />
     public override string MethodName => SshProtocolNames.AuthNone;

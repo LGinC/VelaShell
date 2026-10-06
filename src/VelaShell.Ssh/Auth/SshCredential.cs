@@ -25,6 +25,15 @@ namespace VelaShell.Ssh.Auth;
 /// </remarks>
 public abstract class SshCredential
 {
+    /// <summary>只有库里的几种凭据。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/04 §2.2〕<c>private protected</c>：认证器只认识库里的几种（口令、公钥、键盘交互），
+    /// 外部的子类曾经能写、也能放进凭据列表，却会被当成「取不到材料」静默跳过 —— 写了一条永远不会生效的凭据，没有任何提示。
+    /// </remarks>
+    private protected SshCredential()
+    {
+    }
+
     /// <summary>这条凭据用哪种认证方法。</summary>
     public abstract string MethodName { get; }
 

@@ -12,6 +12,7 @@
 //   行为规格:      velashell-docs/zh/ssh/spec/04-authentication.md 全部
 
 using System.Buffers;
+using System.Diagnostics;
 using VelaShell.Ssh.Diagnostics;
 using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Protocol;
@@ -334,8 +335,8 @@ internal sealed class SshAuthenticator(SshPacketTransport transport, string user
                 PasswordCredential password => await TryPasswordAsync(password, cancellationToken).ConfigureAwait(false),
                 PublicKeyCredential publicKey => await TryPublicKeyAsync(publicKey, cancellationToken).ConfigureAwait(false),
                 KeyboardInteractiveCredential kbd => await TryKeyboardInteractiveAsync(kbd, cancellationToken).ConfigureAwait(false),
-                _ => throw new CredentialMaterialException(
-                    new NotSupportedException($"尚未实现的认证方法：{credential.MethodName}")),
+                // SshCredential 的构造函数是 private protected，库外写不出别的子类；none 在调度之前就滤掉了。
+                _ => throw new UnreachableException($"认证器不认识的凭据类型 {credential.GetType().Name}。"),
             };
         }
         catch (CredentialMaterialException ex)
