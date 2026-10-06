@@ -663,6 +663,26 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual(7, (await shell.WaitAsync(timeout.Token)).ExitCode);
     }
 
+    /// <summary>statvfs@openssh.com 与远端 <c>stat -f</c> 对得上（块大小、总块数、文件名上限；空闲块数会变，不比）。</summary>
+    [TestMethod]
+    public async Task SFTP的文件系统用量与远端stat_f一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasStatVfs, "OpenSSH 的 sftp-server 宣告 statvfs@openssh.com");
+
+        SftpFileSystemInfo info = await sftp.GetFileSystemInfoAsync("/");
+        SshCommandResult stat = await connection.RunAsync("stat -f -c '%S %b %l' /");
+        string[] fields = stat.StandardOutput.Trim().Split(' ');
+
+        Assert.AreEqual(ulong.Parse(fields[0], CultureInfo.InvariantCulture), info.FragmentSize, $"stat -f：{stat.StandardOutput}");
+        Assert.AreEqual(ulong.Parse(fields[1], CultureInfo.InvariantCulture), info.TotalBlocks);
+        Assert.AreEqual(ulong.Parse(fields[2], CultureInfo.InvariantCulture), info.MaxNameLength);
+        Assert.IsLessThanOrEqualTo(info.FreeBlocks, info.AvailableBlocks);
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {

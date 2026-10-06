@@ -1519,6 +1519,48 @@ public sealed class SftpTests
         Assert.IsTrue(error.IsUnsupported);
     }
 
+    // ------------------------------------------------------------ 文件系统用量
+
+    /// <summary>statvfs@openssh.com：11 个字段按顺序解出；字节数按 f_frsize 算，「还能写多少」看 f_bavail。</summary>
+    [TestMethod]
+    public async Task 文件系统用量按字段解出且字节数按基本块算()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddDirectory("/data"),
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.StatVfs] });
+
+        SftpFileSystemInfo info = await harness.Sftp.GetFileSystemInfoAsync("/data", harness.Token);
+
+        Assert.AreEqual(new SftpFileSystemInfo(4096, 1024, 1_000_000, 400_000, 300_000, 65_536, 60_000, 59_000, 0xABCD, 0x1, 255), info);
+        Assert.AreEqual(1_000_000UL * 1024, info.TotalBytes);
+        Assert.AreEqual(400_000UL * 1024, info.FreeBytes);
+        Assert.AreEqual(300_000UL * 1024, info.AvailableBytes, "上传前预检看的是普通用户还能写多少");
+        Assert.IsTrue(info.IsReadOnly);
+    }
+
+    /// <summary>没有这个扩展：如实报不支持，而且不发请求（能力位已经说了）。</summary>
+    [TestMethod]
+    public async Task 服务端没有statvfs扩展时如实报不支持()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server => server.AddDirectory("/data"),
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits] });
+
+        Assert.IsFalse(harness.Sftp.Capabilities.HasStatVfs);
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(
+            async () => await harness.Sftp.GetFileSystemInfoAsync("/data", harness.Token));
+
+        Assert.IsTrue(error.IsUnsupported);
+        Assert.AreEqual(SftpOperation.GetFileSystemInfo, error.Operation);
+    }
+
+    [TestMethod]
+    public void 字节数溢出时饱和_基本块为零时按块大小算()
+    {
+        Assert.AreEqual(ulong.MaxValue, new SftpFileSystemInfo(4096, 4096, ulong.MaxValue / 2, 0, 0, 0, 0, 0, 0, 0, 255).TotalBytes);
+        Assert.AreEqual(10UL * 512, new SftpFileSystemInfo(512, 0, 10, 0, 0, 0, 0, 0, 0, 0, 255).TotalBytes);
+    }
+
     // ------------------------------------------------------------ 重命名
 
     [TestMethod]

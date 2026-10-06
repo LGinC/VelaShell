@@ -76,4 +76,7 @@ public enum SftpOperation
 
     /// <summary>查询服务端的限额（<c>limits@openssh.com</c>）。</summary>
     QueryLimits,
+
+    /// <summary>查文件系统用量（<c>statvfs@openssh.com</c>）。</summary>
+    GetFileSystemInfo,
 }

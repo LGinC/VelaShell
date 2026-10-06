@@ -416,6 +416,23 @@ internal static class SftpWire
         }
     }
 
+    /// <summary>解 <c>statvfs@openssh.com</c> 的应答：11 个 <c>uint64</c>，顺序同 POSIX 的 <c>statvfs</c>。</summary>
+    public static SftpFileSystemInfo ReadStatVfs(ReadOnlySequence<byte> payloadAfterRequestId)
+    {
+        try
+        {
+            SshDataReader reader = new(payloadAfterRequestId);
+            return new SftpFileSystemInfo(
+                reader.ReadUInt64(), reader.ReadUInt64(), reader.ReadUInt64(), reader.ReadUInt64(),
+                reader.ReadUInt64(), reader.ReadUInt64(), reader.ReadUInt64(), reader.ReadUInt64(),
+                reader.ReadUInt64(), reader.ReadUInt64(), reader.ReadUInt64());
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw Malformed(SftpExtensionNames.StatVfs, ex);
+        }
+    }
+
     /// <summary>解 <c>SSH_FXP_STATUS</c>。</summary>
     /// <remarks>
     /// 服务端给的 <c>message</c> 文本必须原样留着：v3 里「目录非空」「文件已存在」

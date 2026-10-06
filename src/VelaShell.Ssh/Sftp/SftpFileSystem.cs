@@ -1205,6 +1205,44 @@ public sealed class SftpFileSystem : IAsyncDisposable
         response.ThrowIfError(linkPath, SftpOperation.CreateHardLink, SftpMessageType.Status);
     }
 
+    /// <summary>查 <paramref name="path"/> 所在文件系统的用量（需要 <c>statvfs@openssh.com</c>）。</summary>
+    /// <param name="path">文件系统上的任意一个路径（常用目标目录本身）。</param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="SftpException">
+    /// 服务端没有这个扩展（<see cref="SftpStatusCode.OperationUnsupported"/>，看 <see cref="SftpCapabilities.HasStatVfs"/>），或路径不存在之类。
+    /// </exception>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕上传大文件之前预检「放得下吗」看 <see cref="SftpFileSystemInfo.AvailableBytes"/>
+    /// —— 传到一半磁盘满，还会在远端留下半个文件。
+    /// </remarks>
+    public async ValueTask<SftpFileSystemInfo> GetFileSystemInfoAsync(string path, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(path);
+
+        if (!Capabilities.HasStatVfs)
+        {
+            throw new SftpException(
+                SftpStatusCode.OperationUnsupported,
+                serverMessage: "",
+                path,
+                SftpOperation.GetFileSystemInfo,
+                detail: "这台服务端没有 statvfs@openssh.com");
+        }
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) =>
+            {
+                ArrayBufferWriter<byte> inner = new();
+                SshDataWriter writer = new(inner);
+                _names.Write(ref writer, path);
+                SftpWire.WriteExtended(output, id, SftpExtensionNames.StatVfs, inner.WrittenSpan);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(path, SftpOperation.GetFileSystemInfo, SftpMessageType.ExtendedReply);
+        return SftpWire.ReadStatVfs(response.Payload);
+    }
+
     // ------------------------------------------------------------ 内部
 
     /// <summary>等一个句柄额度（服务端宣告了 <c>max-open-handles</c> 时）。</summary>

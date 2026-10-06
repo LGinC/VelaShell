@@ -60,6 +60,9 @@ internal sealed record TestSftpOptions
     /// <summary><c>limits@openssh.com</c> 宣告的读写上限。</summary>
     public SftpLimits Limits { get; init; } = new(262_144, 261_120, 261_120, 0);
 
+    /// <summary><c>statvfs@openssh.com</c> 回的 11 个值（要在 <see cref="Extensions"/> 里列上它才回）。</summary>
+    public ulong[] StatVfs { get; init; } = [4096, 1024, 1_000_000, 400_000, 300_000, 65_536, 60_000, 59_000, 0xABCD, 0x1, 255];
+
     /// <summary>工作目录（<c>REALPATH "."</c> 的答案）。</summary>
     public string WorkingDirectory { get; init; } = "/home/joe";
 
@@ -852,6 +855,24 @@ internal sealed class TestSftpServer
         if (name == SftpExtensionNames.Fsync)
         {
             return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.StatVfs)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            if (!_nodes.ContainsKey(path))
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
+            }
+
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            foreach (ulong value in _options.StatVfs)
+            {
+                writer.WriteUInt64(value);
+            }
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
         }
 
         return BuildStatus(id, SftpStatusCode.OperationUnsupported, $"没实现 {name}");
