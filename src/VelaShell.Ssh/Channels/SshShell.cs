@@ -51,6 +51,28 @@ public sealed record SshShellOptions : SshSessionRequestOptions
     /// </remarks>
     public string? Command { get; init; }
 
+    /// <summary>
+    /// 按键时序混淆的节拍（OpenSSH 的 <c>ObscureKeystrokeTiming</c>，它的默认是 20 毫秒）；<see langword="null"/>（默认）不混淆。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §7.4〕按键之间的时间间隔在网上看得见（每次按键一个报文），是公认的侧信道 —— 输口令、敲命令的节奏能推测出内容。
+    /// 打开之后输入按固定节拍发，没有输入的节拍上发等长的 PING 当掩护，一直到最后一次按键之后的一段随机时间（0.5–1.5 秒）；闲着时一个报文都不发。
+    /// </para>
+    /// <para>
+    /// 代价是带宽：打字时每秒约 1000 / 节拍 个报文（服务端还回同样多的 PONG），且每次按键最多晚一个节拍才发出去。
+    /// 掩护要服务端认 PING（<c>ping@openssh.com</c>，OpenSSH 9.5 起）；不认时只攒批、不发掩护。粘贴（一次写进来很多）不受影响。
+    /// </para>
+    /// </remarks>
+    /// <exception cref="ArgumentOutOfRangeException">不在 1 毫秒到 1 秒之间。</exception>
+    public TimeSpan? ObscureKeystrokeTiming
+    {
+        get;
+        init => field = value is null || (value >= TimeSpan.FromMilliseconds(1) && value <= TimeSpan.FromSeconds(1))
+            ? value
+            : throw new ArgumentOutOfRangeException(nameof(ObscureKeystrokeTiming), value, "节拍要在 1 毫秒到 1 秒之间；不混淆就给 null。");
+    }
+
     /// <summary>默认参数。</summary>
     public static SshShellOptions Default { get; } = new();
 }
@@ -77,8 +99,10 @@ public sealed class SshShell : IAsyncDisposable
         X11Forwarder? x11 = null,
         AgentForwarder? agent = null,
         SshForwardException? x11SetupFailure = null,
-        SshForwardException? agentSetupFailure = null)
+        SshForwardException? agentSetupFailure = null,
+        KeystrokeObfuscator? obfuscator = null)
     {
+        _obfuscator = obfuscator;
         Channel = channel;
         Size = size;
         X11 = x11;
@@ -86,6 +110,14 @@ public sealed class SshShell : IAsyncDisposable
         X11SetupFailure = x11SetupFailure;
         AgentSetupFailure = agentSetupFailure;
     }
+
+    private readonly KeystrokeObfuscator? _obfuscator;
+
+    /// <summary>按键时序混淆在不在跑（<see cref="SshShellOptions.ObscureKeystrokeTiming"/>）。</summary>
+    public bool IsObscuringKeystrokeTiming => _obfuscator is not null;
+
+    /// <summary>按键时序混淆发过的掩护报文个数（诊断用；没开时为 0）。</summary>
+    public int KeystrokeChaffSent => _obfuscator?.ChaffSent ?? 0;
 
     /// <summary>底层通道。</summary>
     public SshChannel Channel { get; }
@@ -118,7 +150,7 @@ public sealed class SshShell : IAsyncDisposable
     public PipeReader StandardOutput => Channel.StandardOutput;
 
     /// <summary>终端输入。</summary>
-    public PipeWriter StandardInput => Channel.StandardInput;
+    public PipeWriter StandardInput => _obfuscator?.Writer ?? Channel.StandardInput;
 
     /// <summary>当前的终端尺寸。</summary>
     public SshTerminalSize Size { get; private set; }
@@ -181,7 +213,7 @@ public sealed class SshShell : IAsyncDisposable
 
     /// <summary>告诉远端输入到此为止。</summary>
     public ValueTask CompleteStandardInputAsync(CancellationToken cancellationToken = default) =>
-        Channel.SendEofAsync(cancellationToken);
+        _obfuscator is { } obfuscator ? obfuscator.CompleteAsync(cancellationToken) : Channel.SendEofAsync(cancellationToken);
 
     /// <summary>等 shell 结束。</summary>
     public ValueTask<SshExitStatus> WaitAsync(CancellationToken cancellationToken = default) =>
@@ -194,6 +226,11 @@ public sealed class SshShell : IAsyncDisposable
     /// </remarks>
     public async ValueTask DisposeAsync()
     {
+        if (_obfuscator is not null)
+        {
+            await _obfuscator.DisposeAsync().ConfigureAwait(false);
+        }
+
         if (X11 is not null)
         {
             await X11.DisposeAsync().ConfigureAwait(false);

@@ -1441,6 +1441,43 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim(), "PING 之后连接照常");
     }
 
+    /// <summary>
+    /// 按键时序混淆对真 sshd：一个字一个字敲进 shell，命令照常跑、输出照常回；打字期间发了掩护 PING（sshd 认 ping@openssh.com），
+    /// 连接一直好好的。
+    /// </summary>
+    [TestMethod]
+    public async Task 按键时序混淆对真sshd照常工作()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+        while (!connection.PeerSupportsPing)
+        {
+            await Task.Delay(20, timeout.Token);
+        }
+
+        await using SshShell shell = await connection.OpenShellAsync(
+            new SshShellOptions { ObscureKeystrokeTiming = TimeSpan.FromMilliseconds(20) }, timeout.Token);
+        foreach (char c in "echo obscured-$((6*7))\n")
+        {
+            await shell.StandardInput.WriteAsync(new[] { (byte)c }, timeout.Token);
+            await Task.Delay(25, timeout.Token);
+        }
+
+        StringBuilder output = new();
+        while (!output.ToString().Contains("obscured-42", StringComparison.Ordinal))
+        {
+            System.IO.Pipelines.ReadResult read = await shell.StandardOutput.ReadAsync(timeout.Token);
+            foreach (ReadOnlyMemory<byte> segment in read.Buffer)
+            {
+                output.Append(Encoding.UTF8.GetString(segment.Span));
+            }
+            shell.StandardOutput.AdvanceTo(read.Buffer.End);
+        }
+        Assert.IsGreaterThan(0, shell.KeystrokeChaffSent, "打字期间要有掩护");
+        Assert.IsTrue(connection.IsAlive);
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

@@ -453,6 +453,22 @@ public sealed class SshHostConfig
             options = options with { Environment = environment };
         }
 
+        // ObscureKeystrokeTiming：yes 是 20 毫秒的节拍（OpenSSH 的默认），interval:N 是 N 毫秒，no 不混淆。
+        if (options.ObscureKeystrokeTiming is null && First("ObscureKeystrokeTiming") is { } obscure)
+        {
+            string value = obscure.Trim();
+            TimeSpan? interval = value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+                ? TimeSpan.FromMilliseconds(20)
+                : value.StartsWith("interval:", StringComparison.OrdinalIgnoreCase)
+                    && int.TryParse(value["interval:".Length..], NumberStyles.None, CultureInfo.InvariantCulture, out int ms) && ms is >= 1 and <= 1000
+                    ? TimeSpan.FromMilliseconds(ms)
+                    : null;
+            if (interval is not null)
+            {
+                options = options with { ObscureKeystrokeTiming = interval };
+            }
+        }
+
         // RemoteCommand：在伪终端里跑这条命令而不是登录 shell（模板里显式给了命令就不动）。
         if (options.Command is null && First("RemoteCommand") is { } remoteCommand
             && !remoteCommand.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))

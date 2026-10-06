@@ -109,6 +109,24 @@ public sealed partial class SshConnection
         }
     }
 
+    /// <summary>
+    /// 按键时序混淆的掩护：一个 PING，数据 5 个随机字节 —— 整个载荷 10 字节，与一次按键的 <c>CHANNEL_DATA</c>（1 字节数据）一样长。
+    /// 对端不认 PING 时不发、返回 <see langword="false"/>。它的 PONG 不对任何序号，收到就丢。
+    /// </summary>
+    internal async ValueTask<bool> SendChaffAsync(CancellationToken cancellationToken)
+    {
+        if (!PeerSupportsPing)
+        {
+            return false;
+        }
+        byte[] packet = new byte[1 + 4 + 5];
+        packet[0] = (byte)SshMessageNumber.Ping;
+        BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(1), 5);
+        System.Security.Cryptography.RandomNumberGenerator.Fill(packet.AsSpan(5));
+        await SendAsync(packet, cancellationToken).ConfigureAwait(false);
+        return true;
+    }
+
     /// <summary>一个 PING 报文：<c>byte 192</c> ‖ <c>string</c> 数据（8 字节序号）。</summary>
     internal static byte[] BuildPing(ulong id)
     {

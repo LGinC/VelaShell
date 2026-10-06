@@ -202,9 +202,14 @@ public static class SshConnectionExtensions
                 }
             }
 
+            // 按键时序混淆：输入改经混淆器按节拍发；掩护用 PING（对端不认时混淆器只攒批）。
+            KeystrokeObfuscator? obfuscator = effective.ObscureKeystrokeTiming is { } interval
+                ? new KeystrokeObfuscator(channel, interval, connection.SendChaffAsync, connection.Time)
+                : null;
+
             return new SshShell(
                 channel, effective.Size, forwarding.X11, forwarding.Agent, forwarding.X11SetupFailure,
-                forwarding.AgentSetupFailure);
+                forwarding.AgentSetupFailure, obfuscator);
         }
         catch (Exception)
         {
