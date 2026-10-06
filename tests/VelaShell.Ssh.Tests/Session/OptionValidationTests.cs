@@ -120,6 +120,17 @@ public sealed class OptionValidationTests
         Assert.IsEmpty(default(SftpFileAttributes).Extended);
     }
 
+    /// <summary>终端模式只有一个入口：没有名字的操作码强转过来照样能设；结束标记与保留区当场就抛。</summary>
+    [TestMethod]
+    public void 终端模式的操作码()
+    {
+        SshTerminalModes modes = SshTerminalModes.Empty.With((SshTerminalModeOpcode)42, 7);
+        Assert.AreSequenceEqual(new byte[] { 42, 0, 0, 0, 7, 0 }, modes.Encode());
+
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SshTerminalModes.Empty.With(SshTerminalModeOpcode.EndOfOptions, 1));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => SshTerminalModes.Empty.With((SshTerminalModeOpcode)160, 1));
+    }
+
     /// <summary>曾经超过约 24.8 天的间隔让保活循环里的 <c>(int)</c> 溢出，循环静默退出 —— 设了保活等于没设。</summary>
     [TestMethod]
     public void 保活间隔超过上限时构造就抛()

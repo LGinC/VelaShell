@@ -243,7 +243,7 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
 
         foreach ((TerminalMode mode, uint argument) in values)
         {
-            modes = modes.With((byte)mode, argument);
+            modes = modes.With((SshTerminalModeOpcode)(byte)mode, argument);
         }
         return modes;
     }
