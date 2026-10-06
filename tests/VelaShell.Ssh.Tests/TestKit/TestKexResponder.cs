@@ -34,6 +34,7 @@ internal static class TestKexResponder
         SshAlgorithmNames.EcdhSha2Nistp256 or SshAlgorithmNames.EcdhSha2Nistp384 or SshAlgorithmNames.EcdhSha2Nistp521 => true,
         SshAlgorithmNames.DiffieHellmanGroup14Sha256 or SshAlgorithmNames.DiffieHellmanGroup16Sha512
             or SshAlgorithmNames.DiffieHellmanGroup14Sha1 => true,
+        SshAlgorithmNames.DiffieHellmanGroupExchangeSha256 => true,
         SshAlgorithmNames.MlKem768X25519Sha256 => true,
         SshAlgorithmNames.Sntrup761X25519Sha512 or SshAlgorithmNames.Sntrup761X25519Sha512OpenSsh => true,
         _ => false,
@@ -97,6 +98,10 @@ internal static class TestKexResponder
 
         return new TestKexResponse(serverPublic, server.DeriveRawSecretAgreement(peer.PublicKey));
     }
+
+    /// <summary>群交换：群是服务端自己给出去的那一个（见 <c>TestSshServerOptions.GexGroup</c>）。</summary>
+    public static TestKexResponse RespondGroupExchange(ReadOnlySpan<byte> clientPublic, byte[] prime, byte[] generator) =>
+        RespondDiffieHellman(clientPublic, new DHParameters(new BcBigInteger(1, prime), new BcBigInteger(1, generator)));
 
     private static TestKexResponse RespondDiffieHellman(ReadOnlySpan<byte> clientPublic, DHParameters group)
     {

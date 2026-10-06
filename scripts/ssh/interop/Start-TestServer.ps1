@@ -301,6 +301,15 @@ if ($LASTEXITCODE -ne 0) {
 }
 Start-Sleep -Milliseconds 500
 
+# 群交换（RFC 4419）：OpenSSH 10 起服务端默认不开，这里追加进清单（不动默认的那些）。
+Write-Step '让 sshd 再开 diffie-hellman-group-exchange-sha256（验群交换）'
+docker cp (Join-Path $PSScriptRoot 'kex-gex.sh') "${ContainerName}:/tmp/kex-gex.sh" | Out-Null
+docker exec $ContainerName sh /tmp/kex-gex.sh
+if ($LASTEXITCODE -ne 0) {
+    throw '打开群交换失败 —— 群交换的互操作用例会记成 Inconclusive。'
+}
+Start-Sleep -Milliseconds 500
+
 Write-Step '写环境变量'
 $envFile = Join-Path $keyDir 'env.ps1'
 @"

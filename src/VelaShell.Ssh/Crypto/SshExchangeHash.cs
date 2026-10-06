@@ -6,6 +6,7 @@
 //   RFC 4253 §7.2  密钥派生
 //   RFC 5656 §4    ECDH 下 H 的输入
 //   RFC 8731 §3    curve25519 下 H 的输入
+//   RFC 4419 §3    GEX 下 H 多出的 min ‖ n ‖ max ‖ p ‖ g
 //   行为规格:      velashell-docs/zh/ssh/spec/03-key-exchange.md §4、§7
 
 using System.Buffers;
@@ -52,7 +53,18 @@ internal readonly ref struct SshExchangeHashInput
 
     /// <summary>共享密钥的编码方式。</summary>
     public required SshKexValueEncoding SharedSecretEncoding { get; init; }
+
+    /// <summary>GEX（RFC 4419）在 <c>K_S</c> 之后、客户端公开值之前多出的五项；别的方法为 <see langword="null"/>。</summary>
+    public SshGroupExchangeHashInput? GroupExchange { get; init; }
 }
+
+/// <summary>GEX 的额外输入（velashell-docs/zh/ssh/spec/03 §4.2）。</summary>
+/// <param name="Minimum">请求的最小位数（<c>uint32</c>）。</param>
+/// <param name="Preferred">请求的首选位数（<c>uint32</c>）。</param>
+/// <param name="Maximum">请求的最大位数（<c>uint32</c>）。</param>
+/// <param name="Prime"><c>p</c>（按 <c>mpint</c>）。</param>
+/// <param name="Generator"><c>g</c>（按 <c>mpint</c>）。</param>
+internal sealed record SshGroupExchangeHashInput(uint Minimum, uint Preferred, uint Maximum, byte[] Prime, byte[] Generator);
 
 /// <summary>交换哈希与密钥派生。</summary>
 internal static class SshExchangeHash
@@ -81,6 +93,14 @@ internal static class SshExchangeHash
         writer.WriteString(input.ClientKexInit);
         writer.WriteString(input.ServerKexInit);
         writer.WriteString(input.HostKeyBlob);
+        if (input.GroupExchange is { } gex)
+        {
+            writer.WriteUInt32(gex.Minimum);
+            writer.WriteUInt32(gex.Preferred);
+            writer.WriteUInt32(gex.Maximum);
+            writer.WriteMpint(gex.Prime);
+            writer.WriteMpint(gex.Generator);
+        }
 
         WriteValue(ref writer, input.ClientPublicValue, input.PublicValueEncoding);
         WriteValue(ref writer, input.ServerPublicValue, input.PublicValueEncoding);

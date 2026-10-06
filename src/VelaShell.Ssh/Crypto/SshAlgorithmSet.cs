@@ -168,6 +168,10 @@ public sealed record SshAlgorithmSet
                 SshAlgorithmNames.EcdhSha2Nistp256,
                 SshAlgorithmNames.EcdhSha2Nistp384,
                 SshAlgorithmNames.EcdhSha2Nistp521,
+
+                // 群交换排在 DH 标准群之前、椭圆曲线之后：别的都谈不成时它才会被选中（客户端的顺序为准），
+                // 而只开它的服务端（老设备、加固过的）原来直接连不上。
+                SshAlgorithmNames.DiffieHellmanGroupExchangeSha256,
                 SshAlgorithmNames.DiffieHellmanGroup16Sha512,
                 SshAlgorithmNames.DiffieHellmanGroup14Sha256,
             ],

@@ -10,6 +10,7 @@
 //    它放在 tests/ 而不是 src/ 正是为了这一点。
 
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Protocol;
 using VelaShell.Ssh.Transport;
@@ -69,6 +70,15 @@ internal sealed record TestSshServerOptions
     /// 模拟连接中途被换了主机密钥。
     /// </summary>
     public string? RekeyHostKeyType { get; init; }
+
+    /// <summary>
+    /// 群交换（<c>diffie-hellman-group-exchange-sha256</c>）时给客户端的群（无符号大端的 <c>p</c>、<c>g</c>）；
+    /// <see langword="null"/> 时给 RFC 3526 的 3072 位群。造小群、合数、越界的生成元就靠它。
+    /// </summary>
+    public (byte[] Prime, byte[] Generator)? GexGroup { get; init; }
+
+    /// <summary>群交换时收到的 <c>GEX_REQUEST</c>（min、n、max）。</summary>
+    public StrongBox<(uint Min, uint Preferred, uint Max)>? ObservedGexRequest { get; init; }
 }
 
 /// <summary>一次握手之后服务端这一侧的结果。</summary>
@@ -305,11 +315,35 @@ internal sealed class TestSshServer : IAsyncDisposable
             await Transport.FlushAsync(cancellationToken);
         }
 
-        // ③ 收客户端公开值，算共享密钥。
-        SshInboundPacket initPacket = await ExpectAsync(read, (SshMessageNumber)30, cancellationToken);
+        // ③ 收客户端公开值，算共享密钥。群交换先多一轮：收 GEX_REQUEST（34），回 GEX_GROUP（31）。
+        bool groupExchange = negotiated.KeyExchange == SshAlgorithmNames.DiffieHellmanGroupExchangeSha256;
+        Ssh.Crypto.SshGroupExchangeHashInput? groupHashInput = null;
+        if (groupExchange)
+        {
+            SshInboundPacket request = await ExpectAsync(read, (SshMessageNumber)34, cancellationToken);
+            SshDataReader requestReader = new(new ReadOnlySequence<byte>(request.Payload));
+            requestReader.ReadByte();
+            (uint min, uint preferred, uint max) = (requestReader.ReadUInt32(), requestReader.ReadUInt32(), requestReader.ReadUInt32());
+            _options.ObservedGexRequest?.Value = (min, preferred, max);
+
+            (byte[] prime, byte[] generator) = _options.GexGroup
+                ?? (Org.BouncyCastle.Crypto.Agreement.DHStandardGroups.rfc3526_3072.P.ToByteArrayUnsigned(),
+                    Org.BouncyCastle.Crypto.Agreement.DHStandardGroups.rfc3526_3072.G.ToByteArrayUnsigned());
+            ArrayBufferWriter<byte> group = new();
+            SshDataWriter groupWriter = new(group);
+            groupWriter.WriteByte(31);
+            groupWriter.WriteMpint(prime);
+            groupWriter.WriteMpint(generator);
+            await send(group.WrittenMemory, cancellationToken);
+            groupHashInput = new Ssh.Crypto.SshGroupExchangeHashInput(min, preferred, max, prime, generator);
+        }
+
+        SshInboundPacket initPacket = await ExpectAsync(read, (SshMessageNumber)(groupExchange ? 32 : 30), cancellationToken);
         byte[] clientPublic = ReadKexValue(initPacket.Payload, negotiated.KeyExchange);
 
-        TestKexResponse response = TestKexResponder.Respond(negotiated.KeyExchange, clientPublic);
+        TestKexResponse response = groupHashInput is { } gexInput
+            ? TestKexResponder.RespondGroupExchange(clientPublic, gexInput.Prime, gexInput.Generator)
+            : TestKexResponder.Respond(negotiated.KeyExchange, clientPublic);
 
         // ④ 算交换哈希并签名。
         using Ssh.Crypto.Kex.ISshKeyExchange shape =
@@ -328,6 +362,7 @@ internal sealed class TestSshServer : IAsyncDisposable
             SharedSecret = response.SharedSecret,
             PublicValueEncoding = shape.PublicValueEncoding,
             SharedSecretEncoding = shape.SharedSecretEncoding,
+            GroupExchange = groupHashInput,
         });
 
         byte[] signature = KeyFor(isInitial).Sign(exchangeHash, negotiated.HostKey);
@@ -338,7 +373,7 @@ internal sealed class TestSshServer : IAsyncDisposable
 
         ArrayBufferWriter<byte> reply = new();
         SshDataWriter replyWriter = new(reply);
-        replyWriter.WriteByte(31);
+        replyWriter.WriteByte(groupExchange ? (byte)33 : (byte)31);
         replyWriter.WriteString(hostKeyBlob);
         if (shape.PublicValueEncoding == Ssh.Crypto.Kex.SshKexValueEncoding.Mpint)
         {
@@ -454,7 +489,8 @@ internal sealed class TestSshServer : IAsyncDisposable
 
         bool isMpint = kexAlgorithm is SshAlgorithmNames.DiffieHellmanGroup14Sha256
             or SshAlgorithmNames.DiffieHellmanGroup16Sha512
-            or SshAlgorithmNames.DiffieHellmanGroup14Sha1;
+            or SshAlgorithmNames.DiffieHellmanGroup14Sha1
+            or SshAlgorithmNames.DiffieHellmanGroupExchangeSha256;
 
         return isMpint
             ? reader.ReadMpint(MaxField).ToArray()

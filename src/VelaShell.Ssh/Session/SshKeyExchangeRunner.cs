@@ -75,6 +75,12 @@ internal sealed class SshKeyExchangeRunner
     private const byte KexMethodInit = 30;
     private const byte KexMethodReply = 31;
 
+    // 群交换（RFC 4419 §5）：31 在这里是 GEX_GROUP，与上面的 KEX_*_REPLY 撞号 —— 30–49 只能按协商出的方法解释。
+    private const byte GexGroup = 31;
+    private const byte GexInit = 32;
+    private const byte GexReply = 33;
+    private const byte GexRequest = 34;
+
     private readonly ISshKexTransport _transport;
     private readonly SshAlgorithmSet _algorithms;
     private readonly IHostKeyPolicy _hostKeyPolicy;
@@ -259,25 +265,61 @@ internal sealed class SshKeyExchangeRunner
 
         // ③ 交换公开值。
         using ISshKeyExchange kex = SshKeyExchangeFactory.Create(negotiated.KeyExchange);
+
+        // 对端若在它的 KEXINIT 里设了 first_kex_packet_follows，且猜错了，
+        // 它会先发一个要被丢弃的报文（RFC 4253 §7.1）—— 丢在我们读的第一个报文之前。
+        bool discardGuess = serverKexInit.FirstKexPacketFollows && !GuessedCorrectly(serverKexInit, negotiated);
+
+        // 群交换先多一轮：说要多大的群，收下服务端给的（spec/03 §3.5）。
+        ISshGroupExchange? groupExchange = kex as ISshGroupExchange;
+        SshGroupExchangeHashInput? groupHashInput = null;
+        if (groupExchange is not null)
+        {
+            ArrayBufferWriter<byte> request = new();
+            SshDataWriter requestWriter = new(request);
+            requestWriter.WriteByte(GexRequest);
+            requestWriter.WriteUInt32(groupExchange.MinimumBits);
+            requestWriter.WriteUInt32(groupExchange.PreferredBits);
+            requestWriter.WriteUInt32(groupExchange.MaximumBits);
+            await _transport.SendAsync(request.WrittenMemory, cancellationToken).ConfigureAwait(false);
+
+            if (discardGuess)
+            {
+                _ = await ReadAnyKexPacketAsync(strictReads, cancellationToken).ConfigureAwait(false);
+                discardGuess = false;
+            }
+
+            SshInboundPacket group = await ReadKexPacketAsync(
+                (SshMessageNumber)GexGroup, strictReads, cancellationToken).ConfigureAwait(false);
+            AcceptGroup(groupExchange, group.Payload);
+            groupHashInput = new SshGroupExchangeHashInput(
+                groupExchange.MinimumBits, groupExchange.PreferredBits, groupExchange.MaximumBits,
+                groupExchange.Prime, groupExchange.Generator);
+        }
+
         byte[] clientPublic = kex.CreateClientPublicValue();
 
         ArrayBufferWriter<byte> initMessage = new();
         SshDataWriter initWriter = new(initMessage);
-        initWriter.WriteByte(KexMethodInit);
+        initWriter.WriteByte(groupExchange is null ? KexMethodInit : GexInit);
         WriteKexValue(ref initWriter, clientPublic, kex.PublicValueEncoding);
         await _transport.SendAsync(initMessage.WrittenMemory, cancellationToken).ConfigureAwait(false);
 
-        // 对端若在它的 KEXINIT 里设了 first_kex_packet_follows，且猜错了，
-        // 它会先发一个要被丢弃的报文（RFC 4253 §7.1）。
-        if (serverKexInit.FirstKexPacketFollows && !GuessedCorrectly(serverKexInit, negotiated))
+        if (discardGuess)
         {
             _ = await ReadAnyKexPacketAsync(strictReads, cancellationToken).ConfigureAwait(false);
         }
 
         SshInboundPacket reply = await ReadKexPacketAsync(
-            (SshMessageNumber)KexMethodReply, strictReads, cancellationToken).ConfigureAwait(false);
+            (SshMessageNumber)(groupExchange is null ? KexMethodReply : GexReply), strictReads, cancellationToken).ConfigureAwait(false);
 
         (byte[] hostKeyBlob, byte[] serverPublic, byte[] signature) = ParseReply(reply.Payload, kex);
+
+        // 群交换：素性检验在收到群时就在后台起跑了，与上面那一轮往返重叠；用这个群算出的东西被信任之前等它的结论。
+        if (groupExchange is not null)
+        {
+            await groupExchange.EnsureGroupValidAsync(cancellationToken).ConfigureAwait(false);
+        }
 
         // ④ 算共享密钥与交换哈希。
         byte[] sharedSecret = kex.ComputeSharedSecret(serverPublic);
@@ -296,6 +338,7 @@ internal sealed class SshKeyExchangeRunner
                 SharedSecret = sharedSecret,
                 PublicValueEncoding = kex.PublicValueEncoding,
                 SharedSecretEncoding = kex.SharedSecretEncoding,
+                GroupExchange = groupHashInput,
             });
 
             // ⑤ 验主机密钥。**顺序本身是安全属性**（velashell-docs/zh/ssh/spec/03 §5.3）：
@@ -346,13 +389,32 @@ internal sealed class SshKeyExchangeRunner
         && string.Equals(peer.KeyExchangeAlgorithms[0], negotiated.KeyExchange, StringComparison.Ordinal)
         && string.Equals(peer.ServerHostKeyAlgorithms[0], negotiated.HostKey, StringComparison.Ordinal);
 
+    /// <summary>解 <c>GEX_GROUP</c>（<c>mpint p</c> ‖ <c>mpint g</c>）并交给群交换去查。</summary>
+    private static void AcceptGroup(ISshGroupExchange groupExchange, ReadOnlyMemory<byte> payload)
+    {
+        byte[] prime;
+        byte[] generator;
+        try
+        {
+            SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+            reader.ReadByte();   // 31
+            prime = reader.ReadMpint(MaxFieldBytes).ToArray();
+            generator = reader.ReadMpint(MaxFieldBytes).ToArray();
+        }
+        catch (SshWireFormatException ex)
+        {
+            throw new SshProtocolException(SshPhase.KeyExchange, $"群交换的 GEX_GROUP 格式非法：{ex.Message}", ex);
+        }
+        groupExchange.AcceptGroup(prime, generator);
+    }
+
     private static (byte[] HostKey, byte[] ServerPublic, byte[] Signature) ParseReply(
         ReadOnlyMemory<byte> payload, ISshKeyExchange kex)
     {
         try
         {
             SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
-            reader.ReadByte();   // 31
+            reader.ReadByte();   // 31（群交换是 33）
             byte[] hostKey = reader.ReadStringAsArray(MaxFieldBytes);
             byte[] serverPublic = kex.PublicValueEncoding == SshKexValueEncoding.Mpint
                 ? reader.ReadMpint(MaxFieldBytes).ToArray()

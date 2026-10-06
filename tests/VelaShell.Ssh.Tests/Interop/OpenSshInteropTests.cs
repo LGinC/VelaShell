@@ -1161,6 +1161,46 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim());
     }
 
+    /// <summary>
+    /// 群交换（RFC 4419）：只开它时与真 OpenSSH 谈得成 —— 线上的 34 / 31 / 32 / 33 与交换哈希多出的五项都对，
+    /// 否则签名验不过。再连一次（服务端多半换一个群）、重协商一次，都照常。
+    /// </summary>
+    [TestMethod]
+    public async Task 群交换与真OpenSSH谈得成()
+    {
+        RequireServer();
+        SshAlgorithmSet gexOnly = SshAlgorithmSet.Default with { KeyExchange = [SshAlgorithmNames.DiffieHellmanGroupExchangeSha256] };
+
+        for (int round = 0; round < 2; round++)
+        {
+            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+            SshConnection connection;
+            try
+            {
+                connection = await SshConnection.ConnectAsync(Options() with { Algorithms = gexOnly });
+            }
+            catch (SshNegotiationException ex) when (!ex.OfferedByPeer.Contains(SshAlgorithmNames.DiffieHellmanGroupExchangeSha256))
+            {
+                // OpenSSH 10 起服务端默认不开 DH 那几种；Start-TestServer.ps1 会用 kex-gex.sh 打开。
+                Assert.Inconclusive($"服务端没开群交换（它给的是 {string.Join(", ", ex.OfferedByPeer)}）。用 Start-TestServer.ps1 起服务端。");
+                return;
+            }
+            await using SshConnection _ = connection;
+            Console.WriteLine($"第 {round + 1} 次连接（含素性检验）：{elapsed.ElapsedMilliseconds} ms");
+
+            Assert.AreEqual(SshAlgorithmNames.DiffieHellmanGroupExchangeSha256, connection.Algorithms.KeyExchange);
+            Assert.AreEqual("ok", (await connection.RunAsync("echo ok")).StandardOutput.Trim());
+
+            await connection.StartRekeyAsync();
+            using CancellationTokenSource rekeyTimeout = new(TimeSpan.FromSeconds(30));
+            while (connection.RekeyCount == 0)
+            {
+                await Task.Delay(20, rekeyTimeout.Token);
+            }
+            Assert.AreEqual("again", (await connection.RunAsync("echo again")).StandardOutput.Trim());
+        }
+    }
+
     [TestMethod]
     public async Task 保活探测能被真实服务端应答()
     {
