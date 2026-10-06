@@ -1318,6 +1318,26 @@ public sealed class OpenSshInteropTests
         Assert.IsFalse(File.Exists(localSocket), "释放之后本机的套接字文件要删掉");
     }
 
+    /// <summary>
+    /// 通用的扩展请求对真 sftp-server：limits@openssh.com 经它发、应答原样交回（四个 uint64，与库内置的解读一致）；
+    /// 不认识的扩展名是 OperationUnsupported。
+    /// </summary>
+    [TestMethod]
+    public async Task 通用扩展请求对真sftp_server()
+    {
+        RequireServer();
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+
+        byte[] reply = await sftp.SendExtendedAsync(SftpExtensionNames.Limits, ReadOnlyMemory<byte>.Empty);
+        Assert.HasCount(32, reply);
+        Assert.AreEqual(sftp.Capabilities.Limits.MaxReadLength, BinaryPrimitives.ReadUInt64BigEndian(reply.AsSpan(8)));
+
+        SftpException unknown = await Assert.ThrowsAsync<SftpException>(
+            async () => await sftp.SendExtendedAsync("nope@vendor.example", ReadOnlyMemory<byte>.Empty));
+        Assert.AreEqual(SftpStatusCode.OperationUnsupported, unknown.StatusCode);
+    }
+
     [TestMethod]
     public async Task 群交换与真OpenSSH谈得成()
     {

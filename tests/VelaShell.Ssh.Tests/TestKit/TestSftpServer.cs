@@ -48,6 +48,12 @@ internal sealed record TestSftpOptions
     /// <summary>宣告的版本号。</summary>
     public uint Version { get; init; } = 3;
 
+    /// <summary>
+    /// 本测试桩不认识的扩展怎么答（扩展名、请求载荷 → 应答载荷）：返回 <see langword="null"/> 回 <c>STATUS OK</c>，
+    /// 抛 <see cref="InvalidOperationException"/> 回 <c>FAILURE</c>。扩展名还得出现在 <see cref="Extensions"/> 里。
+    /// </summary>
+    public Func<string, byte[], byte[]?>? VendorExtension { get; init; }
+
     /// <summary>宣告哪些扩展。</summary>
     public IReadOnlyList<string> Extensions { get; init; } =
     [
@@ -990,6 +996,29 @@ internal sealed class TestSftpServer
             {
                 writer.WriteUInt64(value);
             }
+            return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
+        }
+
+        if (_options.VendorExtension is { } vendor)
+        {
+            byte[] request = reader.ReadRemaining().ToArray();
+            byte[]? reply;
+            try
+            {
+                reply = vendor(name, request);
+            }
+            catch (InvalidOperationException ex)
+            {
+                return BuildStatus(id, SftpStatusCode.Failure, ex.Message);
+            }
+            if (reply is null)
+            {
+                return BuildStatus(id, SftpStatusCode.Ok, "");
+            }
+            ArrayBufferWriter<byte> payload = new();
+            SshDataWriter writer = new(payload);
+            writer.WriteUInt32(id);
+            writer.WriteRaw(reply);
             return Frame(SftpMessageType.ExtendedReply, payload.WrittenSpan);
         }
 

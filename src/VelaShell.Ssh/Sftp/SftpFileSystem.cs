@@ -1360,6 +1360,44 @@ public sealed class SftpFileSystem : IAsyncDisposable
         return SftpWire.ReadStatVfs(response.Payload);
     }
 
+    /// <summary>
+    /// 发一个<b>厂商私有</b>的扩展请求（<c>SSH_FXP_EXTENDED</c>），拿回应答载荷 —— 本库没有内置的扩展
+    /// （群晖、某些 NAS 的私有扩展、插件要用的东西）走这里。
+    /// </summary>
+    /// <param name="extensionName">扩展名（如 <c>vendor-op@example.com</c>）。</param>
+    /// <param name="payload">扩展名之后的请求内容，按那个扩展自己的约定编码（本库原样发出）。</param>
+    /// <param name="cancellationToken">取消令牌。取消只是不再等，服务端那边照样会做完（SFTP 没有取消报文）。</param>
+    /// <returns><c>SSH_FXP_EXTENDED_REPLY</c> 的载荷（request-id 之后的部分）；服务端回 <c>STATUS OK</c> 时为空。</returns>
+    /// <exception cref="SftpException">服务端回了错误状态；不认识这个扩展是 <see cref="SftpStatusCode.OperationUnsupported"/>。</exception>
+    /// <remarks>
+    /// <para>
+    /// 〔决策 velashell-docs/zh/ssh/spec/06 §7.3〕<b>扩展点只到「扩展名 + 载荷 → 应答」这一层</b>：请求照样走同一条流水线
+    /// （request-id、在途额度、取消后的迟到应答都由本库管），管线的时序约束不交出去。要类型化，在调用方包一层即可。
+    /// </para>
+    /// <para>
+    /// 不先查 <see cref="SftpCapabilities.RawExtensions"/>：有的服务端支持却不宣告。要不要先看一眼由调用方决定。
+    /// 应答是对端给的字节，按不可信输入解析。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<byte[]> SendExtendedAsync(
+        string extensionName, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken = default)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(extensionName);
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) => SftpWire.WriteExtended(output, id, extensionName, payload.Span),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        if (response.TryGetStatus(out SftpStatusCode code, out string message))
+        {
+            return code == SftpStatusCode.Ok
+                ? []
+                : throw new SftpException(code, message, path: null, SftpOperation.Extension, detail: extensionName);
+        }
+        response.ExpectType(path: null, SftpOperation.Extension, SftpMessageType.ExtendedReply);
+        return response.Payload.ToArray();
+    }
+
     /// <summary>一次最多问多少个 uid / gid（两者各算）：防一个巨大的目录让请求长到被服务端拒掉。</summary>
     public const int MaxIdsPerLookup = 4096;
 

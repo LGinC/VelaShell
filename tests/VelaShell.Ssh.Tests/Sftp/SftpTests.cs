@@ -196,6 +196,55 @@ public sealed class SftpTests
         Assert.AreEqual(65_536UL, harness.Sftp.Capabilities.Limits.MaxWriteLength);
     }
 
+    /// <summary>
+    /// 厂商私有扩展（spec/06 §7.3）：扩展名与载荷原样发出，EXTENDED_REPLY 的载荷原样交回；STATUS OK 交回空；
+    /// 错误状态抛 SftpException（不认识是 OperationUnsupported），消息里有扩展名。请求照样走同一条流水线。
+    /// </summary>
+    [TestMethod]
+    public async Task 厂商私有扩展原样收发()
+    {
+        List<(string Name, byte[] Request)> seen = [];
+        await using Harness harness = await Harness.StartAsync(sftpOptions: new TestSftpOptions
+        {
+            Extensions = ["echo@vendor.example", "ack@vendor.example", "fail@vendor.example"],
+            VendorExtension = (name, request) =>
+            {
+                lock (seen)
+                {
+                    seen.Add((name, request));
+                }
+                return name switch
+                {
+                    "echo@vendor.example" => [.. request.Reverse()],
+                    "ack@vendor.example" => null,
+                    _ => throw new InvalidOperationException("厂商那边出错了"),
+                };
+            },
+        });
+
+        Assert.IsTrue(harness.Sftp.Capabilities.RawExtensions.ContainsKey("echo@vendor.example"));
+        CollectionAssert.AreEqual(new byte[] { 3, 2, 1 }, await harness.Sftp.SendExtendedAsync("echo@vendor.example", new byte[] { 1, 2, 3 }, harness.Token));
+        Assert.IsEmpty(await harness.Sftp.SendExtendedAsync("ack@vendor.example", ReadOnlyMemory<byte>.Empty, harness.Token));
+
+        SftpException failed = await Assert.ThrowsAsync<SftpException>(
+            async () => await harness.Sftp.SendExtendedAsync("fail@vendor.example", "x"u8.ToArray(), harness.Token));
+        Assert.AreEqual(SftpStatusCode.Failure, failed.StatusCode);
+        Assert.AreEqual(SftpOperation.Extension, failed.Operation);
+        StringAssert.Contains(failed.Message, "fail@vendor.example");
+
+        SftpException unknown = await Assert.ThrowsAsync<SftpException>(
+            async () => await harness.Sftp.SendExtendedAsync("nope@vendor.example", ReadOnlyMemory<byte>.Empty, harness.Token));
+        Assert.AreEqual(SftpStatusCode.OperationUnsupported, unknown.StatusCode);
+
+        lock (seen)
+        {
+            Assert.AreEqual("echo@vendor.example", seen[0].Name);
+            CollectionAssert.AreEqual(new byte[] { 1, 2, 3 }, seen[0].Request);
+        }
+
+        // 用过之后流水线照常：别的请求不受影响。
+        Assert.IsNotNull(await harness.Sftp.GetAttributesAsync("/", cancellationToken: harness.Token));
+    }
     [TestMethod]
     public async Task 没有limits扩展时用保守默认()
     {

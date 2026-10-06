@@ -88,4 +88,7 @@ public enum SftpOperation
 
     /// <summary>把 uid / gid 翻成名字（<c>users-groups-by-id@openssh.com</c>）。</summary>
     LookupNames,
+
+    /// <summary>使用者自己发的厂商扩展（<see cref="SftpFileSystem.SendExtendedAsync"/>）。</summary>
+    Extension,
 }
