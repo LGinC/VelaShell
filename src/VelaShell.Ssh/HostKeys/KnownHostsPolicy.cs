@@ -40,7 +40,7 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
     }
 
     /// <summary>不读也不写任何文件：每台主机都当成没见过，接受了也不记（<c>UserKnownHostsFile none</c> / <c>/dev/null</c>）。</summary>
-    /// <param name="askUnknownHost">没见过这台主机时问使用者。</param>
+    /// <param name="askUnknownHost">没见过这台主机时问使用者。只在 <paramref name="unknownHost"/> 是 <see cref="UnknownHostBehavior.Ask"/> 时能给。</param>
     /// <param name="unknownHost">没见过这台主机时的行为（见 <see cref="UnknownHost"/>）。</param>
     public static KnownHostsPolicy WithoutFile(
         Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? askUnknownHost = null,
@@ -53,7 +53,27 @@ public sealed class KnownHostsPolicy : IHostKeyPolicy, IHostKeyTypePreference
     private bool _withoutFile;
 
     /// <summary>没见过这台主机时的行为。</summary>
-    public UnknownHostBehavior UnknownHost { get; init; } = UnknownHostBehavior.Ask;
+    /// <exception cref="ArgumentOutOfRangeException">不是定义过的值。</exception>
+    /// <exception cref="ArgumentException">
+    /// 给了询问回调（构造函数的 <c>askUnknownHost</c>），又设成不问 —— 回调永远不会被调用。曾经静默忽略回调。
+    /// </exception>
+    public UnknownHostBehavior UnknownHost
+    {
+        get;
+        init
+        {
+            if (!Enum.IsDefined(value))
+            {
+                throw new ArgumentOutOfRangeException(nameof(UnknownHost), value, "不认识的取值。");
+            }
+            if (value != UnknownHostBehavior.Ask && _askUnknownHost is not null)
+            {
+                throw new ArgumentException(
+                    $"给了询问回调，又把没见过的主机设成 {value} —— 回调永远不会被调用。二者只取其一。", nameof(UnknownHost));
+            }
+            field = value;
+        }
+    } = UnknownHostBehavior.Ask;
 
     /// <summary>
     /// 允许在密钥变化时也接受。

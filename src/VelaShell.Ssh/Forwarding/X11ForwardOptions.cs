@@ -122,4 +122,22 @@ public sealed record X11ForwardOptions
 
     /// <summary>默认选项。</summary>
     public static X11ForwardOptions Default { get; } = new();
+
+    /// <summary>跨字段的核对：给了 <see cref="LocalConnector"/> 就必须是受信模式。</summary>
+    /// <exception cref="ArgumentException">给了连接器却不是受信模式。</exception>
+    /// <remarks>
+    /// 由几条 <c>init</c> 拼成，赋值的先后不定，做不到设值时校验 —— 由开会话的入口在<b>开通道之前</b>代为调用。
+    /// 曾经要到发 <c>x11-req</c> 的时候才报，而且报成「转发没开成」（<see cref="SshForwardException"/>）：
+    /// 在 <see cref="ForwardFailureMode.Continue"/> 下，一处写错的配置变成了一条每次都出现的「X11 没开成」。
+    /// </remarks>
+    internal void Validate()
+    {
+        if (LocalConnector is not null && !Trusted)
+        {
+            throw new ArgumentException(
+                "本机显示经连接器接入时只支持受信模式（Trusted = true）：非受信模式要 xauth 连上本机显示签受限 cookie，" +
+                "连接器后面没有可供它去连的显示。",
+                nameof(LocalConnector));
+        }
+    }
 }

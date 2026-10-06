@@ -216,14 +216,29 @@ public sealed class X11ForwardTests
         Assert.AreEqual(0, forwarder.AcceptedChannels);
     }
 
+    /// <summary>
+    /// 连接器与非受信模式同时设是配置矛盾：开会话的入口在开通道之前就抛 <see cref="ArgumentException"/>，
+    /// 「转发没开成也继续」也不吞它。曾经要到发 x11-req 时才报成「转发没开成」。
+    /// </summary>
     [TestMethod]
-    public async Task 连接器与非受信模式同时设时请求直接抛()
+    public async Task 连接器与非受信模式同时设时开通道之前就抛()
     {
         await using Fixture fixture = await Fixture.StartAsync();
-        await Assert.ThrowsAsync<SshForwardException>(async () => await X11Forwarder.RequestAsync(
-            fixture.Harness.Connection, fixture.Session,
-            fixture.Options with { Trusted = false, LocalConnector = _ => ValueTask.FromResult<Stream>(new MemoryStream()) },
+        int opensBefore = fixture.Harness.Channels.Observation.ReceivedOpens;
+
+        await Assert.ThrowsExactlyAsync<ArgumentException>(async () => await fixture.Harness.Connection.OpenShellAsync(
+            new SshShellOptions
+            {
+                X11Forwarding = fixture.Options with
+                {
+                    Trusted = false,
+                    LocalConnector = _ => ValueTask.FromResult<Stream>(new MemoryStream()),
+                    FailureMode = ForwardFailureMode.Continue,
+                },
+            },
             fixture.Harness.Token));
+
+        Assert.AreEqual(opensBefore, fixture.Harness.Channels.Observation.ReceivedOpens, "开了通道");
         Assert.IsEmpty(fixture.Harness.Channels.Observation.X11Requests, "没有发 x11-req");
     }
 

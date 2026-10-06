@@ -8,6 +8,7 @@ using VelaShell.Ssh.Channels;
 using VelaShell.Ssh.Crypto;
 using VelaShell.Ssh.Forwarding;
 using VelaShell.Ssh.HostKeys;
+using VelaShell.Ssh.Keys;
 using VelaShell.Ssh.Session;
 using VelaShell.Ssh.Sftp;
 
@@ -118,6 +119,26 @@ public sealed class OptionValidationTests
 
         Assert.HasCount(1, attributes.Extended);
         Assert.IsEmpty(default(SftpFileAttributes).Extended);
+    }
+
+    /// <summary>
+    /// 互相矛盾的参数当场就抛，而不是静默忽略其中一个：
+    /// 给了询问回调又不问（回调永远不会被调用）；agent 的端点与连接器都给（连哪一个说不清）。
+    /// </summary>
+    [TestMethod]
+    public void 互相矛盾的参数当场就抛()
+    {
+        static ValueTask<bool> Ask(SshHostKeyContext context, CancellationToken token) => ValueTask.FromResult(true);
+
+        Assert.ThrowsExactly<ArgumentException>(() => new KnownHostsPolicy(askUnknownHost: Ask) { UnknownHost = UnknownHostBehavior.Reject });
+        Assert.ThrowsExactly<ArgumentException>(() => KnownHostsPolicy.WithoutFile(Ask, UnknownHostBehavior.AcceptAndPersist));
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new KnownHostsPolicy { UnknownHost = (UnknownHostBehavior)42 });
+        Assert.AreEqual(UnknownHostBehavior.Ask, new KnownHostsPolicy(askUnknownHost: Ask) { UnknownHost = UnknownHostBehavior.Ask }.UnknownHost);
+
+        static ValueTask<SshAgentClient> Connector(CancellationToken token) => throw new InvalidOperationException();
+        Assert.ThrowsExactly<ArgumentException>(() => new AgentForwardOptions { AgentEndpoint = "/tmp/agent.sock", LocalConnector = Connector });
+        Assert.ThrowsExactly<ArgumentException>(() => new AgentForwardOptions { LocalConnector = Connector, AgentEndpoint = "/tmp/agent.sock" });
+        Assert.IsNull((new AgentForwardOptions { LocalConnector = Connector } with { AgentEndpoint = null }).AgentEndpoint);
     }
 
     /// <summary>终端模式只有一个入口：没有名字的操作码强转过来照样能设；结束标记与保留区当场就抛。</summary>

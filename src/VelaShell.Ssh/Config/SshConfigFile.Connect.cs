@@ -346,15 +346,19 @@ public static partial class SshConfigFile
             && (string.Equals(knownHosts, "none", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(knownHosts, "/dev/null", StringComparison.Ordinal)))
         {
-            return KnownHostsPolicy.WithoutFile(settings.AskUnknownHost, unknown);
+            return KnownHostsPolicy.WithoutFile(AskOnlyWhenAsking(), unknown);
         }
 
         // 〔FW-E13〕%h / %r 照这台主机与用户展开（每台主机一个 known_hosts 的写法要靠它）。曾经代入空串：
         // ~/.ssh/kh_%h 成了 ~/.ssh/kh_，所有主机挤进同一个文件。
-        return new KnownHostsPolicy(ExpandPath(knownHosts, config.HostName, user), settings.AskUnknownHost)
+        return new KnownHostsPolicy(ExpandPath(knownHosts, config.HostName, user), AskOnlyWhenAsking())
         {
             UnknownHost = unknown,
         };
+
+        // 询问回调只在「问」的时候交出去：yes / accept-new 下它不会被调用，策略会把「给了回调又不问」当成配置矛盾。
+        Func<SshHostKeyContext, CancellationToken, ValueTask<bool>>? AskOnlyWhenAsking() =>
+            unknown == UnknownHostBehavior.Ask ? settings.AskUnknownHost : null;
     }
 
     private static async ValueTask<IReadOnlyList<SshCredential>> LoadIdentityFilesAsync(

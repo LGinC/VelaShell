@@ -115,11 +115,7 @@ public sealed class X11Forwarder : IAsyncDisposable
                 "拿不到本机的 X 显示：DISPLAY 没设或者格式不认识。" +
                 "可以在 X11ForwardOptions.Display 里显式指定。");
 
-        if (effective.LocalConnector is not null && !effective.Trusted)
-        {
-            throw new SshForwardException(SshFailureReason.ForwardSetupFailed,
-                "本机显示经连接器接入时只支持受信模式:非受信模式要 xauth 连上本机显示签受限 cookie,连接器后面没有可供它去连的显示。");
-        }
+        effective.Validate();   // 开会话的入口已经核对过；这里留着是给直接调用的（测试）
 
         byte[] realCookie = effective.LocalConnector is not null
             ? effective.LocalCookie.ToArray()

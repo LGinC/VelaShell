@@ -67,6 +67,7 @@ public static class SshConnectionExtensions
         ArgumentNullException.ThrowIfNull(commandLine);
 
         SshCommandOptions effective = options ?? SshCommandOptions.Default;
+        effective.X11Forwarding?.Validate();   // 配置矛盾在开通道之前就抛
         SshChannel channel = await connection
             .OpenSessionChannelAsync(effective.Channel, cancellationToken).ConfigureAwait(false);
 
@@ -132,6 +133,7 @@ public static class SshConnectionExtensions
         ArgumentNullException.ThrowIfNull(connection);
 
         SshShellOptions effective = options ?? SshShellOptions.Default;
+        effective.X11Forwarding?.Validate();   // 配置矛盾在开通道之前就抛
         SshChannel channel = await connection
             .OpenSessionChannelAsync(effective.Channel, cancellationToken).ConfigureAwait(false);
 
