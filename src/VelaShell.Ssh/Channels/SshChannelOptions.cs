@@ -59,6 +59,21 @@ public sealed record SshChannelOptions
     /// <remarks>SFTP 用它：sftp-server 起不来时，它在 stderr 上说的那一句是唯一的线索（velashell-docs/zh/ssh/spec/06 §一）。</remarks>
     internal int DiscardedStderrTailBytes { get; init; }
 
+    /// <summary>
+    /// 交互式通道：这条通道上发的报文走交互道，不排在别的通道积压的批量数据后面（终端的按键、窗口大小变化）。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔Q7，velashell-docs/zh/ssh/spec/05 §3.2〕<c>OpenShellAsync</c> 开的通道自动是。同一条连接上一堆隧道连接、SFTP 一起在传时，
+    /// 发送队列里每条通道各排着一帧；不走交互道的话，一下按键要等它们都发完才上线 —— 积压 2 MiB、上行 5 Mbit/s 时就是 3 秒以上。
+    /// </para>
+    /// <para>
+    /// 交互道与普通队列<b>轮流</b>出队：往终端里粘贴一大段时，别的通道照样分到一半的出队机会，不会被饿死。
+    /// 只给交互式会话用 —— 批量数据走交互道，就是在跟别的通道抢那一半。
+    /// </para>
+    /// </remarks>
+    public bool IsInteractive { get; init; }
+
     /// <summary>默认参数。</summary>
     public static SshChannelOptions Default { get; } = new();
 }

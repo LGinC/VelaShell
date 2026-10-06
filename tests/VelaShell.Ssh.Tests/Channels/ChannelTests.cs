@@ -818,6 +818,7 @@ public sealed class ChannelTests
     {
         await using Harness harness = await Harness.StartAsync(new TestChannelScript { RejectBreak = reject, CloseAfterScript = false });
         await using SshShell shell = await harness.Connection.OpenShellAsync(cancellationToken: harness.Token);
+        Assert.IsTrue(shell.Channel.IsInteractive, "终端的通道走交互道（Q7）");
 
         Assert.AreEqual(!reject, await shell.SendBreakAsync(cancellationToken: harness.Token));
         Assert.AreEqual(!reject, await shell.SendBreakAsync(TimeSpan.FromMilliseconds(1500), harness.Token));

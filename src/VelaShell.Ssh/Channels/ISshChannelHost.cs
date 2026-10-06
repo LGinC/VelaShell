@@ -29,15 +29,16 @@ internal interface ISshChannelHost
     /// 通道上的每一帧都走这里，<paramref name="admit"/> 查的是「CLOSE 发过没有」——
     /// 先查后入队的话，中间插进来的 CLOSE 会让这一帧排到 CLOSE 后面（RFC 4254 §5.3 不许）。
     /// <paramref name="admit"/> 在入队锁里执行，不许在里面等任何东西。
+    /// <paramref name="isInteractive"/> 为真时走交互道（<see cref="SshChannelOptions.IsInteractive"/>）：一条通道的每一帧都得走同一条道，不然它自己的报文会乱序。
     /// </remarks>
-    ValueTask SendIfAsync(ReadOnlyMemory<byte> packet, Func<bool> admit, CancellationToken cancellationToken);
+    ValueTask SendIfAsync(ReadOnlyMemory<byte> packet, Func<bool> admit, bool isInteractive, CancellationToken cancellationToken);
 
     /// <summary>同 <see cref="SendIfAsync"/>，但 <paramref name="packet"/> 是<b>借来的</b>：返回之后调用方就会回收它。</summary>
     /// <remarks>
     /// 给通道数据用 —— 那是按块从池里租的缓冲。返回时这一帧要么已经写进传输（加密时已复制），
     /// 要么被重协商的闸门暂存了 —— 暂存的那一刻发送泵会自己复制一份，不再引用这块内存。
     /// </remarks>
-    ValueTask SendBorrowedIfAsync(ReadOnlyMemory<byte> packet, Func<bool> admit, CancellationToken cancellationToken);
+    ValueTask SendBorrowedIfAsync(ReadOnlyMemory<byte> packet, Func<bool> admit, bool isInteractive, CancellationToken cancellationToken);
 
     /// <summary>通道已经彻底关了（或者永远不会再有对端的报文），可以把号收回去。</summary>
     /// <param name="localId">通道号。</param>

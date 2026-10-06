@@ -327,6 +327,87 @@ public sealed class SessionFailureTests
         }
     }
 
+    /// <summary>
+    /// 〔Q7〕同一条连接上一堆通道一起在传时，终端（交互式通道）的按键走交互道 —— 不排在积压的数据后面。
+    /// </summary>
+    /// <remarks>每条上传通道各排着一帧（stdin 泵等上一帧刷出去才发下一帧）；按键排在它们后面的话，要等整个积压都上线。</remarks>
+    [TestMethod]
+    public async Task 大量上传时终端的按键走交互道_不排在积压的数据后面()
+    {
+        const int uploads = 64;
+        await using var peer = RawPeer.Start();
+
+        List<SshChannel> uploadChannels = [];
+        for (int i = 0; i < uploads; i++)
+        {
+            Task<SshChannel> open = peer.Connection.OpenSessionChannelAsync(cancellationToken: peer.Token).AsTask();
+            await peer.AcceptChannelOpenAsync(ourId: (uint)(100 + i), window: uint.MaxValue);
+            uploadChannels.Add(await open);
+        }
+
+        Task<SshChannel> openTerminal = peer.Connection
+            .OpenSessionChannelAsync(new SshChannelOptions { IsInteractive = true }, peer.Token).AsTask();
+        await peer.AcceptChannelOpenAsync(ourId: 8);
+        await using SshChannel terminal = await openTerminal;
+
+        // ① 每条上传通道都灌数据，对端先不读：发送泵卡在写上，每条通道一个报文排在队里。
+        byte[] chunk = new byte[64 * 1024];
+        Task[] pumping =
+        [
+            .. uploadChannels.Select(channel => Task.Run(async () =>
+            {
+                for (int i = 0; i < 16; i++)
+                {
+                    await channel.StandardInput.WriteAsync(chunk, peer.Token);
+                }
+            })),
+        ];
+
+        using (var full = CancellationTokenSource.CreateLinkedTokenSource(peer.Token))
+        {
+            full.CancelAfter(TimeSpan.FromSeconds(10));
+            while (peer.Connection.PendingSendBytes < (uploads - 4) * 32L * 1024)
+            {
+                await Task.Delay(10, full.Token);
+            }
+        }
+
+        // ② 在终端里按一下。
+        await terminal.StandardInput.WriteAsync("a"u8.ToArray(), peer.Token);
+        await Task.Delay(100, peer.Token);   // 按键此刻已经交给了会话
+
+        // ③ 对端开始读：数一数看到这下按键之前，收到了多少上传数据。
+        long uploadBytesBefore = 0;
+        while (true)
+        {
+            byte[] packet = await peer.ReadAsync() ?? throw new AssertFailedException("连接断了");
+            if (packet[0] != (byte)SshMessageNumber.ChannelData)
+            {
+                continue;
+            }
+            if (BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(1)) == 8)
+            {
+                break;
+            }
+            uploadBytesBefore += BinaryPrimitives.ReadUInt32BigEndian(packet.AsSpan(5));
+        }
+
+        // 走交互道的话，按键之前只会漏出正在刷的那一两批加上至多一帧；排在普通队列里就是整个积压。
+        Assert.IsLessThan(
+            512L * 1024, uploadBytesBefore,
+            $"按键排在了积压的上传后面：它之前先发出了 {uploadBytesBefore} 字节上传数据");
+
+        await peer.Connection.DisposeAsync();
+        try
+        {
+            await Task.WhenAll(pumping);
+        }
+        catch (Exception)
+        {
+            // 连接关了，上传的写入随之失败 —— 预期之中。
+        }
+    }
+
     // ------------------------------------------------------------ 保活
 
     /// <summary>

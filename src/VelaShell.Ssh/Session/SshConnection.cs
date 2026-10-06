@@ -863,13 +863,13 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
     /// <inheritdoc />
     ValueTask ISshChannelHost.SendIfAsync(
-        ReadOnlyMemory<byte> packet, Func<bool> admit, CancellationToken cancellationToken) =>
-        SendIfAsync(packet, admit, cancellationToken);
+        ReadOnlyMemory<byte> packet, Func<bool> admit, bool isInteractive, CancellationToken cancellationToken) =>
+        EnqueueAsync(packet, applyBackpressure: true, admit, cancellationToken, isInteractive: isInteractive);
 
     /// <inheritdoc />
     ValueTask ISshChannelHost.SendBorrowedIfAsync(
-        ReadOnlyMemory<byte> packet, Func<bool> admit, CancellationToken cancellationToken) =>
-        EnqueueAsync(packet, applyBackpressure: true, admit, cancellationToken, borrowed: true);
+        ReadOnlyMemory<byte> packet, Func<bool> admit, bool isInteractive, CancellationToken cancellationToken) =>
+        EnqueueAsync(packet, applyBackpressure: true, admit, cancellationToken, borrowed: true, isInteractive: isInteractive);
 
     /// <inheritdoc />
     bool ISshChannelHost.TryReserveWindowBudget(int bytes)
@@ -1265,11 +1265,11 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
 
         // CLOSE **必须双向**：收到对端的就得回一个（除非我们已经发过）。
         // 「要不要回」与入队在同一把锁里判定 —— 泵正要发的数据要么排在这个 CLOSE 前面，
-        // 要么看到「已发」而不再发（见 SendIfAsync）。
+        // 要么看到「已发」而不再发（见 ISshChannelHost.SendIfAsync）。
         byte[] reply = new byte[5];
         reply[0] = (byte)SshMessageNumber.ChannelClose;
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(1), channel.RemoteId);
-        PostIf(reply, channel.OnClose);
+        PostIf(reply, channel.OnClose, channel.IsInteractive);
 
         channel.OnCloseCompleted();
     }
@@ -1310,7 +1310,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         byte[] reply = new byte[5];
         reply[0] = (byte)(handled ? SshMessageNumber.ChannelSuccess : SshMessageNumber.ChannelFailure);
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(reply.AsSpan(1), channel.RemoteId);
-        PostIf(reply, () => !channel.CloseSent);
+        PostIf(reply, () => !channel.CloseSent, channel.IsInteractive);
     }
 
     private async ValueTask OnChannelRequestReplyAsync(

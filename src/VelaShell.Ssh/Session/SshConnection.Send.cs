@@ -65,6 +65,49 @@ public sealed partial class SshConnection
         });
 
     /// <summary>
+    /// 交互道：交互式通道（<see cref="Channels.SshChannelOptions.IsInteractive"/>，终端）发的报文。发送泵让它与普通队列轮流出队。
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// 〔Q7，velashell-docs/zh/ssh/spec/05 §3.2〕每条通道同一时刻至多一帧数据在队里（stdin 泵等上一帧刷出去才发下一帧），
+    /// 可一堆隧道连接、SFTP 一起在传时，普通队列里就排着每条一帧；按键排在它们后面，要等它们都上线 ——
+    /// 积压 2 MiB、上行 5 Mbit/s 时就是 3 秒以上。走交互道，至多等普通队列的一帧。
+    /// </para>
+    /// <para>
+    /// <b>轮流，不是优先</b>：往终端里粘贴一大段、或者开着很多个终端一起刷屏时，普通队列照样每隔一项轮到一次，不会被饿死。
+    /// </para>
+    /// <para>
+    /// 一条通道的报文<b>全都</b>走同一条道 —— 它自己发的，以及接收循环替它回的（<c>CHANNEL_CLOSE</c>、请求应答）——
+    /// 所以它自己的报文之间顺序不变，<c>CLOSE</c> 照样在它的数据之后。道在开通道时定下，之后不换。
+    /// 与别的通道之间、与连接级的报文之间本来就没有顺序约束；重协商期间它照样被闸门暂存，暂存保序。
+    /// 回补（<see cref="_priority"/>）仍在它前面。
+    /// </para>
+    /// </remarks>
+    private readonly Channel<OutboundItem> _interactive = Channel.CreateUnbounded<OutboundItem>(
+        new UnboundedChannelOptions
+        {
+            SingleReader = true,
+            SingleWriter = false,
+            AllowSynchronousContinuations = false,
+        });
+
+    /// <summary>这一次轮到交互道先取（只有发送泵碰它，见 <see cref="TryReadNext"/>）。</summary>
+    private bool _isInteractiveTurn;
+
+    /// <summary>一帧排进哪条队。</summary>
+    private enum OutboundLane : byte
+    {
+        /// <summary>普通队列。</summary>
+        Normal,
+
+        /// <summary>交互道（见 <see cref="_interactive"/>）。</summary>
+        Interactive,
+
+        /// <summary>插队的那一条（见 <see cref="_priority"/>）。</summary>
+        Priority,
+    }
+
+    /// <summary>
     /// 闸门本身不再限量：限量挪到了入队这一步（<see cref="_sendBudget"/>），
     /// 因为只有在那里才分得清「数据面的发送方」与「接收循环」—— 后者绝不能等。
     /// </summary>
@@ -158,29 +201,19 @@ public sealed partial class SshConnection
             },
             cancellationToken);
 
-    /// <summary>
-    /// 发一个报文；入队的<b>同一时刻</b>先问 <paramref name="admit"/> 还发不发，它说不发就不发。
-    /// </summary>
-    /// <remarks>
-    /// 给通道用：<c>CHANNEL_CLOSE</c> 之后这条通道上不许再有任何报文（RFC 4254 §5.3），
-    /// 而「通道关没关」必须和「入队」是同一个动作 —— 先查后入队的话，中间插进来一个 CLOSE，
-    /// 这一帧就排到了 CLOSE 后面。对端收到 CLOSE 就可能已经把通道释放了，
-    /// 它看到的是一帧发往不存在的通道的数据。
-    /// <paramref name="admit"/> 在入队锁里执行，不许在里面等任何东西。
-    /// </remarks>
-    private ValueTask SendIfAsync(
-        ReadOnlyMemory<byte> packet, Func<bool> admit, CancellationToken cancellationToken) =>
-        EnqueueAsync(packet, applyBackpressure: true, admit, cancellationToken);
 
     /// <summary>投递一个报文、不等它上线、不受背压限制；与入队同一时刻问 <paramref name="admit"/>。</summary>
-    /// <remarks>接收循环回复通道报文用（它不能在背压上等）。理由同 <see cref="SendIfAsync"/>。</remarks>
-    private void PostIf(ReadOnlyMemory<byte> packet, Func<bool> admit)
+    /// <remarks>
+    /// 接收循环回复通道报文用（它不能在背压上等）。理由同 <see cref="Channels.ISshChannelHost.SendIfAsync"/>。
+    /// <paramref name="isInteractive"/> 是那条通道的道（<see cref="Channels.SshChannel.IsInteractive"/>）：回给它的 <c>CLOSE</c> 要排在它自己的数据后面。
+    /// </remarks>
+    private void PostIf(ReadOnlyMemory<byte> packet, Func<bool> admit, bool isInteractive)
     {
         lock (_enqueueLock)
         {
             if (admit())
             {
-                Post(packet);
+                Post(packet, isInteractive);
             }
         }
     }
@@ -199,7 +232,8 @@ public sealed partial class SshConnection
         bool applyBackpressure,
         Func<bool>? admit,
         CancellationToken cancellationToken,
-        bool borrowed = false)
+        bool borrowed = false,
+        bool isInteractive = false)
     {
         // 空包不该走到这里 —— 消息编号是第一个字节。
         if (packet.IsEmpty)
@@ -210,8 +244,9 @@ public sealed partial class SshConnection
         ThrowIfFaulted();
         cancellationToken.ThrowIfCancellationRequested();
 
-        // 本端的窗口回补插队、不在背压上等（见 _priority）。
+        // 本端的窗口回补插队、不在背压上等（见 _priority）；交互式通道的其余报文走交互道（见 _interactive）。
         bool jumpQueue = packet.Span[0] == (byte)SshMessageNumber.ChannelWindowAdjust;
+        OutboundLane lane = jumpQueue ? OutboundLane.Priority : isInteractive ? OutboundLane.Interactive : OutboundLane.Normal;
 
         int accounted = 0;
         if (applyBackpressure)
@@ -236,7 +271,7 @@ public sealed partial class SshConnection
         bool enqueued;
         if (admit is null)
         {
-            enqueued = TryWriteFrame(frame, jumpQueue);
+            enqueued = TryWriteFrame(frame, lane);
         }
         else
         {
@@ -248,11 +283,11 @@ public sealed partial class SshConnection
             //    登记与入队仍在同一把锁里，所以登记顺序与上线顺序照样一致。
             //    入队失败只发生在连接已经收尾时：调用方拿到的是下面的关闭异常，
             //    不会去等那个登记项，而账本随连接一起被结算。
-            //    「通道关没关」的判定也在这把锁里做（见 SendIfAsync）。
+            //    「通道关没关」的判定也在这把锁里做（见 ISshChannelHost.SendIfAsync）。
             lock (_enqueueLock)
             {
                 admitted = admit();
-                enqueued = admitted && TryWriteFrame(frame, jumpQueue);
+                enqueued = admitted && TryWriteFrame(frame, lane);
             }
         }
 
@@ -271,29 +306,39 @@ public sealed partial class SshConnection
         await done.ConfigureAwait(false);
     }
 
-    /// <summary>把一帧放进普通队列，或者插队（见 <see cref="_priority"/>）。</summary>
+    /// <summary>把一帧放进普通队列、交互道（见 <see cref="_interactive"/>），或者插队（见 <see cref="_priority"/>）。</summary>
     /// <returns>放进去了为 <see langword="true"/>；连接已经收尾时为 <see langword="false"/>。</returns>
-    private bool TryWriteFrame(in OutboundItem frame, bool jumpQueue)
+    private bool TryWriteFrame(in OutboundItem frame, OutboundLane lane)
     {
-        if (!jumpQueue)
+        if (lane == OutboundLane.Normal)
         {
             return _outbound.Writer.TryWrite(frame);
         }
 
-        if (!_priority.Writer.TryWrite(frame))
+        if (!(lane == OutboundLane.Priority ? _priority : _interactive).Writer.TryWrite(frame))
         {
             return false;
         }
 
-        // 泵只在普通队列上等 —— 放一个空项叫醒它。泵正忙着的话，它取下一项之前就会先看插队的那一条。
-        // 叫醒失败只发生在收尾时，那时插队的这一帧会随收尾一起结算。
+        // 泵只在普通队列上等 —— 放一个空项叫醒它。泵正忙着的话，它取下一项之前就会先看插队的那一条、轮到时看交互道。
+        // 叫醒失败只发生在收尾时，那时这一帧会随收尾一起结算。
         _outbound.Writer.TryWrite(new OutboundItem(OutboundKind.Wake, default, 0, null));
         return true;
     }
 
-    /// <summary>取下一项：插队的先。</summary>
-    private bool TryReadNext(ChannelReader<OutboundItem> reader, out OutboundItem item) =>
-        _priority.Reader.TryRead(out item) || reader.TryRead(out item);
+    /// <summary>取下一项：插队的先；交互道与普通队列轮流（一边空着就取另一边）。</summary>
+    private bool TryReadNext(ChannelReader<OutboundItem> reader, out OutboundItem item)
+    {
+        if (_priority.Reader.TryRead(out item))
+        {
+            return true;
+        }
+
+        _isInteractiveTurn = !_isInteractiveTurn;
+        return _isInteractiveTurn
+            ? _interactive.Reader.TryRead(out item) || reader.TryRead(out item)
+            : reader.TryRead(out item) || _interactive.Reader.TryRead(out item);
+    }
 
     /// <summary>投递一个报文，不等它上线（接收循环用）。</summary>
     /// <remarks>
@@ -301,7 +346,7 @@ public sealed partial class SshConnection
     /// <c>OPEN_CONFIRMATION</c>…）走这里：发送泵保证它们按投递顺序上线，
     /// 发送失败则由发送泵把整条会话判死 —— 接收循环不需要、也不应该等。
     /// </remarks>
-    private void Post(ReadOnlyMemory<byte> packet)
+    private void Post(ReadOnlyMemory<byte> packet, bool isInteractive = false)
     {
         if (Volatile.Read(ref _fault) is not null)
         {
@@ -325,8 +370,9 @@ public sealed partial class SshConnection
 
         // 投递的字节照样计入背压：应答攒多了，数据面的发送方就得等。
         _sendBudget.Charge(packet.Length);
-        if (!_outbound.Writer.TryWrite(
-                new OutboundItem(OutboundKind.Frame, packet, packet.Length, null, IsReply: true)))
+        if (!TryWriteFrame(
+                new OutboundItem(OutboundKind.Frame, packet, packet.Length, null, IsReply: true),
+                isInteractive ? OutboundLane.Interactive : OutboundLane.Normal))
         {
             ReleasePendingBytes(packet.Length);
             Interlocked.Add(ref _queuedReplyBytes, -packet.Length);
@@ -473,6 +519,7 @@ public sealed partial class SshConnection
         // 两条队都先关上再排空 —— 之后的写入一律失败（调用方拿到关闭异常），不会有漏在队里没人结算的。
         _outbound.Writer.TryComplete();
         _priority.Writer.TryComplete();
+        _interactive.Writer.TryComplete();
         Exception reason = ClosedException();
 
         foreach (SendCompletion completion in flushed)
@@ -597,7 +644,7 @@ public sealed partial class SshConnection
                 }
 
             case OutboundKind.Wake:
-                return 0;   // 只是来叫醒泵的；插队的那一帧已经在它前面处理过了
+                return 0;   // 只是来叫醒泵的；插队或交互道的那一帧在它前面处理过了，或者轮到时再处理
 
             default:
                 throw new InvalidOperationException($"未知的出站项 {item.Kind}。");

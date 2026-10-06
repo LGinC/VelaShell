@@ -170,6 +170,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         _windowPolicy = options.WindowPolicy;
         ReceiveMaxPacketBytes = options.ReceiveMaxPacketBytes;
+        IsInteractive = options.IsInteractive;
         int window = options.WindowPolicy.InitialBytes;
         _receiveWindow = new SshWindow(window);
         _budgetCharged = window;   // 会话开通道时按它计的
@@ -265,6 +266,9 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>我们宣告的单个数据段上限（<c>maximum packet size</c>）：对端发来的每个 DATA / EXTENDED_DATA 都不许超过它。</summary>
     internal int ReceiveMaxPacketBytes { get; }
+
+    /// <summary>这条通道发的报文走交互道（<see cref="SshChannelOptions.IsInteractive"/>）；开通道时定下，之后不变 —— 中途换道会让它自己的报文乱序。</summary>
+    internal bool IsInteractive { get; }
 
     /// <summary>远端的标准输出。</summary>
     /// <remarks>
@@ -454,7 +458,7 @@ public sealed class SshChannel : IAsyncDisposable
         if (!wantReply)
         {
             bool sent = false;
-            await _host.SendIfAsync(buffer.WrittenMemory, () => sent = MayStillSend(), cancellationToken)
+            await _host.SendIfAsync(buffer.WrittenMemory, () => sent = MayStillSend(), IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
             return sent;
         }
@@ -475,7 +479,7 @@ public sealed class SshChannel : IAsyncDisposable
                 reply = _pendingRequests.TryRegister();
                 return reply is not null;
             },
-            cancellationToken).ConfigureAwait(false);
+            IsInteractive, cancellationToken).ConfigureAwait(false);
 
         return reply is not null && await reply.WaitAsync(cancellationToken).ConfigureAwait(false);
     }
@@ -565,7 +569,7 @@ public sealed class SshChannel : IAsyncDisposable
         // 对端可能已经 CLOSE 了 —— 那时不发，入队时一并判定。
         if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
         {
-            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
+            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
         }
     }
@@ -656,7 +660,7 @@ public sealed class SshChannel : IAsyncDisposable
             // 「已发」这个标记在入队锁里、与入队同一时刻设上（TryCommitClose）。
             // 曾经是先设标记、后发 —— 发送被取消（释放通道有 5 秒时限）的话，标记已经是真的，
             // CLOSE 却永远不会再发：服务端那条通道一直开着，远端进程也一直跑着。
-            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelClose), TryCommitClose, cancellationToken)
+            await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelClose), TryCommitClose, IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested)
@@ -1416,7 +1420,7 @@ public sealed class SshChannel : IAsyncDisposable
         packet[0] = (byte)SshMessageNumber.ChannelWindowAdjust;
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(1), RemoteId);
         System.Buffers.Binary.BinaryPrimitives.WriteUInt32BigEndian(packet.AsSpan(5), bytes);
-        await _host.SendIfAsync(packet, _mayStillSend, cancellationToken).ConfigureAwait(false);
+        await _host.SendIfAsync(packet, _mayStillSend, IsInteractive, cancellationToken).ConfigureAwait(false);
     }
 
     private async Task PumpStandardInputAsync(CancellationToken cancellationToken)
@@ -1473,7 +1477,7 @@ public sealed class SshChannel : IAsyncDisposable
                     _ = TryMarkLocalEof();
                     if (Interlocked.Exchange(ref _eofOwed, 0) == 1)
                     {
-                        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, cancellationToken)
+                        await _host.SendIfAsync(SimplePacket(SshMessageNumber.ChannelEof), _mayStillSend, IsInteractive, cancellationToken)
                             .ConfigureAwait(false);
                     }
                     return;
@@ -1549,7 +1553,7 @@ public sealed class SshChannel : IAsyncDisposable
             data.CopyTo(rented.AsSpan(9));
 
             _dataAdmitted = false;
-            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _admitData, cancellationToken)
+            await _host.SendBorrowedIfAsync(rented.AsMemory(0, 9 + length), _admitData, IsInteractive, cancellationToken)
                 .ConfigureAwait(false);
             if (_dataAdmitted)
             {
