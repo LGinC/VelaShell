@@ -101,6 +101,7 @@ public sealed partial class X11Server
                     }
                     else
                     {
+                        RequireMemory(c, ResourceOverheadBytes + PixelBytes(window.Width, window.Height));
                         pixmap = new XPixmap(pixmapId, c, window.Width, window.Height, window.Depth);
                         (int ox, int oy) = window.OffsetInTopLevel();
                         PixelBuffer.CopyRect(buffer, ox, oy, pixmap.Buffer, 0, 0, window.Width, window.Height);

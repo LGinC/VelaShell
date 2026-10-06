@@ -59,6 +59,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 65535² 一块就是 16 GB
         }
+        RequireMemory(c, ResourceOverheadBytes + PixelBytes(width, height));   // 先核账再分配(xs_plan X-2)
         AddResource(c, new XPixmap(id, c, width, height, depth));
     }
 

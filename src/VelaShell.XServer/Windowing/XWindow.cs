@@ -16,7 +16,11 @@ namespace VelaShell.XServer.Windowing;
 /// <param name="Type">类型原子。</param>
 /// <param name="Format">8 / 16 / 32。</param>
 /// <param name="Data">原始字节 —— 按<b>存进来的那个客户端的字节序</b>规整成本机序存放,取出时再按取的人的字节序写出。</param>
-internal sealed record XProperty(uint Type, byte Format, byte[] Data);
+internal sealed record XProperty(uint Type, byte Format, byte[] Data)
+{
+    /// <summary>值记在谁的账上(写它的客户端);服务端自己写的为 null(见 <c>X11Server.ChargeMemory</c>)。</summary>
+    public XClient? ChargedTo { get; init; }
+}
 
 /// <summary>一个窗口。</summary>
 /// <remarks>
@@ -124,6 +128,9 @@ internal sealed class XWindow : XResource
 
     /// <summary>顶层窗口(根的直接子窗口)的像素缓冲;子窗口画在所属顶层的缓冲里(架构 §6)。</summary>
     public PixelBuffer? Buffer { get; set; }
+
+    /// <summary><see cref="Buffer" /> 记在 <see cref="XResource.Owner" /> 名下的字节数(见 <c>X11Server.SyncBufferCharge</c>)。</summary>
+    public long BufferCharged { get; set; }
 
     /// <summary>被动按钮抓取(GrabButton)。</summary>
     public List<Input.PassiveGrab> ButtonGrabs { get; } = [];

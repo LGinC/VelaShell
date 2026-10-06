@@ -141,7 +141,7 @@ public sealed partial class X11Server
         {
             BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(i * 4), values[i]);
         }
-        window.Properties[property] = new XProperty(type, 32, data);
+        StoreServerProperty(window, property, new XProperty(type, 32, data));
         SendPropertyNotify(window, property, deleted: false);
     }
 

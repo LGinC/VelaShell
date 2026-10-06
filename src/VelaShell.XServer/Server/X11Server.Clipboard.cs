@@ -154,7 +154,7 @@ public sealed partial class X11Server
         }
         else
         {
-            requestor.Properties[property] = value;
+            StoreServerProperty(requestor, property, value);
             SendPropertyNotify(requestor, property, deleted: false);
         }
         XClient to = requestor.Owner is { Closed: false } creator ? creator : c;
@@ -257,8 +257,9 @@ public sealed partial class X11Server
 
     private void DeleteSelectionProperty(uint property)
     {
-        if (SelectionWindow.Properties.Remove(property))
+        if (SelectionWindow.Properties.Remove(property, out XProperty? removed))
         {
+            ReleaseProperty(removed);
             SendPropertyNotify(SelectionWindow, property, deleted: true);
         }
     }

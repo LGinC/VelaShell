@@ -285,7 +285,7 @@ public sealed partial class X11Server
     private void DestroyOne(XWindow window)
     {
         DeliverStructure(window, XEventCode.DestroyNotify, 0, w => w.U32(window.Id));
-        _resources.Remove(window.Id);
+        RemoveResource(window.Id);
         if (window.Owner is { } creator)
         {
             creator.WindowCount--;
@@ -321,10 +321,17 @@ public sealed partial class X11Server
         }
         _damage.Remove(window);
         window.Buffer = null;
+        SyncBufferCharge(window);
         foreach (XClient client in _clients.Values)
         {
             client.SaveSet.Remove(window.Id);
         }
+        // 属性随窗口而去:写它们的客户端的账退还(最后做 —— 上面的清理还可能读它们)。
+        foreach (XProperty property in window.Properties.Values)
+        {
+            ReleaseProperty(property);
+        }
+        window.Properties.Clear();
     }
 
     /// <summary>
@@ -361,6 +368,10 @@ public sealed partial class X11Server
             wm.Event(XEventCode.MapRequest, 0, w => w.U32(parent.Id).U32(window.Id));
             return;
         }
+        if (requester is not null && window.IsTopLevel)
+        {
+            RequireBufferMemory(window, window.Width, window.Height);   // 映射时才建缓冲:先核账(xs_plan X-2)
+        }
 
         window.Mapped = true;
         InvalidateVisibility();
@@ -374,6 +385,7 @@ public sealed partial class X11Server
         {
             window.Buffer ??= new Drawing.PixelBuffer(window.Width, window.Height, window.Depth == 32 ? (byte)32 : (byte)24);
             window.Buffer.Resize(window.Width, window.Height);
+            SyncBufferCharge(window);
             XTopLevelWindow handle = HandleFor(window);
             RefreshSnapshot(window, handle);
             SetMapped(handle, true);
@@ -491,6 +503,10 @@ public sealed partial class X11Server
             return;
         }
 
+        if (window.IsTopLevel && window.Buffer is not null && (width != window.Width || height != window.Height))
+        {
+            RequireBufferMemory(window, width, height);   // 缓冲要跟着变大:先核账(xs_plan X-2)
+        }
         Configure(window, x, y, width, height, border, sibling, stackMode);
     }
 
@@ -543,6 +559,7 @@ public sealed partial class X11Server
             if (resized && window.Buffer is { } buffer)
             {
                 buffer.Resize(width, height);
+                SyncBufferCharge(window);
                 // bit-gravity 默认 Forget:整窗重画(并发 Expose)。NorthWest 时只画新露出的部分。
                 Drawing.Region exposed = new(buffer.Bounds);
                 ExposeWindowTree(window, exposed);
@@ -646,6 +663,7 @@ public sealed partial class X11Server
                 SetMapped(handle, false);
             }
             window.Buffer = null;
+            SyncBufferCharge(window);
         }
 
         void Body(XWriter w) => w.U32(window.Id).U32(parent.Id).I16(x).I16(y).Bool(window.OverrideRedirect);

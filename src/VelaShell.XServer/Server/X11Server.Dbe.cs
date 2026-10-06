@@ -21,6 +21,9 @@ public sealed partial class X11Server
     /// <summary>DBE:窗口 → 它的后缓冲(可以有多个名字指向同一块)。</summary>
     private readonly Dictionary<XWindow, (XPixmap Buffer, List<uint> Names)> _backBuffers = [];
 
+    /// <summary>每块后缓冲记在账上的字节数(xs_plan X-2;后缓冲不经 AddResource,单独记)。</summary>
+    private readonly Dictionary<XWindow, long> _backBufferBytes = [];
+
     private void Dbe(XClient c, XRequestReader r)
     {
         switch (r.Data)
@@ -42,8 +45,11 @@ public sealed partial class X11Server
                     }
                     if (!_backBuffers.TryGetValue(window, out (XPixmap Buffer, List<uint> Names) back))
                     {
+                        long bytes = PixelBytes(window.Width, window.Height);
+                        ChargeMemory(c, bytes);   // 后缓冲记在第一个要它的客户端名下(xs_plan X-2)
                         back = (new XPixmap(name, c, window.Width, window.Height, window.Depth), []);
                         _backBuffers[window] = back;
+                        _backBufferBytes[window] = bytes;
                     }
                     back.Names.Add(name);
                     // 每个名字都能当可绘对象用:同一块缓冲挂在各自的 ID 下。
@@ -58,7 +64,7 @@ public sealed partial class X11Server
                     _resources.Remove(name);
                     if (back.Names.Count == 0)
                     {
-                        _backBuffers.Remove(window);
+                        DropBackBuffer(window);
                     }
                     break;
                 }
@@ -171,18 +177,39 @@ public sealed partial class X11Server
         if (_backBuffers.TryGetValue(window, out (XPixmap Buffer, List<uint> Names) back))
         {
             back.Buffer.Buffer.Resize(window.Width, window.Height);
+            // 跟着窗口变的尺寸照记不拒(窗口那一边已经核过账);账记在当初分配它的客户端名下。
+            long bytes = PixelBytes(window.Width, window.Height), old = _backBufferBytes.GetValueOrDefault(window);
+            if (bytes > old)
+            {
+                ChargeMemory(back.Buffer.Owner, bytes - old, force: true);
+            }
+            else
+            {
+                RefundMemory(back.Buffer.Owner, old - bytes);
+            }
+            _backBufferBytes[window] = bytes;
+        }
+    }
+
+    /// <summary>后缓冲整块丢掉(最后一个名字没了、窗口销毁):退还它的账。</summary>
+    private void DropBackBuffer(XWindow window)
+    {
+        if (_backBuffers.Remove(window, out (XPixmap Buffer, List<uint> Names) back) && _backBufferBytes.Remove(window, out long bytes))
+        {
+            RefundMemory(back.Buffer.Owner, bytes);
         }
     }
 
     /// <summary>窗口销毁:它的后缓冲连同所有名字一起释放。</summary>
     private void CleanupDbe(XWindow window)
     {
-        if (_backBuffers.Remove(window, out (XPixmap Buffer, List<uint> Names) back))
+        if (_backBuffers.TryGetValue(window, out (XPixmap Buffer, List<uint> Names) back))
         {
             foreach (uint name in back.Names)
             {
                 _resources.Remove(name);
             }
+            DropBackBuffer(window);
         }
     }
 
@@ -194,7 +221,7 @@ public sealed partial class X11Server
             back.Names.RemoveAll(name => !_resources.ContainsKey(name));
             if (back.Names.Count == 0)
             {
-                _backBuffers.Remove(w);
+                DropBackBuffer(w);
             }
         }
     }

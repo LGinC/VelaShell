@@ -610,7 +610,7 @@ public sealed partial class X11Server
         DetachShmSegments(others);
         foreach (XResource resource in others)
         {
-            _resources.Remove(resource.Id);
+            RemoveResource(resource.Id);
             if (resource is XPixmap pixmap)
             {
                 CleanupDamage(pixmap);   // 客户端走了,它的像素图随之销毁:别的客户端建在上面的 Damage 一并销毁

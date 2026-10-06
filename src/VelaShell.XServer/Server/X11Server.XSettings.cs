@@ -45,12 +45,12 @@ public sealed partial class X11Server
     {
         _xsettingsSerial++;
         uint settings = Intern("_XSETTINGS_SETTINGS");
-        SelectionWindow.Properties[settings] = new XProperty(settings, 8, BuildXSettings());
+        StoreServerProperty(SelectionWindow, settings, new XProperty(settings, 8, BuildXSettings()));
         SendPropertyNotify(SelectionWindow, settings, deleted: false);
 
         uint resources = Intern("RESOURCE_MANAGER");
         string text = $"Xft.dpi:\t{_dpi}\nXft.antialias:\t1\nXft.hinting:\t1\nXft.hintstyle:\thintslight\nXft.rgba:\tnone\n";
-        Root.Properties[resources] = new XProperty(XAtom.String, 8, XWire.Latin1.GetBytes(text));
+        StoreServerProperty(Root, resources, new XProperty(XAtom.String, 8, XWire.Latin1.GetBytes(text)));
         SendPropertyNotify(Root, resources, deleted: false);
     }
 

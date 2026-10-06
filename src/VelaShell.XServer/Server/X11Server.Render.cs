@@ -61,7 +61,7 @@ public sealed partial class X11Server
             case 17: CreateGlyphSet(c, r); break;
             case 18: ReferenceGlyphSet(c, r); break;
             case 19: FreeGlyphSet(r); break;
-            case 20: AddGlyphs(r); break;
+            case 20: AddGlyphs(c, r); break;
             case 22: FreeGlyphs(r); break;
             case 23: case 24: case 25: CompositeGlyphs(r); break;
             case 26: FillRectangles(r); break;
@@ -694,7 +694,7 @@ public sealed partial class X11Server
         RemoveResource(id);
     }
 
-    private void AddGlyphs(XRequestReader r)
+    private void AddGlyphs(XClient c, XRequestReader r)
     {
         GlyphTable table = GlyphSet(r.U32()).Table;
         int count = (int)r.U32();
@@ -723,9 +723,15 @@ public sealed partial class X11Server
                 throw new XProtocolError(XErrorCode.Length);
             }
             byte[] data = r.Bytes(size);
+            // 字形位图记在加它的客户端名下(xs_plan X-2),在解码分配之前核账;同一个 ID 的旧字形退还。
+            ChargeMemory(c, (long)w * h * (format.HasColor ? 4 : 1));
+            if (table.Glyphs.TryGetValue(ids[i], out XRenderGlyph? previous))
+            {
+                ReleaseGlyphs([previous]);
+            }
             table.Glyphs[ids[i]] = format.HasColor
-                ? new XRenderGlyph(w, h, x, y, xOff, yOff, null, DecodeColorGlyph(data, w, h, bpp, format))
-                : new XRenderGlyph(w, h, x, y, xOff, yOff, DecodeAlphaGlyph(data, w, h, bpp, format), null);
+                ? new XRenderGlyph(w, h, x, y, xOff, yOff, null, DecodeColorGlyph(data, w, h, bpp, format)) { ChargedTo = c }
+                : new XRenderGlyph(w, h, x, y, xOff, yOff, DecodeAlphaGlyph(data, w, h, bpp, format), null) { ChargedTo = c };
         }
     }
 
@@ -786,10 +792,11 @@ public sealed partial class X11Server
         while (r.Remaining >= 4)
         {
             uint id = r.U32();
-            if (!table.Glyphs.Remove(id))
+            if (!table.Glyphs.Remove(id, out XRenderGlyph? removed))
             {
                 throw RenderError(4, id);
             }
+            ReleaseGlyphs([removed]);
         }
     }
 

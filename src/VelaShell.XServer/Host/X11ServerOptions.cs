@@ -82,6 +82,15 @@ public sealed class X11ServerOptions
     public string WindowManagerName { get; init; } = "VelaShell";
 
     /// <summary>
+    /// 一个客户端能占的内存上限(字节):像素图、顶层窗口的缓冲、DOUBLE-BUFFER 的后缓冲、属性值、RENDER 字形、XFIXES 区域,
+    /// 以及每个资源的一份固定开销。超了的请求回 BadAlloc,而不是让服务端(连同宿主进程)耗尽内存。默认 1 GiB。
+    /// </summary>
+    public long MaxClientMemory { get; init; } = 1L << 30;
+
+    /// <summary>全部客户端合计的内存上限(字节,口径同 <see cref="MaxClientMemory" />)。默认 2 GiB。</summary>
+    public long MaxTotalMemory { get; init; } = 2L << 30;
+
+    /// <summary>
     /// 诊断日志:连接进出、每条发给客户端的协议错误(带操作码与最近几条请求)、未实现的请求、服务端内部与宿主回调的异常。
     /// null = 不记。服务端的全部诊断只走这一个出口。在执行线程或连接的读写线程上调用,不要在里面阻塞。
     /// </summary>
@@ -99,6 +108,7 @@ public sealed class X11ServerOptions
         Require(ScaleFactor >= 1, $"{nameof(ScaleFactor)} 必须 ≥ 1。");
         Require(!string.IsNullOrEmpty(KeyboardLayout), $"{nameof(KeyboardLayout)} 不能为空。");
         Require(Vendor is not null && WindowManagerName is not null, $"{nameof(Vendor)} / {nameof(WindowManagerName)} 不能为 null。");
+        Require(MaxClientMemory >= 1 && MaxTotalMemory >= 1, $"{nameof(MaxClientMemory)} / {nameof(MaxTotalMemory)} 必须 ≥ 1。");
 
         static void Require(bool condition, string message)
         {

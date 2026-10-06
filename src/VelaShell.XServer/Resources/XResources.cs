@@ -22,6 +22,9 @@ internal abstract class XResource(uint id, XClient? owner)
     /// 创建者。客户端断开时它创建的资源一律释放(CloseDownMode = Destroy,默认)。
     /// </summary>
     public XClient? Owner { get; } = owner;
+
+    /// <summary>进资源表时记在 <see cref="Owner" /> 名下的字节数(见 <c>X11Server.ChargeMemory</c>);离开资源表时如数退还。</summary>
+    public long Charged { get; set; }
 }
 
 /// <summary>像素图:一块离屏帧缓冲。</summary>
@@ -33,7 +36,11 @@ internal sealed class XPixmap(uint id, XClient? owner, PixelBuffer buffer) : XRe
     public XPixmap(uint id, XClient? owner, int width, int height, byte depth)
         : this(id, owner, new PixelBuffer(width, height, depth))
     {
+        OwnsBuffer = true;
     }
+
+    /// <summary>缓冲是它自己的(而不是包住顶层窗口或后缓冲的那一块):只有这样才按像素记账。</summary>
+    public bool OwnsBuffer { get; }
 
     public PixelBuffer Buffer { get; } = buffer;
 

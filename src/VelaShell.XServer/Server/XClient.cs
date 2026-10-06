@@ -69,6 +69,9 @@ internal sealed class XClient : IDisposable
     /// <summary>这个客户端眼下拥有的窗口数(见 <c>X11Server.MaxWindowsPerClient</c>)。</summary>
     public int WindowCount { get; set; }
 
+    /// <summary>记在这个客户端名下的内存(字节,见 <c>X11Server.ChargeMemory</c>);断开之后还没释放的(保留的资源、写在别人窗口上的属性)照样算。</summary>
+    public long MemoryInUse { get; set; }
+
     // 最近几条请求的主、次操作码(主 << 16 | 次),环形覆盖;出错时一并打印,便于看出错前客户端在干什么。
     // 每条请求都记,所以记成整数 —— 拼字符串只在真要打印时做。
     private readonly uint[] _recentRequests = new uint[8];

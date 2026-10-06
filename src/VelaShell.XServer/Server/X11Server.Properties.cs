@@ -130,14 +130,33 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 先算再拼:不为一个注定超限的值分配
         }
+        // 记账(xs_plan X-2):新值记在写它的客户端名下,旧值退还给当初写它的客户端;记不下回 Alloc,属性不变。
+        XProperty? replaced = window.Properties.GetValueOrDefault(property);
+        ReleaseProperty(replaced);
+        try
+        {
+            ChargeMemory(c, byteCount + (existing?.Data.Length ?? 0));
+        }
+        catch (XProtocolError)
+        {
+            ChargeMemory(replaced?.ChargedTo, replaced?.Data.Length ?? 0, force: true);
+            throw;
+        }
         byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
         if (existing is not null)
         {
             data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
         }
-        window.Properties[property] = new XProperty(type, format, data);
+        window.Properties[property] = new XProperty(type, format, data) { ChargedTo = c };
         SendPropertyNotify(window, property, deleted: false);
         OnTopLevelPropertyChanged(window, property);
+    }
+
+    /// <summary>服务端自己写的属性(EWMH、XSETTINGS、剪贴板的回应……):被替换掉的旧值退还写它的客户端的账。</summary>
+    internal void StoreServerProperty(XWindow window, uint property, XProperty value)
+    {
+        ReleaseProperty(window.Properties.GetValueOrDefault(property));
+        window.Properties[property] = value;
     }
 
     /// <summary>16 / 32 位属性一律按本机序(小端)存放,取出时再按取的人的字节序写出。</summary>
@@ -174,8 +193,9 @@ public sealed partial class X11Server
         XWindow window = Window(r.U32());
         uint property = r.U32();
         CheckAtom(property);
-        if (window.Properties.Remove(property))
+        if (window.Properties.Remove(property, out XProperty? removed))
         {
+            ReleaseProperty(removed);
             SendPropertyNotify(window, property, deleted: true);
             OnTopLevelPropertyChanged(window, property);
         }
@@ -238,6 +258,7 @@ public sealed partial class X11Server
         if (delete && after == 0)
         {
             window.Properties.Remove(property);
+            ReleaseProperty(prop);
             SendPropertyNotify(window, property, deleted: true);
             OnTopLevelPropertyChanged(window, property);   // 与 DeleteProperty 一样:宿主那边的标题 / 提示跟着变
         }

@@ -745,7 +745,7 @@ public sealed partial class X11Server
     {
         uint property = Intern("_XKB_RULES_NAMES");
         byte[] value = XWire.Latin1.GetBytes($"evdev\0pc105\0{KeyboardLayout}\0\0\0");
-        Root.Properties[property] = new XProperty(XAtom.String, 8, value);
+        StoreServerProperty(Root, property, new XProperty(XAtom.String, 8, value));
         SendPropertyNotify(Root, property, deleted: false);
     }
 

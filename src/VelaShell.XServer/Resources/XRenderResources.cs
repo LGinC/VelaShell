@@ -46,7 +46,14 @@ internal sealed class XPicture(uint id, XClient? owner) : XResource(id, owner)
 /// 一个字形:度量与位图。只有 alpha 的字形集(a8 / a4 / a1,Xft 的常态)存 <paramref name="Alpha" />,每像素一个字节;
 /// 带颜色的(次像素渲染)存 <paramref name="Color" />,每像素一个预乘的 0xAARRGGBB。
 /// </summary>
-internal sealed record XRenderGlyph(int Width, int Height, int X, int Y, int XOff, int YOff, byte[]? Alpha, uint[]? Color);
+internal sealed record XRenderGlyph(int Width, int Height, int X, int Y, int XOff, int YOff, byte[]? Alpha, uint[]? Color)
+{
+    /// <summary>加这个字形的客户端(它的内存记在谁名下)。</summary>
+    public XClient? ChargedTo { get; init; }
+
+    /// <summary>位图占的字节。</summary>
+    public long Bytes => (Alpha?.Length ?? 0) + ((Color?.Length ?? 0) * 4L);
+}
 
 /// <summary>字形集的内容;ReferenceGlyphSet 让多个 ID 共用同一份。</summary>
 internal sealed class GlyphTable(PictFormat format)
@@ -54,6 +61,9 @@ internal sealed class GlyphTable(PictFormat format)
     public PictFormat Format { get; } = format;
 
     public Dictionary<uint, XRenderGlyph> Glyphs { get; } = [];
+
+    /// <summary>还有几个字形集 ID 指着这张表;减到 0 时字形一并释放(见 <c>X11Server.RemoveResource</c>)。</summary>
+    public int References { get; set; }
 }
 
 /// <summary>一个字形集 ID。</summary>
