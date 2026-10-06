@@ -11,7 +11,6 @@
 //   以及宿主作为窗口管理器对顶层做的动作(焦点、移动、缩放、关闭、状态、外框)。
 
 using System.Runtime.InteropServices;
-using System.Text;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Windowing;
 
@@ -65,18 +64,22 @@ public sealed partial class X11Server
     private XTopLevelSnapshot BuildSnapshot(XWindow top, XTopLevelSnapshot previous)
     {
         Dictionary<uint, XProperty> props = top.Properties;
+        // 字符串只取有限的一段、去掉控制字符(见 HostText):属性能有 32 MB,快照每次几何刷新都要重建。
         string title = props.TryGetValue(_netWmNameAtom, out XProperty? utf8) && utf8.Format == 8
-            ? Encoding.UTF8.GetString(utf8.Data)
+            ? HostText(utf8.Data, utf8: true, MaxHostTitleChars)
             : props.TryGetValue(XAtom.WmName, out XProperty? name) && name.Format == 8
-                ? XWire.Latin1.GetString(name.Data)
+                ? HostText(name.Data, utf8: false, MaxHostTitleChars)
                 : "";
 
         string className = "";
         if (props.TryGetValue(XAtom.WmClass, out XProperty? cls) && cls.Format == 8)
         {
             // WM_CLASS = "instance\0class\0"
-            string[] parts = XWire.Latin1.GetString(cls.Data).Split('\0');
-            className = parts.Length > 1 ? parts[1] : parts[0];
+            ReadOnlySpan<byte> data = cls.Data.AsSpan(0, Math.Min(cls.Data.Length, (2 * MaxHostNameChars) + 2));
+            int split = data.IndexOf((byte)0);
+            ReadOnlySpan<byte> classPart = split < 0 ? data : data[(split + 1)..];
+            int end = classPart.IndexOf((byte)0);
+            className = HostText(end < 0 ? classPart : classPart[..end], utf8: false, MaxHostNameChars);
         }
 
         uint transientId = props.TryGetValue(XAtom.WmTransientFor, out XProperty? transient) && transient is { Format: 32, Data.Length: >= 4 }
@@ -164,7 +167,7 @@ public sealed partial class X11Server
     /// <summary>WM_HINTS 的 input 字段(ICCCM §4.1.2.4);没给(flags 里没有 InputHint)时按 True 算。</summary>
     private static bool AcceptsInputHint(XWindow top)
     {
-        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints));
+        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints), 9);
         return hints.Length < 2 || (hints[0] & 1) == 0 || hints[1] != 0;
     }
 

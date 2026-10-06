@@ -164,6 +164,29 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 交给宿主的标题去掉控制字符与双向排版控制符_过长的截断()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        XTopLevelWindow window = host.Mapped[top];
+
+        await SetTitleAsync(c, top, "a\u001Bb\u0007c\u0085d");
+        await host.WaitForAsync(() => window.Snapshot.Title == "abcd");
+
+        // _NET_WM_NAME(UTF-8):RLO 能把任务栏里的标题倒着显示。
+        uint netWmName = await InternAsync(c, "_NET_WM_NAME"), utf8String = await InternAsync(c, "UTF8_STRING");
+        byte[] spoof = Encoding.UTF8.GetBytes("invoice‮txt.exe");
+        await c.SendAsync(18, 0, b => b.U32(top).U32(netWmName).U32(utf8String).U8(8).U8(0).U8(0).U8(0).U32((uint)spoof.Length).Bytes(spoof).Pad());
+        await host.WaitForAsync(() => window.Snapshot.Title == "invoicetxt.exe");
+
+        byte[] huge = Encoding.UTF8.GetBytes(new string('x', 20000));
+        await c.SendAsync(18, 0, b => b.U32(top).U32(netWmName).U32(utf8String).U8(8).U8(0).U8(0).U8(0).U32((uint)huge.Length).Bytes(huge).Pad());
+        await host.WaitForAsync(() => window.Snapshot.Title.Length == 4096);
+    }
+
+    [TestMethod]
     public async Task 位图光标连图像交给宿主_XFIXES起的名字推出形状()
     {
         using RecordingHost host = new();

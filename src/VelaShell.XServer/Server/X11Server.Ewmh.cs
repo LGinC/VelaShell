@@ -145,13 +145,41 @@ public sealed partial class X11Server
         SendPropertyNotify(window, property, deleted: false);
     }
 
-    private static uint[] ReadCard32s(XProperty? property)
+    /// <summary>_NET_WM_STATE、_NET_WM_WINDOW_TYPE 这类原子列表最多看这么多个(认识的状态与类型总共十几个)。</summary>
+    private const int MaxHintAtoms = 64;
+
+    /// <summary>交给宿主的标题最多这么多个字符;类名、机器名、角色最多 <see cref="MaxHostNameChars" /> 个。</summary>
+    internal const int MaxHostTitleChars = 4096, MaxHostNameChars = 256;
+
+    /// <summary>
+    /// 交给宿主的字符串(标题、类名、机器名、角色):只解码够 <paramref name="maxChars" /> 个字符的那几个字节(属性能有 32 MB,
+    /// 快照每次几何刷新都要重建),去掉控制字符与双向排版控制符 —— 后者能在任务栏、标题栏里把标题倒着显示、伪造来源。
+    /// </summary>
+    internal static string HostText(ReadOnlySpan<byte> data, bool utf8, int maxChars)
+    {
+        int maxBytes = utf8 ? maxChars * 4 : maxChars;
+        string text = utf8 ? Encoding.UTF8.GetString(data.Length > maxBytes ? data[..maxBytes] : data)
+                           : XWire.Latin1.GetString(data.Length > maxBytes ? data[..maxBytes] : data);
+        if (text.Length > maxChars)
+        {
+            text = text[..(char.IsHighSurrogate(text[maxChars - 1]) ? maxChars - 1 : maxChars)];
+        }
+        return text.AsSpan().ContainsAny(DisallowedHostChars) ? string.Concat(text.Where(ch => !DisallowedHostChars.Contains(ch))) : text;
+    }
+
+    /// <summary>C0 / C1 控制字符,以及双向排版控制符(LRM / RLM / ALM、LRE…RLO、LRI…PDI)。</summary>
+    private static readonly System.Buffers.SearchValues<char> DisallowedHostChars = System.Buffers.SearchValues.Create(
+        string.Concat(Enumerable.Range(0, 0x20).Concat(Enumerable.Range(0x7F, 0x21)).Select(c => (char)c))
+        + "؜‎‏‪‫‬‭‮⁦⁧⁨⁩");
+
+    /// <summary>32 位属性的前 <paramref name="max" /> 个值(提示类属性只看头几个:客户端可以把它们设成 32 MB,快照每次几何刷新都要读一遍)。</summary>
+    private static uint[] ReadCard32s(XProperty? property, int max = int.MaxValue)
     {
         if (property is not { Format: 32 })
         {
             return [];
         }
-        uint[] values = new uint[property.Data.Length / 4];
+        uint[] values = new uint[Math.Min(property.Data.Length / 4, max)];
         for (int i = 0; i < values.Length; i++)
         {
             values[i] = BinaryPrimitives.ReadUInt32LittleEndian(property.Data.AsSpan(i * 4));
@@ -224,7 +252,7 @@ public sealed partial class X11Server
     private XWindowStates ReadNetWmStates(XWindow top)
     {
         XWindowStates states = XWindowStates.None;
-        foreach (uint atom in ReadCard32s(top.Properties.GetValueOrDefault(_netWmStateAtom)))
+        foreach (uint atom in ReadCard32s(top.Properties.GetValueOrDefault(_netWmStateAtom), MaxHintAtoms))
         {
             int index = Array.IndexOf(_stateAtoms, atom);
             if (index >= 0)
@@ -372,7 +400,7 @@ public sealed partial class X11Server
         XWindowStates states = ReadNetWmStates(top);
 
         XWindowType type = hasTransientFor ? XWindowType.Dialog : XWindowType.Normal;
-        foreach (uint atom in ReadCard32s(props.GetValueOrDefault(_netWmTypeAtom)))   // 按偏好顺序,第一个认识的为准
+        foreach (uint atom in ReadCard32s(props.GetValueOrDefault(_netWmTypeAtom), MaxHintAtoms))   // 按偏好顺序,第一个认识的为准
         {
             int index = Array.IndexOf(_typeAtoms, atom);
             if (index >= 0)
@@ -382,13 +410,13 @@ public sealed partial class X11Server
             }
         }
 
-        uint[] motif = ReadCard32s(props.GetValueOrDefault(_motifHintsAtom));
-        uint[] size = ReadCard32s(props.GetValueOrDefault(XAtom.WmNormalHints));
+        uint[] motif = ReadCard32s(props.GetValueOrDefault(_motifHintsAtom), 5);
+        uint[] size = ReadCard32s(props.GetValueOrDefault(XAtom.WmNormalHints), 18);
         uint sizeFlags = size.Length >= 11 ? size[0] : 0;
-        uint[] hints = ReadCard32s(props.GetValueOrDefault(XAtom.WmHints));
-        uint[] opacity = ReadCard32s(props.GetValueOrDefault(_netWmOpacityAtom));
-        uint[] extents = ReadCard32s(props.GetValueOrDefault(_gtkFrameExtentsAtom));
-        uint[] pid = ReadCard32s(props.GetValueOrDefault(_netWmPidAtom));
+        uint[] hints = ReadCard32s(props.GetValueOrDefault(XAtom.WmHints), 9);
+        uint[] opacity = ReadCard32s(props.GetValueOrDefault(_netWmOpacityAtom), 1);
+        uint[] extents = ReadCard32s(props.GetValueOrDefault(_gtkFrameExtentsAtom), 4);
+        uint[] pid = ReadCard32s(props.GetValueOrDefault(_netWmPidAtom), 1);
 
         XProperty? icon = props.GetValueOrDefault(_netWmIconAtom);
         if (!ReferenceEquals(icon, top.ParsedIcons.Source))
@@ -413,8 +441,8 @@ public sealed partial class X11Server
             Opacity = opacity.Length >= 1 ? opacity[0] / (double)uint.MaxValue : 1,
             ClientFrameExtents = extents.Length >= 4 ? new XFrameExtents((int)extents[0], (int)extents[1], (int)extents[2], (int)extents[3]) : default,
             ProcessId = pid.Length >= 1 ? (int)pid[0] : 0,
-            ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? XWire.Latin1.GetString(machine.Data) : "",
-            Role = props.GetValueOrDefault(_wmRoleAtom) is { Format: 8 } role ? XWire.Latin1.GetString(role.Data) : "",
+            ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? HostText(machine.Data, utf8: false, MaxHostNameChars) : "",
+            Role = props.GetValueOrDefault(_wmRoleAtom) is { Format: 8 } role ? HostText(role.Data, utf8: false, MaxHostNameChars) : "",
             Icons = top.ParsedIcons.Icons,
         };
     }
