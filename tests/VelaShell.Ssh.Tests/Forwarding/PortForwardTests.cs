@@ -352,9 +352,9 @@ public sealed class PortForwardTests
         // 先开一条 session 通道，占住服务端的 0 号 —— 用户的第一条 shell 就在那里。
         SshChannel firstShell = await harness.Connection.OpenSessionChannelAsync(null, harness.Token);
 
-        bool closedBetweenSteps = false;
+        TaskCompletionSource<bool> closedBetweenSteps = new(TaskCreationOptions.RunContinuationsAsynchronously);
         harness.Connection.AfterIncomingOpenConfirmationQueued = channel =>
-            closedBetweenSteps = SpinWait.SpinUntil(() => channel.State == SshChannelState.Closed, TimeSpan.FromSeconds(10));
+            closedBetweenSteps.TrySetResult(SpinWait.SpinUntil(() => channel.State == SshChannelState.Closed, TimeSpan.FromSeconds(10)));
 
         using Socket target = new(SocketType.Stream, ProtocolType.Tcp);
         target.Bind(new IPEndPoint(IPAddress.Loopback, 0));
@@ -381,7 +381,7 @@ public sealed class PortForwardTests
             }
         }, harness.Token);
 
-        Assert.IsTrue(closedBetweenSteps, "接收循环要在两步之间处理完对端的 CLOSE（这一刻摆出来了，用例才有意义）");
+        Assert.IsTrue(await closedBetweenSteps.Task.WaitAsync(harness.Token), "接收循环要在两步之间处理完对端的 CLOSE（这一刻摆出来了，用例才有意义）");
         lock (harness.Observed.ClosedServerChannels)
         {
             Assert.DoesNotContain(0u, harness.Observed.ClosedServerChannels, "回的 CLOSE 不许指向对端的 0 号通道");
