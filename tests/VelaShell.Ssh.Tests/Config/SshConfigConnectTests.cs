@@ -506,7 +506,7 @@ public sealed class SshConfigConnectTests
         TimeSpan? Timeout(string host) => SshConfigFile.Resolve(blocks, host).ApplyToShell().X11Forwarding?.Timeout;
 
         Assert.AreEqual(TimeSpan.FromMinutes(90), Timeout("long"));
-        Assert.AreEqual(TimeSpan.Zero, Timeout("forever"));
+        Assert.AreEqual(System.Threading.Timeout.InfiniteTimeSpan, Timeout("forever"));
         Assert.AreEqual(X11ForwardOptions.Default.Timeout, Timeout("typo"), "写不对的值不猜，沿用默认");
         Assert.AreEqual(X11ForwardOptions.Default.Timeout, Timeout("unset"));
     }

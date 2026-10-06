@@ -66,7 +66,7 @@ public sealed class X11Forwarder : IAsyncDisposable
         _slots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
 
         // 有效期与受信与否无关 —— 见 X11ForwardOptions.Timeout 上的说明。
-        _expiresAtTicks = options.Timeout <= TimeSpan.Zero
+        _expiresAtTicks = options.Timeout == Timeout.InfiniteTimeSpan
             ? long.MaxValue
             : Environment.TickCount64 + (long)options.Timeout.TotalMilliseconds;
     }
@@ -444,13 +444,13 @@ public sealed class X11Forwarder : IAsyncDisposable
     /// 曾经传的就是有效期本身。
     /// </para>
     /// <para>
-    /// <b>有效期为 0（不过期）时传 0。</b>曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，
+    /// <b>不过期（<see cref="Timeout.InfiniteTimeSpan"/>）时传 0。</b>曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，
     /// 我们却还在接受新的 <c>x11</c> 通道，之后的 X 程序一律被 X server 拒绝。
     /// </para>
     /// </remarks>
     internal static int XAuthTimeoutSeconds(TimeSpan validity)
     {
-        if (validity <= TimeSpan.Zero)
+        if (validity == Timeout.InfiniteTimeSpan)
         {
             return 0;
         }

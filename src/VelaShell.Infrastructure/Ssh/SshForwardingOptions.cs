@@ -74,7 +74,7 @@ internal static class SshForwardingOptions
         {
             Display = display,
             IsTrusted = features.X11Trusted,
-            Timeout = TimeSpan.Zero,
+            Timeout = Timeout.InfiniteTimeSpan,
             FailureMode = ForwardFailureMode.Continue,
             LocalConnector = fromLocalServer && features.X11Trusted ? localServerConnector : null,
         };

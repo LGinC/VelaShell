@@ -182,10 +182,12 @@ public sealed class SshHostConfig
     /// <summary><c>ForwardX11Timeout</c>：X11 转发的有效期；没写或写不对为 <see langword="null"/>（用默认）。</summary>
     /// <remarks>
     /// ssh_config 的时间格式：数字后跟 <c>s</c> / <c>m</c> / <c>h</c> / <c>d</c> / <c>w</c>（大小写均可），
-    /// 不带单位为秒，几段相加（<c>1h30m</c>）；<c>0</c> 为不过期（<see cref="TimeSpan.Zero"/>）。
+    /// 不带单位为秒，几段相加（<c>1h30m</c>）；<c>0</c> 为不过期（<see cref="Timeout.InfiniteTimeSpan"/>）。
     /// </remarks>
     public TimeSpan? ForwardX11Timeout =>
-        TryParseTimeSpec(First("ForwardX11Timeout"), out TimeSpan value) ? value : null;
+        TryParseTimeSpec(First("ForwardX11Timeout"), out TimeSpan value)
+            ? value == TimeSpan.Zero ? Timeout.InfiniteTimeSpan : value
+            : null;
 
     /// <summary>解析 ssh_config 的时间格式（见 <see cref="ForwardX11Timeout"/>）。</summary>
     /// <remarks>写不对（空、带别的字符、单位不认识、溢出）就返回 <see langword="false"/> —— 不猜。</remarks>

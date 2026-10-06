@@ -91,7 +91,7 @@ public class SshSessionFeaturesTests
         Assert.AreEqual("127.0.0.1", options.Display!.Host);
         Assert.AreEqual(1, options.Display.Number);
         Assert.IsFalse(options.IsTrusted);
-        Assert.AreEqual(TimeSpan.Zero, options.Timeout);
+        Assert.AreEqual(Timeout.InfiniteTimeSpan, options.Timeout);
         Assert.IsEmpty(notices);
     }
 

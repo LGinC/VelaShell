@@ -314,8 +314,16 @@ public sealed class X11ForwardTests
         Assert.AreEqual(62, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.FromSeconds(1.2)), "不足一秒的部分向上取整");
 
         // 曾经退回 20 分钟：X server 空闲 20 分钟就清掉授权，而我们还在接受新的 x11 通道。
-        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.Zero));
-        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(TimeSpan.FromSeconds(-5)));
+        Assert.AreEqual(0, X11Forwarder.XAuthTimeoutSeconds(Timeout.InfiniteTimeSpan));
+    }
+
+    [TestMethod]
+    public void 有效期不过期写InfiniteTimeSpan_0与负数设值时就抛()
+    {
+        // 〔AGENTS 4.2〕「不限时」全库一种写法。曾经这里用 Zero 表示不过期，而别的时限都用 InfiniteTimeSpan。
+        Assert.AreEqual(Timeout.InfiniteTimeSpan, new X11ForwardOptions { Timeout = Timeout.InfiniteTimeSpan }.Timeout);
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new X11ForwardOptions { Timeout = TimeSpan.Zero });
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => new X11ForwardOptions { Timeout = TimeSpan.FromSeconds(-5) });
     }
 
     [TestMethod]
