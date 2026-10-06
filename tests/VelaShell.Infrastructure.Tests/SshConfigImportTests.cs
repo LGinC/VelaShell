@@ -243,6 +243,26 @@ public class SshConfigImportTests
         Assert.IsNull(profile.Password);
     }
 
+    /// <summary>
+    /// IdentityFile 里的 %h / %r 照这台主机与用户展开(由 SSH 库展开,与连接时读私钥同一套)。
+    /// 曾经宿主自己展开,只认 ~ 与 %d,%h 原样留在路径里。
+    /// </summary>
+    [TestMethod]
+    public async Task Import_IdentityFileTokensAreExpanded()
+    {
+        SessionImportScan scan = await ScanAsync(WriteConfig(
+            """
+            Host prod
+                HostName 10.0.0.5
+                User deploy
+                IdentityFile ~/.ssh/%h_%r
+            """));
+
+        string expected = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "10.0.0.5_deploy");
+        Assert.AreEqual(expected, scan.Items[0].PrivateKeyPath);
+    }
+
     /// <summary>没有 IdentityFile 的会话仍以密码认证落盘(密码留空,连接时再问)。</summary>
     [TestMethod]
     public async Task Import_WithoutIdentityFileStaysPasswordAuth()

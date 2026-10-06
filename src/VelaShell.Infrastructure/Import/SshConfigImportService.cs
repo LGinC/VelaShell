@@ -82,7 +82,8 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
 
             int port = options.Port;   // SSH 库已经把配得不对的端口换成 22
             string user = Value(options.User) ?? string.Empty;
-            string? keyPath = ResolveIdentityFile(Value(options.First("IdentityFile")), baseDirectory);
+            // ~ 与 %d %u %h %r 由 SSH 库展开(与连接时读私钥同一套),宿主只把相对路径落到 ~/.ssh 下。
+            string? keyPath = ResolveIdentityFile(options.ExpandIdentityFiles(user) is [var first, ..] ? first : null, baseDirectory);
             string? jump = SshConfigFile.ParseProxyJump(options.ProxyJump) is [.., SshProxyJumpHop last]
                 ? last.Host
                 : null;
@@ -151,22 +152,21 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
 
 
     /// <summary>
-    /// 解析 <c>IdentityFile</c>:展开 <c>~</c> 与相对路径。文件不存在也照样带上 ——
+    /// 把 SSH 库展开好的 <c>IdentityFile</c> 落成本机绝对路径(相对路径按 <c>~/.ssh</c>)。文件不存在也照样带上 ——
     /// 密钥可能在另一台机器上,或者用户正打算补进来;把路径留在配置里比悄悄丢掉更有用。
     /// </summary>
-    private static string? ResolveIdentityFile(string? value, string baseDirectory)
+    /// <remarks>
+    /// <c>~</c> / <c>%d</c> / <c>%h</c> 的展开曾经在这里另写了一份(而且不认 <c>%h</c> / <c>%r</c>);
+    /// <c>IdentityFile none</c> 由库排除。
+    /// </remarks>
+    private static string? ResolveIdentityFile(string? expanded, string baseDirectory)
     {
-        if (value is null)
+        if (expanded is null)
         {
             return null;
         }
-        // `IdentityFile none` 是显式关闭,不是路径。
-        if (value.Equals("none", StringComparison.OrdinalIgnoreCase))
-        {
-            return null;
-        }
-        string expanded = SshPathResolver.Expand(value, baseDirectory);
-        return expanded.Length > 0 ? expanded : null;
+        string path = SshPathResolver.ToAbsolute(expanded, baseDirectory);
+        return path.Length > 0 ? path : null;
     }
 
     private static string DedupKey(string host, int port, string user) => $"{host.Trim()}|{port}|{user.Trim()}";
