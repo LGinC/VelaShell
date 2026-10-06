@@ -29,13 +29,15 @@ namespace VelaShell.Ssh.Session;
 /// <param name="HostKey">服务端出示并已通过验证的主机公钥。</param>
 /// <param name="StrictKeyExchange">本次连接是否启用了严格 KEX。</param>
 /// <param name="HostKeySignature">服务端在本次交换的应答里对 <c>H</c> 的签名 blob（已验过）。</param>
+/// <param name="ServerVersion">服务端的版本标识串（如 <c>SSH-2.0-OpenSSH_10.0</c>）。</param>
 internal sealed record SshKeyExchangeResult(
     SshNegotiatedAlgorithms Algorithms,
     byte[] ExchangeHash,
     byte[] SessionId,
     SshPublicKey HostKey,
     bool StrictKeyExchange,
-    byte[] HostKeySignature)
+    byte[] HostKeySignature,
+    string ServerVersion = "")
 {
     /// <summary>给 ssh-agent 的会话声明用的身份证明（spec/07 §7.4）。</summary>
     /// <exception cref="InvalidOperationException">这不是首次交换的结果。</exception>
@@ -327,7 +329,8 @@ internal sealed class SshKeyExchangeRunner
                 .ConfigureAwait(false);
 
             return new SshKeyExchangeResult(
-                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange, signature);
+                negotiated, exchangeHash, effectiveSessionId, hostKey, negotiated.StrictKeyExchange, signature,
+                versions.ServerVersion);
         }
         finally
         {

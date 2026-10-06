@@ -49,4 +49,7 @@ internal interface ISshChannelHost
 
     /// <summary>缩窗时把多出来的预算还回去。</summary>
     void ReleaseWindowBudget(int bytes);
+
+    /// <summary>对端认不认 <c>eow@openssh.com</c>（只有 OpenSSH 才发，见 <see cref="SshChannel.StopStandardOutputAsync"/>）。</summary>
+    bool PeerAcceptsEndOfWrite { get; }
 }

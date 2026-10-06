@@ -602,6 +602,28 @@ public sealed class OpenSshInteropTests
         Assert.Contains("/dev/pts", output.ToString());
     }
 
+    /// <summary>
+    /// 输出读够了就告诉服务端（<c>eow@openssh.com</c>）：真 OpenSSH 关掉远端进程的输出端，<c>yes</c> 收到 SIGPIPE 结束 ——
+    /// 不告诉的话它永远跑下去（本端丢弃、窗口照常回补），这条用例会超时。
+    /// </summary>
+    [TestMethod]
+    public async Task 输出读够了告诉服务端远端进程就提前结束()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SshCommand command = await connection.ExecuteAsync("yes");
+        using CancellationTokenSource timeout = new(TimeSpan.FromSeconds(20));
+
+        System.IO.Pipelines.ReadResult read = await command.StandardOutput.ReadAtLeastAsync(4096, timeout.Token);
+        Assert.StartsWith("y\ny\n", Encoding.UTF8.GetString(read.Buffer.ToArray()));
+        command.StandardOutput.AdvanceTo(read.Buffer.End);
+
+        Assert.IsTrue(await command.StopStandardOutputAsync(timeout.Token), "对端是 OpenSSH，请求要发出去");
+        SshExitStatus exit = await command.WaitAsync(timeout.Token);
+        Assert.IsTrue(exit.ExitSignalName == "PIPE" || exit.ExitCode == 141, $"yes 应当被 SIGPIPE 结束，实际：{exit}");
+    }
+
     /// <summary>在伪终端里跑一条命令（<c>ssh -t host tty</c>）：命令看得到终端，跑完通道就关、退出码照常取。</summary>
     [TestMethod]
     public async Task 在伪终端里跑命令()

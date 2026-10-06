@@ -464,6 +464,36 @@ public sealed class SshChannel : IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// 这边不再要对端的标准输出了：本端把 <see cref="StandardOutput"/> 收尾、之后到的数据丢弃，并告诉对端（<c>eow@openssh.com</c>）。
+    /// </summary>
+    /// <returns>
+    /// 告诉对端的请求有没有发出去：对端不是 OpenSSH、或者通道已经在关时为 <see langword="false"/> —— 那时只在本端丢弃，
+    /// 远端进程照常跑完。
+    /// </returns>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/05 §5.2〕场景是只要输出的前几行（<c>head</c>、<c>grep -m 1</c> 那样）：读够了就不读了。
+    /// OpenSSH 的服务端收到之后关掉远端进程的输出端，进程再写就收到 <c>SIGPIPE</c> 提前结束，不再白跑完、白占带宽；
+    /// 通道仍然开着，退出状态照常回来，标准输入也还能写。与 <c>CHANNEL_EOF</c> 方向相反、同样不是关闭通道。
+    /// </para>
+    /// <para>
+    /// <b>只发给 OpenSSH</b>（按服务端的版本标识串）：这是 OpenSSH 的扩展，有的实现收到不认识的通道请求会直接断开连接。
+    /// 不要应答、不占窗口。本端丢弃的数据照常回补窗口，对端不会因此停住。标准错误不受影响。
+    /// </para>
+    /// </remarks>
+    public async ValueTask<bool> StopStandardOutputAsync(CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
+        // 读端完成之后，到达的数据在 TryDeliver 里就被判为「消费者不读了」：丢弃并立刻回补窗口。
+        await StandardOutput.CompleteAsync().ConfigureAwait(false);
+
+        return _host.PeerAcceptsEndOfWrite
+            && await SendRequestAsync(SshProtocolNames.RequestEndOfWrite, default, wantReply: false, cancellationToken)
+                .ConfigureAwait(false);
+    }
+
     /// <summary>发 <c>CHANNEL_EOF</c>：我们不再发数据了。</summary>
     /// <remarks>
     /// <b>这不是关闭通道。</b>发完之后仍然可以继续收对端的数据。

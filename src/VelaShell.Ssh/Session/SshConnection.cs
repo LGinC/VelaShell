@@ -89,6 +89,8 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         SessionProof = kex.CreateSessionProof();
         Algorithms = kex.Algorithms;
         HostKey = kex.HostKey;
+        // 只有 OpenSSH 才发 eow@openssh.com：有的实现收到不认识的通道请求会直接断开（RFC 4254 §5.4 不许，但确实有）。
+        PeerAcceptsEndOfWrite = kex.ServerVersion.StartsWith("SSH-2.0-OpenSSH_", StringComparison.Ordinal);
         _limits = limits ?? SshConnectionLimits.Default;
         Disconnected = _disconnected.Token;
 
@@ -98,6 +100,12 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
     }
 
     private readonly byte[] _sessionId;
+
+    /// <inheritdoc />
+    bool ISshChannelHost.PeerAcceptsEndOfWrite => PeerAcceptsEndOfWrite;
+
+    /// <summary>对端是 OpenSSH（按版本标识串判断），可以发 <c>eow@openssh.com</c>。</summary>
+    internal bool PeerAcceptsEndOfWrite { get; }
 
     /// <summary>会话标识（首次密钥交换的交换哈希 H，RFC 4253 §7.2），整条连接不变。</summary>
     /// <remarks>

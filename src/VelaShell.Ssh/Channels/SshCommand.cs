@@ -88,6 +88,14 @@ public sealed class SshCommand : IAsyncDisposable
     public ValueTask CompleteStandardInputAsync(CancellationToken cancellationToken = default) =>
         Channel.SendEofAsync(cancellationToken);
 
+    /// <summary>
+    /// 输出读够了、不再要了：本端丢弃之后的标准输出，并告诉 OpenSSH 服务端，远端进程再写就收到 <c>SIGPIPE</c> 提前结束。
+    /// </summary>
+    /// <returns>告诉服务端的请求有没有发出去（对端不是 OpenSSH 时只在本端丢弃）。</returns>
+    /// <remarks>细节见 <see cref="SshChannel.StopStandardOutputAsync"/>。退出状态照常取：被 SIGPIPE 结束的进程报的是信号 <c>PIPE</c>。</remarks>
+    public ValueTask<bool> StopStandardOutputAsync(CancellationToken cancellationToken = default) =>
+        Channel.StopStandardOutputAsync(cancellationToken);
+
     /// <summary>给远端进程发信号。</summary>
     /// <param name="signalName">信号名，<b>不带 <c>SIG</c> 前缀</b>（<c>"TERM"</c> 而非 <c>"SIGTERM"</c>）。</param>
     /// <param name="cancellationToken">取消令牌。</param>

@@ -66,11 +66,12 @@ public sealed class ChannelTests
             SshConnectionLimits? limits = null,
             Func<Stream, Stream>? wrapClient = null,
             SshKeepAlivePolicy keepAlive = default,
-            TimeProvider? time = null)
+            TimeProvider? time = null,
+            TestSshServerOptions? serverOptions = null)
         {
             (InMemoryDuplexStream clientStream, InMemoryDuplexStream serverStream) = InMemoryTransport.CreatePair();
 
-            TestSshServer server = new(serverStream);
+            TestSshServer server = new(serverStream, serverOptions);
             SshPacketTransport clientTransport =
                 new(wrapClient is null ? clientStream : wrapClient(clientStream));
             CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
@@ -783,6 +784,30 @@ public sealed class ChannelTests
         Assert.StartsWith("top - ", Encoding.UTF8.GetString(read.Buffer));
         shell.StandardOutput.AdvanceTo(read.Buffer.End);
         Assert.AreEqual(3, (await shell.WaitAsync(harness.Token)).ExitCode);
+    }
+
+    /// <summary>
+    /// 输出读够了（<c>eow@openssh.com</c>）：对端是 OpenSSH 就告诉它，不是就只在本端丢弃（有的实现收到不认识的请求会断开）。
+    /// 两种情况下之后到的输出都丢弃、窗口照常回补 —— 远比窗口大的输出照样发得完，退出状态照常回来，不会停住。
+    /// </summary>
+    [TestMethod]
+    [DataRow("SSH-2.0-OpenSSH_10.0p2 Debian-5", true, DisplayName = "OpenSSH")]
+    [DataRow("SSH-2.0-VelaShellTestServer_1.0", false, DisplayName = "别的实现")]
+    public async Task 输出读够了告诉OpenSSH_之后的输出丢弃且不会停住(string identification, bool expectSent)
+    {
+        byte[] output = new byte[8 * 1024 * 1024];
+        output.AsSpan().Fill((byte)'y');
+        await using Harness harness = await Harness.StartAsync(
+            new TestChannelScript { StandardOutput = output, ExitCode = 0 },
+            serverOptions: new TestSshServerOptions { Identification = identification });
+
+        await using SshCommand command = await harness.Connection.ExecuteAsync("yes", cancellationToken: harness.Token);
+        ReadResult read = await command.StandardOutput.ReadAtLeastAsync(16, harness.Token);
+        command.StandardOutput.AdvanceTo(read.Buffer.End);
+
+        Assert.AreEqual(expectSent, await command.StopStandardOutputAsync(harness.Token));
+        Assert.AreEqual(0, (await command.WaitAsync(harness.Token)).ExitCode, "八兆的输出被丢弃、窗口照常回补，脚本放得完");
+        Assert.AreEqual(expectSent ? 1 : 0, harness.ChannelServer.Observation.Requests.Count(r => r == SshProtocolNames.RequestEndOfWrite));
     }
 
     /// <summary>服务端拒绝 exec（ForceCommand 之类）：说清楚是命令被拒，而不是 shell 被拒。</summary>
