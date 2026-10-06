@@ -698,6 +698,38 @@ public sealed class OpenSshInteropTests
         Assert.AreEqual("/root", await sftp.ExpandPathAsync("~root"));
     }
 
+    /// <summary>
+    /// 按句柄设时间（FSETSTAT，关闭之前）与不跟随链接设时间（lsetstat@openssh.com）：远端 stat 看到的
+    /// 是设下去的时间，链接的目标不被改到。
+    /// </summary>
+    [TestMethod]
+    public async Task SFTP按句柄与不跟随链接设时间与远端stat一致()
+    {
+        RequireServer();
+
+        await using SshConnection connection = await SshConnection.ConnectAsync(Options());
+        await using SftpFileSystem sftp = await SftpFileSystem.ConnectAsync(connection);
+        Assert.IsTrue(sftp.Capabilities.HasLSetStat, "OpenSSH 的 sftp-server 宣告 lsetstat@openssh.com");
+
+        string dir = $"/tmp/vela-times-{Guid.NewGuid():N}";
+        await sftp.CreateDirectoryAsync(dir);
+        DateTimeOffset fileTime = new(2023, 5, 6, 7, 8, 9, TimeSpan.Zero);
+        DateTimeOffset linkTime = new(2021, 1, 2, 3, 4, 5, TimeSpan.Zero);
+
+        await using (SftpFileStream file = await sftp.OpenWriteAsync($"{dir}/f.txt"))
+        {
+            await file.WriteAsync("payload"u8.ToArray());
+            await file.SetTimesAsync(fileTime, fileTime);
+        }
+        await sftp.CreateSymbolicLinkAsync($"{dir}/link", "f.txt");
+        await sftp.SetLinkAttributesAsync($"{dir}/link", SftpFileAttributes.WithTimes(linkTime, linkTime));
+
+        string stat = (await connection.RunAsync($"stat -c %Y {dir}/f.txt {dir}/link; rm -rf {dir}")).StandardOutput;
+        string[] lines = stat.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.AreEqual(fileTime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), lines[0], "目标的修改时间是按句柄设的那个，不被链接改到");
+        Assert.AreEqual(linkTime.ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture), lines[1], "链接自身的修改时间");
+    }
+
     [TestMethod]
     public async Task SFTP能与真实的sftp_server对话()
     {

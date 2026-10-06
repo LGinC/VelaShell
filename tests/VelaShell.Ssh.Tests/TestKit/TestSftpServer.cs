@@ -60,6 +60,9 @@ internal sealed record TestSftpOptions
     /// <summary><c>limits@openssh.com</c> 宣告的读写上限。</summary>
     public SftpLimits Limits { get; init; } = new(262_144, 261_120, 261_120, 0);
 
+    /// <summary><c>WRITE</c> 把文件的修改时间改成「现在」（真实文件系统就是这样）。</summary>
+    public bool WriteTouchesModifyTime { get; init; }
+
     /// <summary>
     /// 各用户的家目录（<c>home-directory</c> 与 <c>expand-path@openssh.com</c> 的 <c>~用户名</c> 查它；登录用户的是 <see cref="WorkingDirectory"/>）。
     /// </summary>
@@ -622,6 +625,10 @@ internal sealed class TestSftpServer
         LargestWrite = Math.Max(LargestWrite, data.Length);
 
         TestSftpNode node = _nodes[state.Path];
+        if (_options.WriteTouchesModifyTime)
+        {
+            node.ModifyTime = (int)DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        }
         int end = (int)offset + data.Length;
 
         // 写到超出末尾就补 0 —— 与真实文件系统一样，中间会留空洞。
@@ -687,7 +694,8 @@ internal sealed class TestSftpServer
         string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
         SftpFileAttributes attributes = ReadAttributes(ref reader);
 
-        if (!_nodes.TryGetValue(path, out TestSftpNode? node))
+        // SETSTAT 跟随符号链接（改到的是目标）；不跟随的是 lsetstat@openssh.com。
+        if (Resolve(path, followLinks: true) is not { } node)
         {
             return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
         }
@@ -859,6 +867,18 @@ internal sealed class TestSftpServer
 
         if (name == SftpExtensionNames.Fsync)
         {
+            return BuildStatus(id, SftpStatusCode.Ok, "");
+        }
+
+        if (name == SftpExtensionNames.LSetStat)
+        {
+            string path = SftpNameCodec.Utf8.Read(ref reader, SftpProtocol.MaxPathLength);
+            SftpFileAttributes attributes = ReadAttributes(ref reader);
+            if (!_nodes.TryGetValue(path, out TestSftpNode? link))
+            {
+                return BuildStatus(id, SftpStatusCode.NoSuchFile, $"没有 {path}");
+            }
+            ApplyAttributes(link, attributes);   // 链接自身，不跟随
             return BuildStatus(id, SftpStatusCode.Ok, "");
         }
 

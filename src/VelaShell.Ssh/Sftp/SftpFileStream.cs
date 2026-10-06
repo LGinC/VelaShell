@@ -801,6 +801,30 @@ public sealed class SftpFileStream : Stream
         _acked.TruncateTo(value);
     }
 
+    /// <summary>按句柄设属性（<c>FSETSTAT</c>）。</summary>
+    /// <remarks>先等攒着的与在途的写都落地：之后才到的写会把修改时间又改成「现在」。</remarks>
+    public async ValueTask SetAttributesAsync(SftpFileAttributes attributes, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_closed, this);
+        await FlushAsync(cancellationToken).ConfigureAwait(false);
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) => SftpWire.WriteFSetStat(output, id, _handle, attributes),
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(Path, SftpOperation.SetAttributes, SftpMessageType.Status);
+    }
+
+    /// <summary>按句柄设访问时间与修改时间（两者共用一个标志位，要一起给）。</summary>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕上传完、关闭之前用同一个句柄设修改时间：一次往返，
+    /// 而 <see cref="SftpFileSystem.SetLastWriteTimeAsync"/> 要先 <c>STAT</c> 取回访问时间再 <c>SETSTAT</c>，两次往返 ——
+    /// 批量上传小文件时差别明显。
+    /// </remarks>
+    public ValueTask SetTimesAsync(
+        DateTimeOffset lastAccessTime, DateTimeOffset lastWriteTime, CancellationToken cancellationToken = default) =>
+        SetAttributesAsync(SftpFileAttributes.WithTimes(lastAccessTime, lastWriteTime), cancellationToken);
+
     /// <summary>取当前属性。</summary>
     public async ValueTask<SftpFileAttributes> GetAttributesAsync(CancellationToken cancellationToken = default)
     {

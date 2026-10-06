@@ -535,6 +535,41 @@ public sealed class SftpFileSystem : IAsyncDisposable
         response.ThrowIfError(path, SftpOperation.SetAttributes, SftpMessageType.Status);
     }
 
+    /// <summary>设属性，<b>不跟随</b>符号链接 —— 改链接自身（需要 <c>lsetstat@openssh.com</c>）。</summary>
+    /// <exception cref="SftpException">服务端没有这个扩展（<see cref="SftpStatusCode.OperationUnsupported"/>，看 <see cref="SftpCapabilities.HasLSetStat"/>）。</exception>
+    /// <remarks>
+    /// 〔velashell-docs/zh/ssh/spec/06 §7.1〕相当于 <c>touch -h</c> / <c>chown -h</c>：同步目录时保留符号链接自身的时间戳。
+    /// <c>SETSTAT</c> 跟随链接，改到的是链接的目标；没有扩展时不退化成它（那等于换了语义）。
+    /// </remarks>
+    public async ValueTask SetLinkAttributesAsync(
+        string path, SftpFileAttributes attributes, CancellationToken cancellationToken = default)
+    {
+        ValidatePath(path);
+
+        if (!Capabilities.HasLSetStat)
+        {
+            throw new SftpException(
+                SftpStatusCode.OperationUnsupported,
+                serverMessage: "",
+                path,
+                SftpOperation.SetAttributes,
+                detail: "这台服务端没有 lsetstat@openssh.com");
+        }
+
+        using SftpResponse response = await _pipeline.SendAsync(
+            (output, id) =>
+            {
+                ArrayBufferWriter<byte> inner = new();
+                SshDataWriter writer = new(inner);
+                _names.Write(ref writer, path);
+                attributes.Write(ref writer);
+                SftpWire.WriteExtended(output, id, SftpExtensionNames.LSetStat, inner.WrittenSpan);
+            },
+            cancellationToken: cancellationToken).ConfigureAwait(false);
+
+        response.ThrowIfError(path, SftpOperation.SetAttributes, SftpMessageType.Status);
+    }
+
     /// <summary>改权限。</summary>
     public ValueTask SetPermissionsAsync(
         string path, uint permissions, CancellationToken cancellationToken = default) =>

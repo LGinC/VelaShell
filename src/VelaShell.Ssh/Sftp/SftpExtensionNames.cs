@@ -33,4 +33,7 @@ public static class SftpExtensionNames
 
     /// <summary>展开 <c>~</c>。</summary>
     public const string ExpandPath = "expand-path@openssh.com";
+
+    /// <summary>设属性但不跟随符号链接（改链接自身）。</summary>
+    public const string LSetStat = "lsetstat@openssh.com";
 }

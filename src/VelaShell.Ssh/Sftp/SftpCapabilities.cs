@@ -65,6 +65,9 @@ public sealed class SftpCapabilities
     /// <summary>支持展开 <c>~</c>。</summary>
     public bool HasExpandPath => RawExtensions.ContainsKey(SftpExtensionNames.ExpandPath);
 
+    /// <summary>支持不跟随符号链接地设属性（改链接自身）。</summary>
+    public bool HasLSetStat => RawExtensions.ContainsKey(SftpExtensionNames.LSetStat);
+
     /// <summary>服务端支不支持某个扩展。</summary>
     public bool Supports(string extensionName) => RawExtensions.ContainsKey(extensionName);
 }

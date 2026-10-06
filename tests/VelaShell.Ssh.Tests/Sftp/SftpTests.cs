@@ -1519,6 +1519,67 @@ public sealed class SftpTests
         Assert.IsTrue(error.IsUnsupported);
     }
 
+    // ------------------------------------------------------------ 按句柄设时间 / 不跟随链接设属性
+
+    /// <summary>
+    /// 关闭之前按句柄设修改时间（一次往返，省掉 STAT + SETSTAT）：先等攒着的写落地 ——
+    /// 之后才到的写会把修改时间又改成「现在」。
+    /// </summary>
+    [TestMethod]
+    public async Task 按句柄设时间时先让攒着的写落地()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            sftpOptions: new TestSftpOptions { WriteTouchesModifyTime = true });
+        DateTimeOffset mtime = new(2024, 2, 3, 4, 5, 6, TimeSpan.Zero);
+
+        await using (SftpFileStream file = await harness.Sftp.OpenWriteAsync("/home/joe/t.txt", cancellationToken: harness.Token))
+        {
+            await file.WriteAsync(Text("还在缓冲里的一小段"), harness.Token);
+            await file.SetTimesAsync(mtime, mtime, harness.Token);
+        }
+
+        SftpFileAttributes attributes = await harness.Sftp.GetAttributesAsync("/home/joe/t.txt", harness.Token);
+        Assert.AreEqual(mtime, attributes.LastWriteTime);
+        Assert.AreEqual("还在缓冲里的一小段", Encoding.UTF8.GetString(await harness.Sftp.ReadAllBytesAsync("/home/joe/t.txt", harness.Token)));
+    }
+
+    /// <summary>lsetstat：改的是链接自身，目标不动；SETSTAT 跟随链接改到目标。</summary>
+    [TestMethod]
+    public async Task 不跟随链接设属性改的是链接自身()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server =>
+            {
+                server.AddFile("/home/joe/target.txt", Text("目标"));
+                server.AddSymbolicLink("/home/joe/link", "/home/joe/target.txt");
+            },
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits, SftpExtensionNames.LSetStat] });
+        DateTimeOffset linkTime = new(2020, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+        await harness.Sftp.SetLinkAttributesAsync("/home/joe/link", SftpFileAttributes.WithTimes(linkTime, linkTime), harness.Token);
+
+        Assert.AreEqual(linkTime, (await harness.Sftp.GetLinkAttributesAsync("/home/joe/link", harness.Token)).LastWriteTime);
+        Assert.AreNotEqual(linkTime, (await harness.Sftp.GetAttributesAsync("/home/joe/target.txt", harness.Token)).LastWriteTime, "目标不该被改到");
+    }
+
+    /// <summary>没有 lsetstat：如实报不支持，不退化成跟随链接的 SETSTAT（那会改到目标）。</summary>
+    [TestMethod]
+    public async Task 没有lsetstat时报不支持而不是改到目标()
+    {
+        await using Harness harness = await Harness.StartAsync(
+            server =>
+            {
+                server.AddFile("/home/joe/target.txt", Text("目标"));
+                server.AddSymbolicLink("/home/joe/link", "/home/joe/target.txt");
+            },
+            new TestSftpOptions { Extensions = [SftpExtensionNames.Limits] });
+
+        SftpException error = await Assert.ThrowsExactlyAsync<SftpException>(async () =>
+            await harness.Sftp.SetLinkAttributesAsync("/home/joe/link", SftpFileAttributes.WithPermissions(0x1FF), harness.Token));
+
+        Assert.IsTrue(error.IsUnsupported);
+    }
+
     // ------------------------------------------------------------ 展开 ~
 
     /// <summary>有 expand-path@openssh.com：整条交给服务端，~ 与 ~用户名都认。</summary>
