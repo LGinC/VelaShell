@@ -106,6 +106,44 @@ public sealed partial class SshConnection
     /// </remarks>
     public SshRekeyCause? LastRekey => Volatile.Read(ref _lastRekey);
 
+    /// <summary>最近一次重协商从收到对端的 <c>KEXINIT</c> 到新密钥装好用了多久；还没重协商过是 <see langword="null"/>。</summary>
+    /// <remarks>这段时间里通道数据暂存、发不出去 —— 「终端偶尔卡一下」要从这里对得上。</remarks>
+    public TimeSpan? LastRekeyDuration => Volatile.Read(ref _lastRekeyDurationTicks) is var ticks and > 0
+        ? TimeSpan.FromTicks(ticks)
+        : null;
+
+    private long _lastRekeyDurationTicks;
+
+    /// <summary>一次重协商做完了（新密钥已装好、暂存的通道数据放出去之后）。</summary>
+    /// <remarks>
+    /// <para>
+    /// 〔velashell-docs/zh/ssh/spec/03 §8〕对端发起的、按阈值发起的、显式请求的都报。在接收循环上同步调用 ——
+    /// <b>订阅者不要阻塞</b>；订阅者抛的异常吞掉，不影响连接。失败的重协商不报（连接随之判死，看 <see cref="Completion"/>）。
+    /// </para>
+    /// <para>曾经没有事件：重协商只能事后翻 <see cref="RekeyCount"/> 与 <see cref="LastRekey"/>，也没有耗时。</para>
+    /// </remarks>
+    public event EventHandler<SshRekeyEventArgs>? Rekeyed;
+
+    private void RaiseRekeyed(SshRekeyEventArgs args)
+    {
+        if (Rekeyed is not { } handlers)
+        {
+            return;
+        }
+
+        foreach (Delegate handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                ((EventHandler<SshRekeyEventArgs>)handler)(this, args);
+            }
+            catch (Exception)
+            {
+                // 订阅者的异常不影响连接（同转发器的事件）。
+            }
+        }
+    }
+
     /// <summary>重协商时只留下与钉住的主机密钥同类型的主机密钥算法；一个都不剩就原样返回。</summary>
     /// <remarks>
     /// 谈出另一种类型，服务端出示的必然是另一把钥，只会被当成「换了主机密钥」断开（见 <c>PinnedHostKey</c>）。
@@ -354,6 +392,7 @@ public sealed partial class SshConnection
 
         // 载荷要复制一份：它背后是接收缓冲，密钥交换过程中会被回收重用。
         byte[] peerKexInit = payload.ToArray();
+        long startedAt = Time.GetTimestamp();
 
         // 我们自己发起过吗？
         //
@@ -472,6 +511,11 @@ public sealed partial class SshConnection
             // 〔velashell-docs/zh/ssh/spec/03 §8.2〕**只在交换成功时开闸。**暂存的帧随之按原顺序流出。
             Interlocked.Increment(ref _sendGateOpensPosted);
             PostControl(OutboundKind.OpenGate);
+
+            TimeSpan duration = Time.GetElapsedTime(startedAt);
+            Volatile.Write(ref _lastRekeyDurationTicks, Math.Max(duration.Ticks, 1));
+            RaiseRekeyed(new SshRekeyEventArgs(
+                LastRekey ?? new SshRekeyCause(SshRekeyTrigger.Peer), duration, RekeyCount, result.Algorithms));
         }
         finally
         {

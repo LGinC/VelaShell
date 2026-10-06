@@ -40,6 +40,11 @@ public sealed class RekeyTests
         SshNegotiatedAlgorithms? firstRound = host.Connection.Algorithms;
         Assert.IsNotNull(firstRound);
 
+        List<SshRekeyEventArgs> rekeyed = [];
+        host.Connection.Rekeyed += (_, e) => rekeyed.Add(e);
+        host.Connection.Rekeyed += (_, _) => throw new InvalidOperationException("订阅者的异常不该影响连接");
+        Assert.IsNull(host.Connection.LastRekeyDuration);
+
         // 服务端发起重协商 —— 这就是 OpenSSH 到了 RekeyLimit 时做的事。
         await host.Channels.RequestRekeyAsync().WaitAsync(host.Token);
 
@@ -53,6 +58,13 @@ public sealed class RekeyTests
         Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Peer), host.Connection.LastRekey, "对端发起的也要记 —— 曾经只记我们按阈值发起的");
         Assert.AreEqual(1, host.Connection.SendGateOpensPosted, "交换成功才开闸，开一次");
         Assert.IsTrue(host.Connection.IsAlive, "重协商不该把连接弄坏");
+
+        // 〔可观测性缺口 4〕重协商有事件、有耗时。
+        SshRekeyEventArgs done = rekeyed.Single();
+        Assert.AreEqual(new SshRekeyCause(SshRekeyTrigger.Peer), done.Cause);
+        Assert.AreEqual(1, done.Count);
+        Assert.AreEqual(host.Connection.Algorithms, done.Algorithms);
+        Assert.AreEqual(done.Duration, host.Connection.LastRekeyDuration);
     }
 
     /// <summary>
