@@ -1357,6 +1357,62 @@ public sealed class ChannelTests
         await channel.DisposeAsync();
     }
 
+    /// <summary>
+    /// <c>xon-xoff</c>（RFC 4254 §6.8）类型化成 <see cref="SshChannelEvent.FlowControl"/>，按顺序进事件流，最近一次的值留在属性上。
+    /// 曾经它只以通用的 PeerRequest 出现，使用者得自己解载荷。
+    /// </summary>
+    [TestMethod]
+    public async Task xon_xoff类型化成流控事件()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { XonXoffBeforeExit = [true, false, true], ExitCode = 0 });
+        await using SshCommand command = await harness.Connection.ExecuteAsync("流控", cancellationToken: harness.Token);
+
+        List<bool> seen = [];
+        SshChannelEvent channelEvent;
+        while ((channelEvent = await command.Channel.ReadEventAsync(harness.Token)) is not SshChannelEvent.Closed)
+        {
+            Assert.IsNotInstanceOfType<SshChannelEvent.PeerRequest>(channelEvent, "xon-xoff 不再以通用的 PeerRequest 出现");
+            if (channelEvent is SshChannelEvent.FlowControl flow)
+            {
+                seen.Add(flow.ClientCanDo);
+            }
+        }
+
+        Assert.AreSequenceEqual(new[] { true, false, true }, seen.ToArray());
+        Assert.IsTrue(command.Channel.ClientMayDoFlowControl);
+    }
+
+    /// <summary>没收到过 <c>xon-xoff</c>：属性是 null（不知道），而不是 false。</summary>
+    [TestMethod]
+    public async Task 没收到过xon_xoff时属性为null()
+    {
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { ExitCode = 0 });
+        await using SshCommand command = await harness.Connection.ExecuteAsync("无", cancellationToken: harness.Token);
+        await command.WaitAsync(harness.Token);
+
+        Assert.IsNull(command.Channel.ClientMayDoFlowControl);
+    }
+
+    /// <summary>对端来回翻个不停：事件与未知请求一样受积压上限约束，属性仍是最后一次的值。</summary>
+    [TestMethod]
+    public async Task 对端灌xon_xoff时事件积压有上限且属性是最后一次的值()
+    {
+        bool[] flood = [.. Enumerable.Range(0, 500).Select(static i => i % 2 == 0)];
+        await using Harness harness = await Harness.StartAsync(new TestChannelScript { XonXoffBeforeExit = flood, ExitCode = 0 });
+        await using SshCommand command = await harness.Connection.ExecuteAsync("灌", cancellationToken: harness.Token);
+        await WaitUntilAsync(() => command.Channel.State == SshChannelState.Closed, harness.Token);
+
+        int flowEvents = 0;
+        SshChannelEvent channelEvent;
+        while ((channelEvent = await command.Channel.ReadEventAsync(harness.Token)) is not SshChannelEvent.Closed)
+        {
+            flowEvents += channelEvent is SshChannelEvent.FlowControl ? 1 : 0;
+        }
+
+        Assert.IsLessThanOrEqualTo(SshChannel.MaxQueuedEvents, flowEvents);
+        Assert.IsFalse(command.Channel.ClientMayDoFlowControl, "最后一次是 false：属性不受积压上限影响");
+    }
+
     [TestMethod]
     public async Task 对端灌未知通道请求时事件积压有上限()
     {

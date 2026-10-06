@@ -145,6 +145,9 @@ internal sealed record TestChannelScript
     /// <summary>回放退出状态之前，先发这么多条客户端不认识的通道请求（每条带 1 KiB 载荷）。</summary>
     public int UnknownRequestsBeforeExit { get; init; }
 
+    /// <summary>回放退出状态之前，按顺序发这些 <c>xon-xoff</c>（RFC 4254 §6.8，<c>client can do</c> 的值）。</summary>
+    public IReadOnlyList<bool> XonXoffBeforeExit { get; init; } = [];
+
     /// <summary>退出状态 / 退出信号重复发几遍（恶意或有缺陷的服务端）；EOF 也跟着重复这么多遍。</summary>
     public int RepeatExitReport { get; init; } = 1;
 }
@@ -1203,6 +1206,11 @@ internal sealed class TestChannelServer : IDisposable
             for (int i = 0; i < _script.UnknownRequestsBeforeExit; i++)
             {
                 await SendChannelRequestAsync(serverChannel, "flood@velashell.test", new byte[1024], cancellationToken);
+            }
+
+            foreach (bool clientCanDo in _script.XonXoffBeforeExit)
+            {
+                await SendChannelRequestAsync(serverChannel, SshProtocolNames.RequestXonXoff, new[] { clientCanDo ? (byte)1 : (byte)0 }, cancellationToken);
             }
 
             if (_script.ExitSignal is { } signal)

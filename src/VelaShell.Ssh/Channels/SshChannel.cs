@@ -317,10 +317,10 @@ public sealed class SshChannel : IAsyncDisposable
             ?? throw new InvalidOperationException("事件流结束了却没有 Closed 事件 —— 这是库的 bug。");
     }
 
-    /// <summary>读走一条对端的未知请求，积压计数减一（见 <see cref="OnPeerRequest"/>）。</summary>
+    /// <summary>读走一条对端请求带来的事件，积压计数减一（见 <see cref="OnPeerRequest"/>）。</summary>
     private void NoteEventRead(SshChannelEvent? channelEvent)
     {
-        if (channelEvent is SshChannelEvent.PeerRequest)
+        if (channelEvent is SshChannelEvent.PeerRequest or SshChannelEvent.FlowControl)
         {
             Interlocked.Decrement(ref _queuedPeerRequests);
         }
@@ -906,6 +906,21 @@ public sealed class SshChannel : IAsyncDisposable
             return true;
         }
 
+        if (requestType == SshProtocolNames.RequestXonXoff)
+        {
+            // 〔velashell-docs/zh/ssh/spec/05 §5.4〕类型化成一条事件，最近一次的值留在属性上。
+            // 事件与未知请求一起受下面那个积压上限约束：对端可以来回翻个不停。
+            SshDataReader reader = new(new ReadOnlySequence<byte>(payload));
+            bool clientCanDo = reader.ReadBoolean();
+            Volatile.Write(ref _clientFlowControl, clientCanDo ? 1 : 0);
+            if (Volatile.Read(ref _queuedPeerRequests) < MaxQueuedEvents
+                && _events.Writer.TryWrite(new SshChannelEvent.FlowControl(clientCanDo)))
+            {
+                Interlocked.Increment(ref _queuedPeerRequests);
+            }
+            return true;
+        }
+
         // 不认识的请求攒成事件等使用者去读。**有上限**：没人读事件流的话（大多数使用者只读 stdout），
         // 对端每发一条就白占一份内存（载荷最长 256 KiB）—— 它绕过了窗口流控，
         // 是一条不花对端任何代价的内存放大。超出上限的直接丢掉，照样回 FAILURE（调用方会回）。
@@ -933,6 +948,20 @@ public sealed class SshChannel : IAsyncDisposable
 
     /// <summary>已经收到过退出状态或退出信号了。</summary>
     private int _exitReported;
+
+    /// <summary>最近一次 <c>xon-xoff</c> 的值：-1 没收到过，0 / 1。</summary>
+    private int _clientFlowControl = -1;
+
+    /// <summary>
+    /// 服务端最近一次说的「客户端能不能在本地做 ^S / ^Q 流控」（<c>xon-xoff</c>，RFC 4254 §6.8）；没说过时为 <see langword="null"/>。
+    /// </summary>
+    /// <remarks>每次变化同时以 <see cref="SshChannelEvent.FlowControl"/> 进事件流。</remarks>
+    public bool? ClientMayDoFlowControl => Volatile.Read(ref _clientFlowControl) switch
+    {
+        0 => false,
+        1 => true,
+        _ => null,
+    };
 
     /// <summary>事件流里还没被读走的 <see cref="SshChannelEvent.PeerRequest"/> 条数。</summary>
     private int _queuedPeerRequests;

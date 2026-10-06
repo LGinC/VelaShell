@@ -118,6 +118,9 @@ internal static class SshProtocolNames
     /// <summary>给远端进程发信号。<b>RFC 要求 want_reply 为假。</b></summary>
     public const string RequestSignal = "signal";
 
+    /// <summary>服务端告诉客户端能不能在本地做 ^S / ^Q 流控（RFC 4254 §6.8）。<b>want_reply 为假。</b></summary>
+    public const string RequestXonXoff = "xon-xoff";
+
     /// <summary>发 BREAK（RFC 4335）。</summary>
     public const string RequestBreak = "break";
 
