@@ -268,9 +268,18 @@ public sealed partial class X11Server
             {
                 connection = await listener.AcceptAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException)
             {
                 return;
+            }
+            catch (SocketException ex)
+            {
+                if (cancellationToken.IsCancellationRequested || listener.SafeHandle.IsClosed)
+                {
+                    return;   // 监听已经关了
+                }
+                await AcceptFailedAsync("Unix socket", ex, cancellationToken).ConfigureAwait(false);   // 暂时的(fd 用完之类):接着接
+                continue;
             }
             TrackConnection(ServeUnixAsync(connection, ownerOnly, cancellationToken));
         }

@@ -94,15 +94,64 @@ public sealed partial class X11Server
             {
                 tcp = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
             {
-                return;
+                return;   // 收工,或者监听已经关了(TcpListener 停了之后再 Accept 抛 InvalidOperationException)
             }
-            tcp.NoDelay = true;
-            bool local = tcp.Client.RemoteEndPoint is IPEndPoint { Address: var address } && IPAddress.IsLoopback(address);
-            TrackConnection(ServeAndDisposeAsync(tcp, local, cancellationToken));
+            catch (SocketException ex)
+            {
+                if (cancellationToken.IsCancellationRequested || !ReferenceEquals(Volatile.Read(ref _listener), listener))
+                {
+                    return;
+                }
+                await AcceptFailedAsync("TCP", ex, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            try
+            {
+                tcp.NoDelay = true;
+                bool local = tcp.Client.RemoteEndPoint is IPEndPoint { Address: var address } && IPAddress.IsLoopback(address);
+                TrackConnection(ServeAndDisposeAsync(tcp, local, cancellationToken));
+            }
+            catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+            {
+                tcp.Dispose();   // 刚接进来对端就复位了:只丢这一条
+            }
         }
     }
+
+    /// <summary>
+    /// 接受连接失败了,但监听还在:记一行(限流),按原因退避一下再接着接。原先接受循环遇到任何 SocketException 就永久退出 ——
+    /// fd 用完(EMFILE / ENFILE)、accept 之前对端就复位(Windows 的 ConnectionReset、BSD 的 ECONNABORTED)都是暂时的,
+    /// 之后本机 X 程序却再也连不进来,一行日志都没有(经 SSH 连接器来的不受影响,所以很难察觉)。
+    /// </summary>
+    private async Task AcceptFailedAsync(string transport, SocketException error, CancellationToken cancellationToken)
+    {
+        SocketError code = error.SocketErrorCode;
+        Post(null, () =>
+        {
+            if (ShouldLogFrequent())
+            {
+                LogFrequent($"{transport} accept failed ({code}); still listening");
+            }
+        });
+        if (code is SocketError.ConnectionReset or SocketError.ConnectionAborted)
+        {
+            return;   // 只是那一条连接没了
+        }
+        // fd 用完之类:立刻再 accept 还是失败,原地打转就是占满一个核。
+        try
+        {
+            await Task.Delay(AcceptRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // 收工:下一轮循环看到取消就退出。
+        }
+    }
+
+    /// <summary>接受连接失败(fd 用完之类)后等这么久再试。</summary>
+    private static readonly TimeSpan AcceptRetryDelay = TimeSpan.FromMilliseconds(100);
 
     private async Task ServeAndDisposeAsync(TcpClient tcp, bool local, CancellationToken cancellationToken)
     {

@@ -222,6 +222,69 @@ public sealed partial class UnixSocketTests
         Assert.IsFalse(X11Server.SameIpcNamespace(int.MaxValue), "进程不在了(读不了 /proc/<pid>/ns/ipc)");
     }
 
+    [TestMethod]
+    public async Task fd用完时接受循环不退出_放出来之后照常接新连接()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("按 RLIMIT_NOFILE 把 fd 用完只在 Linux 上做");
+            return;
+        }
+        // 原先接受循环遇到任何 SocketException 就永久退出:fd 用完(EMFILE)是暂时的,本机 X 程序却从此再也连不进来。
+        string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path });
+        await server.StartAsync();
+
+        Assert.AreEqual(0, GetRLimit(RLimitNoFile, out RLimit original));
+        List<FileStream> filler = [];
+        Socket queued = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            int open = Directory.GetFileSystemEntries("/proc/self/fd").Length;
+            Assert.AreEqual(0, SetRLimit(RLimitNoFile, new RLimit { Current = (ulong)open + 32, Maximum = original.Maximum }));
+            while (true)
+            {
+                try
+                {
+                    filler.Add(File.OpenRead("/dev/null"));
+                }
+                catch (IOException)
+                {
+                    break;   // EMFILE:一个 fd 都不剩了(连接的套接字事先建好了)
+                }
+            }
+            await queued.ConnectAsync(new UnixDomainSocketEndPoint(path));   // 排进 backlog;服务端 accept 时拿不到 fd
+            await Task.Delay(300);
+        }
+        finally
+        {
+            Assert.AreEqual(0, SetRLimit(RLimitNoFile, original));
+            filler.ForEach(f => f.Dispose());
+        }
+
+        // fd 放出来之后,排着的那条照常被接进来、完成连接建立。
+        await using NetworkStream stream = new(queued, ownsSocket: true);
+        await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        byte[] head = new byte[8];
+        await stream.ReadExactlyAsync(head).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.AreEqual(1, head[0], "Success");
+    }
+
+    private const int RLimitNoFile = 7;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RLimit
+    {
+        public ulong Current;
+        public ulong Maximum;
+    }
+
+    [LibraryImport("libc", EntryPoint = "getrlimit")]
+    private static partial int GetRLimit(int resource, out RLimit limit);
+
+    [LibraryImport("libc", EntryPoint = "setrlimit")]
+    private static partial int SetRLimit(int resource, in RLimit limit);
+
     /// <summary>6000 + N 此刻没人占着的显示号(TCP 监听要用)。</summary>
     private static int FreeDisplayNumber()
     {
