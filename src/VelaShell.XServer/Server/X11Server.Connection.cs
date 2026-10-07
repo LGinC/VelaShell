@@ -136,7 +136,7 @@ public sealed partial class X11Server
 
     /// <summary>连接的对端:服务端对它知道多少(授权检查与 MIT-SHM 用)。</summary>
     /// <param name="IsLocal">来自本机(环回 TCP、Unix 套接字、进程内的流)。没配置 cookie 时只接受本机连接。</param>
-    /// <param name="SameHost">经 Unix 套接字连进来的:MIT-SHM 对它可见。</param>
+    /// <param name="SameHost">经 Unix 套接字连进来、与服务端在同一个 IPC 命名空间里的:MIT-SHM 对它可见。</param>
     /// <param name="Uid">对端的 uid(Linux 上经 SO_PEERCRED,macOS / FreeBSD 上经 getpeereid);取不到为 null。</param>
     /// <param name="LocalUser">能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 uid 与本进程相同)。</param>
     /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />),不再查授权。</param>

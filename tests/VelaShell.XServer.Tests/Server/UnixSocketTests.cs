@@ -208,6 +208,20 @@ public sealed partial class UnixSocketTests
         Assert.IsFalse(X11Server.IsLocalUser(ownerOnly: false, peerUid: null, self: null));
     }
 
+    [TestMethod]
+    public void MITSHM只给同一个IPC命名空间里的对端_核对不了算不同()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("IPC 命名空间只有 Linux 有");
+            return;
+        }
+        // 把 /tmp/.X11-unix 挂进容器后,容器里同一个 uid 的进程给的 shmid 按服务端的命名空间解释 —— 读写的是宿主这边的段。
+        Assert.IsTrue(X11Server.SameIpcNamespace(Environment.ProcessId));
+        Assert.IsFalse(X11Server.SameIpcNamespace(0), "SO_PEERCRED 的 pid 为 0:对端在别的 pid 命名空间里,看不见");
+        Assert.IsFalse(X11Server.SameIpcNamespace(int.MaxValue), "进程不在了(读不了 /proc/<pid>/ns/ipc)");
+    }
+
     /// <summary>6000 + N 此刻没人占着的显示号(TCP 监听要用)。</summary>
     private static int FreeDisplayNumber()
     {

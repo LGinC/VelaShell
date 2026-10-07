@@ -8,7 +8,8 @@
 //   GetImage 4(回复 depth、visual、size,像素写进段里)、CreatePixmap 5;错误 BadShmSeg。
 //   System V 共享内存段按 shmid 附加(shmat / shmdt),段的大小与属主取自 Linux 的 /proc/sysvipc/shm。
 //
-//   只对「同一台机器、经 Unix 套接字连进来」的客户端提供(QueryExtension / ListExtensions 对别的客户端看不见它):
+//   只对「同一台机器、经 Unix 套接字连进来、与服务端在同一个 IPC 命名空间里」的客户端提供(QueryExtension / ListExtensions
+//   对别的客户端看不见它;容器里的客户端给的 shmid 指的是宿主这边的段):
 //   远端经 SSH 来的客户端给的 shmid 在这台机器上毫无意义。只在 Linux 上提供 —— 段的大小要可靠地取到,
 //   而 shmctl 的结构体布局各平台不同。1.2 的 AttachFd / CreateSegment 要经套接字传文件描述符,不支持。
 //   访问控制:连接对端的 uid(SO_PEERCRED)须是段的属主或创建者,或者段的权限对其他人开放 —— 否则一个本机客户端

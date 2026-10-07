@@ -281,7 +281,7 @@ public sealed partial class X11Server
     /// <param name="cancellationToken">取消令牌。</param>
     private async Task ServeUnixAsync(Socket connection, bool ownerOnly, CancellationToken cancellationToken)
     {
-        uint? peerUid = PeerUidOf(connection);
+        (uint? peerUid, int peerPid) = PeerCredentials(connection);
         bool localUser = IsLocalUser(ownerOnly, peerUid, EffectiveUid);
         await using NetworkStream stream = new(connection, ownsSocket: true);
         if (!localUser && peerUid is not null && _cookie is null)
@@ -290,8 +290,8 @@ public sealed partial class X11Server
         }
         try
         {
-            await ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: true, peerUid, localUser, Authenticated: false),
-                cancellationToken).ConfigureAwait(false);
+            await ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: SharesMemoryWith(peerPid), peerUid, localUser,
+                Authenticated: false), cancellationToken).ConfigureAwait(false);
         }
         catch (ObjectDisposedException)
         {
@@ -307,10 +307,10 @@ public sealed partial class X11Server
     internal static bool IsLocalUser(bool ownerOnly, uint? peerUid, uint? self) => peerUid is { } uid ? uid == self : ownerOnly;
 
     /// <summary>
-    /// 连接对端的 uid:Linux 上经 SO_PEERCRED(struct ucred:pid、uid、gid 各 4 字节),macOS / FreeBSD 上经 getpeereid;
-    /// 别的平台或取不到时为 null。
+    /// 连接对端的 uid 与 pid:Linux 上经 SO_PEERCRED(struct ucred:pid、uid、gid 各 4 字节;pid 已换算到本进程所在的 pid 命名空间,
+    /// 对端在那里看不见时为 0),macOS / FreeBSD 上经 getpeereid(只有 uid)。取不到的为 null / 0。
     /// </summary>
-    private static uint? PeerUidOf(Socket connection)
+    private static (uint? Uid, int Pid) PeerCredentials(Socket connection)
     {
         try
         {
@@ -318,17 +318,44 @@ public sealed partial class X11Server
             {
                 Span<byte> credentials = stackalloc byte[12];
                 int length = connection.GetRawSocketOption(1, 17, credentials);   // SOL_SOCKET、SO_PEERCRED
-                return length >= 8 ? BitConverter.ToUInt32(credentials[4..]) : null;
+                return length >= 8 ? (BitConverter.ToUInt32(credentials[4..]), BitConverter.ToInt32(credentials)) : (null, 0);
             }
             if (OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD())
             {
-                return GetPeerEid((int)connection.Handle, out uint uid, out _) == 0 ? uid : null;
+                return (GetPeerEid((int)connection.Handle, out uint uid, out _) == 0 ? uid : null, 0);
             }
         }
         catch (Exception ex) when (ex is SocketException or EntryPointNotFoundException or DllNotFoundException)
         {
         }
-        return null;
+        return (null, 0);
+    }
+
+    /// <summary>
+    /// 这条 Unix 套接字连接的对端能不能与服务端共享 SysV 内存(MIT-SHM 只对这样的客户端可见,见 <c>XClient.SameHost</c>)。
+    /// Linux 上要求对端与服务端在同一个 IPC 命名空间:shmid 按服务端自己的命名空间解释 —— 把 <c>/tmp/.X11-unix</c> 挂进容器后,
+    /// 容器里同一个 uid 的进程给的 shmid 指的是宿主这边的段,原先它能借服务端之手读写宿主用户的 SysV 段。
+    /// 核对不了(取不到 pid、读不了 <c>/proc/&lt;pid&gt;/ns/ipc</c>)也算不同。别的平台不提供 MIT-SHM,照旧为 true。
+    /// </summary>
+    private static bool SharesMemoryWith(int pid) => !OperatingSystem.IsLinux() || SameIpcNamespace(pid);
+
+    /// <summary>进程 <paramref name="pid" /> 与本进程在同一个 IPC 命名空间里(比较 <c>/proc/…/ns/ipc</c> 的链接目标);核对不了时为 false。</summary>
+    internal static bool SameIpcNamespace(int pid)
+    {
+        if (pid <= 0)
+        {
+            return false;
+        }
+        try
+        {
+            string? mine = new FileInfo("/proc/self/ns/ipc").LinkTarget;
+            string? theirs = new FileInfo($"/proc/{pid}/ns/ipc").LinkTarget;
+            return mine is not null && mine == theirs;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     [LibraryImport("libc", EntryPoint = "getpeereid")]
