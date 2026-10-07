@@ -190,6 +190,29 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task 换DPI只替换RESOURCE_MANAGER里的Xft几项_用户xrdb进去的资源留着()
+    {
+        await using X11Server server = new(new X11ServerOptions { Dpi = 96 });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint resources = await InternAsync(c, "RESOURCE_MANAGER");
+        // xrdb -merge 的结果:用户的资源,连同一条带续行的与一条旧的 Xft.dpi。
+        byte[] text = Encoding.Latin1.GetBytes("XTerm*background:\tblack\nEmacs.font:\tfixed\\\n-misc\nXft.dpi:\t120\n! 注释: 留着\n*faceName:\tMonospace\n");
+        await c.SendAsync(18, 0, b => b.U32(c.RootWindow).U32(resources).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)text.Length).Bytes(text).Pad());
+        await c.SyncAsync();
+
+        server.SetDisplayScale(144);
+        await c.SyncAsync();
+        XMessage value = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(resources).U32(0).U32(0).U32(100000));
+        string merged = Encoding.Latin1.GetString(value.Bytes, 32, (int)value.U32(16));
+        StringAssert.Contains(merged, "XTerm*background:\tblack\n", "原先换一次 DPI 整份覆盖,用户的资源全丢");
+        StringAssert.Contains(merged, "Emacs.font:\tfixed\\\n-misc\n", "续行跟着它那一条走");
+        StringAssert.Contains(merged, "*faceName:\tMonospace\n");
+        StringAssert.Contains(merged, "Xft.dpi:\t144\n");
+        Assert.DoesNotContain("Xft.dpi:\t120", merged, "服务端管的那几项换成新值,不留重复的旧值");
+        Assert.AreEqual(1, merged.Split("Xft.antialias:").Length - 1);
+    }
+
+    [TestMethod]
     public async Task 关掉互通后不取也不占()
     {
         using RecordingHost host = new();

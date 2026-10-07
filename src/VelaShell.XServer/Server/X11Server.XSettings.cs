@@ -5,7 +5,7 @@
 //   XSETTINGS Specification 0.5(freedesktop.org)—— §「Protocol」(管理器占有 _XSETTINGS_S<screen> 选区,
 //   设置放在属主窗口的 _XSETTINGS_SETTINGS 属性里)、§「Format」(byte-order、serial、N_SETTINGS,
 //   每项:类型、名字、last-change-serial、值)、§「Registered settings」(Xft/DPI 以 1024 为单位等)
-//   ICCCM 2.0 §2.8「Manager Selections」
+//   ICCCM 2.0 §2.8「Manager Selections」;根窗口的 RESOURCE_MANAGER(Xlib 资源文件的格式:每条「名字: 值」一行,行尾反斜杠续行)
 //
 //   服务端自己当 XSETTINGS 管理器:真实桌面总有一个(gnome-settings-daemon 之类),GTK / Qt 启动时会去找;
 //   找不到时它们照样能跑,但会先踩一次 BadWindow / BadAtom。这里只发布字体渲染相关的几项。
@@ -57,8 +57,59 @@ public sealed partial class X11Server
 
         uint resources = Intern("RESOURCE_MANAGER");
         string text = $"Xft.dpi:\t{_dpi}\nXft.antialias:\t1\nXft.hinting:\t1\nXft.hintstyle:\thintslight\nXft.rgba:\tnone\n";
+        if (Root.Properties.GetValueOrDefault(resources) is { Format: 8 } existing)
+        {
+            text = MergeResources(XWire.Latin1.GetString(existing.Data), text);
+        }
         StoreServerProperty(Root, resources, new XProperty(XAtom.String, 8, XWire.Latin1.GetBytes(text)));
         SendPropertyNotify(Root, resources, deleted: false);
+    }
+
+    /// <summary>服务端在 RESOURCE_MANAGER 里管的那几项(换 DPI 时只换它们)。</summary>
+    private static readonly string[] ManagedResources = ["Xft.dpi", "Xft.antialias", "Xft.hinting", "Xft.hintstyle", "Xft.rgba"];
+
+    /// <summary>
+    /// 根窗口上已有的资源(用户 <c>xrdb -merge</c> 进去的 xterm / Emacs / Motif 设置)留着,只把 <see cref="ManagedResources" /> 那几项
+    /// 换成 <paramref name="ours" />。原先换一次 DPI 就整份覆盖,用户的资源全丢。按逻辑行处理(行尾的反斜杠接着下一行),注释照留。
+    /// </summary>
+    private static string MergeResources(string existing, string ours)
+    {
+        StringBuilder merged = new(existing.Length + ours.Length);
+        int start = 0;
+        while (start < existing.Length)
+        {
+            int end = start;
+            while (true)
+            {
+                int newline = existing.IndexOf('\n', end);
+                if (newline < 0)
+                {
+                    end = existing.Length;
+                    break;
+                }
+                end = newline + 1;
+                if (newline == start || existing[newline - 1] != '\\')
+                {
+                    break;
+                }
+            }
+            ReadOnlySpan<char> entry = existing.AsSpan(start, end - start);
+            start = end;
+            int colon = entry.IndexOf(':');
+            if (colon >= 0 && ManagedResources.AsSpan().Contains(entry[..colon].Trim().ToString()))
+            {
+                continue;
+            }
+            if (!entry.IsWhiteSpace())
+            {
+                merged.Append(entry);
+                if (entry[^1] != '\n')
+                {
+                    merged.Append('\n');
+                }
+            }
+        }
+        return merged.Append(ours).ToString();
     }
 
     private byte[] BuildXSettings()
