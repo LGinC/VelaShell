@@ -7,8 +7,9 @@ namespace VelaShell.XServer.Tests.Server;
 [TestCategory("X11Server")]
 public sealed class WindowStructureTests
 {
-    private const uint SubstructureNotifyMask = 0x80000, SubstructureRedirectMask = 0x100000;
-    private const byte DestroyNotify = 17, MapRequest = 20, CirculateNotify = 26, CirculateRequest = 27;
+    private const uint StructureNotifyMask = 0x20000, ResizeRedirectMask = 0x40000, SubstructureNotifyMask = 0x80000, SubstructureRedirectMask = 0x100000;
+    private const byte DestroyNotify = 17, UnmapNotify = 18, MapRequest = 20, ConfigureNotify = 22, GravityNotify = 24, ResizeRequest = 25,
+        CirculateNotify = 26, CirculateRequest = 27;
 
     /// <summary>在 <paramref name="parent" /> 下建一个子窗口(InputOutput,背景色 <paramref name="background" />)。</summary>
     private static async Task<uint> CreateChildAsync(XTestClient c, uint parent, short x, short y, ushort width, ushort height,
@@ -110,6 +111,95 @@ public sealed class WindowStructureTests
         XMessage request = await wm.NextEventAsync(MapRequest);
         Assert.AreEqual(second, request.U32(8));
         Assert.AreEqual(0, await MapStateAsync(second));
+    }
+
+    [TestMethod]
+    public async Task ConfigureWindow的stack_mode越界回BadValue_TopIf_BottomIf_Opposite按遮挡决定()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint parent = await CreateChildAsync(c, c.RootWindow, 0, 0, 200, 200);
+        uint low = await CreateChildAsync(c, parent, 0, 0, 50, 50);
+        uint high = await CreateChildAsync(c, parent, 40, 40, 50, 50);   // 挡着 low 的右下角
+        uint far = await CreateChildAsync(c, parent, 150, 150, 20, 20);  // 谁也不挡
+        await c.SendAsync(9, 0, b => b.U32(parent));   // MapSubwindows
+        Task<ushort> StackAsync(uint window, uint mode, uint? sibling = null) => c.SendAsync(12, 0, b =>
+        {
+            b.U32(window).U16((ushort)(sibling is null ? 0x40 : 0x60)).U16(0);
+            if (sibling is { } s)
+            {
+                b.U32(s);
+            }
+            b.U32(mode);
+        });
+
+        await StackAsync(low, 5);
+        Assert.AreEqual(2, (await c.NextAsync(m => m.IsError)).Detail, "stack-mode 5:BadValue(原先截成一个字节照用)");
+
+        await StackAsync(far, 2);   // TopIf:没有兄弟挡着它 → 不动(原先按 Above 抬到最上)
+        CollectionAssert.AreEqual(new[] { low, high, far }, await QueryChildrenAsync(c, parent));
+        await StackAsync(low, 2);   // TopIf:high 挡着它 → 最上
+        CollectionAssert.AreEqual(new[] { high, far, low }, await QueryChildrenAsync(c, parent));
+        await StackAsync(far, 3);   // BottomIf:它谁也不挡 → 不动(原先按 Below 压到最下)
+        CollectionAssert.AreEqual(new[] { high, far, low }, await QueryChildrenAsync(c, parent));
+        await StackAsync(low, 4, high);   // Opposite + 兄弟:low 挡着 high → 最下
+        CollectionAssert.AreEqual(new[] { low, high, far }, await QueryChildrenAsync(c, parent));
+        await StackAsync(low, 4, far);    // Opposite + 不相交的兄弟:不动
+        CollectionAssert.AreEqual(new[] { low, high, far }, await QueryChildrenAsync(c, parent));
+    }
+
+    [TestMethod]
+    public async Task 父窗口改尺寸时子窗口按win_gravity挪并发GravityNotify_Unmap重力的取消映射_ResizeRedirect改道成ResizeRequest()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        uint parent = await CreateChildAsync(c, c.RootWindow, 10, 10, 100, 100);
+        async Task<uint> ChildAsync(short x, short y, uint gravity)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 24, b => b.U32(id).U32(parent).I16(x).I16(y).U16(10).U16(10).U16(0).U16(1).U32(0)
+                .U32(0x20).U32(gravity));   // win-gravity
+            return id;
+        }
+        uint southEast = await ChildAsync(80, 80, 9);
+        uint center = await ChildAsync(45, 45, 5);
+        uint unmap = await ChildAsync(0, 0, 0);
+        uint fixedToRoot = await ChildAsync(20, 20, 10);   // Static
+        await c.SendAsync(9, 0, b => b.U32(parent));
+        await SelectInputAsync(c, parent, StructureNotifyMask | SubstructureNotifyMask);
+        await c.SyncAsync();
+
+        // 往左挪 4、变成 150×121:SouthEast 挪 (50, 21),Center 挪 (25, 10),Static 抵消父窗口的位移 (+4, 0)。
+        await c.SendAsync(12, 0, b => b.U32(parent).U16(0x1 | 0x4 | 0x8).U16(0).U32(6).U32(150).U32(121));
+        XMessage configure = await c.NextEventAsync(ConfigureNotify);
+        Assert.AreEqual(parent, configure.U32(8));
+        Dictionary<uint, (short X, short Y)> moved = [];
+        for (int i = 0; i < 3; i++)
+        {
+            XMessage gravity = await c.NextEventAsync(GravityNotify);
+            Assert.AreEqual(parent, gravity.U32(4), "父窗口上选了 SubstructureNotify 的收到");
+            moved[gravity.U32(8)] = (gravity.I16(12), gravity.I16(14));
+        }
+        Assert.AreEqual(((short)130, (short)101), moved[southEast]);
+        Assert.AreEqual(((short)70, (short)55), moved[center]);
+        Assert.AreEqual(((short)24, (short)20), moved[fixedToRoot]);
+        XMessage unmapped = await c.NextEventAsync(UnmapNotify);
+        Assert.AreEqual(unmap, unmapped.U32(8));
+        Assert.AreEqual(1, unmapped.Bytes[12], "from-configure");
+        XMessage geometry = await c.RequestAsync(14, 0, b => b.U32(southEast));
+        Assert.AreEqual(((short)130, (short)101), (geometry.I16(12), geometry.I16(14)));
+
+        // 别的客户端选了 ResizeRedirect:改尺寸变成发给它的 ResizeRequest,尺寸不变,位置照改。
+        await SelectInputAsync(other, parent, ResizeRedirectMask);
+        await other.SyncAsync();
+        await c.SendAsync(12, 0, b => b.U32(parent).U16(0x1 | 0x4).U16(0).U32(20).U32(300));
+        XMessage request = await other.NextEventAsync(ResizeRequest);
+        Assert.AreEqual(parent, request.U32(4));
+        Assert.AreEqual(300, request.U16(8), "请求的宽");
+        Assert.AreEqual(121, request.U16(10), "高没改:现值");
+        XMessage after = await c.RequestAsync(14, 0, b => b.U32(parent));
+        Assert.AreEqual((20, 150), (after.I16(12), after.U16(16)), "位置照改,尺寸保持");
     }
 
     [TestMethod]

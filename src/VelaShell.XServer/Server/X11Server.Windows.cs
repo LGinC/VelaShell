@@ -4,9 +4,10 @@
 // 规范依据(AGENTS.md §2 纪律 1):
 //   X Window System Protocol, X Version 11 —— 「CreateWindow」「ChangeWindowAttributes」「GetWindowAttributes」
 //   「DestroyWindow」「DestroySubwindows」「ChangeSaveSet」「ReparentWindow」「MapWindow」「MapSubwindows」
-//   「UnmapWindow」「UnmapSubwindows」「ConfigureWindow」(含 stack-mode 与 SubstructureRedirect 的改道)
+//   「UnmapWindow」「UnmapSubwindows」「ConfigureWindow」(含 stack-mode、SubstructureRedirect 与 ResizeRedirect 的改道)
 //   「CirculateWindow」「GetGeometry」「QueryTree」「TranslateCoordinates」;
-//   第 10 节「Events」里 CreateNotify / DestroyNotify / MapNotify / MapRequest / UnmapNotify / ReparentNotify /
+//   「CreateWindow」的 win-gravity(父窗口改尺寸时子窗口怎么挪);第 10 节「Events」里 CreateNotify / DestroyNotify / MapNotify /
+//   MapRequest / UnmapNotify / ReparentNotify / GravityNotify / ResizeRequest / CirculateRequest /
 //   ConfigureNotify / ConfigureRequest / CirculateNotify 的字段
 
 using VelaShell.XServer.Protocol;
@@ -575,7 +576,10 @@ public sealed partial class X11Server
                 case XConfigMask.Height: height = (ushort)v; break;
                 case XConfigMask.BorderWidth: border = (ushort)v; break;
                 case XConfigMask.Sibling: sibling = Window(v); break;
-                case XConfigMask.StackMode: stackMode = (byte)v; break;
+                case XConfigMask.StackMode:
+                    // Above、Below、TopIf、BottomIf、Opposite 之外的值:BadValue(原先截成一个字节照用)。
+                    stackMode = v <= 4 ? (int)v : throw new XProtocolError(XErrorCode.Value, v);
+                    break;
             }
         }
         if (width == 0 || height == 0)
@@ -598,6 +602,14 @@ public sealed partial class X11Server
                 .U32(parent.Id).U32(window.Id).U32(sibling?.Id ?? 0)
                 .I16(x).I16(y).U16((ushort)width).U16((ushort)height).U16((ushort)border).U16(mask));
             return;
+        }
+        if ((width != window.Width || height != window.Height)
+            && RedirectClient(window, XEventMask.ResizeRedirect) is { } resizer && !ReferenceEquals(resizer, c))
+        {
+            // 协议「ConfigureWindow」:别的客户端在这个窗口上选了 ResizeRedirect,改尺寸就变成发给它的 ResizeRequest,
+            // 尺寸保持现值,其余(位置、边框、堆叠)照常处理。原先 ResizeRedirect 选得上却不生效。
+            resizer.Event(XEventCode.ResizeRequest, 0, w => w.U32(window.Id).U16((ushort)width).U16((ushort)height));
+            (width, height) = (window.Width, window.Height);
         }
 
         if (window.IsTopLevel && window.Buffer is not null && (width != window.Width || height != window.Height))
@@ -624,6 +636,7 @@ public sealed partial class X11Server
         Drawing.Region old = viewable && !window.IsTopLevel ? VisibleOuter(window) : new Drawing.Region();
         bool resized = width != window.Width || height != window.Height;
         bool moved = x != window.X || y != window.Y;
+        (int dx, int dy, int dw, int dh) = (x - window.X, y - window.Y, width - window.Width, height - window.Height);
 
         window.X = x;
         window.Y = y;
@@ -652,6 +665,10 @@ public sealed partial class X11Server
         DeliverStructure(window, XEventCode.ConfigureNotify, 0, w => w
             .U32(window.Id).U32(above?.Id ?? 0).I16(x).I16(y).U16((ushort)width).U16((ushort)height)
             .U16((ushort)border).Bool(window.OverrideRedirect));
+        if (resized && window.Children.Count != 0)
+        {
+            ApplyWinGravity(window, dx, dy, dw, dh);   // GravityNotify 在 ConfigureNotify 之后
+        }
 
         if (!viewable)
         {
@@ -683,12 +700,78 @@ public sealed partial class X11Server
         UpdatePointerWindow();
     }
 
-    /// <summary>stack-mode:0 Above,1 Below,2 TopIf,3 BottomIf,4 Opposite。后三种按遮挡判断太贵,按 Above / Below 近似。</summary>
+    /// <summary>
+    /// 协议「ConfigureWindow」的 win-gravity:父窗口的内区尺寸真的变了,子窗口按各自的重力在父窗口里挪 —— (dw, dh) 是尺寸的变化,
+    /// North 挪 (dw/2, 0)、SouthEast 挪 (dw, dh) 之类;Static 抵消父窗口位置的变化,在根窗口里不动;Unmap 位置同 NorthWest、
+    /// 但取消映射(UnmapNotify 的 from-configure 为真)。挪了的发 GravityNotify。原先子窗口一律不动。
+    /// </summary>
+    private void ApplyWinGravity(XWindow window, int dx, int dy, int dw, int dh)
+    {
+        foreach (XWindow child in window.Children.ToArray())
+        {
+            if (child.WinGravity == 0)
+            {
+                Unmap(child, fromConfigure: true);
+                continue;
+            }
+            (int ox, int oy) = child.WinGravity switch
+            {
+                2 => (dw / 2, 0),
+                3 => (dw, 0),
+                4 => (0, dh / 2),
+                5 => (dw / 2, dh / 2),
+                6 => (dw, dh / 2),
+                7 => (0, dh),
+                8 => (dw / 2, dh),
+                9 => (dw, dh),
+                10 => (-dx, -dy),
+                _ => (0, 0),   // NorthWest
+            };
+            if (ox == 0 && oy == 0)
+            {
+                continue;
+            }
+            child.X = Math.Clamp(child.X + ox, short.MinValue, short.MaxValue);
+            child.Y = Math.Clamp(child.Y + oy, short.MinValue, short.MaxValue);
+            short cx = (short)child.X, cy = (short)child.Y;
+            DeliverStructure(child, XEventCode.GravityNotify, 0, w => w.U32(child.Id).I16(cx).I16(cy));
+        }
+        InvalidateVisibility();
+    }
+
+    /// <summary>
+    /// stack-mode(协议「ConfigureWindow」):0 Above、1 Below 放到兄弟的上 / 下面(没给兄弟就是最上 / 最下);
+    /// 2 TopIf「兄弟挡着它就放到最上」、3 BottomIf「它挡着兄弟就放到最下」、4 Opposite 两样都看(没给兄弟就是任何一个兄弟)。
+    /// 遮挡按新几何的外框矩形算(不看 SHAPE);原先后三种按 Above / Below 近似,不看遮挡。
+    /// </summary>
     private static void Restack(XWindow parent, XWindow window, XWindow? sibling, int stackMode)
     {
         List<XWindow> list = parent.Children;
+        if (stackMode >= 2)
+        {
+            int own = list.IndexOf(window);
+            int other = sibling is null ? -1 : list.IndexOf(sibling);
+            bool visible = window.Mapped && !window.IsInputOnly;
+            bool occluded = sibling is null
+                ? OverlapsAny(window, list, own + 1, list.Count, othersOcclude: true)
+                : other > own && sibling.Mapped && !sibling.IsInputOnly && Overlap(window, sibling);
+            bool occludes = visible && (sibling is null
+                ? OverlapsAny(window, list, 0, own, othersOcclude: false)
+                : other < own && sibling.Mapped && Overlap(window, sibling));
+            bool? toTop = stackMode switch
+            {
+                2 => occluded ? true : null,
+                3 => occludes ? false : null,
+                _ => occluded ? true : occludes ? false : null,
+            };
+            if (toTop is not { } top)
+            {
+                return;
+            }
+            (stackMode, sibling) = (top ? 0 : 1, null);
+        }
         list.Remove(window);
-        bool above = stackMode is 0 or 2 or 4;
+        bool above = stackMode == 0;
         if (sibling is null)
         {
             if (above)
@@ -785,19 +868,21 @@ public sealed partial class X11Server
     /// </summary>
     private static bool OverlapsAny(XWindow window, List<XWindow> siblings, int from, int to, bool othersOcclude)
     {
-        XRect outer = OuterInParent(window);
         for (int i = from; i < to; i++)
         {
             XWindow other = siblings[i];
-            if (other.Mapped && !(othersOcclude && other.IsInputOnly) && !outer.Intersect(OuterInParent(other)).IsEmpty)
+            if (other.Mapped && !(othersOcclude && other.IsInputOnly) && Overlap(window, other))
             {
                 return true;
             }
         }
         return false;
-
-        static XRect OuterInParent(XWindow w) => new(w.X, w.Y, w.Width + (2 * w.BorderWidth), w.Height + (2 * w.BorderWidth));
     }
+
+    /// <summary>两个兄弟窗口的外框(含边框,父窗口坐标)相交。</summary>
+    private static bool Overlap(XWindow a, XWindow b) => !OuterInParent(a).Intersect(OuterInParent(b)).IsEmpty;
+
+    private static XRect OuterInParent(XWindow w) => new(w.X, w.Y, w.Width + (2 * w.BorderWidth), w.Height + (2 * w.BorderWidth));
 
     private void ReparentWindow(XClient c, XRequestReader r)
     {
