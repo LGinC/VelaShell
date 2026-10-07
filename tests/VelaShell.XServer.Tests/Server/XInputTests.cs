@@ -125,7 +125,7 @@ public sealed class XInputTests
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         byte xi = await XiAsync(c);
         uint top = await MapTopAsync(c, host);   // 在根坐标 (10, 20)
-        await SelectAsync(c, xi, c.RootWindow, 0, 1u << 17);   // XIAllDevices:RawMotion
+        await SelectAsync(c, xi, c.RootWindow, 1, 1u << 17);   // XIAllMasterDevices:RawMotion(XIAllDevices 的话主、从设备各一份)
         await c.SyncAsync();
         server.InjectPointerMotion(host.Mapped[top], 1, 1);
         await NextXiAsync(c, xi, 17);
@@ -190,8 +190,10 @@ public sealed class XInputTests
         await c.SyncAsync();
 
         server.InjectPointerMotion(host.Mapped[top], 3, 3);
+        XMessage fromSlave = await NextXiAsync(c, xi, 6);
+        Assert.AreEqual(4, fromSlave.U16(10), "XIAllDevices:从设备那份");
         XMessage attached = await NextXiAsync(c, xi, 6);
-        Assert.AreEqual(6, attached.U16(10), "deviceid = 新的主指针");
+        Assert.AreEqual(6, attached.U16(10), "主设备那份:deviceid = 新的主指针");
 
         await c.SendAsync(xi, 43, b => b.U8(1).U8(0).U8(0).U8(0).U16(4).U16(2).U16(4).U16(0));    // DetachSlave 4
         await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x40));                             // 同时选核心 PointerMotion
@@ -297,6 +299,105 @@ public sealed class XInputTests
         // AnyButton(0)与 AnyModifier 跟谁都冲突。
         XMessage any = await PassiveGrabAsync(b, xi, 0, 0, 0x80000000);
         Assert.AreEqual(1, any.U16(8));
+    }
+
+    /// <summary>
+    /// 选 XIAllDevices 的客户端,从设备与主设备的事件各收一份(按键与原始按键都是);核心的 do-not-propagate 不截断 XI2 的传播。
+    /// </summary>
+    [TestMethod]
+    public async Task 选XIAllDevices的主从设备各收一份_核心的do_not_propagate不截断XI2()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient core = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint top = await MapTopAsync(c, host);
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(top).I16(0).I16(0).U16(30).U16(30).U16(0).U16(1).U32(0).U32(0x1000).U32(0x1));   // do-not-propagate:KeyPress
+        await c.SendAsync(8, 0, b => b.U32(child));
+        await SelectAsync(c, xi, top, 0, 1u << 2);                  // XIAllDevices:KeyPress
+        await SelectAsync(c, xi, c.RootWindow, 0, 1u << 13);        // XIAllDevices:RawKeyPress
+        await core.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x1));
+        await core.SyncAsync();
+        await c.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+        server.InjectPointerMotion(host.Mapped[top], 5, 5);       // 指针在子窗口里:按键从子窗口往上传
+        server.InjectKey(XKeycodes.A, pressed: true);
+
+        XMessage first = await NextXiAsync(c, xi, 2), second = await NextXiAsync(c, xi, 2);
+        CollectionAssert.AreEquivalent(new ushort[] { 5, 3 }, new[] { first.U16(10), second.U16(10) }, "从键盘、主键盘各一份(原先只有主设备那份)");
+        Assert.AreEqual(top, first.U32(24), "do-not-propagate 只截断核心事件,XI2 照样传到顶层");
+        XMessage raw1 = await NextXiAsync(c, xi, 13), raw2 = await NextXiAsync(c, xi, 13);
+        CollectionAssert.AreEquivalent(new ushort[] { 5, 3 }, new[] { raw1.U16(10), raw2.U16(10) }, "原始事件也是各一份");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => core.NextEventAsync(2, timeoutMs: 100), "核心事件被子窗口的 do-not-propagate 截断");
+    }
+
+    /// <summary>
+    /// XISetFocus 接受 PointerRoot(原先 BadWindow);窗口不可见时焦点退到父窗口(XI 2.2:等于 RevertToParent,原先退到 PointerRoot);
+    /// XIUngrabDevice 校验设备;Enter 等被动抓取的 detail、TouchBegin 的 grab_mode 按规范校验;XIQueryPointer 重置移动提示。
+    /// </summary>
+    [TestMethod]
+    public async Task XISetFocus接受PointerRoot并按RevertToParent退回_XIUngrabDevice校验设备_XIQueryPointer重置移动提示()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint top = await MapTopAsync(c, host);
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(top).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(child));
+
+        ushort pointerRoot = await c.SendAsync(xi, 49, b => b.U32(1).U32(0).U16(3).U16(0));   // XISetFocus(PointerRoot)
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError && m.Sequence == pointerRoot, timeoutMs: 100));
+        await c.SendAsync(xi, 49, b => b.U32(child).U32(0).U16(3).U16(0));
+        await c.SendAsync(10, 0, b => b.U32(child));                                          // UnmapWindow(child)
+        XMessage focus = await c.RequestAsync(xi, 50, b => b.U16(3).U16(0));
+        Assert.AreEqual(top, focus.U32(8), "退到父窗口");
+
+        XMessage badDevice = await c.RequestAsync(xi, 52, b => b.U32(0).U16(42).U16(0));
+        Assert.IsTrue(badDevice.IsError, "XIUngrabDevice 对不存在的设备回 BadDevice");
+        XMessage enterDetail = await c.RequestAsync(xi, 54, b => b.U32(0).U32(top).U32(0).U32(1).U16(2).U16(1).U16(1)
+            .U8(2).U8(1).U8(1).U8(0).U16(0).U32(0).U32(0));
+        Assert.AreEqual(2, enterDetail.Detail, "Enter 类被动抓取的 detail 必须是 0");
+        XMessage touchMode = await c.RequestAsync(xi, 54, b => b.U32(0).U32(top).U32(0).U32(0).U16(2).U16(1).U16(1)
+            .U8(4).U8(1).U8(1).U8(0).U16(0).U32(0).U32(0));
+        Assert.AreEqual(2, touchMode.Detail, "TouchBegin 的 grab_mode 必须是 Touch");
+
+        // PointerMotionHint:一条提示之后,XIQueryPointer 问过位置才再给一条(同核心 QueryPointer)。
+        await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x40 | 0x80));
+        await c.SyncAsync();
+        server.InjectPointerMotion(host.Mapped[top], 30, 30);
+        Assert.AreEqual(1, (await c.NextEventAsync(6)).Detail, "Hint");
+        server.InjectPointerMotion(host.Mapped[top], 31, 31);
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(6, timeoutMs: 100));
+        await c.RequestAsync(xi, 40, b => b.U32(top).U16(2).U16(0));                         // XIQueryPointer
+        server.InjectPointerMotion(host.Mapped[top], 32, 32);
+        Assert.AreEqual(1, (await c.NextEventAsync(6)).Detail, "问过位置之后再给一条提示");
+    }
+
+    /// <summary>根窗口变大:指针设备的 Abs X / Abs Y 范围跟着变,发 XI_DeviceChanged(reason DeviceChange)带上新的类。原先从不发。</summary>
+    [TestMethod]
+    public async Task 根窗口尺寸变了发XI_DeviceChanged_轴的范围跟着变()
+    {
+        await using X11Server server = new(new X11ServerOptions { ScreenWidth = 1920, ScreenHeight = 1080 });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        await SelectAsync(c, xi, c.RootWindow, 0, 1u << 1);   // XIAllDevices:DeviceChanged
+        await c.SyncAsync();
+        server.SetScreenLayout(2560, 1440);
+
+        List<XMessage> changed = [await NextXiAsync(c, xi, 1), await NextXiAsync(c, xi, 1)];
+        CollectionAssert.AreEquivalent(new ushort[] { 2, 4 }, changed.Select(e => e.U16(10)).ToArray(), "主指针与从指针各一条");
+        XMessage e = changed[0];
+        Assert.AreEqual(3, e.U16(16), "num_classes");
+        Assert.AreEqual(2, e.Bytes[20], "reason = DeviceChange");
+        // 类从第 32 字节起:按钮类 12 个四字节,之后是 Abs X 的轴类(max 的整数部分在轴类的第 20 字节)。
+        Assert.AreEqual(2, e.U16(80), "第二个类是轴");
+        Assert.AreEqual(2559, (int)e.U32(100), "Abs X 的最大值 = 新的根窗口宽 − 1");
     }
 
     [TestMethod]

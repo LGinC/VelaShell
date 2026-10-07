@@ -489,9 +489,10 @@ public sealed partial class X11Server
         Delivery? SendToAll(XWindow window)
         {
             Delivery? first = null;
+            bool coreAllowed = !CoreBlockedBelow(source, window, mask);   // 落点是 XI2 的选择、核心的传播在下面就被截断了
             foreach ((XClient client, uint selected) in window.EventSelections)
             {
-                if ((selected & (uint)mask) != 0 && !client.Closed && (repeat != RepeatPhase.Release || WantsRepeatRelease(client)))
+                if (coreAllowed && (selected & (uint)mask) != 0 && !client.Closed && (repeat != RepeatPhase.Release || WantsRepeatRelease(client)))
                 {
                     SendDeviceEvent(client, code, detail, window, source, selected);
                     first ??= new Delivery(window, client, selected, false, 0, false);
@@ -502,14 +503,24 @@ public sealed partial class X11Server
                 return first;
             }
             uint flags = repeat == RepeatPhase.Press ? XiKeyRepeatFlag : 0;
+            ulong bit = 1UL << code;
             foreach ((XClient client, (ulong master, ulong slave)) in window.Xi2Selections)
             {
-                if (((master | slave) & (1UL << code)) != 0 && !client.Closed)
+                if (((master | slave) & bit) == 0 || client.Closed)
                 {
-                    bool slaveOnly = (master & (1UL << code)) == 0;
-                    SendXi2DeviceEvent(client, code, detail, window, source, slaveOnly, flags);
-                    first ??= new Delivery(window, client, 0, true, master | slave, slaveOnly);
+                    continue;
                 }
+                // 从设备与主设备各产生一个事件(XI2「XISelectEvents」:XIAllDevices 两者都选):选了从设备的收从设备那份,
+                // 选了主设备的收主设备那份 —— 原先选 XIAllDevices 只收到主设备一份。
+                if ((slave & bit) != 0)
+                {
+                    SendXi2DeviceEvent(client, code, detail, window, source, slave: true, flags);
+                }
+                if ((master & bit) != 0)
+                {
+                    SendXi2DeviceEvent(client, code, detail, window, source, slave: false, flags);
+                }
+                first ??= new Delivery(window, client, 0, true, master | slave, (master & bit) == 0);
             }
             return first;
         }
@@ -542,17 +553,22 @@ public sealed partial class X11Server
 
     /// <summary>
     /// 从源窗口向上找第一个(指定客户端)选了这类事件的窗口 —— 核心掩码或 XI2 的 <paramref name="evtype" /> 都算;
-    /// 碰上 do-not-propagate 或 <paramref name="stopAt" /> 就停。
+    /// 碰上 <paramref name="stopAt" /> 就停。核心的 do-not-propagate 只截断核心事件的传播:之后的祖先只看 XI2 的选择
+    /// (XI2 没有 do-not-propagate;原先连 XI2 的传播一起截断)。
     /// </summary>
     private static Delivery? Propagate(XWindow source, XEventMask mask, int evtype, XClient? only, XWindow? stopAt)
     {
+        bool coreBlocked = false;
         for (XWindow? w = source; w is not null; w = w.Parent)
         {
-            foreach ((XClient client, uint selected) in w.EventSelections)
+            if (!coreBlocked)
             {
-                if ((selected & (uint)mask) != 0 && !client.Closed && (only is null || ReferenceEquals(client, only)))
+                foreach ((XClient client, uint selected) in w.EventSelections)
                 {
-                    return new Delivery(w, client, selected, false, 0, false);
+                    if ((selected & (uint)mask) != 0 && !client.Closed && (only is null || ReferenceEquals(client, only)))
+                    {
+                        return new Delivery(w, client, selected, false, 0, false);
+                    }
                 }
             }
             foreach ((XClient client, (ulong master, ulong slave)) in w.Xi2Selections)
@@ -562,12 +578,26 @@ public sealed partial class X11Server
                     return new Delivery(w, client, 0, true, master | slave, (master & (1UL << evtype)) == 0);
                 }
             }
-            if ((w.DoNotPropagateMask & (uint)mask) != 0 || ReferenceEquals(w, stopAt))
+            if (ReferenceEquals(w, stopAt))
             {
                 return null;
             }
+            coreBlocked |= (w.DoNotPropagateMask & (uint)mask) != 0;
         }
         return null;
+    }
+
+    /// <summary>从 <paramref name="source" /> 到 <paramref name="target" />(不含)之间有窗口用 do-not-propagate 截断了这类核心事件。</summary>
+    private static bool CoreBlockedBelow(XWindow source, XWindow target, XEventMask mask)
+    {
+        for (XWindow? w = source; w is not null && !ReferenceEquals(w, target); w = w.Parent)
+        {
+            if ((w.DoNotPropagateMask & (uint)mask) != 0)
+            {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void SendDeviceEvent(XClient client, byte code, byte detail, XWindow eventWindow, XWindow source, uint clientMask)
