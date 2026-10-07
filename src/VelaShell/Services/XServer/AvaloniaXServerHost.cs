@@ -209,6 +209,32 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void UseKeyboardLayout(string layout) => _chosenLayout = layout ?? "";
 
+    private long _layoutCheckedAt;
+
+    /// <summary>
+    /// X 窗口里按下了一个键:系统布局可能刚在 X 窗口里切过(Win+Space、Alt+Shift、输入法的切换)—— 先看一眼,变了就把新的键位表推过去,
+    /// 再注入这个键(同一个工作队列,按先后处理)。原先只在激活 X 窗口时重推,在 X 窗口里切了布局,继续敲出的仍是旧布局。
+    /// Windows 上只比一下布局句柄(很便宜);别的系统算一遍键位表较贵,至多每秒看一次。设置里手选了布局时不跟随系统。
+    /// 服务端只改与上次不同的键,用户在 X 里做的 xmodmap 改动不受影响。
+    /// </summary>
+    internal void RefreshKeyboardLayoutOnKey()
+    {
+        if (_server is not { } server || _chosenLayout.Length != 0)
+        {
+            return;
+        }
+        if (!OperatingSystem.IsWindows())
+        {
+            long now = Environment.TickCount64;
+            if (now - _layoutCheckedAt < 1000)
+            {
+                return;
+            }
+            _layoutCheckedAt = now;
+        }
+        ApplyKeyboardLayout(server);
+    }
+
     private HostKeymapResult? BuildHostKeymap(X11Server server)
     {
         // 设置里手选了布局:用随程序带的键位表,不再跟随系统。

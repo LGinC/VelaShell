@@ -595,6 +595,10 @@ public sealed class XNativeWindow : Window
         // 已经按着又来一次按下:系统的自动重复(Avalonia 的 X11 后端开了 XKB 的 detectable autorepeat,中间没有 KeyUp)。
         // 告诉服务端这是重复,由它按 X 的语义决定发不发、怎么发(xset r off、修饰键不重复、DetectableAutoRepeat)。
         bool repeat = !_heldKeys.Add(keycode);
+        if (!repeat)
+        {
+            _host.RefreshKeyboardLayoutOnKey();   // 布局可能刚在 X 窗口里切过:先换键位表,再注入这个键
+        }
         if (CommandKeyUpMayBeLost && (e.KeyModifiers & KeyModifiers.Meta) != 0 && keycode is not (XKeycodes.SuperLeft or XKeycodes.SuperRight))
         {
             if (repeat && _pressedWithCommand.Contains(keycode))

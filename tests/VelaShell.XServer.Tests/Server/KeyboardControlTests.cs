@@ -226,6 +226,48 @@ public sealed class KeyboardControlTests
         Assert.AreEqual(other, key.U32(12), "按键送到指针所在的窗口");
     }
 
+    /// <summary>
+    /// 宿主再推一次键位表(激活 X 窗口、切了布局):只改与上次不同的键,修饰键表只挪右 Alt —— 用户用 xmodmap 交换的 Caps / Ctrl 保留。
+    /// 原先每次整张覆盖修饰键表、连同固定键的键值一起还原。
+    /// </summary>
+    [TestMethod]
+    public async Task 宿主重推键位表保留xmodmap交换的Caps与Ctrl_只挪右Alt()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        static XKeymap Us(bool altGr) => new XKeymap("us") { AltGr = altGr }
+            .Map(XKeycodes.ControlLeft, 0xffe3, 0xffe3).Map(XKeycodes.A, 'a', 'A');
+        server.SetKeymap(Us(altGr: false));
+        await c.SyncAsync();
+
+        // xmodmap:左 Ctrl 当 Caps Lock、Caps Lock 当 Ctrl。
+        await c.SendAsync(100, 1, b => b.U8(XKeycodes.ControlLeft).U8(1).U16(0).U32(0xffe5));
+        await c.SendAsync(100, 1, b => b.U8(XKeycodes.CapsLock).U8(1).U16(0).U32(0xffe3));
+        XMessage current = await c.RequestAsync(119, 0);
+        int per = current.Bytes[1];
+        byte[] swapped = current.Bytes[32..(32 + (8 * per))];
+        Array.Clear(swapped, per, 2 * per);
+        swapped[per] = XKeycodes.ControlLeft;        // Lock
+        swapped[2 * per] = XKeycodes.CapsLock;       // Control
+        Assert.AreEqual(0, (await c.RequestAsync(118, (byte)per, b => b.Bytes(swapped))).Bytes[1]);
+
+        server.SetKeymap(Us(altGr: false));          // 宿主再推一次(用户激活了 X 窗口)
+        await c.SyncAsync();
+        XMessage ctrl = await c.RequestAsync(101, 0, b => b.U8(XKeycodes.ControlLeft).U8(1).U16(0));
+        Assert.AreEqual(0xffe5u, ctrl.U32(32), "左 Ctrl 仍是 Caps_Lock");
+        XMessage after = await c.RequestAsync(119, 0);
+        CollectionAssert.AreEqual(swapped, after.Bytes[32..(32 + (8 * after.Bytes[1]))], "修饰键表原样");
+
+        server.SetKeymap(Us(altGr: true));           // 换成有 AltGr 的布局:右 Alt 从 Mod1 挪到 Mod5,别的不动
+        await c.SyncAsync();
+        XMessage altGr = await c.RequestAsync(119, 0);
+        int per2 = altGr.Bytes[1];
+        byte[] map = altGr.Bytes[32..(32 + (8 * per2))];
+        Assert.DoesNotContain(XKeycodes.AltRight, map[(3 * per2)..(4 * per2)], "Mod1 里没有右 Alt 了");
+        Assert.Contains(XKeycodes.AltRight, map[(7 * per2)..(8 * per2)], "Mod5 里有右 Alt");
+        Assert.Contains(XKeycodes.ControlLeft, map[per2..(2 * per2)], "Lock 仍是左 Ctrl");
+    }
+
     [TestMethod]
     public async Task SetModifierMapping校验键码_修饰键按着时Busy_XI的GetDeviceKeyMapping不回绕()
     {

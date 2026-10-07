@@ -128,13 +128,8 @@ public sealed partial class X11Server
     /// <summary>右 Alt 当 AltGr 时的键值(ISO_Level3_Shift)与平时的键值(Alt_R),协议附录 A「KEYSYM Encoding」。</summary>
     private const uint IsoLevel3ShiftKeysym = 0xfe03, AltRightKeysym = 0xffea;
 
-    /// <summary>
-    /// 修饰键表(8 个修饰位 × 每位 2 个键码):Shift、Lock、Control、Mod1(Alt)、Mod2(Num Lock)、Mod3、Mod4(Super)、Mod5。
-    /// 有 AltGr 时右 Alt 从 Mod1 挪到 Mod5 —— 四级键类型按 Mod5 选第三、四级。
-    /// </summary>
-    private static readonly byte[] DefaultModifierMap = [50, 62, 66, 0, 37, 105, 64, 108, 77, 0, 0, 0, 133, 134, 0, 0];
-
-    private static readonly byte[] AltGrModifierMap = [50, 62, 66, 0, 37, 105, 64, 0, 77, 0, 0, 0, 133, 134, 108, 0];
+    /// <summary>Mod1(Alt)与 Mod5(AltGr:四级键类型按 Mod5 选第三、四级)在修饰键表里的下标。</summary>
+    private const int Mod1Index = 3, Mod5Index = 7;
 
     /// <summary><see cref="XKeymap" /> 在调用方线程上拷下来的一份(之后宿主再改那个对象不影响这里)。</summary>
     private sealed record KeymapChange(string Layout, int KeysymsPerKeycode, bool AltGr, (byte Keycode, uint[] Keysyms)[] Keys)
@@ -143,39 +138,93 @@ public sealed partial class X11Server
             new(keymap.Layout, keymap.KeysymsPerKeycode, keymap.AltGr, [.. keymap.Keys.Select(kv => (kv.Key, (uint[])kv.Value.Clone()))]);
     }
 
+    /// <summary>宿主上次给每个键码的键值(<see cref="ApplyKeymap" /> 只改这次与上次不同的键)。</summary>
+    private readonly Dictionary<byte, uint[]> _hostKeys = [];
+
+    /// <summary>宿主上次给的右 Alt 角色(null = 还没给过)。</summary>
+    private bool? _hostAltGr;
+
     /// <summary>
-    /// 一次换掉键位表:各键码的键值、右 Alt 的键值与修饰位、布局名。客户端各收到一次 MappingNotify(键盘;修饰键表真的变了时再加一次修饰键)
-    /// 与一次 XKB 的 MapNotify,而不是每改一段就通知一轮。
+    /// 换键位表(宿主的布局变了):键值、右 Alt 的键值与修饰位、布局名。只改这次与宿主上次给的不同的那些 —— 宿主没变的键保留客户端的改动
+    /// (xmodmap 交换 Caps / Ctrl、改了某个键的键值);右 Alt 的角色变了才在 Mod1 与 Mod5 之间挪它(它已被客户端挪出这两个修饰位就不动),
+    /// 修饰键表的其余部分不碰。原先每次整张覆盖修饰键表,宿主每激活一次 X 窗口就把用户的 xmodmap 设置还原了。
+    /// 客户端各收到一次 MappingNotify(键盘;修饰键表真的变了时再加一次修饰键)与一次 XKB 的 MapNotify;什么都没变就一条都不发。
     /// </summary>
     private void ApplyKeymap(KeymapChange change)
     {
         int per = change.KeysymsPerKeycode;
-        byte first = XKeycodes.AltRight, last = XKeycodes.AltRight;
+        int first = int.MaxValue, last = -1;
         foreach ((byte keycode, uint[] keysyms) in change.Keys)
         {
+            if (_hostKeys.TryGetValue(keycode, out uint[]? before) && before.AsSpan().SequenceEqual(keysyms))
+            {
+                continue;
+            }
+            _hostKeys[keycode] = keysyms;
             _keymap.Change(keycode, per, keysyms);
-            first = Math.Min(first, keycode);
-            last = Math.Max(last, keycode);
+            (first, last) = (Math.Min(first, keycode), Math.Max(last, keycode));
         }
-        uint altRight = change.AltGr ? IsoLevel3ShiftKeysym : AltRightKeysym;
-        _keymap.Change(XKeycodes.AltRight, 2, [altRight, altRight]);
-        byte[] modifiers = change.AltGr ? AltGrModifierMap : DefaultModifierMap;
-        bool modifiersChanged = !_keymap.ModifierMap.AsSpan().SequenceEqual(modifiers);
-        if (modifiersChanged)
+        bool modifiersChanged = false;
+        if (_hostAltGr != change.AltGr)
         {
-            _keymap.SetModifierMap([.. modifiers]);
+            uint altRight = change.AltGr ? IsoLevel3ShiftKeysym : AltRightKeysym;
+            _keymap.Change(XKeycodes.AltRight, 2, [altRight, altRight]);
+            (first, last) = (Math.Min(first, XKeycodes.AltRight), Math.Max(last, XKeycodes.AltRight));
+            modifiersChanged = MoveAltRight(toMod5: change.AltGr);
+            _hostAltGr = change.AltGr;
         }
         if (change.Layout != KeyboardLayout)
         {
             _keyboardLayout = change.Layout;
             PublishXkbRulesNames();
         }
-        NotifyKeyboardMappingChanged(first, last - first + 1);
+        if (last >= 0)
+        {
+            NotifyKeyboardMappingChanged((byte)first, last - first + 1);
+        }
         if (modifiersChanged)
         {
+            UpdateModifierState(0, 0);
             NotifyModifierMappingChanged();
         }
-        NotifyXkbMapChanged();
+        if (last >= 0 || modifiersChanged)
+        {
+            NotifyXkbMapChanged();
+        }
+    }
+
+    /// <summary>
+    /// 右 Alt 在 Mod1 与 Mod5 之间挪:它在另一个里才挪(客户端把它挪到别处或去掉了就不动);目标修饰位没有空位时每位多一格。
+    /// 返回修饰键表有没有变。
+    /// </summary>
+    private bool MoveAltRight(bool toMod5)
+    {
+        byte[] map = _keymap.ModifierMap;
+        int per = _keymap.KeycodesPerModifier;
+        int from = toMod5 ? Mod1Index : Mod5Index, to = toMod5 ? Mod5Index : Mod1Index;
+        int at = Array.IndexOf(map, XKeycodes.AltRight, from * per, per);
+        if (at < 0)
+        {
+            return false;
+        }
+        int free = Array.IndexOf(map, (byte)0, to * per, per);
+        if (free < 0)
+        {
+            byte[] wider = new byte[8 * (per + 1)];
+            for (int m = 0; m < 8; m++)
+            {
+                Array.Copy(map, m * per, wider, m * (per + 1), per);
+            }
+            (map, at, free) = (wider, at + (at / per), (to * (per + 1)) + per);
+        }
+        else
+        {
+            map = [.. map];
+        }
+        map[at] = 0;
+        map[free] = XKeycodes.AltRight;
+        _keymap.SetModifierMap(map);
+        return true;
     }
 
     /// <summary>核心 MappingNotify(request = Keyboard):这一段键码的键值变了,客户端该重新取。</summary>
