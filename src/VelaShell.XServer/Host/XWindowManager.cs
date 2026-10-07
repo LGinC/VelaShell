@@ -128,6 +128,13 @@ public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRe
 /// </summary>
 public sealed record XRaiseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 
+/// <summary>
+/// 客户端自己把键盘焦点挪到了这个顶层(SetInputFocus / XISetFocus,不是 <see cref="X11Server.FocusTopLevel" /> 引起的),按键此刻送往它。
+/// 宿主应当让用户看得出键盘去了哪儿:激活它的原生窗口;不愿意(用户正在用本机的其它窗口)可以调 <see cref="X11Server.FocusTopLevel" />
+/// 把焦点交回宿主认定的那个顶层。
+/// </summary>
+public sealed record XFocusRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+
 /// <summary>关闭窗口(<c>_NET_CLOSE_WINDOW</c>,一般由任务栏 / 分页器发出)。</summary>
 public sealed record XCloseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 

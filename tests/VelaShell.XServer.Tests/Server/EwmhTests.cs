@@ -211,4 +211,50 @@ public sealed class EwmhTests
         Assert.AreEqual(locallyActive, await FocusAfterAsync(local), "Locally Active:设焦点");
         Assert.AreEqual(locallyActive, (await c.NextEventAsync(33)).U32(4), "同时发 WM_TAKE_FOCUS");
     }
+    [TestMethod]
+    public async Task SetInputFocus按时间戳_宿主换了焦点之后迟到的旧请求不生效_客户端挪焦点到别的顶层时请宿主激活()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint protocols = await InternAsync(c, "WM_PROTOCOLS"), takeFocus = await InternAsync(c, "WM_TAKE_FOCUS");
+        const uint wmHints = 35, atom = 4;
+
+        async Task<(uint Window, XTopLevelWindow Handle)> MapAsync(bool takesFocus)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, b => b.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0));
+            await SetCard32Async(c, id, wmHints, wmHints, 1, 1, 0, 0, 0, 0, 0, 0, 0);   // input = True
+            if (takesFocus)
+            {
+                await SetCard32Async(c, id, protocols, atom, takeFocus);
+            }
+            await c.SendAsync(8, 0, b => b.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return (id, host.Mapped[id]);
+        }
+
+        async Task<uint> FocusAsync() => (await c.RequestAsync(43, 0)).U32(8);   // GetInputFocus
+
+        (uint a, XTopLevelWindow handleA) = await MapAsync(takesFocus: true);   // Locally Active(GTK3 这类)
+        (uint b, XTopLevelWindow handleB) = await MapAsync(takesFocus: false);
+        server.FocusTopLevel(handleA);   // 用户点了 A:服务端给 A 发 WM_TAKE_FOCUS
+        uint stamp = (await c.NextEventAsync(33)).U32(16);
+        await Task.Delay(20);
+        server.FocusTopLevel(handleB);   // 紧接着点了 B
+        Assert.AreEqual(b, await FocusAsync());
+
+        // A 对 WM_TAKE_FOCUS 的回应经 SSH 才到:时间戳早于宿主换焦点的时间,不生效。
+        await c.SendAsync(42, 1, x => x.U32(a).U32(stamp));
+        Assert.AreEqual(b, await FocusAsync(), "原先不看时间戳,焦点被拉回 A,而宿主上亮着的是 B");
+        Assert.IsFalse(host.Requests.OfType<XFocusRequest>().Any());
+
+        await c.SendAsync(42, 3, x => x.U32(a).U32(0));   // revert-to 只有 None / PointerRoot / Parent
+        Assert.AreEqual(2, (await c.NextAsync(m => m.IsError)).Detail, "BadValue");
+
+        // 客户端用 CurrentTime 把焦点挪到另一个顶层:生效,并请宿主激活它的原生窗口。
+        await c.SendAsync(42, 1, x => x.U32(a).U32(0));
+        Assert.AreEqual(a, await FocusAsync());
+        await host.WaitForAsync(() => host.Requests.OfType<XFocusRequest>().Any(r => r.Window.Id == a));
+    }
 }

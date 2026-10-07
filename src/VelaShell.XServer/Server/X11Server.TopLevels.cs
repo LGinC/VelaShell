@@ -199,8 +199,12 @@ public sealed partial class X11Server
     /// </summary>
     private void ApplyFocus(XWindow? top)
     {
+        // 宿主换了焦点就是窗口管理器换了焦点:推进 last-focus-change time,早于此刻的客户端 SetInputFocus 随后都不生效
+        // (见 SetFocusFromClient)。WM_TAKE_FOCUS 带的也是这个时间,客户端拿它回 SetInputFocus 照样生效。
+        uint now = Math.Max(1u, Now);
         if (top is null)
         {
+            _lastFocusChangeTime = now;
             SetFocus(null, 0);
             return;
         }
@@ -208,6 +212,7 @@ public sealed partial class X11Server
         {
             return;
         }
+        _lastFocusChangeTime = now;
         RaiseAboveNormalTopLevels(top);
         if (AcceptsInputHint(top) && (_focus is null || ReferenceEquals(_focus, Root) || !ReferenceEquals(_focus.TopLevel, top)))
         {
@@ -217,8 +222,7 @@ public sealed partial class X11Server
         if (SupportsProtocol(top, _wmTakeFocusAtom) && top.Owner is { Closed: false } owner)
         {
             // ICCCM §4.2.8:ClientMessage,类型 WM_PROTOCOLS,data[0] = WM_TAKE_FOCUS,data[1] 是一个有效的时间戳(不是 CurrentTime)。
-            uint time = Math.Max(1u, Now);
-            owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(time).Zero(12), sent: true);
+            owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(now).Zero(12), sent: true);
         }
     }
 

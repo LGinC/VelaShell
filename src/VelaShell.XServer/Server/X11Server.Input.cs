@@ -45,6 +45,9 @@ public sealed partial class X11Server
     private XWindow? _focus;
     private byte _focusRevertTo;
 
+    /// <summary>协议「SetInputFocus」的 last-focus-change time:客户端带的时间戳早于它的改焦点请求不生效。</summary>
+    private uint _lastFocusChangeTime;
+
     private ushort State => (ushort)(_modifiers | _buttons);
 
     // ================================================================== 宿主注入的输入(见 X11Server.cs 的公开方法)
@@ -1068,7 +1071,11 @@ public sealed partial class X11Server
     private void SetInputFocus(XRequestReader r)
     {
         byte revertTo = r.Data;
-        uint id = r.U32();
+        uint id = r.U32(), time = r.U32();
+        if (revertTo > 2)
+        {
+            throw new XProtocolError(XErrorCode.Value, revertTo);   // None / PointerRoot / Parent
+        }
         XWindow? focus = id switch
         {
             0 => null,
@@ -1079,7 +1086,35 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Match);
         }
+        SetFocusFromClient(focus, revertTo, time);
+    }
+
+    /// <summary>
+    /// 客户端改焦点(SetInputFocus、XI 的 SetDeviceFocus / XISetFocus)。照协议「SetInputFocus」:时间戳早于 last-focus-change time
+    /// 或晚于当前服务端时间的请求不生效(CurrentTime 换成当前时间),生效时 last-focus-change time 改成它。宿主 FocusTopLevel 也推进它
+    /// (见 <see cref="ApplyFocus" />),所以经 SSH 迟到的 SetInputFocus —— 用户点了 A 又点了 B,A 对 WM_TAKE_FOCUS 的回应这才到 ——
+    /// 不再把焦点拉回 A(原先不看时间戳,宿主上亮着的是 B,敲的字进了 A)。
+    /// 焦点因此挪到了另一个顶层时请宿主激活它的原生窗口(<see cref="XFocusRequest" />):原先宿主不知道,用户看不出键盘去了哪儿。
+    /// </summary>
+    private void SetFocusFromClient(XWindow? focus, byte revertTo, uint time)
+    {
+        uint now = Math.Max(1u, Now);
+        if (time == 0)
+        {
+            time = now;
+        }
+        if (unchecked((int)(time - _lastFocusChangeTime)) < 0 || unchecked((int)(time - now)) > 0)
+        {
+            return;
+        }
+        _lastFocusChangeTime = time;
+        XWindow? before = _focus?.TopLevel;
         SetFocus(focus, revertTo);
+        if (focus?.TopLevel is { IsViewable: true, OverrideRedirect: false } top && !ReferenceEquals(top, before)
+            && _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
+        {
+            _host.WindowManagerRequested(new XFocusRequest(handle));
+        }
     }
 
     private void GetInputFocus(XClient c)

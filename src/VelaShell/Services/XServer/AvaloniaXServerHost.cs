@@ -377,6 +377,11 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                 // 只是抬高次序:用户此刻正在用这个 X 程序(另一个 X 窗口是活动的)才照办,不从本机窗口那里抢走前台。
                 native.Activate();
                 break;
+            case XFocusRequest when !native.IsActive && _windows.Values.Any(w => w.IsActive):
+                // X 客户端自己把键盘焦点挪到了这个窗口:按键已经送往它,把它的原生窗口激活,用户才看得出键盘去了哪儿。
+                // 用户正在用本机的其它窗口时不抢前台 —— 那时按键本来就不进 X,用户回到某个 X 窗口时焦点随激活重新给出。
+                native.Activate();
+                break;
             case XMinimizeRequest:
                 native.WindowState = WindowState.Minimized;
                 break;

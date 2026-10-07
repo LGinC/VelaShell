@@ -86,16 +86,19 @@ public sealed partial class X11Server
             case 20:  // GetDeviceFocus:键盘设备的焦点就是核心焦点
                 {
                     uint focus = _focus switch { null => 0, { IsRoot: true } => 1, { } f => f.Id };
-                    uint time = Now;
+                    uint time = _lastFocusChangeTime;
                     c.Reply(minor, w => w.U32(focus).U32(time).U8(_focusRevertTo).Zero(15));
                     break;
                 }
             case 21:  // SetDeviceFocus
                 {
-                    uint focusId = r.U32();
-                    r.Skip(4);
+                    uint focusId = r.U32(), time = r.U32();
                     byte revertTo = r.U8();
-                    SetFocus(focusId switch { 0 => null, 1 => Root, _ => Window(focusId) }, revertTo);
+                    if (revertTo > 2)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, revertTo);
+                    }
+                    SetFocusFromClient(focusId switch { 0 => null, 1 => Root, _ => Window(focusId) }, revertTo, time);
                     break;
                 }
             case 24:  // GetDeviceKeyMapping
@@ -289,8 +292,8 @@ public sealed partial class X11Server
                 }
             case 49:  // XISetFocus
                 {
-                    uint focusId = r.U32();
-                    SetFocus(focusId == 0 ? null : Window(focusId), 1);
+                    uint focusId = r.U32(), time = r.U32();
+                    SetFocusFromClient(focusId == 0 ? null : Window(focusId), 1, time);
                     break;
                 }
             case 50:  // XIGetFocus
