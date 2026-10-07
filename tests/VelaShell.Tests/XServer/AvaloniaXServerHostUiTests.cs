@@ -500,6 +500,40 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 半透明的窗口(<c>_NET_WM_WINDOW_OPACITY</c>)要透明底,否则只是和自己的底色混;图像光标每个窗口只留最近的几个,
+    /// 多的释放(原先放在 ConditionalWeakTable 里,系统光标句柄一直不释放)。
+    /// </summary>
+    [TestMethod]
+    public async Task OpacityNeedsATransparentWindow_AndImageCursorsAreBounded() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, replies: replies);
+        uint opacity = await InternAsync(client, replies, "_NET_WM_WINDOW_OPACITY");
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        Assert.Contains(Avalonia.Controls.WindowTransparencyLevel.None, native.TransparencyLevelHint.ToArray());
+
+        await SendAsync(client, 18, 0, w => w.U32(window).U32(opacity).U32(6).U8(32).Zero(3).U32(1).U32(0x80000000));   // CARDINAL 一半
+        await WaitForAsync(() => native.TransparencyLevelHint.Contains(Avalonia.Controls.WindowTransparencyLevel.Transparent) ? native : null);
+        Assert.AreEqual(0.5, native.Opacity, 0.01);
+
+        for (int i = 0; i < 40; i++)
+        {
+            native.ApplyCursor(new XCursor(XCursorShape.Arrow, new XCursorImage(2, 2, 0, 0, new uint[] { (uint)i, 0, 0, 0 })));
+        }
+        Assert.IsLessThanOrEqualTo(16, native.ImageCursorCount, "图像光标有上限");
+        Assert.IsNotNull(native.Cursor, "正显示的那个还在");
+        host.Detach();
+    });
+
+    /// <summary>
     /// 停服后马上重启:UI 队列里还排着旧服务端的回调,新服务端的窗口 XID 又与旧的重合。旧回调既不能用旧句柄建原生窗口
     /// (之后的注入会把旧句柄交给新服务端,抛 ArgumentException),也不能按 XID 误关新服务端的窗口。
     /// </summary>

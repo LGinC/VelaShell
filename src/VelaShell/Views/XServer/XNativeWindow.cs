@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
@@ -64,6 +63,15 @@ public sealed class XNativeWindow : Window
     private ((int X, int Y) Request, (int X, int Y) Placed)? _placement;
     private long _controlLeftDownAt;
 
+    /// <summary>上一份快照要求引起注意(只在变成要求时闪一次任务栏)。</summary>
+    private bool _urgent;
+
+    /// <summary>窗口区域裁成了哪个形状(null = 整个矩形)。</summary>
+    private IReadOnlyList<XRect>? _regionShape;
+
+    /// <summary>系统边框的尺寸已经报给服务端了(显示之前用的是宿主预估的,不算)。</summary>
+    private bool _frameReported;
+
     internal XNativeWindow(AvaloniaXServerHost host, XTopLevelWindow handle)
     {
         _host = host;
@@ -75,13 +83,16 @@ public sealed class XNativeWindow : Window
         WindowStartupLocation = WindowStartupLocation.Manual;
         Focusable = true;
         ApplyStyle(handle.Snapshot);
+        // 系统边框的尺寸要等显示出来才量得到:先按宿主上一个有边框的窗口量到的预估,第一帧就摆在对的地方,
+        // 不必等 Opened 之后再挪(原先按 0 摆,显示出来跳一下)。
+        _frame = WindowDecorations == WindowDecorations.None ? default : host.LastDecoratedFrame;
 
         PositionChanged += (_, _) => OnMovedByUser();
         Resized += OnResized;
         Activated += (_, _) => _host.OnWindowActivated(this);
         Deactivated += (_, _) => OnDeactivated();
         ScalingChanged += (_, _) => ApplyGeometry();
-        Opened += (_, _) => { _opened = true; UpdateFrameExtents(); ApplyGeometry(); _surface.Start(); };
+        Opened += (_, _) => { _opened = true; UpdateFrameExtents(); ApplyGeometry(); UpdateRegion(Handle.Snapshot); _surface.Start(); };
     }
 
     /// <summary>服务端那边的顶层窗口。</summary>
@@ -109,9 +120,15 @@ public sealed class XNativeWindow : Window
         if ((changes & (XTopLevelChanges.Hints | XTopLevelChanges.Shape)) != 0)
         {
             _surface.PropertiesChanged();
+            UpdateRegion(s);
         }
         if ((changes & XTopLevelChanges.Hints) != 0)
         {
+            if (s.Urgent && !_urgent && !IsActive)
+            {
+                WindowAttention.Request(this);   // WM_HINTS 的 urgency / DEMANDS_ATTENTION:闪任务栏(原先什么也不做)
+            }
+            _urgent = s.Urgent;
             Opacity = Math.Clamp(s.Opacity, 0.05, 1);
             double scale = Scale;
             MinWidth = s.MinWidth > 0 ? s.MinWidth / scale : 0;
@@ -218,7 +235,7 @@ public sealed class XNativeWindow : Window
     {
         if (cursor is { Image: { } image, Shape: not XCursorShape.Hidden })
         {
-            Cursor = ImageCursors.GetValue(image, CreateImageCursor);
+            Cursor = ImageCursor(image);
             return;
         }
         StandardCursorType type = XInputMap.Cursor(cursor.Shape);
@@ -232,8 +249,52 @@ public sealed class XNativeWindow : Window
     /// <summary>建过的系统光标(UI 线程上用)。</summary>
     private static readonly Dictionary<StandardCursorType, Cursor> StandardCursors = [];
 
-    /// <summary>按图像建过的光标:服务端对同一个光标总给同一份图像;图像没人引用了,光标随之回收。</summary>
-    private static readonly ConditionalWeakTable<XCursorImage, Cursor> ImageCursors = [];
+    /// <summary>这个窗口按图像建过的光标(服务端对同一个光标总给同一份图像),最近用的排在后面。</summary>
+    private readonly List<(XCursorImage Image, Cursor Cursor)> _imageCursors = [];
+
+    /// <summary>每个窗口最多留这么多个图像光标;再多就释放最久没用的。</summary>
+    private const int MaxImageCursors = 16;
+
+    /// <summary>
+    /// 图像光标:建过的直接用,否则建一个。每个光标背后是一个系统光标句柄(Windows 上是 GDI 对象),要显式释放 —— 原先放在
+    /// ConditionalWeakTable 里等图像被回收,光标对象没人释放,句柄一直漏到进程退出;不停换光标的程序能把 GDI 对象耗尽。
+    /// 现在每个窗口留最近用的几个,多了释放最久没用的(此刻正显示的不动),窗口关闭时全部释放。
+    /// </summary>
+    private Cursor ImageCursor(XCursorImage image)
+    {
+        int index = _imageCursors.FindIndex(c => ReferenceEquals(c.Image, image));
+        (XCursorImage, Cursor) entry = index >= 0 ? _imageCursors[index] : (image, CreateImageCursor(image));
+        if (index >= 0)
+        {
+            _imageCursors.RemoveAt(index);
+        }
+        _imageCursors.Add(entry);
+        for (int i = 0; _imageCursors.Count > MaxImageCursors && i < _imageCursors.Count - 1; )
+        {
+            if (ReferenceEquals(_imageCursors[i].Cursor, Cursor))
+            {
+                i++;   // 正显示着,不释放
+                continue;
+            }
+            _imageCursors[i].Cursor.Dispose();
+            _imageCursors.RemoveAt(i);
+        }
+        return entry.Item2;
+    }
+
+    /// <summary>释放这个窗口建过的图像光标(窗口关了)。</summary>
+    private void ReleaseImageCursors()
+    {
+        Cursor = null;
+        foreach ((_, Cursor cursor) in _imageCursors)
+        {
+            cursor.Dispose();
+        }
+        _imageCursors.Clear();
+    }
+
+    /// <summary>这个窗口此刻留着的图像光标数(测试用)。</summary>
+    internal int ImageCursorCount => _imageCursors.Count;
 
     private static unsafe Cursor CreateImageCursor(XCursorImage image)
     {
@@ -345,8 +406,9 @@ public sealed class XNativeWindow : Window
         UpdateTopmost(_host.XActive);
         CanMinimize = !popup && (s.Functions & XWindowFunctions.Minimize) != 0;
         CanMaximize = !popup && (s.Functions & XWindowFunctions.Maximize) != 0;
-        // 有 alpha 的视觉(GTK 的客户端阴影、圆角)与非矩形窗口要透明底;其余不透明,省掉系统合成的开销。
-        TransparencyLevelHint = s.HasAlpha || s.Shape is not null
+        // 有 alpha 的视觉(GTK 的客户端阴影、圆角)、非矩形窗口与半透明的窗口(_NET_WM_WINDOW_OPACITY)要透明底;其余不透明,
+        // 省掉系统合成的开销。不透明的底上设 Opacity 只是和窗口自己的底色混,看不到后面的窗口。
+        TransparencyLevelHint = s.HasAlpha || s.Shape is not null || s.Opacity < 1
             ? [WindowTransparencyLevel.Transparent]
             : [WindowTransparencyLevel.None];
     }
@@ -450,11 +512,30 @@ public sealed class XNativeWindow : Window
             int side = Math.Max(0, (int)Math.Round((outer.Width - ClientSize.Width) * scale / 2));
             int top = Math.Max(0, (int)Math.Round((outer.Height - ClientSize.Height) * scale) - side);
             frame = new XFrameExtents(side, side, top, side);
+            if (frame != default)
+            {
+                _host.LastDecoratedFrame = frame;   // 下一个有边框的窗口显示之前就按它摆
+            }
         }
-        if (frame != _frame)
+        if (frame != _frame || !_frameReported)
         {
             _frame = frame;
+            _frameReported = true;
             Server?.SetTopLevelFrameExtents(Handle, _frame);
+        }
+    }
+
+    /// <summary>
+    /// 无装饰的非矩形窗口把命中范围裁成形状(Windows 的窗口区域,见 <see cref="WindowRegion" />):形状以外画成全透明,
+    /// 原先却照样接住鼠标,用户点不到下面的窗口。只裁边界形状 —— 窗口区域连绘制一起裁,按更小的输入形状裁会把看得见的部分裁掉。
+    /// </summary>
+    private void UpdateRegion(XTopLevelSnapshot s)
+    {
+        IReadOnlyList<XRect>? shape = WindowDecorations == WindowDecorations.None ? s.Shape : null;
+        if (_opened && !ReferenceEquals(shape, _regionShape))
+        {
+            _regionShape = shape;
+            WindowRegion.Apply(this, shape);
         }
     }
 
@@ -535,6 +616,7 @@ public sealed class XNativeWindow : Window
         _closed = true;
         base.OnClosed(e);
         _surface.Release();
+        ReleaseImageCursors();
         _host.OnWindowClosed(this);
     }
 

@@ -77,6 +77,11 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>根窗口原点在系统虚拟桌面里的位置(物理像素)。只在 UI 线程上读写。</summary>
     public (int X, int Y) RootOrigin { get; private set; }
 
+    /// <summary>
+    /// 最近一个有系统边框的原生窗口量到的边框尺寸(物理像素):新窗口显示之前按它预估,第一帧就摆在对的位置。只在 UI 线程上读写。
+    /// </summary>
+    internal XFrameExtents LastDecoratedFrame { get; set; }
+
     // ================================================================== 生命周期
 
     /// <summary>当前附着着的宿主:本机活动上报给它的服务端(见 <see cref="HookLocalActivity" />)。</summary>
