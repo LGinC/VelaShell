@@ -467,6 +467,10 @@ public sealed partial class X11Server
         }
         if (window.IsTopLevel)
         {
+            if (ReleaseNamedWindowPixmaps(window))
+            {
+                window.Buffer = null;   // 旧缓冲归 NameWindowPixmap 的像素图;映射时整窗重画,换一块新的
+            }
             window.Buffer ??= new Drawing.PixelBuffer(window.Width, window.Height, window.Depth == 32 ? (byte)32 : (byte)24);
             window.Buffer.Resize(window.Width, window.Height);
             SyncBufferCharge(window);
@@ -659,6 +663,10 @@ public sealed partial class X11Server
         {
             if (resized && window.Buffer is { } buffer)
             {
+                if (ReleaseNamedWindowPixmaps(window))
+                {
+                    buffer = window.Buffer = buffer.Clone();   // 旧缓冲归 NameWindowPixmap 的像素图,保持原来的尺寸与内容
+                }
                 buffer.Resize(width, height);
                 SyncBufferCharge(window);
                 // bit-gravity 默认 Forget:整窗重画(并发 Expose)。NorthWest 时只画新露出的部分。
@@ -769,6 +777,7 @@ public sealed partial class X11Server
             {
                 SetMapped(handle, false);
             }
+            ReleaseNamedWindowPixmaps(window);
             window.Buffer = null;
             SyncBufferCharge(window);
         }

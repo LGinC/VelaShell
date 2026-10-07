@@ -113,6 +113,7 @@ public sealed partial class X11Server
         {
             ClientClosed = CleanupComposite,
             WindowDestroyed = CleanupComposite,
+            PixmapFreed = CompositePixmapFreed,
         });
         Register(new Extension("DOUBLE-BUFFER", DbeMajor, Dbe)
         {

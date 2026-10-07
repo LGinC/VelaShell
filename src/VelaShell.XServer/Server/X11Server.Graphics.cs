@@ -277,7 +277,7 @@ public sealed partial class X11Server
         {
             MarkDamage(top, raster.DirtyBounds);
         }
-        else if (_damageObjects.Count != 0 && Lookup<XPixmap>(drawable) is { } pixmap)
+        else if ((_damageObjects.Count != 0 || _namedWindowBuffers.Count != 0) && Lookup<XPixmap>(drawable) is { } pixmap)
         {
             NotePixmapDrawn(pixmap, raster.DirtyBounds);
         }

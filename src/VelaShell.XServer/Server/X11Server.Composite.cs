@@ -7,7 +7,8 @@
 //   CreateRegionFromBorderClip 5、NameWindowPixmap 6、GetOverlayWindow 7、ReleaseOverlayWindow 8
 //
 //   rootless 下每个顶层本来就有自己的像素缓冲,Composite 的「重定向到离屏」是天然状态:
-//   重定向只做登记与互斥检查,NameWindowPixmap 对顶层窗口给出与它共享像素的像素图(之后的绘制照样看得到),
+//   重定向只做登记与互斥检查,NameWindowPixmap 对顶层窗口给出与它共享像素的像素图(之后的绘制照样看得到;
+//   窗口改尺寸、重新映射或销毁时窗口换一块新缓冲,像素图留着旧的 —— 规范:窗口每次映射或改尺寸都换一个新的像素图),
 //   对子窗口给出一份当下内容的拷贝。叠加窗口不挂进窗口树,不会被宿主当成顶层窗口。
 
 using VelaShell.XServer.Drawing;
@@ -97,7 +98,14 @@ public sealed partial class X11Server
                     XPixmap pixmap;
                     if (window.IsTopLevel)
                     {
-                        pixmap = new XPixmap(pixmapId, c, buffer);   // 与顶层共享像素
+                        pixmap = new XPixmap(pixmapId, c, buffer);   // 与顶层共享像素,直到窗口改尺寸、重新映射或销毁
+                        AddResource(c, pixmap);
+                        if (!_namedWindowBuffers.TryGetValue(buffer, out (XWindow Window, List<XPixmap> Pixmaps) named))
+                        {
+                            _namedWindowBuffers[buffer] = named = (window, []);
+                        }
+                        named.Pixmaps.Add(pixmap);
+                        break;
                     }
                     else
                     {
@@ -148,6 +156,53 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>窗口销毁:它的重定向登记随之消失。</summary>
-    private void CleanupComposite(XWindow window) => _manualRedirects.Remove(window);
+    /// <summary>窗口销毁:它的重定向登记随之消失;NameWindowPixmap 给出的像素图留着销毁前的内容(规范:像素图一直有效,直到释放)。</summary>
+    private void CleanupComposite(XWindow window)
+    {
+        _manualRedirects.Remove(window);
+        ReleaseNamedWindowPixmaps(window);
+    }
+
+    /// <summary>NameWindowPixmap 给顶层的像素图包住的那块顶层缓冲 → 那个顶层与这些像素图(按缓冲索引,画进像素图时能找到顶层)。</summary>
+    private readonly Dictionary<PixelBuffer, (XWindow Window, List<XPixmap> Pixmaps)> _namedWindowBuffers = [];
+
+    /// <summary>
+    /// 顶层的缓冲要改尺寸、重新分配或丢掉之前调:之前 NameWindowPixmap 给出的像素图从此独占这块旧缓冲 —— 规范说窗口每次映射或改尺寸
+    /// 都换一块新的像素图,旧的保持原样直到释放(原先缓冲就地 Resize,像素图的宽高跟着窗口变)。这块缓冲改记在第一个像素图的客户端名下,
+    /// 它释放时退还。返回是否有这样的像素图(有的话调用方要给窗口换一块新缓冲,不能再就地改)。
+    /// </summary>
+    private bool ReleaseNamedWindowPixmaps(XWindow window)
+    {
+        if (window.Buffer is not { } buffer || !_namedWindowBuffers.Remove(buffer, out (XWindow Window, List<XPixmap> Pixmaps) named))
+        {
+            return false;
+        }
+        if (named.Pixmaps.Count > 0)
+        {
+            XPixmap holder = named.Pixmaps[0];
+            long bytes = PixelBytes(buffer.Width, buffer.Height);
+            ChargeMemory(holder.Owner, bytes, force: true);
+            holder.Charged += bytes;   // 释放(RemoveResource)时连同固定开销一起退还
+        }
+        return true;
+    }
+
+    /// <summary>画进 NameWindowPixmap 给的像素图:还与顶层共享缓冲时就是画进了顶层 —— 返回那个顶层,好让宿主收到损伤。</summary>
+    private XWindow? TopLevelSharing(XPixmap pixmap) =>
+        !pixmap.OwnsBuffer && _namedWindowBuffers.TryGetValue(pixmap.Buffer, out (XWindow Window, List<XPixmap> Pixmaps) named)
+            ? named.Window
+            : null;
+
+    /// <summary>像素图释放了:从共享登记里去掉。</summary>
+    private void CompositePixmapFreed(XPixmap pixmap)
+    {
+        if (!pixmap.OwnsBuffer && _namedWindowBuffers.TryGetValue(pixmap.Buffer, out (XWindow Window, List<XPixmap> Pixmaps) named))
+        {
+            named.Pixmaps.Remove(pixmap);
+            if (named.Pixmaps.Count == 0)
+            {
+                _namedWindowBuffers.Remove(pixmap.Buffer);
+            }
+        }
+    }
 }

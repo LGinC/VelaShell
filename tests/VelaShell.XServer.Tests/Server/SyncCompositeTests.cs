@@ -139,6 +139,33 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task NameWindowPixmap在窗口改尺寸后保持原来的尺寸与内容_往里画宿主收到损伤()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte composite, _, _) = await ExtAsync(c, "Composite");
+        uint top = await MapTopAsync(c, host, 0x123456);
+        uint pixmap = c.NewId();
+        await c.SendAsync(composite, 6, b => b.U32(top).U32(pixmap));
+        await c.SyncAsync();
+
+        // 画进像素图就是画进了顶层(还共享着缓冲):宿主要收到损伤,不然原生窗口不重画。
+        int before = host.Log.Count(e => e.StartsWith($"damaged {top:x}", StringComparison.Ordinal));
+        await FillAsync(c, pixmap, await GcAsync(c, pixmap, 0xABCDEF), 0, 0, 4, 4);
+        await host.WaitForAsync(() => host.Log.Count(e => e.StartsWith($"damaged {top:x}", StringComparison.Ordinal)) > before);
+        Assert.AreEqual(0xABCDEFu, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF);
+
+        // 窗口改成 60×50:像素图保持 40×30 与原来的内容(规范:窗口换一个新的像素图,旧的一直有效到释放)。
+        await c.SendAsync(12, 0, b => b.U32(top).U16(0xC).U16(0).U32(60).U32(50));
+        await FillAsync(c, top, await GcAsync(c, top, 0x00FF00), 0, 0, 60, 50);
+        XMessage geometry = await c.RequestAsync(14, 0, b => b.U32(pixmap));
+        Assert.AreEqual("40×30", $"{geometry.U16(16)}×{geometry.U16(18)}", "像素图的尺寸不跟着窗口变");
+        XMessage image = await c.RequestAsync(73, 2, b => b.U32(pixmap).I16(0).I16(0).U16(1).U16(1).U32(0xFFFFFFFF));
+        Assert.AreEqual(0xABCDEFu, image.U32(32) & 0xFFFFFF, "之后画进窗口的不进旧像素图");
+    }
+
+    [TestMethod]
     public async Task DBE后缓冲画好后SwapBuffers才出现在窗口上()
     {
         using RecordingHost host = new();

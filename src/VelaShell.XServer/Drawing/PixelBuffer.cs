@@ -57,6 +57,14 @@ internal sealed class PixelBuffer
 
     public uint Get(int x, int y) => (uint)x < (uint)Width && (uint)y < (uint)Height ? Pixels[(y * Width) + x] : 0;
 
+    /// <summary>一份同尺寸、同内容的独立拷贝。</summary>
+    public PixelBuffer Clone()
+    {
+        PixelBuffer copy = new(Width, Height, Depth);
+        Array.Copy(Pixels, copy.Pixels, Pixels.Length);
+        return copy;
+    }
+
     /// <summary>在两块缓冲之间拷一块矩形(两边都裁到各自范围内)。</summary>
     public static void CopyRect(PixelBuffer src, int sx, int sy, PixelBuffer dst, int dx, int dy, int width, int height)
     {

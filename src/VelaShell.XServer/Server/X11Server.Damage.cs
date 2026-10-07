@@ -144,10 +144,21 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 绘图路径上的钩子
 
-    /// <summary>像素图上画过一块(缓冲坐标,即像素图坐标)。</summary>
+    /// <summary>
+    /// 像素图上画过一块(缓冲坐标,即像素图坐标)。NameWindowPixmap 给的像素图还与顶层共享缓冲时,画进去就是画进了顶层:
+    /// 同样记成顶层的损伤(宿主据此重画,原先只记像素图的,宿主收不到 TopLevelDamaged)。
+    /// </summary>
     internal void NotePixmapDrawn(XPixmap pixmap, XRect rect)
     {
-        if (_damageObjects.Count != 0 && !rect.IsEmpty && _damageObjects.ContainsKey(pixmap))
+        if (rect.IsEmpty)
+        {
+            return;
+        }
+        if (_namedWindowBuffers.Count != 0 && TopLevelSharing(pixmap) is { } top)
+        {
+            MarkDamage(top, rect);
+        }
+        if (_damageObjects.Count != 0 && _damageObjects.ContainsKey(pixmap))
         {
             AccumulateDamage(pixmap, new Region(rect));
         }
