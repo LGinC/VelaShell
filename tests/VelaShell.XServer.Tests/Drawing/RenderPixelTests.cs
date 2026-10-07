@@ -290,6 +290,47 @@ public sealed class RenderPixelTests
     }
 
     [TestMethod]
+    public void a8目标的PorterDuff运算走整数_与浮点只差取整()
+    {
+        const int size = 24;
+        Random random = new(81);
+        PixelBuffer a8Image = RandomBuffer(random, 17, 13, 8);
+        PixelBuffer argbImage = RandomBuffer(random, 17, 13, 32);
+        byte[] maskBytes = new byte[size * size];
+        random.NextBytes(maskBytes);
+        double c = Math.Cos(0.4), sn = Math.Sin(0.4);
+        double[] rotate = [c, -sn, 2.5, sn, c, -1.5, 0, 0, 1];
+        List<(string Name, Func<RenderSource> Make)> sources =
+        [
+            ("a8 平铺", () => new ImageSource(a8Image, 0, 0, 17, 13, PictFormat.A8) { Repeat = RenderSource.RepeatNormal }),
+            ("argb 旋转双线性", () => new ImageSource(argbImage, 0, 0, 17, 13, PictFormat.A8R8G8B8) { Repeat = RenderSource.RepeatReflect, Bilinear = true, Transform = rotate }),
+            ("纯色", () => new SolidSource(new Argb(0.4f, 0.1f, 0.2f, 0.3f))),
+        ];
+        int worst = 0;
+        for (byte op = 0; op <= RenderOps.Saturate; op++)
+        {
+            foreach ((string name, Func<RenderSource> make) in sources)
+            {
+                foreach (bool withMask in (bool[])[false, true])
+                {
+                    PixelBuffer dst = RandomBuffer(random, size, size, 8);
+                    RenderSource? mask = withMask ? new ByteMaskSource(maskBytes, 0, 0, size, size) : null;
+                    uint[] expected = FloatComposite(op, make(), mask, dst, PictFormat.A8);
+                    RenderTarget target = new(dst, 0, 0, PictFormat.A8, [new XRect(0, 0, size, size)]);
+                    RenderCompositor.Composite(op, make(), mask, false, target, 0, 0, 0, 0, 0, 0, size, size);
+                    for (int i = 0; i < expected.Length; i++)
+                    {
+                        int diff = Math.Abs((int)expected[i] - (int)dst.Pixels[i]);
+                        worst = Math.Max(worst, diff);
+                        Assert.IsLessThanOrEqualTo(2, diff, $"op {op}、{name}、遮罩 {withMask}:像素 {i} 期望 {expected[i]},实际 {dst.Pixels[i]}");
+                    }
+                }
+            }
+        }
+        Console.WriteLine($"a8 目标最大差 {worst}");
+    }
+
+    [TestMethod]
     public void 源与目标同缓冲时只拷变换后读得到的那一块_取样结果不变()
     {
         // 窗口的 picture 至多 256 MB:原先源带变换或重复时每条请求整张拷一遍。现在按四个角变换后的外接矩形估算,

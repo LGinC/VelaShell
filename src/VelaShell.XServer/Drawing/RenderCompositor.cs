@@ -70,7 +70,9 @@ internal static class RenderCompositor
 
         // 8888 目标上最常用的三种运算走整数:源与遮罩各取成 8 位预乘的一行(渐变、变换、重复、各种源格式都在取样里处理掉),
         // 逐像素整数合成。其余运算、分量 alpha 与别的目标格式走浮点。
-        bool integer = Is8888(dst.Format) && !componentAlpha && op is RenderOps.Src or RenderOps.Over or RenderOps.Add;
+        // 只有 alpha 的 a8 目标(cairo 拼遮罩、Qt 的 alpha 图)上的 Porter-Duff 运算同样走整数,只算 alpha 一个通道。
+        bool alphaOnly = ReferenceEquals(dst.Format, PictFormat.A8) && !componentAlpha && op <= RenderOps.Saturate;
+        bool integer = alphaOnly || (Is8888(dst.Format) && !componentAlpha && op is RenderOps.Src or RenderOps.Over or RenderOps.Add);
         Argb[] srcRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
         Argb[] maskRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
         uint[] srcRow8 = integer ? ArrayPool<uint>.Shared.Rent(Math.Max(1, width)) : [];
@@ -111,7 +113,15 @@ internal static class RenderCompositor
                         int dy = by - dst.OriginY - dstY;
                         src.FetchRow8888(srcX + dx, srcY + dy, s8);
                         mask?.FetchRow8888(maskX + dx, maskY + dy, m8);
-                        CombineRow(op, s8, m8, buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width), dst.Format.HasAlpha, depthMask);
+                        Span<uint> row = buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width);
+                        if (alphaOnly)
+                        {
+                            CombineAlphaRow(op, s8, m8, row);
+                        }
+                        else
+                        {
+                            CombineRow(op, s8, m8, row, dst.Format.HasAlpha, depthMask);
+                        }
                     }
                     continue;
                 }
@@ -234,6 +244,41 @@ internal static class RenderCompositor
                         break;
                     }
             }
+        }
+    }
+
+    /// <summary>
+    /// a8 目标的一行:只有 alpha。结果 = 源 alpha × Fa + 目标 alpha × Fb(Porter-Duff 的两个因子,0–255 定点,同 <see cref="RenderOps" />
+    /// 的浮点公式),夹到 255。原先逐像素浮点 Decode、四通道合成、再 Encode。
+    /// </summary>
+    private static void CombineAlphaRow(byte op, ReadOnlySpan<uint> src, ReadOnlySpan<uint> mask, Span<uint> dst)
+    {
+        for (int i = 0; i < dst.Length; i++)
+        {
+            uint sa = src[i] >> 24;
+            if (!mask.IsEmpty)
+            {
+                sa = Argb8.Div255(sa * (mask[i] >> 24));
+            }
+            uint da = dst[i] & 0xFF;
+            (uint fa, uint fb) = op switch
+            {
+                RenderOps.Clear => (0u, 0u),
+                RenderOps.Src => (255u, 0u),
+                RenderOps.Dst => (0u, 255u),
+                RenderOps.Over => (255u, 255 - sa),
+                4 => (255 - da, 255u),           // OverReverse
+                5 => (da, 0u),                   // In
+                6 => (0u, sa),                   // InReverse
+                7 => (255 - da, 0u),             // Out
+                8 => (0u, 255 - sa),             // OutReverse
+                9 => (da, 255 - sa),             // Atop
+                10 => (255 - da, sa),            // AtopReverse
+                11 => (255 - da, 255 - sa),      // Xor
+                RenderOps.Add => (255u, 255u),
+                _ => (255 - da >= sa ? 255u : (255 - da) * 255 / sa, 255u),   // Saturate:min(1, (1 − da) / sa)
+            };
+            dst[i] = Math.Min(Argb8.Div255(sa * fa) + Argb8.Div255(da * fb), 255);
         }
     }
 
