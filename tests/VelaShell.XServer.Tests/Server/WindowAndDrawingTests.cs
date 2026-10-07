@@ -237,6 +237,29 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 字体的短名字与没有的字号退到最接近的内置字体_别的字族照旧BadName()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        async Task<int?> OpenWidthAsync(string name)
+        {
+            uint font = c.NewId();
+            byte[] bytes = Encoding.Latin1.GetBytes(name);
+            await c.SendAsync(45, 0, b => b.U32(font).U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad());
+            XMessage reply = await c.RequestAsync(47, 0, b => b.U32(font));   // QueryFont
+            return reply.IsReply ? reply.I16(28) : null;                       // max-bounds 的 character-width
+        }
+
+        Assert.AreEqual(6, await OpenWidthAsync("8x13"), "原先 BadName");
+        Assert.AreEqual(6, await OpenWidthAsync("5x7"));
+        Assert.AreEqual(9, await OpenWidthAsync("9x18bold"));
+        Assert.AreEqual(6, await OpenWidthAsync("-misc-fixed-medium-r-normal--14-*-*-*-*-*-iso8859-1"), "14 像素:13 与 15 一样近,取小的");
+        Assert.AreEqual(9, await OpenWidthAsync("-misc-fixed-bold-r-normal--18-*-*-*-*-*-iso10646-1"), "粗体里最接近的是 9x15B");
+        Assert.AreEqual(10, await OpenWidthAsync("-*-fixed-medium-r-*-*-*-200-75-75-*-*-iso8859-1"), "按 20 磅 75 dpi 换成 21 像素");
+        Assert.IsNull(await OpenWidthAsync("-adobe-helvetica-medium-r-normal--12-*-*-*-*-*-iso8859-1"), "没有的字族照旧 BadName(数据见 F21)");
+    }
+
+    [TestMethod]
     public async Task ListFonts按通配符匹配()
     {
         await using X11Server server = new();

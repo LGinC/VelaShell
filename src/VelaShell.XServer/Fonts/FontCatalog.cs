@@ -20,7 +20,8 @@ namespace VelaShell.XServer.Fonts;
 /// </para>
 /// <para>
 /// 别名(<c>fixed</c>、<c>6x13</c>、<c>9x15bold</c>…)与 X.Org misc 字体目录里的 fonts.alias 同一习惯:
-/// 大量老程序只认这几个短名字,缺了它们 xterm 连默认字体都开不出来。
+/// 大量老程序只认这几个短名字,缺了它们 xterm 连默认字体都开不出来。没有数据的字号(8x13、5x7…)与 XLFD 里要的字号
+/// 退到高度最接近的内置字体(见 <see cref="NearestSize" />),不回 BadName。
 /// </para>
 /// <para>字体数据在第一次打开时才解析,并缓存;列名字只读 BDF 的 FONT 一行。</para>
 /// </remarks>
@@ -40,6 +41,23 @@ internal sealed class FontCatalog
         ["9x15"] = ("9x15", false),
         ["9x15bold"] = ("9x15B", false),
         ["10x20"] = ("10x20", false),
+        // X.Org misc 字体目录 fonts.alias 里的其余短名字:没有那个字号的数据,退到高度最接近、粗细相同的内置字体 ——
+        // 原先 BadName,xterm -fn 8x13、Xaw 默认的 5x7 / 6x10 之类直接打不开(数据要更多字号见 xs_plan F21)。
+        ["5x7"] = ("6x13", false),
+        ["5x8"] = ("6x13", false),
+        ["6x9"] = ("6x13", false),
+        ["6x10"] = ("6x13", false),
+        ["6x12"] = ("6x13", false),
+        ["7x13"] = ("6x13", false),
+        ["7x13bold"] = ("6x13B", false),
+        ["7x14"] = ("6x13", false),
+        ["7x14bold"] = ("6x13B", false),
+        ["8x13"] = ("6x13", false),
+        ["8x13bold"] = ("6x13B", false),
+        ["8x16"] = ("9x15", false),
+        ["9x18"] = ("9x15", false),
+        ["9x18bold"] = ("9x15B", false),
+        ["12x24"] = ("10x20", false),
     };
 
     private readonly Dictionary<string, (string File, bool TwoByte)> _names = [with(StringComparer.OrdinalIgnoreCase)];
@@ -95,7 +113,7 @@ internal sealed class FontCatalog
     {
         string? resolved = _names.ContainsKey(name) || SyntheticNames.Contains(name, StringComparer.OrdinalIgnoreCase)
             ? name
-            : Match(name, 1).FirstOrDefault();
+            : Match(name, 1).FirstOrDefault() ?? NearestSize(name);
         if (resolved is null)
         {
             return null;
@@ -120,6 +138,55 @@ internal sealed class FontCatalog
         XFont font = Build(bdf, canonical, twoByte);
         _fonts[(file, twoByte)] = font;
         return font;
+    }
+
+    /// <summary>
+    /// 完整的 14 字段 XLFD 要了一个我们没有的字号(<c>-misc-fixed-medium-r-normal--14-*-*-*-*-*-iso8859-1</c>):
+    /// foundry、family、weight、slant、charset 都对得上的里面,取像素高度最接近的(一样近取小的)。原先直接 BadName。
+    /// 尺寸按 PIXEL_SIZE,没给时按 POINT_SIZE 与 RESOLUTION_Y(没给按 75 dpi)换算;两个都没给就不猜(通配本来就该匹配上)。
+    /// setwidth、add-style、spacing、平均宽度不看 —— 只有 misc-fixed 一族,宁可给一个近似的也别让程序打不开字体。
+    /// </summary>
+    /// <summary>就近回退时必须对得上的 XLFD 字段:FOUNDRY、FAMILY_NAME、WEIGHT_NAME、SLANT、CHARSET_REGISTRY、CHARSET_ENCODING。</summary>
+    private static readonly int[] NearestSizeFields = [1, 2, 3, 4, 13, 14];
+
+    private string? NearestSize(string pattern)
+    {
+        string[] want = pattern.ToLowerInvariant().Split('-');
+        if (want.Length != 15 || want[0].Length != 0)
+        {
+            return null;
+        }
+        int target;
+        if (int.TryParse(want[7], NumberStyles.None, CultureInfo.InvariantCulture, out int pixels) && pixels > 0)
+        {
+            target = pixels;
+        }
+        else if (int.TryParse(want[8], NumberStyles.None, CultureInfo.InvariantCulture, out int decipoints) && decipoints > 0)
+        {
+            int dpi = int.TryParse(want[10], NumberStyles.None, CultureInfo.InvariantCulture, out int y) && y > 0 ? y : 75;
+            target = (int)Math.Round(decipoints / 10.0 * dpi / 72.27);
+        }
+        else
+        {
+            return null;
+        }
+        string? best = null;
+        int bestDistance = int.MaxValue, bestPixels = 0;
+        foreach (string name in _names.Keys)
+        {
+            string[] have = name.Split('-');
+            if (have.Length != 15 || !int.TryParse(have[7], NumberStyles.None, CultureInfo.InvariantCulture, out int size)
+                || !NearestSizeFields.All(i => WildcardMatch(want[i], have[i])))
+            {
+                continue;
+            }
+            int distance = Math.Abs(size - target);
+            if (distance < bestDistance || (distance == bestDistance && size < bestPixels))
+            {
+                (best, bestDistance, bestPixels) = (name, distance, size);
+            }
+        }
+        return best;
     }
 
     /// <summary>X 的字体名通配:'*' 任意串,'?' 单个字符,不区分大小写。</summary>
