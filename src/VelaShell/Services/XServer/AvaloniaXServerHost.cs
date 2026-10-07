@@ -230,18 +230,32 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// 按键盘布局换服务端的键位表:设置里手选了布局时用随程序带的表(<see cref="BundledKeymaps" />);否则跟随系统当前的布局 ——
     /// Windows 见 <see cref="WindowsKeymap" />,macOS 见 <see cref="MacKeymap" />,Linux 见 <see cref="LinuxKeymap" />。
     /// 算出来的与上次推给服务端的一样时什么也不做;取不到布局时沿用服务端内置的 US 键位表。
+    /// Linux 上要连桌面的 X 显示、拉一遍完整的 XKB 表,放到后台去读(见 <see cref="RefreshFromDesktop" />),连同锁定键一起。
     /// </summary>
     private void ApplyKeyboardLayout(X11Server server)
     {
+        if (DesktopKeyboardReader is not null)
+        {
+            RefreshFromDesktop(server);   // 锁定键总要读;键位表在没手选布局时才用(见 OnDesktopRead)
+            if (ChosenKeymap() is null)
+            {
+                return;
+            }
+        }
         HostKeymapResult? keymap;
         try
         {
-            keymap = BuildHostKeymap(server);
+            keymap = BuildHostKeymap();
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             return;   // 系统库缺了哪一个:沿用现在的键位表
         }
+        ApplyKeymap(server, keymap);
+    }
+
+    private void ApplyKeymap(X11Server server, HostKeymapResult? keymap)
+    {
         if (keymap is null || keymap.SameAs(_appliedKeymap))
         {
             return;
@@ -252,6 +266,66 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         server.SetKeymap(keymap.ToXKeymap());
     }
 
+    /// <summary>
+    /// 读桌面的键位表与锁定键(Linux:<see cref="LinuxKeymap.ReadDesktop" />;其余平台为 null,在 UI 线程上直接读)。
+    /// 参数是内置服务端自己的显示号。测试可以换掉。
+    /// </summary>
+    internal Func<int, DesktopKeyboard?>? DesktopKeyboardReader { get; set; } =
+        OperatingSystem.IsLinux() ? display => OperatingSystem.IsLinux() ? LinuxKeymap.ReadDesktop(display) : null : null;
+
+    /// <summary>后台读桌面键盘的那一次;没在读为 null。只在 UI 线程上碰。</summary>
+    private Task? _desktopRead;
+
+    /// <summary>读的期间又有窗口激活了:读完再读一次(只再读一次,不排队)。</summary>
+    private bool _desktopReadAgain;
+
+    /// <summary>
+    /// 在后台读桌面的键位表与锁定键,读完回到 UI 线程交给服务端。原先 Linux 上每次激活 X 窗口都在 UI 线程上 <c>xcb_connect</c>
+    /// 桌面、完整拉两遍 XKB 表(键位表、锁定键各一遍):<c>$DISPLAY</c> 指向慢的显示时,切一次窗口界面就卡一下。
+    /// 同一时刻只读一次,读的期间再激活的合成读完之后的一次。
+    /// </summary>
+    private void RefreshFromDesktop(X11Server server)
+    {
+        if (DesktopKeyboardReader is not { } reader)
+        {
+            return;
+        }
+        if (_desktopRead is not null)
+        {
+            _desktopReadAgain = true;
+            return;
+        }
+        int display = server.DisplayNumber;
+        Task<DesktopKeyboard?> read = Task.Run(() => reader(display));
+        _desktopRead = read.ContinueWith(done => Dispatcher.UIThread.Post(() => OnDesktopRead(server, done)), TaskScheduler.Default);
+    }
+
+    private void OnDesktopRead(X11Server server, Task<DesktopKeyboard?> read)
+    {
+        _desktopRead = null;
+        if (read.IsFaulted)
+        {
+            Trace.WriteLine($"[XServer] cannot read the desktop keyboard: {read.Exception.InnerException?.Message}");
+        }
+        // 读的期间服务端停了 / 换了一个:结果不交给它(新服务端附着时自己会再读)。
+        if (ReferenceEquals(_server, server) && read.IsCompletedSuccessfully && read.Result is { } desktop)
+        {
+            if (desktop.Locks is var (capsLock, numLock))
+            {
+                server.SetLockState(capsLock, numLock);
+            }
+            if (ChosenKeymap() is null)
+            {
+                ApplyKeymap(server, desktop.Keymap);
+            }
+        }
+        if (_desktopReadAgain && _server is { } current)
+        {
+            _desktopReadAgain = false;
+            RefreshFromDesktop(current);
+        }
+    }
+
     /// <inheritdoc />
     public void UseKeyboardLayout(string layout) => _chosenLayout = layout ?? "";
 
@@ -260,7 +334,8 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>
     /// X 窗口里按下了一个键:系统布局可能刚在 X 窗口里切过(Win+Space、Alt+Shift、输入法的切换)—— 先看一眼,变了就把新的键位表推过去,
     /// 再注入这个键(同一个工作队列,按先后处理)。原先只在激活 X 窗口时重推,在 X 窗口里切了布局,继续敲出的仍是旧布局。
-    /// Windows 上只比一下布局句柄(很便宜);别的系统算一遍键位表较贵,至多每秒看一次。设置里手选了布局时不跟随系统。
+    /// Windows 上只比一下布局句柄(很便宜);别的系统算一遍键位表较贵,至多每秒看一次(Linux 上在后台读,读完才推,
+    /// 紧接着的这个键可能还按旧布局)。设置里手选了布局时不跟随系统。
     /// 服务端只改与上次不同的键,用户在 X 里做的 xmodmap 改动不受影响。
     /// </summary>
     internal void RefreshKeyboardLayoutOnKey()
@@ -281,10 +356,12 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         ApplyKeyboardLayout(server);
     }
 
-    private HostKeymapResult? BuildHostKeymap(X11Server server)
+    /// <summary>设置里手选了布局:随程序带的键位表(不再跟随系统);没手选、或选的名字表里没有时为 null。</summary>
+    private HostKeymapResult? ChosenKeymap() => _chosenLayout.Length != 0 ? HostKeymap.FromBundled(_chosenLayout) : null;
+
+    private HostKeymapResult? BuildHostKeymap()
     {
-        // 设置里手选了布局:用随程序带的键位表,不再跟随系统。
-        if (_chosenLayout.Length != 0 && HostKeymap.FromBundled(_chosenLayout) is { } chosen)
+        if (ChosenKeymap() is { } chosen)
         {
             return chosen;
         }
@@ -302,10 +379,6 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         if (OperatingSystem.IsMacOS())
         {
             return MacKeymap.Build();
-        }
-        if (OperatingSystem.IsLinux())
-        {
-            return LinuxKeymap.Build(server.DisplayNumber);
         }
         return null;
     }
@@ -618,9 +691,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         }
         UpdateTopmost(xActive: true);
         server.FocusTopLevel(window.Handle);
-        if (HostLockState.Read(server.DisplayNumber) is var (capsLock, numLock))
+        if (HostLockState.Read() is var (capsLock, numLock))
         {
-            server.SetLockState(capsLock, numLock);   // 用户可能在别的程序里切过 CapsLock / NumLock
+            server.SetLockState(capsLock, numLock);   // 用户可能在别的程序里切过 CapsLock / NumLock(Linux 上随键位表在后台读)
         }
         ApplyKeyboardLayout(server);   // 用户可能在别的程序里切了输入法 / 布局
         FireAndForget.Run(() => OfferSystemClipboardAsync(server, window));

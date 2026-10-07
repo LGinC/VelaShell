@@ -9,9 +9,11 @@ namespace VelaShell.Services.XServer;
 /// </summary>
 internal static partial class HostLockState
 {
-    /// <summary>读不到(平台不支持、桌面的显示连不上)时为 null,沿用服务端现在的状态。</summary>
-    /// <param name="ownDisplay">内置服务端自己的显示号(Linux 上 <c>$DISPLAY</c> 指向它时不读)。</param>
-    public static (bool CapsLock, bool NumLock)? Read(int ownDisplay)
+    /// <summary>
+    /// 读不到(平台不支持)时为 null,沿用服务端现在的状态。Linux 上不在这里读:要连桌面的 X 显示,与键位表一起在后台读
+    /// (<see cref="LinuxKeymap.ReadDesktop" />),这里给 null。
+    /// </summary>
+    public static (bool CapsLock, bool NumLock)? Read()
     {
         try
         {
@@ -23,10 +25,6 @@ internal static partial class HostLockState
             {
                 // Mac 键盘没有 NumLock:小键盘总是打数字,X 这边就当 NumLock 一直开着。
                 return ((CGEventSourceFlagsState(CombinedSessionState) & AlphaShiftMask) != 0, true);
-            }
-            if (OperatingSystem.IsLinux())
-            {
-                return LinuxKeymap.ReadLockState(ownDisplay);
             }
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)

@@ -32,7 +32,14 @@ internal static partial class LinuxKeymap
     /// 按桌面当前的布局算出键位表。<paramref name="ownDisplay" /> 是内置服务端自己的显示号:<c>$DISPLAY</c> 指向它时不读(那是自己的表)。
     /// </summary>
     [SupportedOSPlatform("linux")]
-    public static HostKeymapResult? Build(int ownDisplay)
+    public static HostKeymapResult? Build(int ownDisplay) => ReadDesktop(ownDisplay)?.Keymap;
+
+    /// <summary>
+    /// 连一次桌面的 X 显示,同时取键位表与锁定键状态(XKB 的锁定修饰位 Lock、Mod2);读不到为 null。
+    /// 要连显示、拉一遍完整的 XKB 表:<c>$DISPLAY</c> 指向慢的显示(经 SSH 转发的、远端的)时能花上几百毫秒,不要在 UI 线程上调。
+    /// </summary>
+    [SupportedOSPlatform("linux")]
+    public static DesktopKeyboard? ReadDesktop(int ownDisplay)
     {
         string? display = Environment.GetEnvironmentVariable("DISPLAY");
         if (string.IsNullOrEmpty(display) || DisplayNumber(display) == ownDisplay)
@@ -64,7 +71,7 @@ internal static partial class LinuxKeymap
     }
 
     [SupportedOSPlatform("linux")]
-    private static unsafe HostKeymapResult? Read()
+    private static unsafe DesktopKeyboard? Read()
     {
         nint connection = xcb_connect(null, null);
         if (connection == 0)
@@ -107,58 +114,9 @@ internal static partial class LinuxKeymap
             List<(uint, uint, uint, uint)> extras = [.. HostKeymap.ExtraKeys.Select(k =>
                 (Level(keymap, k.Keycode, group, 0), Level(keymap, k.Keycode, group, 1),
                     level3 ? Level(keymap, k.Keycode, group, 2) : 0, level3 ? Level(keymap, k.Keycode, group, 3) : 0))];
-            return HostKeymap.WithExtras(HostKeymap.Assemble(levels), extras);
-        }
-        finally
-        {
-            if (state != 0)
-            {
-                xkb_state_unref(state);
-            }
-            if (keymap != 0)
-            {
-                xkb_keymap_unref(keymap);
-            }
-            if (context != 0)
-            {
-                xkb_context_unref(context);
-            }
-            xcb_disconnect(connection);
-        }
-    }
-
-    /// <summary>桌面 X 显示此刻的锁定键状态(XKB 的锁定修饰位 Lock、Mod2);读不到为 null。</summary>
-    [SupportedOSPlatform("linux")]
-    public static unsafe (bool CapsLock, bool NumLock)? ReadLockState(int ownDisplay)
-    {
-        string? display = Environment.GetEnvironmentVariable("DISPLAY");
-        if (string.IsNullOrEmpty(display) || DisplayNumber(display) == ownDisplay)
-        {
-            return null;
-        }
-        nint connection = xcb_connect(null, null);
-        if (connection == 0)
-        {
-            return null;
-        }
-        nint context = 0, keymap = 0, state = 0;
-        try
-        {
-            if (xcb_connection_has_error(connection) != 0
-                || xkb_x11_setup_xkb_extension(connection, 1, 0, 0, null, null, null, null) != 1)
-            {
-                return null;
-            }
-            int device = xkb_x11_get_core_keyboard_device_id(connection);
-            context = device < 0 ? 0 : xkb_context_new(0);
-            keymap = context == 0 ? 0 : xkb_x11_keymap_new_from_device(context, connection, device, 0);
-            state = keymap == 0 ? 0 : xkb_x11_state_new_from_device(keymap, connection, device);
-            if (state == 0)
-            {
-                return null;
-            }
             const int locked = 1 << 2;   // XKB_STATE_MODS_LOCKED
-            return (xkb_state_mod_name_is_active(state, "Lock", locked) > 0, xkb_state_mod_name_is_active(state, "Mod2", locked) > 0);
+            return new DesktopKeyboard(HostKeymap.WithExtras(HostKeymap.Assemble(levels), extras),
+                (xkb_state_mod_name_is_active(state, "Lock", locked) > 0, xkb_state_mod_name_is_active(state, "Mod2", locked) > 0));
         }
         finally
         {
@@ -229,3 +187,8 @@ internal static partial class LinuxKeymap
     [LibraryImport(XkbCommon)]
     private static unsafe partial int xkb_keymap_key_get_syms_by_level(nint keymap, uint key, uint layout, uint level, uint** symsOut);
 }
+
+/// <summary>桌面键盘此刻的样子:按当前布局算出的键位表,与锁定键(CapsLock、NumLock)的状态。</summary>
+/// <param name="Keymap">键位表。</param>
+/// <param name="Locks">锁定键状态;读不到为 null。</param>
+internal sealed record DesktopKeyboard(HostKeymapResult? Keymap, (bool CapsLock, bool NumLock)? Locks);

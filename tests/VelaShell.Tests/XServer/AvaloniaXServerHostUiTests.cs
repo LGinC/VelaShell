@@ -180,6 +180,48 @@ public sealed class AvaloniaXServerHostUiTests
         Assert.AreEqual(0x0A, MacKeymap.VirtualKeyFor(XKeycodes.IntlBackslash), "kVK_ISO_Section");
     }
 
+    /// <summary>
+    /// 桌面的键位表与锁定键(Linux 上要连桌面的 X 显示、拉一遍 XKB 表)在后台读,激活 X 窗口不等它;读的期间再激活的合成一次,
+    /// 读完把键位表与锁定键交给服务端。原先每次激活都在 UI 线程上读两遍,<c>$DISPLAY</c> 慢时切一次窗口界面就卡一下。
+    /// </summary>
+    [TestMethod]
+    public async Task DesktopKeyboard_IsReadInTheBackground_AndActivationsCoalesce() => await _session.RunOnUiAsync(async () =>
+    {
+        using ManualResetEventSlim gate = new();
+        int reads = 0;
+        AvaloniaXServerHost host = new()
+        {
+            DesktopKeyboardReader = _ =>
+            {
+                Interlocked.Increment(ref reads);
+                gate.Wait(TimeSpan.FromSeconds(10));   // 慢的显示
+                return new DesktopKeyboard(HostKeymap.FromBundled("de"), (CapsLock: false, NumLock: true));
+            },
+        };
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        await SendAsync(client, 1, 24, w => w.U32(idBase | 1).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(idBase | 1));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        for (int i = 0; i < 3; i++)
+        {
+            native.Activate();
+            Dispatcher.UIThread.RunJobs();
+        }
+        Assert.IsLessThan(TimeSpan.FromSeconds(5), elapsed.Elapsed, "附着与激活都没等桌面的键盘读完");
+        Assert.AreEqual(1, Volatile.Read(ref reads), "同一时刻只读一次");
+        Assert.IsFalse(host.HasAltGr);
+
+        gate.Set();
+        await WaitForAsync(() => host.HasAltGr ? host : null);   // 德语布局有 AltGr 层:键位表交给了服务端
+        await WaitForAsync(() => Volatile.Read(ref reads) == 2 ? host : null);   // 读的期间激活的合成了读完之后的一次
+        host.Detach();
+    });
+
     [TestMethod]
     public void LinuxKeymap_ParsesDisplayNumber()
     {
