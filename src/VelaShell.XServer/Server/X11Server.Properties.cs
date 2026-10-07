@@ -298,12 +298,13 @@ public sealed partial class X11Server
         int count = r.U16();
         int delta = r.I16();
         uint[] atoms = new uint[count];
+        HashSet<uint> seen = new(count);   // 查重复:原先每个都往前 Array.IndexOf 一遍,65535 个名字就是二十亿次比较
         for (int i = 0; i < count; i++)
         {
             atoms[i] = r.U32();
             CheckAtom(atoms[i]);
             // 属性不存在,或者同一个名字在列表里出现不止一次:Match(协议「RotateProperties」)。
-            if (!window.Properties.ContainsKey(atoms[i]) || Array.IndexOf(atoms, atoms[i], 0, i) >= 0)
+            if (!window.Properties.ContainsKey(atoms[i]) || !seen.Add(atoms[i]))
             {
                 throw new XProtocolError(XErrorCode.Match, atoms[i]);
             }
