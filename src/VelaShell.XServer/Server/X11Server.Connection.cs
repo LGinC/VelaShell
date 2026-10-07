@@ -594,10 +594,13 @@ public sealed partial class X11Server
     /// </summary>
     private void DisconnectClient(XClient client)
     {
-        if (!_clients.Remove(client.Index))
+        // 按对象比对再摘:KillClient / 关窗当场调一次,连接收尾时再排一次;中间这个编号可能已经分给了新客户端,
+        // 原先按编号摘,第二次就把新客户端摘了 —— 它照样收发请求,编号却又能分给下一个,两个客户端的资源 ID 范围撞在一起。
+        if (!_clients.TryGetValue(client.Index, out XClient? current) || !ReferenceEquals(current, client))
         {
             return;
         }
+        _clients.Remove(client.Index);
         client.Closed = true;
         if (ShouldLogFrequent())
         {

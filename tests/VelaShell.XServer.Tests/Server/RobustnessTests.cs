@@ -224,6 +224,51 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 断开的客户端编号刚分给新客户端时_连接收尾的第二次断开不会摘掉新客户端()
+    {
+        // KillClient(这里经宿主的 DisconnectClient)当场断开一次,连接收尾时再排一次;编号在中间分给了新客户端的话,
+        // 原先按编号摘,第二次就把新客户端摘掉了 —— 它照样收发,编号却又能分出去,两个客户端的资源 ID 范围撞在一起。
+        await using X11Server server = new();
+        List<XTestClient> clients = [];
+        try
+        {
+            for (int i = 0; i < X11Server.MaxClients; i++)
+            {
+                clients.Add(await XTestClient.ConnectAsync(server));   // 编号 1–255 用满,下一个从 1 往后找
+            }
+            XTestClient victim = clients[^1];
+            int victimId = (int)(victim.ResourceBase >> 21);
+            Assert.AreEqual(X11Server.MaxClients, victimId);
+
+            using SemaphoreSlim gate = new(0);
+            Task<bool> blocker = server.InvokeAsync(() => gate.Wait(TimeSpan.FromSeconds(10)));   // 先占住执行线程
+            server.DisconnectClient(victimId);                                                    // 排在后面:断开 victim
+            Task<XTestClient> newcomer = XTestClient.ConnectAsync(server);                         // 再后面:新客户端登记
+            await Task.Delay(300);   // 让新客户端的建立报文读进来、登记排进队列(victim 的收尾要等它被断开之后才排)
+            gate.Release();
+            Assert.IsTrue(await blocker);
+            XTestClient c = await newcomer.WaitAsync(TimeSpan.FromSeconds(5));
+            clients.Add(c);
+            Assert.AreEqual(1, c.SetupReply[0]);
+            Assert.AreEqual(victim.ResourceBase, c.ResourceBase, "新客户端拿到的正是刚空出来的编号");
+            await victim.ServerTask.WaitAsync(TimeSpan.FromSeconds(3));   // victim 的连接收完了工(第二次断开已经执行)
+            await c.SyncAsync();
+
+            IReadOnlyList<XClientInfo> listed = await server.GetClientsAsync();
+            Assert.Contains(info => info.Id == victimId && !info.Retained, listed, "新客户端还在册");
+            await using XTestClient extra = await XTestClient.ConnectAsync(server);
+            Assert.AreEqual(0, extra.SetupReply[0], "编号仍是满的:不会再分出一个同样的资源 ID 范围");
+        }
+        finally
+        {
+            foreach (XTestClient c in clients)
+            {
+                await c.DisposeAsync();
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task 协议错误日志在放掉像素锁之后才交给宿主_刷屏时每秒只记五十条()
     {
         using RecordingHost host = new();
