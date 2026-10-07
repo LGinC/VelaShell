@@ -177,9 +177,9 @@ public sealed partial class X11Server
             case XOpcode.GetPointerControl: c.Reply(0, w => w.U16(2).U16(1).U16(4).Zero(18)); break;
             case XOpcode.SetScreenSaver: SetScreenSaver(r); break;
             case XOpcode.GetScreenSaver: GetScreenSaver(c); break;
-            case XOpcode.ChangeHosts: break;
-            case XOpcode.ListHosts: c.Reply(0, w => w.U16(0).Zero(22)); break;
-            case XOpcode.SetAccessControl: break;
+            case XOpcode.ChangeHosts: ChangeHosts(r); break;
+            case XOpcode.ListHosts: ListHosts(c); break;
+            case XOpcode.SetAccessControl: SetAccessControl(r); break;
             case XOpcode.SetCloseDownMode: SetCloseDownMode(c, r); break;
             case XOpcode.KillClient: KillClient(r); break;
             case XOpcode.RotateProperties: RotateProperties(r); break;

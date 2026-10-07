@@ -6,6 +6,7 @@
 //   (客户端开场 12 字节 + 授权名 / 数据;成功回复的定长部分、FORMAT、SCREEN、DEPTH、VISUALTYPE 的布局;失败回复)
 //   BIG-REQUESTS Extension(请求长度字段为 0 时后跟 4 字节的扩展长度;BigReqEnable,次操作码 0:回复 maximum-request-length)
 //   第 10 节「Connection Close」(CloseDownMode = Destroy 时释放该连接的全部资源、选区、抓取)
+//   请求「SetCloseDownMode」「ChangeHosts」「ListHosts」「SetAccessControl」(访问控制策略固定,不可改)
 
 using System.Buffers;
 using System.Buffers.Binary;
@@ -410,6 +411,39 @@ public sealed partial class X11Server
             return "Authorization required, but no authorization protocol specified";
         }
         return peer.IsLocal ? null : "No protocol specified: only local connections are accepted";
+    }
+
+    // ------------------------------------------------------------------ 主机访问控制(协议「ChangeHosts」「ListHosts」「SetAccessControl」)
+    //
+    // 访问策略是固定的(见 Authorize):带对的 cookie,或者能确定是本机 / 本用户;没有可增删的主机清单。原先 ListHosts 报 Disabled ——
+    // xhost 据此显示「access control disabled, clients can connect from any host」,实际谁也不能不带 cookie 从别处连进来 ——
+    // ChangeHosts / SetAccessControl 又静默成功,xhost +host 看起来生效了、其实什么也没变。
+
+    /// <summary>ListHosts:访问控制开着(Enabled),主机清单是空的。</summary>
+    private static void ListHosts(XClient c) => c.Reply(1, static w => w.U16(0).Zero(22));
+
+    /// <summary>ChangeHosts:主机清单改不了 —— 合法的请求回 BadAccess(协议允许服务端不让改)。</summary>
+    private static void ChangeHosts(XRequestReader r)
+    {
+        if (r.Data > 1)
+        {
+            throw new XProtocolError(XErrorCode.Value, r.Data);   // mode:0 Insert、1 Delete
+        }
+        throw new XProtocolError(XErrorCode.Access);
+    }
+
+    /// <summary>SetAccessControl:访问控制本来就开着,Enable 什么也不做;Disable 回 BadAccess。</summary>
+    private static void SetAccessControl(XRequestReader r)
+    {
+        switch (r.Data)
+        {
+            case 1:   // Enable
+                return;
+            case 0:   // Disable
+                throw new XProtocolError(XErrorCode.Access);
+            default:
+                throw new XProtocolError(XErrorCode.Value, r.Data);
+        }
     }
 
     private static async Task SendSetupFailureAsync(Stream stream, bool bigEndian, string reason, CancellationToken ct)

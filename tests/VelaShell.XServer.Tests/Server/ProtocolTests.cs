@@ -94,6 +94,31 @@ public sealed class ProtocolTests
     }
 
     [TestMethod]
+    public async Task 主机访问控制报开着_增删主机与关掉访问控制回BadAccess()
+    {
+        await using X11Server server = new(new X11ServerOptions { AuthorizationCookie = new byte[16] });
+        await using XTestClient c = await XTestClient.ConnectAsync(server, authenticated: true);
+
+        // 原先报 Disabled:xhost 显示「clients can connect from any host」,实际不带 cookie 谁也进不来。
+        XMessage hosts = await c.RequestAsync(110, 0);   // ListHosts
+        Assert.AreEqual(1, hosts.Detail, "mode = Enabled");
+        Assert.AreEqual(0, hosts.U16(8), "主机清单是空的");
+
+        // 原先静默成功:xhost +host 看起来生效了,其实什么也没变。
+        byte[] address = [10, 0, 0, 1];
+        XMessage insert = await c.RequestAsync(109, 0, b => b.U8(0).U8(0).U16((ushort)address.Length).Bytes(address));   // ChangeHosts(Insert, Internet)
+        Assert.IsTrue(insert.IsError);
+        Assert.AreEqual(10, insert.Detail, "BadAccess");
+        XMessage disable = await c.RequestAsync(111, 0);   // SetAccessControl(Disable)
+        Assert.AreEqual(10, disable.Detail, "BadAccess");
+        XMessage badMode = await c.RequestAsync(111, 7);
+        Assert.AreEqual(2, badMode.Detail, "mode 只有 0、1:BadValue");
+        await c.SendAsync(111, 1);   // SetAccessControl(Enable):本来就开着,什么也不做
+        await c.SyncAsync();
+        Assert.IsFalse((await c.RequestAsync(43, 0)).IsError);
+    }
+
+    [TestMethod]
     public async Task 没配cookie时只接受本机连接()
     {
         await using X11Server server = new();
