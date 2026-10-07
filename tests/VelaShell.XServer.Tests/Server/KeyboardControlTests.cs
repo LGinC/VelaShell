@@ -171,6 +171,75 @@ public sealed class KeyboardControlTests
     }
 
     [TestMethod]
+    public async Task 左手的按钮映射生效_发MappingNotify_按钮数与XI一致_要改的按钮按着时Busy()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host, 0x4 | 0x8);   // ButtonPress | ButtonRelease
+
+        XMessage map = await c.RequestAsync(117, 0);
+        Assert.AreEqual(9, map.Bytes[1], "GetPointerMapping 与 XI 一样报 9 个按钮");
+        CollectionAssert.AreEqual(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8, 9 }, map.Bytes[32..41]);
+
+        // xmodmap -e "pointer = 3 2 1":xmodmap 自己把后面的按钮补成恒等,长度与 GetPointerMapping 一致。
+        XMessage set = await c.RequestAsync(116, 9, b => b.Bytes([3, 2, 1, 4, 5, 6, 7, 8, 9]));
+        Assert.AreEqual(0, set.Bytes[1], "Success");
+        XMessage notify = await c.NextEventAsync(34);
+        Assert.AreEqual(2, notify.Bytes[4], "MappingNotify request = Pointer");
+
+        server.InjectPointerButton(host.Mapped[top], 5, 5, 1, pressed: true);
+        XMessage press = await c.NextEventAsync(4);
+        Assert.AreEqual(3, press.Detail, "物理的左键报成按钮 3");
+
+        XMessage busy = await c.RequestAsync(116, 9, b => b.Bytes([1, 2, 3, 4, 5, 6, 7, 8, 9]));
+        Assert.AreEqual(1, busy.Bytes[1], "物理左键正按着,要改它的映射:Busy");
+        server.InjectPointerButton(host.Mapped[top], 5, 5, 1, pressed: false);
+        XMessage release = await c.NextEventAsync(5);
+        Assert.AreEqual(3, release.Detail, "松开按同一份映射");
+        Assert.AreEqual(0x400, release.U16(28) & 0x1F00, "松开之前的 state 里按着的是 Button3");
+
+        XMessage wrongLength = await c.RequestAsync(116, 5, b => b.Bytes([3, 2, 1, 4, 5]));
+        Assert.IsTrue(wrongLength.IsError, "长度与 GetPointerMapping 不一致是 BadValue");
+        XMessage duplicate = await c.RequestAsync(116, 9, b => b.Bytes([1, 1, 3, 4, 5, 6, 7, 8, 9]));
+        Assert.IsTrue(duplicate.IsError, "非零元素重复是 BadValue");
+    }
+
+    [TestMethod]
+    public async Task SetModifierMapping校验键码_修饰键按着时Busy_XI的GetDeviceKeyMapping不回绕()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XMessage current = await c.RequestAsync(119, 0);
+        int per = current.Bytes[1];
+        byte[] map = current.Bytes[32..(32 + (8 * per))];
+
+        byte[] bad = [.. map];
+        bad[per * 5] = 3;   // Mod3 放一个不存在的键码
+        XMessage value = await c.RequestAsync(118, (byte)per, b => b.Bytes(bad));
+        Assert.IsTrue(value.IsError, "键码不在 8–255:BadValue");
+
+        // 交换 Caps Lock 与左 Ctrl(xmodmap 常见的设置),左 Ctrl 正按着:Busy,什么都不改。
+        byte[] swapped = [.. map];
+        swapped[per * 1] = XKeycodes.ControlLeft;
+        swapped[per * 2] = XKeycodes.CapsLock;
+        server.InjectKey(XKeycodes.ControlLeft, pressed: true);
+        await c.SyncAsync();
+        XMessage busy = await c.RequestAsync(118, (byte)per, b => b.Bytes(swapped));
+        Assert.AreEqual(1, busy.Bytes[1], "Busy");
+        CollectionAssert.AreEqual(map, (await c.RequestAsync(119, 0)).Bytes[32..(32 + (8 * per))], "修饰键表没变");
+        server.InjectKey(XKeycodes.ControlLeft, pressed: false);
+        await c.SyncAsync();
+        XMessage ok = await c.RequestAsync(118, (byte)per, b => b.Bytes(swapped));
+        Assert.AreEqual(0, ok.Bytes[1], "松开之后照常生效");
+
+        XMessage q = await c.RequestAsync(98, 0, b => b.U16(15).U16(0).Bytes(Encoding.Latin1.GetBytes("XInputExtension")).Pad());
+        XMessage wrap = await c.RequestAsync(q.Bytes[9], 24, b => b.U8(3).U8(250).U8(10).U8(0));
+        Assert.IsTrue(wrap.IsError, "250 + 10 超出 255:BadValue(原先按字节回绕)");
+    }
+
+    [TestMethod]
     public async Task ChangeKeyboardControl的响铃音量生效_xset_b_off不出声_LED按led_mode点亮()
     {
         using RecordingHost host = new();

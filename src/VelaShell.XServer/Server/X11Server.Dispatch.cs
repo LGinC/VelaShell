@@ -184,7 +184,7 @@ public sealed partial class X11Server
             case XOpcode.KillClient: KillClient(r); break;
             case XOpcode.RotateProperties: RotateProperties(r); break;
             case XOpcode.ForceScreenSaver: ForceScreenSaver(r); break;
-            case XOpcode.SetPointerMapping: c.Reply(0, w => w.Zero(24)); break;
+            case XOpcode.SetPointerMapping: SetPointerMapping(c, r); break;
             case XOpcode.GetPointerMapping: GetPointerMapping(c); break;
             case XOpcode.SetModifierMapping: SetModifierMapping(c, r); break;
             case XOpcode.GetModifierMapping: GetModifierMapping(c); break;

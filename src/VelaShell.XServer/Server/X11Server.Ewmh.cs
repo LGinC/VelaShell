@@ -413,10 +413,18 @@ public sealed partial class X11Server
             {
                 _buttons &= (ushort)~(0x100 << (button - 1));
             }
+            for (int physical = 1; physical <= 255; physical++)
+            {
+                if (MapButton(physical) == button)
+                {
+                    _physicalButtonsDown[physical >> 3] &= (byte)~(1 << (physical & 7));   // 客户端说的是生效的按钮号
+                }
+            }
         }
         else
         {
             Array.Clear(_buttonsDown);
+            Array.Clear(_physicalButtonsDown);
             _buttons = 0;
         }
         if (PointerGrab is { ReleaseWhenButtonsUp: true } && _buttons == 0)

@@ -87,13 +87,13 @@ public sealed partial class X11Server
         });
     }
 
-    /// <summary>松开一个按钮,指针留在原处(按下它的那个顶层已经不在了);X 这边并没按着它就什么也不做。</summary>
+    /// <summary>松开一个(物理)按钮,指针留在原处(按下它的那个顶层已经不在了);X 这边并没按着它就什么也不做。</summary>
     private void ApplyPointerButtonRelease(int button)
     {
         NoteUserActivity();
         ProcessPointerInput(() =>
         {
-            if ((_buttonsDown[button >> 3] & (1 << (button & 7))) != 0)
+            if (IsPhysicalButtonDown(button))
             {
                 ButtonEvent(button, false);
             }
@@ -312,10 +312,6 @@ public sealed partial class X11Server
                 Xi2Mask = passive.Grab.Xi2Mask,
             };
         }
-        if (!replay)
-        {
-            SendRawEvent(XiRawButtonPress, (uint)button, 0, 0);
-        }
         if (PointerGrab is null && !IsFloating(pointer: true)
             && Propagate(_pointerWindow, XEventMask.ButtonPress, XEventCode.ButtonPress, null, null) is { } target)
         {
@@ -379,8 +375,26 @@ public sealed partial class X11Server
         UpdateCursor();
     }
 
-    private void ButtonEvent(int button, bool pressed)
+    /// <summary>
+    /// 物理按钮 <paramref name="physical" /> 按下 / 松开(宿主与 XTEST 给的):原始事件报物理按钮(XI2「RawEvent」是驱动给的数据),
+    /// 其余一律按 SetPointerMapping 换成生效的按钮号;映射成 0 的按钮停用。
+    /// </summary>
+    private void ButtonEvent(int physical, bool pressed)
     {
+        if (pressed)
+        {
+            _physicalButtonsDown[physical >> 3] |= (byte)(1 << (physical & 7));
+        }
+        else
+        {
+            _physicalButtonsDown[physical >> 3] &= (byte)~(1 << (physical & 7));
+        }
+        SendRawEvent(pressed ? XiRawButtonPress : XiRawButtonRelease, (uint)physical, 0, 0);
+        int button = MapButton(physical);
+        if (button == 0)
+        {
+            return;
+        }
         _motionHintEpoch++;   // 按钮状态变了:PointerMotionHint 的客户端可以再收一条提示
         // 只有按钮 1–5 在 state 里有位(协议 SETofKEYBUTMASK);6 以上(水平滚轮等)照样投递,但不进 state。
         ushort bit = button <= 5 ? (ushort)(0x100 << (button - 1)) : (ushort)0;
@@ -391,7 +405,6 @@ public sealed partial class X11Server
         }
         else
         {
-            SendRawEvent(XiRawButtonRelease, (uint)button, 0, 0);
             Delivery? released = DeliverDeviceEvent(XEventCode.ButtonRelease, (byte)button, XEventMask.ButtonRelease, _pointerWindow);
             if (released is not null && PointerGrab is not null)
             {
@@ -399,9 +412,9 @@ public sealed partial class X11Server
             }
             _buttonsDown[button >> 3] &= (byte)~(1 << (button & 7));
             _buttons &= (ushort)~bit;
-            if (_buttons == 0 && PointerGrab is { ReleaseWhenButtonsUp: true })
+            if (!_buttonsDown.AsSpan().ContainsAnyExcept((byte)0) && PointerGrab is { ReleaseWhenButtonsUp: true })
             {
-                PointerGrab = null;
+                PointerGrab = null;   // 所有按钮都松开了(6 号以上不在 state 里,也要等它们松开)
                 UpdateCursor();
             }
         }
@@ -1461,16 +1474,72 @@ public sealed partial class X11Server
         c.Reply((byte)_keymap.KeycodesPerModifier, w => w.Zero(24).Bytes(map));
     }
 
+    /// <summary>
+    /// SetModifierMapping(协议「SetModifierMapping」):非零键码不在 min-keycode … max-keycode 里回 BadValue;某个修饰位的键换了、
+    /// 而它的新键或旧键正按着时回 Busy,什么都不改。成功后按新表重算当前的修饰状态 —— 原先一律回 Success,按着 Shift 时把 Shift 换走,
+    /// 状态里的 Shift 位要等下一次按键才消失。
+    /// </summary>
     private void SetModifierMapping(XClient c, XRequestReader r)
     {
         int per = r.Data;
         byte[] map = r.Bytes(per * 8);
+        foreach (byte keycode in map)
+        {
+            if (keycode is not 0 and < Keymap.MinKeycode)
+            {
+                throw new XProtocolError(XErrorCode.Value, keycode);
+            }
+        }
+        byte[] old = _keymap.ModifierMap;
+        int oldPer = _keymap.KeycodesPerModifier;
+        for (int m = 0; m < 8; m++)
+        {
+            ReadOnlySpan<byte> before = old.AsSpan(m * oldPer, oldPer), after = map.AsSpan(m * per, per);
+            if (SameKeys(before, after))
+            {
+                continue;
+            }
+            if (AnyDown(before) || AnyDown(after))
+            {
+                c.Reply(1, w => w.Zero(24));   // Busy
+                return;
+            }
+        }
         _keymap.SetModifierMap(map);
+        UpdateModifierState(0, 0);
         NotifyXkbMapChanged();
         c.Reply(0, w => w.Zero(24));
         NotifyModifierMappingChanged();
-    }
 
-    private static void GetPointerMapping(XClient c) =>
-        c.Reply(5, w => w.Zero(24).Bytes([1, 2, 3, 4, 5]).Pad4());
+        static bool SameKeys(ReadOnlySpan<byte> a, ReadOnlySpan<byte> b)
+        {
+            foreach (byte k in a)
+            {
+                if (k != 0 && !b.Contains(k))
+                {
+                    return false;
+                }
+            }
+            foreach (byte k in b)
+            {
+                if (k != 0 && !a.Contains(k))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool AnyDown(ReadOnlySpan<byte> keys)
+        {
+            foreach (byte k in keys)
+            {
+                if (k != 0 && IsKeyDown(k))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
 }

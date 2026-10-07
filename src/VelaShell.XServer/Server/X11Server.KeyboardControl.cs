@@ -5,7 +5,8 @@
 //   X Window System Protocol, X Version 11 —— 「ChangeKeyboardControl」(key-click-percent、bell-percent、bell-pitch、
 //   bell-duration 的 −1 = 恢复默认;led / led-mode;key / auto-repeat-mode:全局与逐键的自动重复,「自动重复的键交替产生 KeyPress
 //   与 KeyRelease」,「当作修饰键用的键最好不重复」;只给 led 不给 led-mode、只给 key 不给 auto-repeat-mode 是 Match 错误)、
-//   「GetKeyboardControl」「Bell」(音量公式)
+//   「GetKeyboardControl」「Bell」(音量公式)、「SetPointerMapping」「GetPointerMapping」(下标是物理按钮、元素是生效的按钮号,
+//   0 停用;长度与 GetPointerMapping 一致,非零元素不重复,否则 Value;要改的按钮按着时 Busy;成功时发 MappingNotify(Pointer))
 //   The X Keyboard Extension —— 「The RepeatKeys Control」「The PerKeyRepeat Control」(与核心的自动重复互为表里)、
 //   「Detectable Autorepeat」(开了它的客户端在自动重复时收不到中间的 KeyRelease)、XkbGetControls / XkbSetControls(附录 D 的编码)
 //   X Input Extension 2.2 ——「DeviceEvent」「RawEvent」的 flags:KeyRepeat(XI2.h 的 1 << 16):物理状态没变、只为重复而发
@@ -258,6 +259,64 @@ public sealed partial class X11Server
             ? baseVolume - (baseVolume * percent / 100) + percent
             : baseVolume + (baseVolume * percent / 100);
         _host.BellRequested(volume);
+    }
+
+    // ================================================================== 指针按钮映射
+
+    /// <summary>
+    /// 指针的按钮映射:下标 i 是物理按钮 i + 1,元素是它生效时的按钮号(0 = 停用)。长度与 XI 报的按钮数一致;
+    /// 更大号的按钮(宿主最多可以注入 255)不经映射。
+    /// </summary>
+    private readonly byte[] _pointerMap = [.. Enumerable.Range(1, XiButtonCount).Select(b => (byte)b)];
+
+    /// <summary>物理上按着的按钮(按物理按钮号,与 <see cref="_buttonsDown" /> 的生效按钮号区分开):松开与 SetPointerMapping 的 Busy 看它。</summary>
+    private readonly byte[] _physicalButtonsDown = new byte[32];
+
+    /// <summary>物理按钮 → 生效的按钮号(0 = 停用)。</summary>
+    private int MapButton(int physical) => physical <= _pointerMap.Length ? _pointerMap[physical - 1] : physical;
+
+    private bool IsPhysicalButtonDown(int physical) => (_physicalButtonsDown[physical >> 3] & (1 << (physical & 7))) != 0;
+
+    /// <summary>
+    /// SetPointerMapping:左手用户 <c>xmodmap -e "pointer = 3 2 1"</c>。原先回 Success 却不生效、也不发 MappingNotify,
+    /// GetPointerMapping 还只报 5 个按钮(XI 报 9 个)。
+    /// </summary>
+    private void SetPointerMapping(XClient c, XRequestReader r)
+    {
+        int count = r.Data;
+        byte[] map = r.Bytes(count);
+        if (count != _pointerMap.Length)
+        {
+            throw new XProtocolError(XErrorCode.Value, (uint)count);
+        }
+        HashSet<byte> seen = [];
+        foreach (byte b in map)
+        {
+            if (b != 0 && !seen.Add(b))
+            {
+                throw new XProtocolError(XErrorCode.Value, b);
+            }
+        }
+        for (int i = 0; i < map.Length; i++)
+        {
+            if (map[i] != _pointerMap[i] && IsPhysicalButtonDown(i + 1))
+            {
+                c.Reply(1, w => w.Zero(24));   // Busy:要改的按钮正按着,映射不变
+                return;
+            }
+        }
+        map.CopyTo(_pointerMap, 0);
+        c.Reply(0, w => w.Zero(24));
+        foreach (XClient client in _clients.Values)
+        {
+            client.Event(XEventCode.MappingNotify, 0, w => w.U8(2).U8(0).U8(0));   // request = Pointer
+        }
+    }
+
+    private void GetPointerMapping(XClient c)
+    {
+        byte[] map = [.. _pointerMap];
+        c.Reply((byte)map.Length, w => w.Zero(24).Bytes(map).Pad4());
     }
 
     // ================================================================== XKB 的键盘控制

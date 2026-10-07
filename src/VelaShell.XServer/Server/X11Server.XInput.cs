@@ -105,6 +105,10 @@ public sealed partial class X11Server
                 {
                     r.U8();
                     byte first = r.U8(), count = r.U8();
+                    if (first < Keymap.MinKeycode || first + count - 1 > Keymap.MaxKeycode)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, first);   // 同核心 GetKeyboardMapping(原先键码按字节回绕)
+                    }
                     int per = _keymap.KeysymsPerKeycode;
                     c.Reply(minor, w =>
                     {
@@ -125,17 +129,12 @@ public sealed partial class X11Server
                     c.Reply(minor, w => w.U8((byte)_keymap.KeycodesPerModifier).Zero(23).Bytes(map));
                     break;
                 }
-            case 28:  // GetDeviceButtonMapping:恒等映射
-                c.Reply(minor, w =>
+            case 28:  // GetDeviceButtonMapping:与核心 GetPointerMapping 同一份
                 {
-                    w.U8(XiButtonCount).Zero(23);
-                    for (int b = 1; b <= XiButtonCount; b++)
-                    {
-                        w.U8((byte)b);
-                    }
-                    w.Pad4();
-                });
-                break;
+                    byte[] map = [.. _pointerMap];
+                    c.Reply(minor, w => w.U8((byte)map.Length).Zero(23).Bytes(map).Pad4());
+                    break;
+                }
             case 30:  // QueryDeviceState
                 {
                     byte id = r.U8();
