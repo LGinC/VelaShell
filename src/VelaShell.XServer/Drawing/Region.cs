@@ -61,6 +61,9 @@ internal sealed class Region
     /// <summary>组成区域的矩形(互不重叠,先 y 后 x)。</summary>
     public IReadOnlyList<XRect> Rects => _rects;
 
+    /// <summary>同 <see cref="Rects" />,但给出底下的 List 本身(热循环里不走接口)。调用方只读,且只在区域不变期间用。</summary>
+    internal List<XRect> RectList => _rects;
+
     public bool IsEmpty => _rects.Count == 0;
 
     /// <summary>一个只知道「落在 <paramref name="bounds" /> 之内」的区域(已经 <see cref="Saturated" />)。</summary>

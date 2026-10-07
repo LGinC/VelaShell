@@ -64,8 +64,40 @@ internal sealed class XGc : XResource
     /// <summary>裁剪位图(clip-mask 设成像素图时)。</summary>
     public XPixmap? ClipPixmap { get; set; }
 
-    /// <summary>裁剪矩形(SetClipRectangles);与 <see cref="ClipPixmap" /> 互斥。null = 不裁剪。</summary>
-    public List<XRect>? ClipRects { get; set; }
+    /// <summary>裁剪矩形(SetClipRectangles);与 <see cref="ClipPixmap" /> 互斥。null = 不裁剪。换的时候整份替换,不就地改。</summary>
+    public List<XRect>? ClipRects
+    {
+        get => _clipRects;
+        set
+        {
+            _clipRects = value;
+            _clipRegion = null;
+        }
+    }
+
+    private List<XRect>? _clipRects;
+
+    /// <summary>上一次按裁剪矩形建出来的区域与它平移的量(见 <see cref="ClipRegionAt" />)。</summary>
+    private (int Dx, int Dy, Drawing.Region Region)? _clipRegion;
+
+    /// <summary>
+    /// 裁剪矩形平移 (<paramref name="dx" />, <paramref name="dy" />) 之后的区域(调用方只读);没有裁剪矩形时为 null。
+    /// 按平移量缓存:同一个 GC 连着画同一个可绘对象时不必每个请求都 FromRects 一次。
+    /// </summary>
+    public Drawing.Region? ClipRegionAt(int dx, int dy)
+    {
+        if (_clipRects is not { } rects)
+        {
+            return null;
+        }
+        if (_clipRegion is { } cached && cached.Dx == dx && cached.Dy == dy)
+        {
+            return cached.Region;
+        }
+        Drawing.Region region = Drawing.Region.FromRects(rects).Translate(dx, dy);
+        _clipRegion = (dx, dy, region);
+        return region;
+    }
 
     public ushort DashOffset { get; set; }
 

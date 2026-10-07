@@ -137,6 +137,30 @@ public sealed class RasterizerTests
         Assert.AreEqual(20, buffer.Pixels.Count(p => p == 5), "整列 2 × 10 个像素");
     }
 
+    [TestMethod]
+    public void GC裁剪区域按平移量缓存_换了裁剪矩形或原点就重建()
+    {
+        XGc gc = new(1, null, 24) { Foreground = 1, ClipRects = [new XRect(0, 0, 2, 2)] };
+        PixelBuffer buffer = new(10, 10, 24);
+        new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc).FillRect(0, 0, 10, 10);
+        Assert.AreEqual(4, buffer.Pixels.Count(p => p == 1));
+
+        gc.ClipXOrigin = 5;   // 原点变了:裁剪区域跟着挪
+        buffer = new(10, 10, 24);
+        new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc).FillRect(0, 0, 10, 10);
+        Assert.AreEqual((1u, 0u), (buffer.Get(5, 0), buffer.Get(0, 0)));
+
+        gc.ClipRects = [new XRect(0, 0, 3, 1)];   // 整份换掉:缓存作废
+        buffer = new(10, 10, 24);
+        new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc).FillRect(0, 0, 10, 10);
+        Assert.AreEqual(3, buffer.Pixels.Count(p => p == 1));
+
+        gc.ClipRects = null;   // 不裁剪:可见区域原样用
+        buffer = new(10, 10, 24);
+        new Rasterizer(buffer, 0, 0, new Region(new XRect(-5, -5, 30, 30)), gc).FillRect(0, 0, 10, 10);
+        Assert.AreEqual(100, buffer.Pixels.Count(p => p == 1), "可见区域伸出缓冲时仍与缓冲求交");
+    }
+
     // ------------------------------------------------------------------ 宽线与弧的 line-style / join-style / cap-style
 
     private static PixelBuffer Stroke(XGc gc, Action<Rasterizer> draw, int size = Size)

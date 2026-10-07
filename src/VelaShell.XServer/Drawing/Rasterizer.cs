@@ -46,13 +46,25 @@ internal sealed class Rasterizer
         _gc = gc;
         _depthMask = buffer.DepthMask;
 
-        Region effective = clip.Clone().Intersect(buffer.Bounds);
-        if (gc.ClipRects is { } rects)
+        // 可画区域:可见区域 ∩ 缓冲 ∩ GC 的裁剪矩形。最常见的情形 —— 没有裁剪矩形、可见区域本来就在缓冲之内 —— 直接用可见区域的块,
+        // 不拷(它在这个光栅化器活着的时候不会变:可见区域的缓存只在两项工作之间换);GC 的裁剪区域缓存在 GC 上,
+        // 原先每个请求都 Clone 一遍可见区域、拷成新 List、再按裁剪矩形 FromRects 一次。
+        Region? gcClip = gc.ClipRegionAt(gc.ClipXOrigin + originX, gc.ClipYOrigin + originY);
+        XRect visible = clip.Bounds;
+        Region effective;
+        if (gcClip is null && visible.Intersect(buffer.Bounds) == visible)
         {
-            int dx = gc.ClipXOrigin + originX, dy = gc.ClipYOrigin + originY;
-            effective.Intersect(Region.FromRects(rects).Translate(dx, dy));
+            effective = clip;
         }
-        _clip = [.. effective.Rects];
+        else
+        {
+            effective = clip.Clone().Intersect(buffer.Bounds);
+            if (gcClip is not null)
+            {
+                effective.Intersect(gcClip);
+            }
+        }
+        _clip = effective.RectList;
         XRect bounds = effective.Bounds;
         (_clipTop, _clipBottom) = bounds.IsEmpty ? (0, 0) : (bounds.Y - originY, bounds.Bottom - originY);
         ClipBounds = bounds.IsEmpty ? default : bounds.Offset(-originX, -originY);
