@@ -9,7 +9,8 @@
 // 场景:核心填充、32 位 PutImage(小块与整窗)、Xft 式字形合成(a8 字形 + 纯色源 + Over)、ARGB 图像 Over 合成、
 // RENDER 通用路径(线性渐变源、带缩放变换的双线性源、ARGB 源 + a8 遮罩)、GLX 单缓冲的小三角形(每个 Render 请求一个)、
 // RENDER 多矩形填充、指针移动注入(窗口选了 PointerMotion)、请求往返延迟;
-// 最后量整窗 PutImage 满载时宿主读像素(另一条线程每 16 毫秒读一次整窗)要等多久 —— 宿主 UI 线程卡不卡看的就是它。
+// 最后量整窗 PutImage 满载时宿主读像素(另一条线程每 16 毫秒读一次整窗)要等多久 —— 宿主 UI 线程卡不卡看的就是它;
+// 再量四个窗口一起忙时宿主每帧逐个窗口读一遍(每个窗口拿一次像素锁)的总耗时。
 // 数字只用来比较前后改动,不同机器之间不可比。
 
 using System.Buffers.Binary;
@@ -195,6 +196,55 @@ reader.Join();
 waits.Sort();
 Console.WriteLine($"宿主读整窗像素(整窗 PutImage 满载):{waits.Count} 次,中位 {waits[waits.Count / 2]:F2} ms,"
     + $"p99 {waits[(int)(waits.Count * 0.99)]:F2} ms,最长 {waits[^1]:F2} ms");
+
+// 四个忙窗口(xs_plan API-P1):宿主每帧逐个窗口拿一次像素锁读整窗(XNativeWindow 的做法:TryReadPixels,最多等 8 毫秒,
+// 拿不到就跳过这一帧)。先在空闲时量一遍(只有拷贝的开销),再在四个窗口轮流整窗 PutImage 时量:每帧的总耗时、读不到的次数。
+// 满载时每帧比空闲时多出来的,就是四次等锁 —— 「一次锁内读多个窗口」的 API 最多能省下其中三次。
+List<XTopLevelWindow> busy = [mapped];
+List<byte[]> busyFrames = [frameRequest];
+for (int k = 1; k < 4; k++)
+{
+    uint extra = c.NewId();
+    c.Request(1, 24, b => b.U32(extra).U32(c.Root).I16((short)(40 * k)).I16((short)(40 * k)).U16(800).U16(600).U16(0).U16(1).U32(0).U32(0x2).U32(0xFFFFFF));
+    c.Request(8, 0, b => b.U32(extra));
+    await c.SyncAsync();
+    busy.Add(host.Mapped!);
+    busyFrames.Add(Client.Encode(72, 2, b => b.U32(extra).U32(gc).U16(800).U16(600).I16(0).I16(0).U8(0).U8(24).U16(0).Bytes(frame), big: true));
+}
+(List<double> Frames, int Busy) ReadFrames(Func<bool> keepGoing, int maxFrames)
+{
+    List<double> frames = [];
+    int skipped = 0;
+    uint[] copy = new uint[800 * 600];
+    XPixelReader reader = (pixels, _, _) => pixels.CopyTo(copy);
+    while (keepGoing() && frames.Count < maxFrames)
+    {
+        long t0 = Stopwatch.GetTimestamp();
+        foreach (XTopLevelWindow w in busy)
+        {
+            if (w.TryReadPixels(reader, TimeSpan.FromMilliseconds(8)) == XPixelReadResult.Busy)
+            {
+                skipped++;
+            }
+        }
+        frames.Add(Stopwatch.GetElapsedTime(t0).TotalMilliseconds);
+        Thread.Sleep(16);
+    }
+    frames.Sort();
+    return (frames, skipped);
+}
+string Describe((List<double> Frames, int Busy) r) =>
+    $"{r.Frames.Count} 帧,每帧中位 {r.Frames[r.Frames.Count / 2]:F2} ms,p99 {r.Frames[(int)(r.Frames.Count * 0.99)]:F2} ms,"
+    + $"最长 {r.Frames[^1]:F2} ms,读不到 {r.Busy} 次";
+Console.WriteLine($"宿主每帧读四个窗口(空闲):{Describe(ReadFrames(() => true, 200))}");
+using CancellationTokenSource stopBusy = new();
+(List<double> Frames, int Busy) loaded = ([], 0);
+Thread busyReader = new(() => loaded = ReadFrames(() => !stopBusy.IsCancellationRequested, int.MaxValue));
+busyReader.Start();
+await SendBatchAsync(2_000, i => c.Raw(busyFrames[i % busyFrames.Count]));
+stopBusy.Cancel();
+busyReader.Join();
+Console.WriteLine($"宿主每帧读四个窗口(四个窗口轮流整窗 PutImage 满载):{Describe(loaded)}");
 
 // GLX 渲染命令:每条 2 字节长度(含 4 字节头)、2 字节操作码,参数都是 4 字节。
 static Client.Body GlCommands(Client.Body b, params (ushort Opcode, float[] Values)[] commands)
