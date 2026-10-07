@@ -138,6 +138,49 @@ public sealed class RasterizerTests
     }
 
     [TestMethod]
+    public void 平铺填充按行整段拷_与逐像素取模的结果相同()
+    {
+        Random random = new(5);
+        for (int round = 0; round < 300; round++)
+        {
+            PixelBuffer tileBuffer = new(random.Next(1, 9), random.Next(1, 9), 24);
+            for (int i = 0; i < tileBuffer.Pixels.Length; i++)
+            {
+                tileBuffer.Pixels[i] = (uint)random.Next() & 0xFFFFFF;
+            }
+            XGc gc = new(1, null, 24)
+            {
+                FillStyle = 1,
+                Tile = new XPixmap(2, null, tileBuffer),
+                TileStipXOrigin = (short)random.Next(-20, 20),
+                TileStipYOrigin = (short)random.Next(-20, 20),
+            };
+            Region clip = RandomClip(random);
+            int ox = random.Next(-5, 5), oy = random.Next(-5, 5);
+            PixelBuffer actual = new(Size, Size, 24);
+            new Rasterizer(actual, ox, oy, clip, gc).FillRect(random.Next(-10, Size), random.Next(-10, Size), random.Next(1, 60), random.Next(1, 60));
+
+            // 参照:每个画到的像素都应当是平铺图在 (x − 原点) 取模处的值。
+            for (int y = 0; y < Size; y++)
+            {
+                for (int x = 0; x < Size; x++)
+                {
+                    uint p = actual.Get(x, y);
+                    if (p == 0)
+                    {
+                        continue;
+                    }
+                    int dx = x - ox, dy = y - oy;
+                    uint expected = tileBuffer.Get(Mod(dx - gc.TileStipXOrigin, tileBuffer.Width), Mod(dy - gc.TileStipYOrigin, tileBuffer.Height));
+                    Assert.AreEqual(expected, p, $"第 {round} 组 ({x},{y})");
+                }
+            }
+        }
+
+        static int Mod(int a, int m) => ((a % m) + m) % m;
+    }
+
+    [TestMethod]
     public void GC裁剪区域按平移量缓存_换了裁剪矩形或原点就重建()
     {
         XGc gc = new(1, null, 24) { Foreground = 1, ClipRects = [new XRect(0, 0, 2, 2)] };

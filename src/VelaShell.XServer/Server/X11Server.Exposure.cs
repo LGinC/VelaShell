@@ -349,7 +349,7 @@ public sealed partial class X11Server
             {
                 for (int y = r.Y; y < r.Bottom; y++)
                 {
-                    TileRow(buffer.Pixels.AsSpan((y * buffer.Width) + r.X, r.Width), tile.Buffer, r.X - tx, y - ty, mask);
+                    buffer.FillTiledRow(y, r.X, r.Right, tile.Buffer, tx, ty, mask);   // 按平铺图的行整段拷
                 }
             }
         }
@@ -375,48 +375,19 @@ public sealed partial class X11Server
         {
             for (int y = r.Y; y < r.Bottom; y++)
             {
-                for (int x = r.X; x < r.Right; x++)
+                if (w.BorderTile is { } tile)
                 {
-                    uint value = w.BorderTile is { } tile
-                        ? tile.Buffer.Get(PositiveMod(x - ox, tile.Width), PositiveMod(y - oy, tile.Height))
-                        : w.BorderPixel;
-                    buffer.Pixels[(y * buffer.Width) + x] = value & mask;
+                    buffer.FillTiledRow(y, r.X, r.Right, tile.Buffer, ox, oy, mask);
+                }
+                else
+                {
+                    Array.Fill(buffer.Pixels, w.BorderPixel & mask, (y * buffer.Width) + r.X, r.Width);
                 }
             }
         }
     }
 
     private static int PositiveMod(int a, int m) => m <= 0 ? 0 : ((a % m) + m) % m;
-
-    /// <summary>
-    /// 平铺一行:目标第一个像素对应图块的 (<paramref name="tileX" />, <paramref name="tileY" />)(可以为负、超出图块,按取模算)。
-    /// 每行只取一次模,之后按图块的一行整段拷、再补掩码 —— 原先每个像素算两次取模(xs_plan WN-P3)。
-    /// </summary>
-    private static void TileRow(Span<uint> destination, PixelBuffer tile, int tileX, int tileY, uint mask)
-    {
-        if (tile.Width <= 0 || tile.Height <= 0)
-        {
-            destination.Clear();
-            return;
-        }
-        ReadOnlySpan<uint> row = tile.Pixels.AsSpan(PositiveMod(tileY, tile.Height) * tile.Width, tile.Width);
-        int column = PositiveMod(tileX, tile.Width);
-        int done = 0;
-        while (done < destination.Length)
-        {
-            int run = Math.Min(row.Length - column, destination.Length - done);
-            row.Slice(column, run).CopyTo(destination.Slice(done, run));
-            done += run;
-            column = 0;
-        }
-        if (mask != uint.MaxValue)
-        {
-            for (int i = 0; i < destination.Length; i++)
-            {
-                destination[i] &= mask;
-            }
-        }
-    }
 
     private static void SendExpose(XWindow w, Region area)
     {

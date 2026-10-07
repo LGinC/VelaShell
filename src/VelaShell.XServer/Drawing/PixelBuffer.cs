@@ -57,6 +57,55 @@ internal sealed class PixelBuffer
 
     public uint Get(int x, int y) => (uint)x < (uint)Width && (uint)y < (uint)Height ? Pixels[(y * Width) + x] : 0;
 
+    /// <summary>
+    /// 用 <paramref name="tile" /> 平铺第 <paramref name="y" /> 行的 [<paramref name="x1" />, <paramref name="x2" />)(本缓冲坐标;
+    /// 平铺原点在本缓冲的 (<paramref name="originX" />, <paramref name="originY" />)),按 <paramref name="mask" /> 掩码,GXcopy。
+    /// 按平铺图的行整段拷 —— 原先逐像素对 x、y 各取一次模。
+    /// </summary>
+    public void FillTiledRow(int y, int x1, int x2, PixelBuffer tile, int originX, int originY, uint mask)
+    {
+        if (x2 <= x1)
+        {
+            return;
+        }
+        int tw = tile.Width, th = tile.Height;
+        int ty = (((y - originY) % th) + th) % th;
+        int tx = (((x1 - originX) % tw) + tw) % tw;
+        ReadOnlySpan<uint> row = tile.Pixels.AsSpan(ty * tw, tw);
+        Span<uint> to = Pixels.AsSpan((y * Width) + x1, x2 - x1);
+        while (!to.IsEmpty)
+        {
+            int n = Math.Min(tw - tx, to.Length);
+            CopyMasked(row.Slice(tx, n), to[..n], mask);
+            to = to[n..];
+            tx = 0;
+        }
+    }
+
+    /// <summary>整段拷贝并与掩码(全 1 时直接拷)。</summary>
+    internal static void CopyMasked(ReadOnlySpan<uint> from, Span<uint> to, uint mask)
+    {
+        if (mask == uint.MaxValue)
+        {
+            from.CopyTo(to);
+            return;
+        }
+        int i = 0;
+        if (System.Numerics.Vector.IsHardwareAccelerated)
+        {
+            System.Numerics.Vector<uint> m = new(mask);
+            int step = System.Numerics.Vector<uint>.Count;
+            for (; i <= from.Length - step; i += step)
+            {
+                (new System.Numerics.Vector<uint>(from[i..]) & m).CopyTo(to[i..]);
+            }
+        }
+        for (; i < from.Length; i++)
+        {
+            to[i] = from[i] & mask;
+        }
+    }
+
     /// <summary>一份同尺寸、同内容的独立拷贝。</summary>
     public PixelBuffer Clone()
     {

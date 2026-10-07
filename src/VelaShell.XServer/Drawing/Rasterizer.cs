@@ -272,7 +272,7 @@ internal sealed class Rasterizer
                     }
                     else
                     {
-                        CopyMasked(from, to, _depthMask);
+                        PixelBuffer.CopyMasked(from, to, _depthMask);
                     }
                     Touch(r.X, by, r.Width);
                     continue;
@@ -285,25 +285,6 @@ internal sealed class Rasterizer
                     }
                 }
             }
-        }
-    }
-
-    /// <summary>整段拷贝并与掩码(按向量宽度一次处理多个像素)。</summary>
-    private static void CopyMasked(ReadOnlySpan<uint> from, Span<uint> to, uint mask)
-    {
-        int i = 0;
-        if (System.Numerics.Vector.IsHardwareAccelerated)
-        {
-            System.Numerics.Vector<uint> m = new(mask);
-            int step = System.Numerics.Vector<uint>.Count;
-            for (; i <= from.Length - step; i += step)
-            {
-                (new System.Numerics.Vector<uint>(from[i..]) & m).CopyTo(to[i..]);
-            }
-        }
-        for (; i < from.Length; i++)
-        {
-            to[i] = from[i] & mask;
         }
     }
 
@@ -390,8 +371,10 @@ internal sealed class Rasterizer
         ChargeSpan(x1, x2);
         int by = dy + _oy;
         int bx1 = x1 + _ox, bx2 = x2 + _ox;
-        bool fastSolid = _gc.FillStyle == 0 && _gc.Function == 3 && _gc.ClipPixmap is null
-                         && (_gc.PlaneMask & _depthMask) == _depthMask;
+        bool plain = _gc.Function == 3 && _gc.ClipPixmap is null && (_gc.PlaneMask & _depthMask) == _depthMask;
+        bool fastSolid = plain && _gc.FillStyle == 0;
+        // 平铺 + GXcopy + 全平面:按平铺图的行整段拷(原先逐像素对 x、y 各取一次模)。
+        PixelBuffer? fastTile = plain && _gc.FillStyle == 1 && _gc.Tile is { } tile ? tile.Buffer : null;
         uint solid = (useBackground ? _gc.Background : _gc.Foreground) & _depthMask;
         for (int i = FirstClipIndex(by, bx1); i < _clip.Count && _clip[i].Y <= by && _clip[i].X < bx2; i++)
         {
@@ -404,6 +387,12 @@ internal sealed class Rasterizer
             if (fastSolid)
             {
                 Array.Fill(_buffer.Pixels, solid, (by * _buffer.Width) + s, e - s);
+                Touch(s, by, e - s);
+                continue;
+            }
+            if (fastTile is not null)
+            {
+                _buffer.FillTiledRow(by, s, e, fastTile, _gc.TileStipXOrigin + _ox, _gc.TileStipYOrigin + _oy, _depthMask);
                 Touch(s, by, e - s);
                 continue;
             }
