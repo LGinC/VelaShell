@@ -140,6 +140,29 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 句柄带着发出它的服务端_窗口销毁或服务端收工之后不再活着()
+    {
+        using RecordingHost host = new();
+        X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XTopLevelWindow first = host.Mapped[await MapTopAsync(c, host)];
+        XTopLevelWindow second = host.Mapped[await MapTopAsync(c, host)];
+        Assert.AreSame(server, first.Server);
+        Assert.IsTrue(first.IsAlive);
+
+        await c.SendAsync(10, 0, b => b.U32(first.Id));   // 只是取消映射:句柄照样活着
+        await host.WaitForAsync(() => !first.Snapshot.IsMapped);
+        Assert.IsTrue(first.IsAlive);
+        await c.SendAsync(4, 0, b => b.U32(first.Id));    // DestroyWindow
+        await c.SyncAsync();
+        Assert.IsFalse(first.IsAlive);
+
+        Assert.IsTrue(second.IsAlive);
+        await server.DisposeAsync();
+        Assert.IsFalse(second.IsAlive, "服务端收工:句柄都不再活着");
+    }
+
+    [TestMethod]
     public async Task 快照整份替换_变化按组报告_没变不报()
     {
         using RecordingHost host = new();

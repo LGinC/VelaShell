@@ -32,7 +32,7 @@ namespace VelaShell.Services.XServer;
 /// </remarks>
 public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 {
-    private readonly Dictionary<uint, XNativeWindow> _windows = [];
+    private readonly Dictionary<XTopLevelWindow, XNativeWindow> _windows = [];
 
     /// <summary>映射着、但不给原生窗口的桌面类窗口(见 <see cref="IsDesktop" />)。只在 UI 线程上碰。</summary>
     private readonly HashSet<XTopLevelWindow> _desktops = [];
@@ -49,8 +49,8 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     private readonly Lock _damageGate = new();
     private readonly Action _deliverDamage;
-    private Dictionary<uint, List<XRect>> _incomingDamage = [];
-    private Dictionary<uint, List<XRect>> _deliveringDamage = [];
+    private Dictionary<XTopLevelWindow, List<XRect>> _incomingDamage = [];
+    private Dictionary<XTopLevelWindow, List<XRect>> _deliveringDamage = [];
     private bool _damagePosted;
 
     /// <summary>新建一个宿主;经 <see cref="AttachAsync" /> 接到服务端上。</summary>
@@ -58,6 +58,15 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     /// <summary>当前附着的服务端;没在运行时为 <see langword="null" />。窗口的注入经它走。</summary>
     public X11Server? Server => _server;
+
+    /// <summary>
+    /// 句柄是此刻附着的服务端发出的。停掉服务端再起一个时 UI 队列里还排着旧服务端的回调,新服务端的 XID 又与旧的重合:
+    /// 原先按 XID 找窗口,旧回调会用旧句柄建原生窗口(之后注入时新服务端抛 ArgumentException)、误关新窗口。
+    /// </summary>
+    private bool IsCurrent(XTopLevelWindow handle) => _server is { } server && ReferenceEquals(handle.Server, server);
+
+    /// <summary>句柄所属的服务端,只在它就是此刻附着的那个时给出(交给别的服务端会抛异常)。</summary>
+    internal X11Server? CurrentServer(XTopLevelWindow handle) => IsCurrent(handle) ? handle.Server : null;
 
     /// <summary>当前开着的原生窗口(UI 线程上读;测试用)。</summary>
     internal IReadOnlyCollection<XNativeWindow> Windows => _windows.Values;
@@ -319,7 +328,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     public void TopLevelUnmapped(XTopLevelWindow window) => Dispatcher.UIThread.Post(() =>
     {
         _desktops.Remove(window);
-        if (_windows.Remove(window.Id, out XNativeWindow? native))
+        if (_windows.Remove(window, out XNativeWindow? native))
         {
             CloseWithOwnedWindows(native);
         }
@@ -335,7 +344,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         XNativeWindow[] owned = [.. _windows.Values.Where(w => ReferenceEquals(w.Owner, native))];
         foreach (XNativeWindow child in owned)
         {
-            _windows.Remove(child.Handle.Id);
+            _windows.Remove(child.Handle);
             child.MarkClosingByHost();
         }
         native.CloseByHost();
@@ -352,12 +361,12 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes) => Dispatcher.UIThread.Post(() =>
     {
-        if (_windows.TryGetValue(window.Id, out XNativeWindow? native))
+        if (_windows.TryGetValue(window, out XNativeWindow? native))
         {
             if (IsDesktop(window.Snapshot))
             {
                 // 映射之后才把类型改成桌面:收掉原生窗口(见 IsDesktop)。
-                _windows.Remove(window.Id);
+                _windows.Remove(window);
                 _desktops.Add(window);
                 CloseWithOwnedWindows(native);
                 return;
@@ -387,9 +396,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     {
         lock (_damageGate)
         {
-            if (!_incomingDamage.TryGetValue(window.Id, out List<XRect>? rects))
+            if (!_incomingDamage.TryGetValue(window, out List<XRect>? rects))
             {
-                _incomingDamage[window.Id] = rects = [];
+                _incomingDamage[window] = rects = [];
             }
             rects.AddRange(damage);
             if (rects.Count > MaxQueuedDamageRects)
@@ -415,15 +424,15 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>UI 线程:把攒下的损伤交给各自的原生窗口。</summary>
     private void DeliverDamage()
     {
-        Dictionary<uint, List<XRect>> batch;
+        Dictionary<XTopLevelWindow, List<XRect>> batch;
         lock (_damageGate)
         {
             (batch, _incomingDamage, _deliveringDamage) = (_incomingDamage, _deliveringDamage, _incomingDamage);
             _damagePosted = false;
         }
-        foreach ((uint id, List<XRect> rects) in batch)
+        foreach ((XTopLevelWindow handle, List<XRect> rects) in batch)
         {
-            if (_windows.TryGetValue(id, out XNativeWindow? native))
+            if (_windows.TryGetValue(handle, out XNativeWindow? native))
             {
                 native.AddDamage(rects);
             }
@@ -434,7 +443,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void CursorChanged(XTopLevelWindow? window, XCursor cursor) => Dispatcher.UIThread.Post(() =>
     {
-        if (window is not null && _windows.TryGetValue(window.Id, out XNativeWindow? native))
+        if (window is not null && _windows.TryGetValue(window, out XNativeWindow? native))
         {
             native.ApplyCursor(cursor);
         }
@@ -469,7 +478,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void WindowManagerRequested(XWindowManagerRequest request) => Dispatcher.UIThread.Post(() =>
     {
-        if (!_windows.TryGetValue(request.Window.Id, out XNativeWindow? native))
+        if (!_windows.TryGetValue(request.Window, out XNativeWindow? native))
         {
             return;
         }
@@ -503,7 +512,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                 native.WindowState = WindowState.Minimized;
                 break;
             case XCloseRequest:
-                _server?.CloseTopLevel(request.Window);
+                CurrentServer(request.Window)?.CloseTopLevel(request.Window);
                 break;
             case XNotRespondingRequest:
                 FireAndForget.Run(() => ConfirmKillAsync(native, request.Window));
@@ -527,7 +536,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             danger: true);
         if (kill)
         {
-            _server?.KillTopLevelClient(handle);
+            CurrentServer(handle)?.KillTopLevelClient(handle);   // 等用户回答期间服务端可能已经换了一个
         }
     }
 
@@ -535,9 +544,10 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     private void Map(XTopLevelWindow handle)
     {
-        if (_server is null || _windows.ContainsKey(handle.Id) || handle.Snapshot.InputOnly)
+        // 旧服务端的句柄、已经没了的窗口不建;InputOnly 的顶层(GtkInvisible 之类)看不见:不开原生窗口(原先多出一个黑窗口)。
+        if (!IsCurrent(handle) || !handle.IsAlive || _windows.ContainsKey(handle) || handle.Snapshot.InputOnly)
         {
-            return;   // InputOnly 的顶层(GtkInvisible 之类)看不见:不开原生窗口(原先多出一个黑窗口)
+            return;
         }
         if (IsDesktop(handle.Snapshot))
         {
@@ -545,7 +555,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             return;
         }
         XNativeWindow window = new(this, handle);
-        _windows[handle.Id] = window;
+        _windows[handle] = window;
         PlaceIfUnpositioned(handle, window);
         window.ApplyProperties(XTopLevelChanges.All);
         window.ApplyInitialStates();   // 映射前就设好的最大化 / 全屏 / initial_state = Iconic
@@ -553,7 +563,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         // 对话框、瞬态窗口(连同声明了 WM_TRANSIENT_FOR 的弹出菜单)压在父窗口之上。没声明的弹层不借用「当前活动的 X 窗口」当 owner:
         // 那个窗口可能属于别的程序甚至别的会话,owner 关闭时会把它连带关掉(弹层本身照样置顶,不需要 owner)。
         XTopLevelSnapshot snapshot = handle.Snapshot;
-        XNativeWindow? owner = snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent)
+        XNativeWindow? owner = snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor, out XNativeWindow? parent)
             ? parent
             : null;
         if (owner is not null && !ReferenceEquals(owner, window))
@@ -580,7 +590,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         }
         (int ox, int oy) = RootOrigin;
         PixelRect area;
-        if (snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent))
+        if (snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor, out XNativeWindow? parent))
         {
             XTopLevelSnapshot p = parent.Handle.Snapshot;
             area = new PixelRect(p.X + p.BorderWidth + ox, p.Y + p.BorderWidth + oy, p.Width, p.Height);
@@ -602,7 +612,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>某个 X 窗口成了活动窗口:键盘焦点给它;顺带把系统剪贴板里别的程序复制的新文本交给 X。</summary>
     public void OnWindowActivated(XNativeWindow window)
     {
-        if (_server is not { } server)
+        if (CurrentServer(window.Handle) is not { } server)
         {
             return;
         }
@@ -658,9 +668,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>原生窗口已关闭(宿主关的,或系统强制关的)。</summary>
     public void OnWindowClosed(XNativeWindow window)
     {
-        if (_windows.TryGetValue(window.Handle.Id, out XNativeWindow? current) && ReferenceEquals(current, window))
+        if (_windows.TryGetValue(window.Handle, out XNativeWindow? current) && ReferenceEquals(current, window))
         {
-            _windows.Remove(window.Handle.Id);
+            _windows.Remove(window.Handle);
         }
     }
 

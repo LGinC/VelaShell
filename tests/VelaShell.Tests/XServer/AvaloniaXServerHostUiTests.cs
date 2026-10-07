@@ -458,6 +458,46 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 停服后马上重启:UI 队列里还排着旧服务端的回调,新服务端的窗口 XID 又与旧的重合。旧回调既不能用旧句柄建原生窗口
+    /// (之后的注入会把旧句柄交给新服务端,抛 ArgumentException),也不能按 XID 误关新服务端的窗口。
+    /// </summary>
+    [TestMethod]
+    public async Task StaleCallbacksFromAStoppedServer_DoNotTouchTheNewServersWindows() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        X11ServerOptions options = new() { ListenTcp = false, UnixSocketPath = "" };
+        await using X11Server old = new(options, host);
+        await host.AttachAsync(old, CancellationToken.None);
+        (InMemoryDuplexStream oldSide, InMemoryDuplexStream oldClient) = InMemoryTransport.CreatePair();
+        _ = old.ServeAsync(oldSide, isLocal: true);
+        (uint oldBase, uint oldRoot) = await HandshakeAsync(oldClient);
+        await SendAsync(oldClient, 1, 24, w => w.U32(oldBase | 1).U32(oldRoot).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(oldClient, 8, 0, w => w.U32(oldBase | 1));
+        XTopLevelWindow stale = (await WaitForAsync(() => host.Windows.FirstOrDefault())).Handle;
+        host.Detach();
+
+        await using X11Server current = new(options, host);
+        await host.AttachAsync(current, CancellationToken.None);
+        (InMemoryDuplexStream newSide, InMemoryDuplexStream newClient) = InMemoryTransport.CreatePair();
+        _ = current.ServeAsync(newSide, isLocal: true);
+        (uint newBase, uint newRoot) = await HandshakeAsync(newClient);
+        await SendAsync(newClient, 1, 24, w => w.U32(newBase | 1).U32(newRoot).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(newClient, 8, 0, w => w.U32(newBase | 1));
+        XNativeWindow fresh = await WaitForAsync(() => host.Windows.FirstOrDefault(w => ReferenceEquals(w.Handle.Server, current)));
+        Assert.AreEqual(stale.Id, fresh.Handle.Id, "两个服务端的第一个窗口 XID 相同");
+
+        // 旧服务端收工时才交出来的回调。
+        host.TopLevelUnmapped(stale);
+        host.TopLevelMapped(stale);
+        host.TopLevelChanged(stale, XTopLevelChanges.All);
+        await Task.Delay(100);
+        Dispatcher.UIThread.RunJobs();
+        Assert.IsTrue(fresh.IsVisible, "新服务端的窗口没被旧回调关掉");
+        Assert.IsFalse(host.Windows.Any(w => ReferenceEquals(w.Handle, stale)), "旧句柄没有原生窗口");
+        host.Detach();
+    });
+
+    /// <summary>
     /// 最大化 / 全屏时尺寸由系统定:客户端自己改了尺寸,把原生窗口的尺寸推回给它 —— 原先不理,X 缓冲从此与原生窗口对不上。
     /// </summary>
     [TestMethod]

@@ -248,6 +248,10 @@ public sealed partial class X11Server : IAsyncDisposable
         {
             client.Abort();
         }
+        foreach (XTopLevelWindow handle in _topLevelHandles.Values)
+        {
+            handle.Retire();   // 执行线程已经停了:句柄都不再指着活着的窗口
+        }
         DetachShmSegments(_resources.Values);
         await WaitForConnectionsAsync().ConfigureAwait(false);
         _lifetime.Dispose();

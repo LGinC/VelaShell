@@ -25,7 +25,7 @@ public sealed partial class X11Server
     {
         if (!_topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
         {
-            handle = new XTopLevelWindow(top, _pixelGate);
+            handle = new XTopLevelWindow(top, _pixelGate, this);
             _topLevelHandles[top] = handle;
         }
         return handle;
@@ -61,6 +61,13 @@ public sealed partial class X11Server
     }
 
     private static void SetMapped(XTopLevelWindow handle, bool mapped) => handle.Snapshot = handle.Snapshot with { IsMapped = mapped };
+
+    /// <summary>窗口不再是这个句柄的顶层了(销毁、被 reparent 走):快照标成未映射,句柄的 <see cref="XTopLevelWindow.IsAlive" /> 变 false。</summary>
+    private static void RetireHandle(XTopLevelWindow handle)
+    {
+        SetMapped(handle, false);
+        handle.Retire();
+    }
 
     private XTopLevelSnapshot BuildSnapshot(XWindow top, XTopLevelSnapshot previous)
     {

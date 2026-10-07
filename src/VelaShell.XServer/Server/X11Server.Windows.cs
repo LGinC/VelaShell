@@ -403,7 +403,7 @@ public sealed partial class X11Server
         }
         if (_topLevelHandles.Remove(window, out XTopLevelWindow? handle))
         {
-            SetMapped(handle, false);
+            RetireHandle(handle);
         }
         _damage.Remove(window);
         window.Buffer = null;
@@ -1022,7 +1022,7 @@ public sealed partial class X11Server
         {
             if (_topLevelHandles.Remove(window, out XTopLevelWindow? handle))
             {
-                SetMapped(handle, false);
+                RetireHandle(handle);
             }
             ReleaseNamedWindowPixmaps(window);
             window.Buffer = null;

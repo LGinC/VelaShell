@@ -11,22 +11,42 @@ namespace VelaShell.XServer;
 /// 宿主经 <see cref="X11Server" /> 的方法对它注入输入、移动 / 缩放 / 关闭时,就用这个对象指名。
 /// </summary>
 /// <remarks>
+/// <para>
 /// 同一个 X 窗口从映射到销毁(或被 reparent 走)一直是同一个对象;之后再用它调服务端的方法会被静默忽略 ——
 /// 宿主与服务端之间总有这样的时间差,不算错误。
+/// </para>
+/// <para>
+/// 宿主拿它当字典键时按引用比较:<see cref="Id" /> 只在一个服务端里、一段时间内唯一 —— 停掉服务端再起一个,新窗口的 XID 与旧的重合,
+/// 而 UI 队列里可能还排着旧服务端的回调。回调里先核对 <see cref="Server" /> 是不是此刻附着的那个。
+/// </para>
 /// </remarks>
 public sealed class XTopLevelWindow
 {
     private readonly PixelGate _pixelGate;
+    private volatile bool _alive = true;
 
-    internal XTopLevelWindow(XWindow window, PixelGate pixelGate)
+    internal XTopLevelWindow(XWindow window, PixelGate pixelGate, X11Server server)
     {
         Window = window;
         Id = window.Id;
         _pixelGate = pixelGate;
+        Server = server;
     }
 
     /// <summary>窗口 ID(XID)。诊断、日志与宿主自己的索引用;调服务端的方法时传这个对象本身。</summary>
     public uint Id { get; }
+
+    /// <summary>发出这个句柄的服务端。只能把句柄交还给它(交给别的服务端的方法会抛 <see cref="ArgumentException" />)。</summary>
+    public X11Server Server { get; }
+
+    /// <summary>
+    /// 句柄还指着一个活着的顶层窗口:窗口没被销毁、没被 reparent 走、服务端没收工。变成 false 之后不会再变回来,
+    /// 再用它调服务端的方法会被静默忽略。任意线程上都可以读(只是一个时间点的值:读完之后随时可能变)。
+    /// </summary>
+    public bool IsAlive => _alive;
+
+    /// <summary>窗口没了(销毁、被 reparent 走、服务端收工):句柄从此不再指着它。只在执行线程上调。</summary>
+    internal void Retire() => _alive = false;
 
     /// <summary>
     /// 当前的属性快照。服务端在执行线程上整份替换它(引用赋值是原子的),可以在任意线程上读;

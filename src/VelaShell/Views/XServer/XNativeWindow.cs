@@ -87,7 +87,8 @@ public sealed class XNativeWindow : Window
     /// <summary>服务端那边的顶层窗口。</summary>
     public XTopLevelWindow Handle { get; }
 
-    private X11Server? Server => _host.Server;
+    /// <summary>这个窗口的服务端,只在它就是宿主此刻附着的那个时给出:停服后马上重启,旧窗口的事件不会把旧句柄交给新服务端。</summary>
+    private X11Server? Server => _host.CurrentServer(Handle);
 
     private double Scale => RenderScaling > 0 ? RenderScaling : 1;
 
