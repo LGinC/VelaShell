@@ -35,6 +35,9 @@ public sealed partial class X11Server
     /// <summary>当前计时器到点的时刻(<see cref="Now" /> 的刻度);没有计时器时为 long.MaxValue。</summary>
     private long _syncDeadline = long.MaxValue;
 
+    /// <summary>系统计数器的计时器是否排着(测试用)。</summary>
+    internal bool SyncTimerPending => _syncTimer is not null;
+
     /// <summary>求值进行中(EndWait 会就地执行暂存的请求,那些请求可能再次改计数器)。</summary>
     private bool _evaluatingSync;
 
@@ -578,11 +581,18 @@ public sealed partial class X11Server
         long soonest = long.MaxValue;
         void Consider(XSyncTrigger t)
         {
-            if (t.Counter is { SystemName: not null } counter
-                && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.PositiveTransition)
+            if (t.Counter is not { SystemName: not null } counter
+                || t.TestType is not (XSyncTrigger.PositiveComparison or XSyncTrigger.PositiveTransition))
             {
-                soonest = Math.Min(soonest, Math.Max(1, t.WaitValue - CounterValue(counter)));
+                return;
             }
+            // 正向跨越已经越过了等待值:系统计数器只会往上涨,要先掉回等待值以下才可能再成立 —— 那只会是 IDLETIME 因用户输入归零,
+            // 那时另有一次求值(NoteIdleReset)。原先照样按 Max(1, 等待值 − 当前值) 排计时器,等于每毫秒醒一次、持锁求值。
+            if (t.TestType == XSyncTrigger.PositiveTransition && t.LastValue >= t.WaitValue)
+            {
+                return;
+            }
+            soonest = Math.Min(soonest, Math.Max(1, t.WaitValue - CounterValue(counter)));
         }
         foreach (SyncWait wait in _syncWaits.Values)
         {

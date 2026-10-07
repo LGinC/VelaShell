@@ -336,6 +336,46 @@ public sealed class SyncCompositeTests
         Assert.AreEqual(alarm, fired.U32(4));
     }
 
+    /// <summary>ListSystemCounters 里按名字找系统计数器。</summary>
+    private static async Task<uint> SystemCounterAsync(XTestClient c, byte sync, string name)
+    {
+        XMessage list = await c.RequestAsync(sync, 1);
+        for (int i = 0, offset = 32; i < (int)list.U32(8); i++)
+        {
+            int length = list.U16(offset + 12);
+            if (Encoding.Latin1.GetString(list.Bytes, offset + 14, length) == name)
+            {
+                return list.U32(offset);
+            }
+            offset += (14 + length + 3) & ~3;
+        }
+        throw new AssertFailedException($"没有系统计数器 {name}");
+    }
+
+    [TestMethod]
+    public async Task 系统计数器上已经越过的正向跨越不排计时器空转()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint serverTime = await SystemCounterAsync(c, sync, "SERVERTIME"), idle = await SystemCounterAsync(c, sync, "IDLETIME");
+
+        // SERVERTIME 上的 PositiveTransition(0),等待值是一秒之前(Relative −1000):已经越过,永远不会再成立。
+        uint past = c.NewId();
+        await c.SendAsync(sync, 9, b => b.U32(past).U32(1 | 2 | 4 | 8).U32(serverTime).U32(1).I32(-1).U32(unchecked((uint)-1000)).U32(0));
+        await c.SyncAsync();
+        Assert.IsFalse(await server.InvokeAsync(() => server.SyncTimerPending), "不该每毫秒醒一次");
+
+        // GNOME / KIdleTime 的用法:IDLETIME 越过 50 毫秒报一次,delta = 0。报过之后用户不动,同样不该空转。
+        await c.SendAsync(sync, 11, b => b.U32(past));
+        uint alarm = c.NewId();
+        await c.SendAsync(sync, 9, b => b.U32(alarm).U32(1 | 2 | 4 | 8 | 16).U32(idle).U32(0).I32(0).U32(50).U32(0).I32(0).U32(0));
+        XMessage fired = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == syncEvent + 1 && m.U32(4) == alarm && m.Bytes[28] == 0);
+        Assert.AreEqual(alarm, fired.U32(4));
+        await c.SyncAsync();
+        Assert.IsFalse(await server.InvokeAsync(() => server.SyncTimerPending), "触发之后等用户输入,不排计时器");
+    }
+
     [TestMethod]
     public async Task Present把像素图拷到窗口并报完成与空闲()
     {
