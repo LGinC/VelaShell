@@ -158,7 +158,7 @@ public sealed class RandRTests
         }
 
         Dictionary<string, uint> before = await OutputsAsync();
-        server.SetScreenLayout(3840, 4320,
+        server.SetScreenLayout(7680, 5400,   // 根窗口要装得下各台显示器(SetScreenLayout 核对)
         [
             new XMonitor(0, 0, 1920, 1080) { Name = "DP-1", Primary = true },
             new XMonitor(0, 1080, 7680, 4320) { Name = "HDMI-1", RefreshRate = 144 },   // DP-2 拔掉,HDMI-1 换成 8K@144
@@ -180,7 +180,7 @@ public sealed class RandRTests
         await c.SyncAsync();
         server.SetDisplayScale(192, 2);
         XMessage change = await c.NextEventAsync(q.Bytes[10]);
-        Assert.AreEqual(ToMillimeters(3840, 192), change.U16(28), "毫米宽按新的 DPI 算");
+        Assert.AreEqual(ToMillimeters(7680, 192), change.U16(28), "毫米宽按新的 DPI 算");
 
         static int ToMillimeters(int pixels, int dpi) => (int)Math.Round(pixels * 25.4 / dpi);
     }

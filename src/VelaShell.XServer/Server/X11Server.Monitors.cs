@@ -100,9 +100,19 @@ public sealed partial class X11Server
         }
         foreach (XMonitor m in monitors)
         {
-            if (m.Width <= 0 || m.Height <= 0)
+            if (m is null || m.Width <= 0 || m.Height <= 0)
             {
-                throw new ArgumentException("显示器的宽高必须为正。", paramName);
+                throw new ArgumentException("显示器不能为 null,宽高必须为正。", paramName);
+            }
+            // 显示器要落在根窗口(虚拟桌面)里:RANDR 的 CRTC 与 XINERAMA 都按根窗口里的位置报,伸出去的显示器上最大化、
+            // 菜单定位都会摆到根窗口外面;位置在 X 的协议里也只有 16 位。原先不查。
+            if (m.X < 0 || m.Y < 0 || (long)m.X + m.Width > width || (long)m.Y + m.Height > height)
+            {
+                throw new ArgumentException($"显示器 {m.Name} 的矩形 ({m.X}, {m.Y}, {m.Width}×{m.Height}) 伸出了 {width}×{height} 的根窗口。", paramName);
+            }
+            if (m.Name is null || m.WidthMillimeters < 0 || m.HeightMillimeters < 0 || m.RefreshRate < 0)
+            {
+                throw new ArgumentException("显示器的名字不能为 null,物理尺寸与刷新率不能为负。", paramName);
             }
             if (m.WorkArea is { } area && (area.IsEmpty || area.Intersect(new XRect(m.X, m.Y, m.Width, m.Height)) != area))
             {

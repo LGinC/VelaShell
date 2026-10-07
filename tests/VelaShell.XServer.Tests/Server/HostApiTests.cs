@@ -114,6 +114,22 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 显示器要落在根窗口里()
+    {
+        // 伸出根窗口的显示器:构造与运行中换布局都当场拒绝(原先照收,RANDR / XINERAMA 报出根窗口外的 CRTC)。
+        Assert.Throws<ArgumentException>(() => new X11Server(new X11ServerOptions
+        {
+            ScreenWidth = 1920,
+            ScreenHeight = 1080,
+            Monitors = [new XMonitor(1000, 0, 1920, 1080)],
+        }));
+        await using X11Server server = new();
+        Assert.Throws<ArgumentException>(() => server.SetScreenLayout(1920, 1080, [new XMonitor(-10, 0, 800, 600)]));
+        Assert.Throws<ArgumentException>(() => server.SetScreenLayout(1920, 1080, [new XMonitor(0, 0, 800, 600) { WidthMillimeters = -1 }]));
+        server.SetScreenLayout(3840, 1080, [new XMonitor(0, 0, 1920, 1080), new XMonitor(1920, 0, 1920, 1080)]);
+    }
+
+    [TestMethod]
     public async Task Display按实际监听的传输给出_没监听时为null()
     {
         await using X11Server server = new(new X11ServerOptions { DisplayNumber = 97, ListenTcp = false, UnixSocketPath = "" });
