@@ -419,6 +419,48 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task NET_CLIENT_LIST按映射先后_焦点进了弹层不换活动窗口_withdraw时删掉过期的状态()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clients = await InternAsync(c, "_NET_CLIENT_LIST"), active = await InternAsync(c, "_NET_ACTIVE_WINDOW");
+        uint netWmState = await InternAsync(c, "_NET_WM_STATE"), desktop = await InternAsync(c, "_NET_WM_DESKTOP");
+        uint first = await CreateTopAsync(c), second = await CreateTopAsync(c);   // first 的 XID 小
+        await c.SendAsync(8, 0, b => b.U32(second));
+        await c.SendAsync(8, 0, b => b.U32(first));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(first) && host.Mapped.ContainsKey(second));
+        XMessage list = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(clients).U32(0).U32(0).U32(10));
+        Assert.AreEqual((second, first), (list.U32(32), list.U32(36)), "按第一次映射的先后(原先按 XID 排)");
+
+        // 弹出菜单抓了键盘焦点:活动窗口还是主窗口,主窗口仍是 FOCUSED。
+        server.FocusTopLevel(host.Mapped[second]);
+        uint popup = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(popup).U32(c.RootWindow).I16(0).I16(0).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0x200).U32(1));
+        await c.SendAsync(8, 0, b => b.U32(popup));
+        await c.SendAsync(42, 1, b => b.U32(popup).U32(0));   // SetInputFocus 到弹层
+        Assert.AreEqual(popup, (await c.RequestAsync(43, 0)).U32(8));
+        Assert.AreEqual(second, (await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(active).U32(0).U32(0).U32(1))).U32(32),
+            "原先活动窗口挪到弹层上,主窗口画成非活动的样子");
+        Assert.IsTrue((host.Mapped[second].Snapshot.States & XWindowStates.Focused) != 0);
+
+        // 最小化之后取消映射(withdraw):_NET_WM_STATE 与 _NET_WM_DESKTOP 删掉;重新映射不再带着过期的 Hidden。
+        server.SetTopLevelStates(host.Mapped[first], XWindowStates.Hidden);
+        await c.SyncAsync();
+        await c.SendAsync(10, 0, b => b.U32(first));
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(first));
+        foreach (uint property in (uint[])[netWmState, desktop])
+        {
+            Assert.AreEqual(0u, (await c.RequestAsync(20, 0, b => b.U32(first).U32(property).U32(0).U32(0).U32(10))).U32(8), "属性删掉了");
+        }
+        await c.SendAsync(8, 0, b => b.U32(first));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(first));
+        Assert.AreEqual(XWindowStates.None, host.Mapped[first].Snapshot.States & XWindowStates.Hidden, "原先重新映射又是最小化的");
+        list = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(clients).U32(0).U32(0).U32(10));
+        Assert.AreEqual((second, first), (list.U32(32), list.U32(36)), "重新映射的排到后面");
+    }
+
+    [TestMethod]
     public async Task 焦点给了顶层就更新活动窗口与FOCUSED状态()
     {
         using RecordingHost host = new();

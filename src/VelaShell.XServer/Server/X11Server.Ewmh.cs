@@ -274,9 +274,17 @@ public sealed partial class X11Server
         SetProperty(top, _wmStateAtom, _wmStateAtom, [hidden, 0]);
         SetProperty(top, Intern("_NET_WM_DESKTOP"), XAtom.Cardinal, [0]);
         WriteFrameExtents(top);
+        if (!_clientListOrder.Contains(top))
+        {
+            _clientListOrder.Add(top);
+        }
         UpdateClientLists();
     }
 
+    /// <summary>
+    /// 顶层取消映射(Withdrawn):WM_STATE 写 Withdrawn,删掉 _NET_WM_STATE 与 _NET_WM_DESKTOP(EWMH:窗口管理器在窗口 withdraw 时删它们)——
+    /// 原先留着,重新映射时带着过期的 Hidden / Focused 又被最小化、画成活动外观。
+    /// </summary>
     private void OnTopLevelUnmappedEwmh(XWindow top)
     {
         if (top.OverrideRedirect || top.IsInputOnly)
@@ -284,26 +292,48 @@ public sealed partial class X11Server
             return;
         }
         SetProperty(top, _wmStateAtom, _wmStateAtom, [0, 0]);   // Withdrawn
+        foreach (uint property in (uint[])[_netWmStateAtom, Intern("_NET_WM_DESKTOP")])
+        {
+            if (top.Properties.Remove(property, out XProperty? removed))
+            {
+                ReleaseProperty(removed);
+                SendPropertyNotify(top, property, deleted: true);
+                OnTopLevelPropertyChanged(top, property);
+            }
+        }
+        _clientListOrder.Remove(top);
         UpdateClientLists();
     }
 
-    /// <summary>_NET_CLIENT_LIST(映射顺序)与 _NET_CLIENT_LIST_STACKING(从下到上)。</summary>
+    /// <summary>管着的顶层,按第一次映射的先后(_NET_CLIENT_LIST 的次序)。</summary>
+    private readonly List<XWindow> _clientListOrder = [];
+
+    /// <summary>
+    /// _NET_CLIENT_LIST(按第一次映射的先后,EWMH §3.3;原先按 XID 排)与 _NET_CLIENT_LIST_STACKING(从下到上)。
+    /// </summary>
     private void UpdateClientLists()
     {
         uint[] stacking = [.. Root.Children.Where(w => w is { Mapped: true, OverrideRedirect: false, IsInputOnly: false } && w.Owner is not null).Select(w => w.Id)];
         SetProperty(Root, Intern("_NET_CLIENT_LIST_STACKING"), XAtom.Window, stacking);
-        SetProperty(Root, Intern("_NET_CLIENT_LIST"), XAtom.Window, [.. stacking.Order()]);
+        SetProperty(Root, Intern("_NET_CLIENT_LIST"), XAtom.Window, [.. _clientListOrder.Where(w => w.Mapped && w.IsTopLevel).Select(w => w.Id)]);
     }
 
-    /// <summary>键盘焦点换了:_NET_ACTIVE_WINDOW 与各顶层的 _NET_WM_STATE_FOCUSED 跟着变。</summary>
-    private void UpdateActiveWindow(XWindow? oldFocus, XWindow? newFocus)
+    /// <summary>当前的活动窗口(_NET_ACTIVE_WINDOW):带键盘焦点的、窗口管理器管着的顶层。</summary>
+    private XWindow? _activeTopLevel;
+
+    /// <summary>
+    /// 键盘焦点换了:_NET_ACTIVE_WINDOW 与各顶层的 _NET_WM_STATE_FOCUSED 跟着变。焦点进了 override-redirect 的弹层(菜单抓键盘)
+    /// 不算换了活动窗口 —— 原先活动窗口与 FOCUSED 被挪到弹层上,主窗口画成非活动的样子。
+    /// </summary>
+    private void UpdateActiveWindow(XWindow? _, XWindow? newFocus)   // 第一个参数是旧焦点:活动窗口另行记着(_activeTopLevel),用不着
     {
-        XWindow? oldTop = oldFocus is { IsRoot: false } ? oldFocus.TopLevel : null;
         XWindow? newTop = newFocus is { IsRoot: false } ? newFocus.TopLevel : null;
-        if (ReferenceEquals(oldTop, newTop))
+        if (newTop is { OverrideRedirect: true } or { IsInputOnly: true } || ReferenceEquals(_activeTopLevel, newTop))
         {
             return;
         }
+        XWindow? oldTop = _activeTopLevel;
+        _activeTopLevel = newTop;
         SetProperty(Root, Intern("_NET_ACTIVE_WINDOW"), XAtom.Window, [newTop?.Id ?? 0]);
         if (oldTop is { Mapped: true })
         {
@@ -698,5 +728,13 @@ public sealed partial class X11Server
         return icons;
     }
 
-    private void CleanupEwmh(XWindow window) => _frameExtents.Remove(window);
+    private void CleanupEwmh(XWindow window)
+    {
+        _frameExtents.Remove(window);
+        _clientListOrder.Remove(window);
+        if (ReferenceEquals(_activeTopLevel, window))
+        {
+            _activeTopLevel = null;
+        }
+    }
 }
