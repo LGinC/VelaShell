@@ -258,6 +258,46 @@ public sealed class SyncGrabTests
     }
 
     /// <summary>
+    /// 抓取请求看时间戳与冻结者(协议「GrabPointer」「GrabKeyboard」「UngrabPointer」「AllowEvents」):设备被别的客户端冻着回 Frozen,
+    /// 时间戳晚于当前服务端时间回 InvalidTime;早于上次抓取时间的 UngrabPointer / AllowEvents 不生效。原先一律不看。
+    /// </summary>
+    [TestMethod]
+    public async Task 设备被别的客户端冻着时回Frozen_时间戳不对回InvalidTime_过期的Ungrab与AllowEvents不生效()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(a, host);
+        server.InjectPointerMotion(host.Mapped[top], 1, 1);
+        await Task.Delay(20);   // 服务端时间走过几毫秒:下面的时间戳 1 一定早于抓取时间
+
+        // A 的指针抓取把键盘也冻上;B 抓键盘:Frozen(原先照样成功,还把冻结者换成了自己)。
+        XMessage grab = await a.RequestAsync(26, 0, w => w.U32(top).U16(0x40).U8(Synchronous).U8(Synchronous).U32(0).U32(0).U32(0));
+        Assert.AreEqual(0, grab.Bytes[1]);
+        XMessage frozen = await b.RequestAsync(31, 0, w => w.U32(top).U32(0).U8(Asynchronous).U8(Asynchronous).U16(0));
+        Assert.AreEqual(4, frozen.Bytes[1], "Frozen");
+
+        // 晚于当前服务端时间:InvalidTime。
+        XMessage future = await a.RequestAsync(31, 0, w => w.U32(top).U32(0x7FFF_0000).U8(Asynchronous).U8(Asynchronous).U16(0));
+        Assert.AreEqual(2, future.Bytes[1], "InvalidTime");
+
+        // 早于这次抓取的 AllowEvents 与 UngrabPointer 不生效:指针还冻着、抓取还在。
+        server.InjectPointerMotion(host.Mapped[top], 10, 10);
+        await a.SendAsync(35, 0, w => w.U32(1));   // AllowEvents AsyncPointer,时间戳 1
+        Assert.IsEmpty(await DrainAsync(a, MotionNotify), "过期的 AllowEvents 不放行");
+        await a.SendAsync(27, 0, w => w.U32(1));   // UngrabPointer,时间戳 1
+        XMessage still = await b.RequestAsync(26, 0, w => w.U32(top).U16(0x40).U8(Asynchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
+        Assert.AreEqual(1, still.Bytes[1], "A 的抓取还在:AlreadyGrabbed");
+
+        await a.SendAsync(35, 6, w => w.U32(0));   // AsyncBoth,CurrentTime
+        Assert.HasCount(1, await DrainAsync(a, MotionNotify), "当前时间的 AllowEvents 照常放行");
+        await a.SendAsync(27, 0, w => w.U32(0));
+        XMessage after = await b.RequestAsync(26, 0, w => w.U32(top).U16(0x40).U8(Asynchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
+        Assert.AreEqual(0, after.Bytes[1], "当前时间的 UngrabPointer 照常解除");
+    }
+
+    /// <summary>
     /// 冻结的队列被按键塞满:新来的按下丢掉(连同它的松开),松开一律留着 —— 原先连松开也丢,解冻之后 a 一直按着。
     /// </summary>
     [TestMethod]

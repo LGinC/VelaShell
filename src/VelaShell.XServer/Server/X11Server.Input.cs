@@ -1204,16 +1204,25 @@ public sealed partial class X11Server
         (bool pointerSync, bool keyboardSync) = ReadGrabModes(r);
         uint confine = r.U32();
         uint cursorId = r.U32();
-        r.U32();
+        uint time = r.U32();
         XWindow? confineTo = confine == 0 ? null : Window(confine);
+        // 失败的次序照协议「GrabPointer」列的:AlreadyGrabbed、Frozen、NotViewable、InvalidTime。
         byte status;
         if (PointerGrab is { } existing && !ReferenceEquals(existing.Client, c))
         {
-            status = 1;   // AlreadyGrabbed
+            status = GrabAlreadyGrabbed;
+        }
+        else if (FrozenByOther(pointer: true, c))
+        {
+            status = GrabFrozen;   // 原先照样成功,还把冻着它的那个抓取换掉了
         }
         else if (!window.IsViewable || confineTo is { IsViewable: false })
         {
-            status = 3;   // GrabNotViewable
+            status = GrabNotViewable;
+        }
+        else if (!TimeAcceptable(ref time, _lastPointerGrabTime))
+        {
+            status = GrabInvalidTime;
         }
         else
         {
@@ -1225,13 +1234,17 @@ public sealed partial class X11Server
                 EventMask = mask,
                 Cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId),
                 ConfineTo = confineTo,
+                Time = time,
             };
             ApplyGrabModes(PointerGrab, pointerSync, keyboardSync);
-            status = 0;
+            status = GrabSuccess;
             UpdateCursor();
         }
         c.Reply(status, w => w.Zero(24));
     }
+
+    /// <summary>抓取请求回复里的 status(协议附录 B「GrabPointer」;XI2 的 XIGrabDevice 同号)。</summary>
+    private const byte GrabSuccess = 0, GrabAlreadyGrabbed = 1, GrabInvalidTime = 2, GrabNotViewable = 3, GrabFrozen = 4;
 
     /// <summary>
     /// 抓取窗口(或指针抓取的 confine-to 窗口)变得不可见时,抓取自动解除(协议「GrabPointer」「GrabKeyboard」)。
@@ -1250,9 +1263,10 @@ public sealed partial class X11Server
         }
     }
 
-    private void UngrabPointer(XClient c)
+    /// <summary>UngrabPointer:时间戳早于 last-pointer-grab time 或晚于当前服务端时间时什么也不做。</summary>
+    private void UngrabPointer(XClient c, uint time)
     {
-        if (PointerGrab is { } grab && ReferenceEquals(grab.Client, c))
+        if (PointerGrab is { } grab && ReferenceEquals(grab.Client, c) && TimeAcceptable(ref time, _lastPointerGrabTime))
         {
             PointerGrab = null;
             UpdateCursor();
@@ -1262,9 +1276,9 @@ public sealed partial class X11Server
     private void ChangeActivePointerGrab(XClient c, XRequestReader r)
     {
         uint cursorId = r.U32();
-        r.U32();
+        uint time = r.U32();
         ushort mask = r.U16();
-        if (PointerGrab is { } grab && ReferenceEquals(grab.Client, c))
+        if (PointerGrab is { } grab && ReferenceEquals(grab.Client, c) && TimeAcceptable(ref time, _lastPointerGrabTime))
         {
             grab.EventMask = mask;
             grab.Cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId);
@@ -1310,29 +1324,38 @@ public sealed partial class X11Server
     {
         bool ownerEvents = r.Data != 0;
         XWindow window = Window(r.U32());
-        r.U32();   // time
+        uint time = r.U32();
         (bool pointerSync, bool keyboardSync) = ReadGrabModes(r);
         byte status;
         if (KeyboardGrab is { } existing && !ReferenceEquals(existing.Client, c))
         {
-            status = 1;
+            status = GrabAlreadyGrabbed;
+        }
+        else if (FrozenByOther(pointer: false, c))
+        {
+            status = GrabFrozen;
         }
         else if (!window.IsViewable)
         {
-            status = 3;
+            status = GrabNotViewable;
+        }
+        else if (!TimeAcceptable(ref time, _lastKeyboardGrabTime))
+        {
+            status = GrabInvalidTime;
         }
         else
         {
-            KeyboardGrab = new ActiveGrab { Client = c, Window = window, OwnerEvents = ownerEvents };
+            KeyboardGrab = new ActiveGrab { Client = c, Window = window, OwnerEvents = ownerEvents, Time = time };
             ApplyGrabModes(KeyboardGrab, pointerSync, keyboardSync);
-            status = 0;
+            status = GrabSuccess;
         }
         c.Reply(status, w => w.Zero(24));
     }
 
-    private void UngrabKeyboard(XClient c)
+    /// <summary>UngrabKeyboard:时间戳早于 last-keyboard-grab time 或晚于当前服务端时间时什么也不做。</summary>
+    private void UngrabKeyboard(XClient c, uint time)
     {
-        if (KeyboardGrab is { } grab && ReferenceEquals(grab.Client, c))
+        if (KeyboardGrab is { } grab && ReferenceEquals(grab.Client, c) && TimeAcceptable(ref time, _lastKeyboardGrabTime))
         {
             KeyboardGrab = null;
         }

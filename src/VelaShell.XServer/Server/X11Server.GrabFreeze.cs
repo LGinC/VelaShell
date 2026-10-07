@@ -108,12 +108,55 @@ public sealed partial class X11Server
                     GenerateCrossing(old.Window, _pointerWindow, CrossingModeUngrab);
                 }
             }
+            if (value is not null)
+            {
+                _lastPointerGrabTime = value.Time = value.Time != 0 ? value.Time : Math.Max(1u, Now);
+            }
             if (value is { Automatic: false })
             {
                 GenerateCrossing(_pointerWindow, value.Window, CrossingModeGrab);
             }
         }
     }
+
+    /// <summary>协议的 last-pointer-grab time:早于它的 GrabPointer 回 InvalidTime,早于它的 UngrabPointer 不生效。</summary>
+    private uint _lastPointerGrabTime;
+
+    /// <summary>协议的 last-keyboard-grab time。</summary>
+    private uint _lastKeyboardGrabTime;
+
+    /// <summary>
+    /// 请求里的时间戳(协议「GrabPointer」「UngrabPointer」「AllowEvents」……):CurrentTime(0)换成当前服务端时间;早于
+    /// <paramref name="last" /> 或晚于当前服务端时间时返回 false(按 32 位回绕比较;<paramref name="last" /> 为 0 表示还没有过)。
+    /// 原先这些请求一律不看时间戳,从不回 InvalidTime。
+    /// </summary>
+    private bool TimeAcceptable(ref uint time, uint last)
+    {
+        uint now = Math.Max(1u, Now);
+        if (time == 0)
+        {
+            time = now;
+        }
+        return (last == 0 || unchecked((int)(time - last)) >= 0) && unchecked((int)(time - now)) <= 0;
+    }
+
+    /// <summary>这个客户端最近生效的那个主动抓取的时间(AllowEvents 的时间戳与它比);没有抓取时为 0。</summary>
+    private uint LastGrabTimeOf(XClient client)
+    {
+        uint last = 0;
+        foreach (ActiveGrab? grab in (ReadOnlySpan<ActiveGrab?>)[_pointerGrab, _keyboardGrab])
+        {
+            if (grab is not null && ReferenceEquals(grab.Client, client) && (last == 0 || unchecked((int)(grab.Time - last)) > 0))
+            {
+                last = grab.Time;
+            }
+        }
+        return last;
+    }
+
+    /// <summary>设备被别的客户端的抓取冻着(GrabPointer / GrabKeyboard / XIGrabDevice 回 Frozen)。</summary>
+    private bool FrozenByOther(bool pointer, XClient client) =>
+        (pointer ? _pointerFrozenBy : _keyboardFrozenBy) is { } freezer && !ReferenceEquals(freezer.Client, client);
 
     /// <summary>
     /// 当前的键盘抓取。换掉时它冻结的设备随之解冻。抓取激活 / 解除时按协议「Input Focus events」发 mode 为 Grab / Ungrab 的
@@ -140,6 +183,7 @@ public sealed partial class X11Server
             }
             if (value is not null)
             {
+                _lastKeyboardGrabTime = value.Time = value.Time != 0 ? value.Time : Math.Max(1u, Now);
                 GenerateFocusEvents(_focus, value.Window, FocusModeGrab);
             }
         }
@@ -331,8 +375,19 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ AllowEvents
 
-    private void AllowEvents(XClient c, byte mode)
+    /// <summary>
+    /// AllowEvents / XIAllowEvents。时间戳早于这个客户端最近生效的主动抓取的时间、或晚于当前服务端时间时什么也不做(协议「AllowEvents」)。
+    /// </summary>
+    private void AllowEvents(XClient c, byte mode, uint time)
     {
+        if (mode > 7)
+        {
+            throw new XProtocolError(XErrorCode.Value, mode);
+        }
+        if (!TimeAcceptable(ref time, LastGrabTimeOf(c)))
+        {
+            return;
+        }
         bool pointerMine = _pointerFrozenBy is { } pf && ReferenceEquals(pf.Client, c);
         bool keyboardMine = _keyboardFrozenBy is { } kf && ReferenceEquals(kf.Client, c);
         switch (mode)

@@ -57,4 +57,10 @@ internal sealed class ActiveGrab
 
     /// <summary>按钮按下时服务端自动建立的抓取(协议「ButtonPress」);激活时的 Grab 模式 crossing 由 PressButton 在投递 ButtonPress 之前发。</summary>
     public bool Automatic { get; init; }
+
+    /// <summary>
+    /// 这个抓取生效的服务端时间(协议的 last-pointer-grab / last-keyboard-grab time):主动抓取是请求里的时间(CurrentTime 换成当前时间),
+    /// 被动与自动抓取是激活它的那个事件的时间。0 = 还没定,抓取生效时由服务端填。
+    /// </summary>
+    public uint Time { get; set; }
 }

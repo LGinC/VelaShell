@@ -95,15 +95,15 @@ public sealed partial class X11Server
             case XOpcode.ConvertSelection: ConvertSelection(c, r); break;
             case XOpcode.SendEvent: SendEvent(c, r); break;
             case XOpcode.GrabPointer: GrabPointer(c, r); break;
-            case XOpcode.UngrabPointer: UngrabPointer(c); break;
+            case XOpcode.UngrabPointer: UngrabPointer(c, r.U32()); break;
             case XOpcode.GrabButton: GrabButton(c, r); break;
             case XOpcode.UngrabButton: UngrabButton(c, r); break;
             case XOpcode.ChangeActivePointerGrab: ChangeActivePointerGrab(c, r); break;
             case XOpcode.GrabKeyboard: GrabKeyboard(c, r); break;
-            case XOpcode.UngrabKeyboard: UngrabKeyboard(c); break;
+            case XOpcode.UngrabKeyboard: UngrabKeyboard(c, r.U32()); break;
             case XOpcode.GrabKey: GrabKey(c, r); break;
             case XOpcode.UngrabKey: UngrabKey(c, r); break;
-            case XOpcode.AllowEvents: AllowEvents(c, r.Data); break;
+            case XOpcode.AllowEvents: AllowEvents(c, r.Data, r.U32()); break;
             case XOpcode.GrabServer: _serverGrabber = c; break;
             case XOpcode.UngrabServer: if (ReferenceEquals(_serverGrabber, c)) { ReleaseServerGrab(); } break;
             case XOpcode.QueryPointer: QueryPointer(c, r); break;

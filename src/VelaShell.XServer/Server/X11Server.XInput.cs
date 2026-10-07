@@ -310,17 +310,17 @@ public sealed partial class X11Server
                 break;
             case 52:  // XIUngrabDevice
                 {
-                    r.Skip(4);
+                    uint time = r.U32();
                     ushort id = r.U16();
                     if (IsPointerDevice(id))
                     {
-                        if (ReferenceEquals(PointerGrab?.Client, c))
+                        if (ReferenceEquals(PointerGrab?.Client, c) && TimeAcceptable(ref time, _lastPointerGrabTime))
                         {
                             PointerGrab = null;
                             UpdateCursor();
                         }
                     }
-                    else if (ReferenceEquals(KeyboardGrab?.Client, c))
+                    else if (ReferenceEquals(KeyboardGrab?.Client, c) && TimeAcceptable(ref time, _lastKeyboardGrabTime))
                     {
                         KeyboardGrab = null;
                     }
@@ -328,7 +328,7 @@ public sealed partial class X11Server
                 }
             case 53:  // XIAllowEvents:换成核心 AllowEvents 的模式(按设备是指针还是键盘)
                 {
-                    r.Skip(4);   // time
+                    uint time = r.U32();
                     ushort id = r.U16();
                     byte mode = r.U8();
                     if (!IsKnownDevice(id))
@@ -340,7 +340,7 @@ public sealed partial class X11Server
                     {
                         break;   // AcceptTouch / RejectTouch:没有触摸设备
                     }
-                    AllowEvents(c, core);
+                    AllowEvents(c, core, time);
                     break;
                 }
             case 61:  // XIBarrierReleasePointer:指针屏障不生效(XFIXES)
@@ -742,7 +742,7 @@ public sealed partial class X11Server
     private void XiGrabDevice(XClient c, XRequestReader r)
     {
         XWindow window = Window(r.U32());
-        r.Skip(4);   // time
+        uint time = r.U32();
         uint cursorId = r.U32();
         ushort id = r.U16();
         byte grabMode = r.U8(), pairedMode = r.U8();   // XIGrabModeSync 0、XIGrabModeAsync 1
@@ -756,10 +756,13 @@ public sealed partial class X11Server
         }
         bool pointer = IsPointerDevice(id);
         ActiveGrab? existing = pointer ? PointerGrab : KeyboardGrab;
-        byte status = existing is not null && !ReferenceEquals(existing.Client, c) ? (byte)1   // AlreadyGrabbed
-            : !window.IsViewable ? (byte)3                                                      // GrabNotViewable
-            : (byte)0;
-        if (status == 0)
+        // 失败的次序照 XI 2.2「XIGrabDevice」列的:AlreadyGrabbed、NotViewable、InvalidTime、Frozen。
+        byte status = existing is not null && !ReferenceEquals(existing.Client, c) ? GrabAlreadyGrabbed
+            : !window.IsViewable ? GrabNotViewable
+            : !TimeAcceptable(ref time, pointer ? _lastPointerGrabTime : _lastKeyboardGrabTime) ? GrabInvalidTime
+            : FrozenByOther(pointer, c) ? GrabFrozen
+            : GrabSuccess;
+        if (status == GrabSuccess)
         {
             ActiveGrab grab = new()
             {
@@ -769,6 +772,7 @@ public sealed partial class X11Server
                 Xi2 = true,
                 Xi2Mask = mask,
                 Cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId),
+                Time = time,
             };
             if (pointer)
             {
