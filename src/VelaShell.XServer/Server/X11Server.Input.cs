@@ -1203,6 +1203,7 @@ public sealed partial class X11Server
         ushort mask = r.U16();
         (bool pointerSync, bool keyboardSync) = ReadGrabModes(r);
         uint confine = r.U32();
+        CheckPointerEventMask(mask);
         uint cursorId = r.U32();
         uint time = r.U32();
         XWindow? confineTo = confine == 0 ? null : Window(confine);
@@ -1278,6 +1279,7 @@ public sealed partial class X11Server
         uint cursorId = r.U32();
         uint time = r.U32();
         ushort mask = r.U16();
+        CheckPointerEventMask(mask);
         if (PointerGrab is { } grab && ReferenceEquals(grab.Client, c) && TimeAcceptable(ref time, _lastPointerGrabTime))
         {
             grab.EventMask = mask;
@@ -1297,16 +1299,11 @@ public sealed partial class X11Server
         byte button = r.U8();
         r.U8();
         ushort modifiers = r.U16();
-        foreach (PassiveGrab g in window.ButtonGrabs)
-        {
-            if (!ReferenceEquals(g.Client, c) && g.Detail == button && g.Modifiers == modifiers)
-            {
-                throw new XProtocolError(XErrorCode.Access);
-            }
-        }
-        window.ButtonGrabs.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == button && g.Modifiers == modifiers);
-        window.ButtonGrabs.Add(new PassiveGrab(c, button, modifiers, ownerEvents, mask,
-            confine == 0 ? null : Lookup<XWindow>(confine), cursorId == 0 ? null : Lookup<XCursorResource>(cursorId),
+        CheckPointerEventMask(mask);
+        CheckGrabModifiers(modifiers);
+        XWindow? confineTo = confine == 0 ? null : Window(confine);
+        XCursorResource? cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId) ?? throw new XProtocolError(XErrorCode.Cursor, cursorId);
+        AddCorePassiveGrab(window.ButtonGrabs, new PassiveGrab(c, button, modifiers, ownerEvents, mask, confineTo, cursor,
             PointerSync: pointerSync, KeyboardSync: keyboardSync));
     }
 
@@ -1315,9 +1312,70 @@ public sealed partial class X11Server
         byte button = r.Data;
         XWindow window = Window(r.U32());
         ushort modifiers = r.U16();
-        window.ButtonGrabs.RemoveAll(g => ReferenceEquals(g.Client, c)
-                                          && (button == 0 || g.Detail == button)
-                                          && (modifiers == 0x8000 || g.Modifiers == modifiers));
+        CheckGrabModifiers(modifiers);
+        SubtractPassiveGrabs(window.ButtonGrabs, c, xi2: false, button, modifiers);
+    }
+
+    /// <summary>修饰组合:SETofKEYMASK(低 8 位)或 AnyModifier,别的位 BadValue(原先不校验)。</summary>
+    private static void CheckGrabModifiers(ushort modifiers)
+    {
+        if (modifiers != PassiveGrab.AnyModifier && (modifiers & ~0xFF) != 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, modifiers);
+        }
+    }
+
+    /// <summary>SETofPOINTEREVENT:#xFFFF8003 那几位必须为 0(协议附录 B),否则 BadValue。</summary>
+    private static void CheckPointerEventMask(ushort mask)
+    {
+        if ((mask & 0x8003) != 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, mask);
+        }
+    }
+
+    /// <summary>
+    /// 登记一个核心被动抓取(GrabButton / GrabKey):与别的客户端的抓取有任何共同的组合就整个请求 BadAccess(协议:用 AnyModifier /
+    /// AnyButton 时「对任何一个组合有冲突」都算,原先只比完全相同的组合);同一客户端自己在这些组合上的旧抓取被取代 ——
+    /// 整个被盖住的删掉,只盖住一部分的减掉那一部分。
+    /// </summary>
+    private static void AddCorePassiveGrab(List<PassiveGrab> list, PassiveGrab grab)
+    {
+        foreach (PassiveGrab g in list)
+        {
+            if (!ReferenceEquals(g.Client, grab.Client) && !g.Client.Closed && g.Overlaps(grab.Detail, grab.Modifiers))
+            {
+                throw new XProtocolError(XErrorCode.Access);
+            }
+        }
+        if (list.Count(g => ReferenceEquals(g.Client, grab.Client)) >= MaxPassiveGrabsPerWindow)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
+        SubtractPassiveGrabs(list, grab.Client, xi2: false, grab.Detail, grab.Modifiers);
+        list.Add(grab);
+    }
+
+    /// <summary>
+    /// 从 <paramref name="client" /> 的被动抓取(核心或 XI2 那一种)里去掉 (<paramref name="detail" />, <paramref name="modifiers" />)
+    /// 这些组合:Ungrab*,以及新登记的抓取取代旧的。整个被盖住的删掉;只有一部分重合的(旧的是 AnyModifier / AnyKey)记下减掉的组合。
+    /// 核心的 Ungrab 只动核心的抓取(原先连这个客户端的 XI2 被动抓取一起删)。
+    /// </summary>
+    private static void SubtractPassiveGrabs(List<PassiveGrab> list, XClient client, bool xi2, int detail, ushort modifiers)
+    {
+        list.RemoveAll(g => ReferenceEquals(g.Client, client) && g.Xi2 == xi2 && g.CoveredBy(detail, modifiers));
+        foreach (PassiveGrab g in list)
+        {
+            if (ReferenceEquals(g.Client, client) && g.Xi2 == xi2 && g.Overlaps(detail, modifiers))
+            {
+                g.Exclusions ??= [];
+                if (g.Exclusions.Count >= PassiveGrab.MaxExclusions)
+                {
+                    throw new XProtocolError(XErrorCode.Alloc);
+                }
+                g.Exclusions.Add((detail, modifiers));
+            }
+        }
     }
 
     private void GrabKeyboard(XClient c, XRequestReader r)
@@ -1372,15 +1430,8 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, key);
         }
-        foreach (PassiveGrab g in window.KeyGrabs)
-        {
-            if (!ReferenceEquals(g.Client, c) && g.Detail == key && g.Modifiers == modifiers)
-            {
-                throw new XProtocolError(XErrorCode.Access);
-            }
-        }
-        window.KeyGrabs.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == key && g.Modifiers == modifiers);
-        window.KeyGrabs.Add(new PassiveGrab(c, key, modifiers, ownerEvents, 0, null, null,
+        CheckGrabModifiers(modifiers);
+        AddCorePassiveGrab(window.KeyGrabs, new PassiveGrab(c, key, modifiers, ownerEvents, 0, null, null,
             PointerSync: pointerSync, KeyboardSync: keyboardSync));
     }
 
@@ -1389,9 +1440,12 @@ public sealed partial class X11Server
         byte key = r.Data;
         XWindow window = Window(r.U32());
         ushort modifiers = r.U16();
-        window.KeyGrabs.RemoveAll(g => ReferenceEquals(g.Client, c)
-                                       && (key == 0 || g.Detail == key)
-                                       && (modifiers == 0x8000 || g.Modifiers == modifiers));
+        if (key is not 0 and < Keymap.MinKeycode)
+        {
+            throw new XProtocolError(XErrorCode.Value, key);
+        }
+        CheckGrabModifiers(modifiers);
+        SubtractPassiveGrabs(window.KeyGrabs, c, xi2: false, key, modifiers);
     }
 
     /// <summary>pointer-mode、keyboard-mode 两个字节:Synchronous 0、Asynchronous 1,别的值 BadValue。</summary>

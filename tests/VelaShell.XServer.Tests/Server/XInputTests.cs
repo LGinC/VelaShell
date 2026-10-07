@@ -314,6 +314,57 @@ public sealed class XInputTests
         Assert.AreEqual(2, modifier.Detail, "核心修饰位之外的位");
     }
 
+    /// <summary>
+    /// 核心被动抓取:AnyModifier 的抓取与别人的具体组合冲突(原先只比完全相同的组合);Ungrab 掉 Shift 那一个组合,其余组合照样有效
+    /// (原先 Ungrab 不拆分);核心的 UngrabKey(AnyKey, AnyModifier)不动同一客户端的 XI2 被动抓取(原先一起删);修饰与事件掩码校验。
+    /// </summary>
+    [TestMethod]
+    public async Task 核心被动抓取按组合查冲突_Ungrab拆分AnyModifier抓取_核心Ungrab不动XI2的被动抓取()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(a);
+        uint top = await MapTopAsync(a, host);
+        await b.SendAsync(2, 0, w => w.U32(top).U32(0x800).U32(0x1));            // B 在顶层上选 KeyPress
+        await a.SendAsync(33, 0, w => w.U32(top).U16(0x8000).U8(38).U8(1).U8(1).Pad());   // A:GrabKey(a, AnyModifier)
+        await a.SyncAsync();
+
+        XMessage conflict = await b.RequestAsync(33, 0, w => w.U32(top).U16(0x1).U8(38).U8(1).U8(1).Pad());
+        Assert.AreEqual(10, conflict.Detail, "Shift+a 落在 A 的 AnyModifier 里:BadAccess");
+
+        await a.SendAsync(34, 38, w => w.U32(top).U16(0x1).Pad());   // A:UngrabKey(a, Shift)
+        await a.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+        await b.SyncAsync();
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: false);
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: false);
+        XMessage shifted = await b.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 2 && m.Detail == XKeycodes.A);
+        Assert.AreEqual(1, shifted.U16(28) & 0xFF, "Shift+a 不再被抓,照常给 B");
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: false);
+        await a.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 2 && m.Detail == XKeycodes.A);   // 不带修饰的 a 仍被 A 抓
+
+        // A 的 XI2 被动抓取(s,不带修饰);核心 UngrabKey(AnyKey, AnyModifier)只删核心的抓取。
+        XMessage xiGrab = await a.RequestAsync(xi, 54, w => w.U32(0).U32(top).U32(0).U32(XKeycodes.S).U16(3).U16(1).U16(1)
+            .U8(1).U8(1).U8(1).U8(0).U16(0).U8(1 << 2).U8(0).U8(0).U8(0).U32(0));
+        Assert.AreEqual(0, xiGrab.U16(8));
+        await a.SendAsync(34, 0, w => w.U32(top).U16(0x8000).Pad());
+        await a.SyncAsync();
+        server.InjectKey(XKeycodes.S, pressed: true);
+        XMessage xiPress = await NextXiAsync(a, xi, 2);
+        Assert.AreEqual(XKeycodes.S, xiPress.U32(16), "XI2 的被动抓取还在");
+        server.InjectKey(XKeycodes.S, pressed: false);
+
+        XMessage badModifiers = await a.RequestAsync(33, 0, w => w.U32(top).U16(0x100).U8(40).U8(1).U8(1).Pad());
+        Assert.AreEqual(2, badModifiers.Detail, "修饰组合里有核心修饰位之外的位:BadValue");
+        XMessage badMask = await a.RequestAsync(28, 0, w => w.U32(top).U16(0x1).U8(1).U8(1).U32(0).U32(0).U8(1).U8(0).U16(0));
+        Assert.AreEqual(2, badMask.Detail, "SETofPOINTEREVENT 之外的位:BadValue");
+    }
+
     [TestMethod]
     public async Task 一个客户端在一个窗口上的XI2被动抓取有上限()
     {

@@ -815,10 +815,8 @@ public sealed partial class X11Server
             {
                 CheckXiGrabDetail(grabType, detail);
                 List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-                // 一趟去掉这个客户端在同一 detail 上要被替换的旧抓取(原先每个修饰组合都 RemoveAll 一遍整张表:O(组合数 × 表长))。
-                HashSet<ushort> wanted = [.. modifiers.Select(m => m.Core)];
-                list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == (int)detail && wanted.Contains(g.Modifiers));
-                // 与别的客户端的被动抓取冲突的组合不登记,回报给客户端(XI 2.2「XIPassiveGrabDevice」:AlreadyGrabbed)。
+                // 与别的客户端的被动抓取有共同组合的不登记,回报给客户端(XI 2.2「XIPassiveGrabDevice」:AlreadyGrabbed);
+                // Any 也算(AnyModifier 等于对所有组合各登记一次)。
                 List<PassiveGrab> others = [.. list.Where(g => !ReferenceEquals(g.Client, c) && !g.Client.Closed
                                                                && (g.Detail == 0 || detail == 0 || g.Detail == (int)detail))];
                 int mine = list.Count(g => ReferenceEquals(g.Client, c));
@@ -826,11 +824,15 @@ public sealed partial class X11Server
                 XCursorResource? cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId);
                 foreach ((uint raw, ushort core) in modifiers)
                 {
-                    if (others.Any(g => g.Modifiers == 0x8000 || core == 0x8000 || g.Modifiers == core))
+                    if (others.Any(g => g.Overlaps((int)detail, core)))
                     {
                         failed.Add(raw);
                         continue;
                     }
+                    // 这个客户端自己在这些组合上的旧 XI2 抓取被取代:整个盖住的删掉,只盖住一部分的减掉那一部分。
+                    int before = list.Count;
+                    SubtractPassiveGrabs(list, c, xi2: true, (int)detail, core);
+                    mine -= before - list.Count;
                     if (++mine > MaxPassiveGrabsPerWindow)
                     {
                         throw new XProtocolError(XErrorCode.Alloc);   // 一个客户端在一个窗口上登记这么多被动抓取,不会是真实程序
@@ -858,9 +860,15 @@ public sealed partial class X11Server
         {
             r.Skip(3);
             List<(uint Raw, ushort Core)> modifiers = ReadXiGrabModifiers(r, modifierCount);
-            HashSet<ushort> removing = [.. modifiers.Select(m => m.Core)];
-            List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-            list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Xi2 && g.Detail == (int)detail && removing.Contains(g.Modifiers));
+            if (grabType is 0 or 1)
+            {
+                // AnyModifier / AnyButton 的抓取只减掉这几个组合,其余照样有效(原先不拆分)。
+                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+                foreach ((_, ushort core) in modifiers)
+                {
+                    SubtractPassiveGrabs(list, c, xi2: true, (int)detail, core);
+                }
+            }
         }
     }
 

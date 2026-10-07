@@ -27,8 +27,52 @@ internal sealed record PassiveGrab(
     XClient Client, int Detail, ushort Modifiers, bool OwnerEvents, uint EventMask, XWindow? ConfineTo, XCursorResource? Cursor,
     bool Xi2 = false, ulong Xi2Mask = 0, bool PointerSync = false, bool KeyboardSync = false)
 {
+    /// <summary>AnyButton / AnyKey。</summary>
+    public const int AnyDetail = 0;
+
+    /// <summary>AnyModifier。</summary>
+    public const ushort AnyModifier = 0x8000;
+
+    /// <summary>一个抓取里最多减掉这么多个组合(见 <see cref="Exclusions" />)。</summary>
+    public const int MaxExclusions = 1024;
+
+    /// <summary>
+    /// 从这个抓取里减掉的组合(各自也可以是 Any):同一客户端后来对其中一部分 Ungrab,或者对其中一部分另登记了抓取。
+    /// 协议:AnyModifier / AnyButton 等于对所有组合各登记一次,所以 Ungrab 掉其中一个组合,其余的照样有效(原先 Ungrab 不拆分,
+    /// 要么整个删掉,要么什么都不做)。
+    /// </summary>
+    public HashSet<(int Detail, ushort Modifiers)>? Exclusions { get; set; }
+
     public bool Matches(int detail, ushort modifiers) =>
-        (Detail == 0 || Detail == detail) && (Modifiers == 0x8000 || Modifiers == (modifiers & 0xFF));
+        (Detail == AnyDetail || Detail == detail) && (Modifiers == AnyModifier || Modifiers == (modifiers & 0xFF))
+        && !Excludes(detail, (ushort)(modifiers & 0xFF));
+
+    /// <summary>具体的组合 (<paramref name="detail" />, <paramref name="modifiers" />) 是不是减掉了。</summary>
+    private bool Excludes(int detail, ushort modifiers)
+    {
+        if (Exclusions is null)
+        {
+            return false;
+        }
+        foreach ((int d, ushort m) in Exclusions)
+        {
+            if ((d == AnyDetail || d == detail) && (m == AnyModifier || m == modifiers))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>与 (<paramref name="detail" />, <paramref name="modifiers" />)(都可以是 Any)有没有共同的组合。</summary>
+    public bool Overlaps(int detail, ushort modifiers) =>
+        (Detail == AnyDetail || detail == AnyDetail || Detail == detail)
+        && (Modifiers == AnyModifier || modifiers == AnyModifier || Modifiers == modifiers)
+        && !(detail != AnyDetail && modifiers != AnyModifier && Excludes(detail, modifiers));
+
+    /// <summary>(<paramref name="detail" />, <paramref name="modifiers" />) 把这个抓取的全部组合都盖住了。</summary>
+    public bool CoveredBy(int detail, ushort modifiers) =>
+        (detail == AnyDetail || detail == Detail) && (modifiers == AnyModifier || modifiers == Modifiers);
 }
 
 /// <summary>一个生效中的抓取(指针或键盘)。</summary>
