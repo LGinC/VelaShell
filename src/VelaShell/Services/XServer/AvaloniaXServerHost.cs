@@ -143,12 +143,17 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             Screen screen = all[i];
             PixelRect b = screen.Bounds;
             double dpi = 96 * Math.Max(1, screen.Scaling);
+            // 工作区(去掉任务栏 / Dock):服务端据此算 _NET_WORKAREA,菜单、最大化、对话框才不会落到任务栏后面。
+            PixelRect work = screen.WorkingArea.Intersect(b);
             monitors.Add(new XMonitor(b.X - minX, b.Y - minY, b.Width, b.Height)
             {
                 Name = string.IsNullOrWhiteSpace(screen.DisplayName) ? $"SCREEN-{i + 1}" : screen.DisplayName,
                 Primary = screen.IsPrimary,
                 WidthMillimeters = (int)Math.Round(b.Width / dpi * 25.4),
                 HeightMillimeters = (int)Math.Round(b.Height / dpi * 25.4),
+                WorkArea = work.Width > 0 && work.Height > 0 && work != b
+                    ? new XRect(work.X - minX, work.Y - minY, work.Width, work.Height)
+                    : null,
             });
         }
         server.SetScreenLayout(maxX - minX, maxY - minY, monitors);

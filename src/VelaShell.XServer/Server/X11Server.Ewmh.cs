@@ -197,7 +197,43 @@ public sealed partial class X11Server
     {
         uint w = (uint)Root.Width, h = (uint)Root.Height;
         SetProperty(Root, Intern("_NET_DESKTOP_GEOMETRY"), XAtom.Cardinal, [w, h]);
-        SetProperty(Root, Intern("_NET_WORKAREA"), XAtom.Cardinal, [0, 0, w, h]);
+        XRect area = WorkArea();
+        SetProperty(Root, Intern("_NET_WORKAREA"), XAtom.Cardinal, [(uint)area.X, (uint)area.Y, (uint)area.Width, (uint)area.Height]);
+    }
+
+    /// <summary>
+    /// EWMH「_NET_WORKAREA」:整个根窗口扣掉各台显示器在虚拟桌面边缘上让出来的部分(<see cref="XMonitor.WorkArea" />;
+    /// 相当于任务栏、Dock 占的 strut)。原先恒为整个根窗口,菜单、最大化、对话框落到任务栏后面。扣完为空时退回整个根窗口。
+    /// </summary>
+    private XRect WorkArea()
+    {
+        int width = Root.Width, height = Root.Height;
+        int left = 0, top = 0, right = 0, bottom = 0;
+        foreach (XMonitor m in _monitors)
+        {
+            if (m.WorkArea is not { } area)
+            {
+                continue;
+            }
+            if (m.X == 0)
+            {
+                left = Math.Max(left, area.X - m.X);
+            }
+            if (m.Y == 0)
+            {
+                top = Math.Max(top, area.Y - m.Y);
+            }
+            if (m.X + m.Width == width)
+            {
+                right = Math.Max(right, m.X + m.Width - area.Right);
+            }
+            if (m.Y + m.Height == height)
+            {
+                bottom = Math.Max(bottom, m.Y + m.Height - area.Bottom);
+            }
+        }
+        XRect result = new(left, top, width - left - right, height - top - bottom);
+        return result.IsEmpty ? new XRect(0, 0, width, height) : result;
     }
 
     // ------------------------------------------------------------------ 窗口管理器维护的属性

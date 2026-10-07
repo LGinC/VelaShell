@@ -104,6 +104,10 @@ public sealed partial class X11Server
             {
                 throw new ArgumentException("显示器的宽高必须为正。", paramName);
             }
+            if (m.WorkArea is { } area && (area.IsEmpty || area.Intersect(new XRect(m.X, m.Y, m.Width, m.Height)) != area))
+            {
+                throw new ArgumentException("显示器的工作区必须是落在显示器里的非空矩形。", paramName);
+            }
         }
         return monitors.Any(m => m.Primary) ? [.. monitors] : [monitors[0] with { Primary = true }, .. monitors.Skip(1)];
     }

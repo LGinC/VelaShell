@@ -66,6 +66,36 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task NET_WORKAREA扣掉显示器在桌面边缘让出来的任务栏_不合法的工作区当场拒绝()
+    {
+        await using X11Server server = new(new X11ServerOptions { ScreenWidth = 1280, ScreenHeight = 720 });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint workarea = await InternAsync(c, "_NET_WORKAREA");
+        async Task<(uint, uint, uint, uint)> AreaAsync()
+        {
+            XMessage m = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(workarea).U32(0).U32(0).U32(4));
+            return (m.U32(32), m.U32(36), m.U32(40), m.U32(44));
+        }
+
+        // 左边一台 1920×1080、任务栏在底部 40 像素;右边一台 1280×1440、Dock 在右边 60 像素。
+        server.SetScreenLayout(3200, 1440,
+        [
+            new XMonitor(0, 0, 1920, 1080) { WorkArea = new XRect(0, 0, 1920, 1040) },
+            new XMonitor(1920, 0, 1280, 1440) { WorkArea = new XRect(1920, 0, 1220, 1440) },
+        ]);
+        await c.SyncAsync();
+        Assert.AreEqual((0u, 0u, 3140u, 1440u), await AreaAsync(),
+            "右边的 Dock 在桌面边缘上扣掉;左边那台的底边不是桌面的底边,它的任务栏扣不出来(EWMH 只有一个矩形)。原先恒为整个根窗口");
+
+        server.SetScreenLayout(1920, 1080, [new XMonitor(0, 0, 1920, 1080) { WorkArea = new XRect(0, 30, 1920, 1010) }]);
+        await c.SyncAsync();
+        Assert.AreEqual((0u, 30u, 1920u, 1010u), await AreaAsync(), "顶部面板 30、底部任务栏 40");
+
+        Assert.ThrowsExactly<ArgumentException>(() => server.SetScreenLayout(1920, 1080,
+            [new XMonitor(0, 0, 1920, 1080) { WorkArea = new XRect(0, 0, 2000, 1080) }]), "工作区超出显示器");
+    }
+
+    [TestMethod]
     public async Task 映射后有WM_STATE与客户端列表_提示解析进窗口快照()
     {
         using RecordingHost host = new();
