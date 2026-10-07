@@ -111,6 +111,28 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task ConvertSelection的property是不存在的原子时回BadAtom_不往窗口上写()
+    {
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(c, "CLIPBOARD");
+        uint utf8 = await InternAsync(c, "UTF8_STRING");
+        server.SetClipboardText("x");
+        while ((await c.RequestAsync(23, 0, b => b.U32(clipboard))).U32(8) == 0)
+        {
+        }
+
+        const uint bogus = 0x00ABCDEF;
+        await c.SendAsync(24, 0, b => b.U32(c.RootWindow).U32(clipboard).U32(utf8).U32(bogus).U32(0));
+        XMessage error = await c.NextAsync(m => m.IsError);
+        Assert.AreEqual(5, error.Detail, "BadAtom");
+        Assert.AreEqual(bogus, error.U32(4));
+        XMessage list = await c.RequestAsync(21, 0, b => b.U32(c.RootWindow));   // ListProperties
+        uint[] atoms = [.. Enumerable.Range(0, list.U16(8)).Select(i => list.U32(32 + (i * 4)))];
+        CollectionAssert.DoesNotContain(atoms, bogus, "原先服务端拿它当属性名写到根窗口上,之后 xprop -root 收到 BadAtom");
+    }
+
+    [TestMethod]
     public async Task X客户端复制的文本交给宿主_写回来不抢选区()
     {
         using RecordingHost host = new();

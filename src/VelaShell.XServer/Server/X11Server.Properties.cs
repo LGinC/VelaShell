@@ -404,6 +404,12 @@ public sealed partial class X11Server
         uint time = r.U32();
         CheckAtom(selection);
         CheckAtom(target);
+        if (property != 0)
+        {
+            // property 是 ATOM 或 None(协议「ConvertSelection」):不存在的原子回 BadAtom。原先不查,宿主占着剪贴板时服务端
+            // 拿它当属性名写到请求方给的窗口上(可以是根窗口),之后 xprop -root 之类列属性的都收到 BadAtom。
+            CheckAtom(property);
+        }
         if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) owner))
         {
             if (owner.Client is null)
