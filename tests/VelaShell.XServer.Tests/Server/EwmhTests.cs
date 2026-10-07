@@ -95,6 +95,88 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task WM_NORMAL_HINTS的基准尺寸_宽高比_重力_USPosition解析进快照_数值夹进X的范围()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await CreateTopAsync(c);
+        // flags:USPosition | PMinSize | PMaxSize | PResizeInc | PAspect | PBaseSize | PWinGravity
+        const uint flags = 1 | 16 | 32 | 64 | 128 | 256 | 512;
+        await SetCard32Async(c, top, 40, 41, flags, 0, 0, 0, 0,
+            unchecked((uint)-5), 0x80000000, 800, 100000, 6, 13,   // 最小尺寸是负数、最大高度超出 X 的范围、步长 6×13
+            4, 3, 16, 9,                                                // 宽高比 4:3 – 16:9
+            19, 4, 9);                                                  // 基准尺寸 19×4、重力 SouthEast
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        XTopLevelSnapshot s = host.Mapped[top].Snapshot;
+        Assert.AreEqual(0, s.MinWidth, "负数当 0:原先强转成负的最小尺寸");
+        Assert.AreEqual(0, s.MinHeight, "0x80000000 是负的 INT32");
+        Assert.AreEqual(short.MaxValue, s.MaxHeight, "超大值夹到 32767");
+        Assert.AreEqual((6, 13), (s.WidthIncrement, s.HeightIncrement));
+        Assert.AreEqual((19, 4), (s.BaseWidth, s.BaseHeight), "xterm 按字符格缩放的基准");
+        Assert.AreEqual(4 / 3.0, s.MinAspect, 1e-9);
+        Assert.AreEqual(16 / 9.0, s.MaxAspect, 1e-9);
+        Assert.AreEqual(XGravity.SouthEast, s.WinGravity);
+        Assert.IsTrue(s.UserPosition, "xterm -geometry +0+0:宿主要照 (0, 0) 摆,不能当成没给位置");
+        Assert.IsFalse(s.ProgramPosition);
+
+        // 只给基准尺寸、没给最小尺寸:最小尺寸按基准尺寸(ICCCM §4.1.2.3);老程序的 15 个值的 WM_SIZE_HINTS 没有重力也照样认。
+        await SetCard32Async(c, top, 40, 41, 4 | 256, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 30, 20, 0);
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.MinWidth == 30);
+        s = host.Mapped[top].Snapshot;
+        Assert.AreEqual((30, 20), (s.BaseWidth, s.MinHeight));
+        Assert.IsTrue(s.ProgramPosition);
+        Assert.AreEqual(XGravity.NorthWest, s.WinGravity, "没给重力:NorthWest");
+        await SetCard32Async(c, top, 40, 41, 16 | 64, 0, 0, 0, 0, 50, 40, 0, 0, 7, 7, 0, 0, 0, 0);   // 15 个值
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.MinWidth == 50);
+        Assert.AreEqual((50, 7), (host.Mapped[top].Snapshot.BaseWidth, host.Mapped[top].Snapshot.WidthIncrement), "没给基准尺寸:按最小尺寸");
+    }
+
+    [TestMethod]
+    public async Task WM_HINTS的initial_state为Iconic时映射即最小化_icon_pixmap烙成图标_window_group与Motif的functions进快照()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint leader = await CreateTopAsync(c);   // 组长:不映射
+        uint top = await CreateTopAsync(c);
+        // 4×2 的图标:深度 1 的像素图,左半边 1(黑)、右半边 0(白);掩码只露出第一行。
+        uint icon = c.NewId(), mask = c.NewId(), gc = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(icon).U32(c.RootWindow).U16(4).U16(2));
+        await c.SendAsync(53, 1, b => b.U32(mask).U32(c.RootWindow).U16(4).U16(2));
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(icon).U32(0));
+        await c.SendAsync(72, 2, b => b.U32(icon).U32(gc).U16(4).U16(2).I16(0).I16(0).U8(0).U8(1).U16(0)   // PutImage ZPixmap
+            .U32(0b0011).U32(0b0011));                                                                       // 每行补到 32 位,低位在前
+        await c.SendAsync(72, 2, b => b.U32(mask).U32(gc).U16(4).U16(2).I16(0).I16(0).U8(0).U8(1).U16(0).U32(0b1111).U32(0));
+        // WM_HINTS:StateHint | IconPixmapHint | IconMaskHint | WindowGroupHint,initial_state = IconicState(3)。
+        await SetCard32Async(c, top, 35, 35, 2 | 4 | 32 | 64, 0, 3, icon, 0, 0, 0, mask, leader);
+        uint motif = await InternAsync(c, "_MOTIF_WM_HINTS");
+        await SetCard32Async(c, top, motif, motif, 1, 1 | 2 | 16, 0, 0, 0);   // functions:ALL 除了改尺寸与最大化
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        await host.WaitForAsync(() => (host.Mapped[top].Snapshot.States & XWindowStates.Hidden) != 0);
+
+        uint wmState = await InternAsync(c, "WM_STATE");
+        XMessage state = await c.RequestAsync(20, 0, b => b.U32(top).U32(wmState).U32(0).U32(0).U32(2));
+        Assert.AreEqual(3u, state.U32(32), "WM_STATE = IconicState:原先一律 Normal,xterm -iconic 不生效");
+
+        XTopLevelSnapshot s = host.Mapped[top].Snapshot;
+        XWindowIcon only = s.Icons.Single();
+        Assert.AreEqual((4, 2), (only.Width, only.Height));
+        Assert.AreEqual(0xFF000000u, only.Pixels[0], "1 → 黑");
+        Assert.AreEqual(0xFFFFFFFFu, only.Pixels[3], "0 → 白");
+        Assert.AreEqual(0u, only.Pixels[4], "掩码为 0 处透明");
+        Assert.AreEqual(leader, s.WindowGroup?.Id);
+        Assert.AreEqual(XWindowFunctions.Move | XWindowFunctions.Minimize | XWindowFunctions.Close, s.Functions);
+
+        // 有 _NET_WM_ICON 时用它。
+        uint netIcon = await InternAsync(c, "_NET_WM_ICON");
+        await SetCard32Async(c, top, netIcon, 6, 1, 1, 0xFF112233);
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.Icons is [{ Width: 1 }]);
+    }
+
+    [TestMethod]
     public async Task NET_WM_STATE请求交给宿主_宿主设状态后写回属性()
     {
         using RecordingHost host = new();

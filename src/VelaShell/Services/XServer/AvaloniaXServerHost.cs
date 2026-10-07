@@ -454,6 +454,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         _windows[handle.Id] = window;
         PlaceIfUnpositioned(handle, window);
         window.ApplyProperties(XTopLevelChanges.All);
+        window.ApplyInitialStates();   // 映射前就设好的最大化 / 全屏 / initial_state = Iconic
 
         // 对话框、瞬态窗口(连同声明了 WM_TRANSIENT_FOR 的弹出菜单)压在父窗口之上。没声明的弹层不借用「当前活动的 X 窗口」当 owner:
         // 那个窗口可能属于别的程序甚至别的会话,owner 关闭时会把它连带关掉(弹层本身照样置顶,不需要 owner)。
@@ -473,11 +474,12 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     /// <summary>
     /// 客户端没给位置(映射在 0,0)的普通窗口,像窗口管理器那样摆:对话框居中压在父窗口上,其余放在主显示器工作区正中。
+    /// 用户指定的位置(USPosition,如 <c>xterm -geometry +0+0</c>)哪怕是 (0, 0) 也照办 —— 原先一律当成「没给位置」挪到屏幕中央。
     /// </summary>
     private void PlaceIfUnpositioned(XTopLevelWindow handle, XNativeWindow window)
     {
         XTopLevelSnapshot snapshot = handle.Snapshot;
-        if (snapshot.OverrideRedirect || snapshot.X != 0 || snapshot.Y != 0 || _server is not { } server)
+        if (snapshot.OverrideRedirect || snapshot.UserPosition || snapshot.X != 0 || snapshot.Y != 0 || _server is not { } server)
         {
             return;
         }

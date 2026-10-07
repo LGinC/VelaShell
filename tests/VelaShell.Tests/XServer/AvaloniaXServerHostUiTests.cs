@@ -300,6 +300,104 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 映射时照客户端的提示摆:映射前就设好的 <c>_NET_WM_STATE</c> 最大化、<c>WM_HINTS</c> 的 initial_state = Iconic(<c>xterm -iconic</c>)、
+    /// 用户指定在 (0, 0) 的位置(USPosition,<c>xterm -geometry +0+0</c>)—— 原先都按普通窗口显示、(0, 0) 一律挪到屏幕中央。
+    /// </summary>
+    [TestMethod]
+    public async Task MapHonoursInitialStatesAndUserPosition() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, replies);
+        uint maximized = idBase | 1, iconic = idBase | 2, pinned = idBase | 3;
+        foreach (uint id in (uint[])[maximized, iconic, pinned])
+        {
+            await SendAsync(client, 1, 24, w => w.U32(id).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        }
+        uint netWmState = await InternAsync(client, replies, "_NET_WM_STATE");
+        uint vert = await InternAsync(client, replies, "_NET_WM_STATE_MAXIMIZED_VERT");
+        uint horz = await InternAsync(client, replies, "_NET_WM_STATE_MAXIMIZED_HORZ");
+        await SendAsync(client, 18, 0, w => w.U32(maximized).U32(netWmState).U32(4).U8(32).Zero(3).U32(2).U32(vert).U32(horz));
+        await SendAsync(client, 18, 0, w => w.U32(iconic).U32(35).U32(35).U8(32).Zero(3).U32(9)              // WM_HINTS:StateHint,IconicState
+            .U32(2).U32(0).U32(3).U32(0).U32(0).U32(0).U32(0).U32(0).U32(0));
+        await SendAsync(client, 18, 0, w => w.U32(pinned).U32(40).U32(41).U8(32).Zero(3).U32(18).U32(1).Zero(17 * 4));   // USPosition
+        foreach (uint id in (uint[])[maximized, iconic, pinned])
+        {
+            await SendAsync(client, 8, 0, w => w.U32(id));
+        }
+
+        XNativeWindow max = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == maximized));
+        XNativeWindow min = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == iconic));
+        XNativeWindow pin = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == pinned));
+        Assert.AreEqual(Avalonia.Controls.WindowState.Maximized, max.WindowState, "映射前设好的最大化");
+        Assert.AreEqual(Avalonia.Controls.WindowState.Minimized, min.WindowState, "initial_state = IconicState");
+        Assert.IsFalse(min.ShowActivated, "一映射就最小化的窗口不抢前台");
+        await Task.Delay(100);
+        Dispatcher.UIThread.RunJobs();
+        Assert.AreEqual((0, 0), (pin.Handle.Snapshot.X, pin.Handle.Snapshot.Y), "USPosition 的 (0, 0) 不被挪到屏幕中央");
+
+        XNativeWindow[] all = [.. host.Windows];
+        host.Detach();
+        await WaitForAsync(() => all.All(w => !w.IsVisible) ? all : null);
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+    });
+
+    /// <summary>连接建立;之后收到的回复按到达顺序放进 <paramref name="replies" />(事件与错误读掉不留)。</summary>
+    private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte[]> replies)
+    {
+        await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        await stream.FlushAsync();
+        byte[] head = new byte[8];
+        await stream.ReadExactlyAsync(head);
+        Assert.AreEqual(1, head[0], "连接建立成功");
+        byte[] rest = new byte[BinaryPrimitives.ReadUInt16LittleEndian(head.AsSpan(6)) * 4];
+        await stream.ReadExactlyAsync(rest);
+        byte[] reply = [.. head, .. rest];
+        int vendor = BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(24));
+        uint root = BinaryPrimitives.ReadUInt32LittleEndian(reply.AsSpan(40 + ((vendor + 3) & ~3) + (reply[29] * 8)));
+        _ = ReadRepliesAsync();
+        return (BinaryPrimitives.ReadUInt32LittleEndian(reply.AsSpan(12)), root);
+
+        async Task ReadRepliesAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    byte[] message = new byte[32];
+                    await stream.ReadExactlyAsync(message);
+                    if (message[0] == 1 || (message[0] & 0x7F) == 35)
+                    {
+                        byte[] extra = new byte[BinaryPrimitives.ReadUInt32LittleEndian(message.AsSpan(4)) * 4];
+                        await stream.ReadExactlyAsync(extra);
+                        if (message[0] == 1)
+                        {
+                            replies.Enqueue([.. message, .. extra]);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or ObjectDisposedException or EndOfStreamException)
+            {
+            }
+        }
+    }
+
+    /// <summary>InternAtom,等它的回复(用 <see cref="HandshakeAsync(Stream, System.Collections.Concurrent.ConcurrentQueue{byte[]})" /> 建立的连接)。</summary>
+    private static async Task<uint> InternAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte[]> replies, string name)
+    {
+        byte[] bytes = Encoding.ASCII.GetBytes(name);
+        await SendAsync(stream, 16, 0, w => w.U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad());
+        byte[] reply = await WaitForAsync(() => replies.TryDequeue(out byte[]? r) ? r : null);
+        return BinaryPrimitives.ReadUInt32LittleEndian(reply.AsSpan(8));
+    }
+
+    /// <summary>
     /// owner 级联关闭(Avalonia 关 owner 时先问它拥有的窗口,有一个不肯 owner 就关不掉):
     /// 父窗口在 X 里取消映射、对话框还映射着 → 父窗口收掉,对话框不带 owner 重新显示;停服时一个都不留;
     /// 弹层的关闭不转给客户端(没有 WM_DELETE_WINDOW 的弹层原先一关就断开了整个程序)。

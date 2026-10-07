@@ -105,7 +105,8 @@ public sealed class XNativeWindow : Window
             MinHeight = s.MinHeight > 0 ? s.MinHeight / scale : 0;
             MaxWidth = s.MaxWidth > 0 ? s.MaxWidth / scale : double.PositiveInfinity;
             MaxHeight = s.MaxHeight > 0 ? s.MaxHeight / scale : double.PositiveInfinity;
-            CanResize = !s.OverrideRedirect && (s.MaxWidth == 0 || s.MaxWidth != s.MinWidth || s.MaxHeight != s.MinHeight);
+            CanResize = !s.OverrideRedirect && (s.Functions & XWindowFunctions.Resize) != 0
+                        && (s.MaxWidth == 0 || s.MaxWidth != s.MinWidth || s.MaxHeight != s.MinHeight);
         }
         if ((changes & XTopLevelChanges.Icons) != 0 && s.Icons.Count > 0 && _host.IconFor(s.Icons) is { } icon)
         {
@@ -242,6 +243,26 @@ public sealed class XNativeWindow : Window
         }
     }
 
+    /// <summary>
+    /// 显示之前按快照里的状态摆:客户端映射前设好的 <c>_NET_WM_STATE</c>(一开始就最大化、全屏),或 <c>WM_HINTS</c> 的
+    /// initial_state 为 IconicState(服务端把它写成 Hidden)。原先这些只在收到 ClientMessage 时才生效,映射时一律按普通窗口显示。
+    /// 状态本来就是客户端自己写的,不再回报给服务端。
+    /// </summary>
+    public void ApplyInitialStates()
+    {
+        XTopLevelSnapshot s = Handle.Snapshot;
+        if (s.OverrideRedirect)
+        {
+            return;
+        }
+        WindowState = (s.States & XWindowStates.Fullscreen) != 0 ? WindowState.FullScreen
+            : (s.States & XWindowStates.Hidden) != 0 ? WindowState.Minimized
+            : (s.States & XWindowStates.Maximized) == XWindowStates.Maximized ? WindowState.Maximized
+            : WindowState.Normal;
+        _resizeState = WindowState;
+        _reportedStates = StatesFromWindow();
+    }
+
     /// <summary>客户端要求改状态(最大化、全屏、最小化……)。</summary>
     public void ApplyStateRequest(XWindowStates add, XWindowStates remove)
     {
@@ -266,11 +287,11 @@ public sealed class XNativeWindow : Window
         WindowDecorations = undecorated ? WindowDecorations.None : WindowDecorations.Full;
         ShowInTaskbar = !popup && s.TransientFor is null && (s.States & XWindowStates.SkipTaskbar) == 0
                         && s.WindowType is XWindowType.Normal or XWindowType.Dialog;
-        ShowActivated = !popup && s.AcceptsFocus;
+        ShowActivated = !popup && s.AcceptsFocus && (s.States & XWindowStates.Hidden) == 0;   // 一映射就最小化的窗口不抢前台
         _above = (s.States & XWindowStates.Above) != 0;
         UpdateTopmost(_host.XActive);
-        CanMinimize = !popup;
-        CanMaximize = !popup;
+        CanMinimize = !popup && (s.Functions & XWindowFunctions.Minimize) != 0;
+        CanMaximize = !popup && (s.Functions & XWindowFunctions.Maximize) != 0;
         // 有 alpha 的视觉(GTK 的客户端阴影、圆角)与非矩形窗口要透明底;其余不透明,省掉系统合成的开销。
         TransparencyLevelHint = s.HasAlpha || s.Shape is not null
             ? [WindowTransparencyLevel.Transparent]

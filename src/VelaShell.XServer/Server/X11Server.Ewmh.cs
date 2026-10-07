@@ -8,8 +8,9 @@
 //   _NET_MOVERESIZE_WINDOW、_NET_WM_MOVERESIZE、_NET_REQUEST_FRAME_EXTENTS)、§5「Application Window Properties」
 //   (_NET_WM_NAME、_NET_WM_DESKTOP、_NET_WM_WINDOW_TYPE、_NET_WM_STATE 及其 ClientMessage、_NET_WM_ICON、_NET_WM_PID、
 //   _NET_WM_WINDOW_OPACITY)、§6「Window Manager Protocols」(_NET_FRAME_EXTENTS)
-//   ICCCM 2.0 —— §4.1.2.3 WM_NORMAL_HINTS、§4.1.2.4 WM_HINTS、§4.1.3.1 WM_STATE、§4.1.4 WM_CHANGE_STATE(IconicState)
-//   Motif Window Manager hints(_MOTIF_WM_HINTS 的 flags / decorations 两个字段,EWMH 附录所引)
+//   ICCCM 2.0 —— §4.1.2.3 WM_NORMAL_HINTS(含基准尺寸、宽高比、win_gravity、USPosition / PPosition)、§4.1.2.4 WM_HINTS(含 initial_state、
+//   icon_pixmap / icon_mask、window_group)、§4.1.3.1 WM_STATE、§4.1.4 WM_CHANGE_STATE(IconicState)
+//   Motif Window Manager hints(_MOTIF_WM_HINTS 的 flags / functions / decorations 三个字段,EWMH 附录所引)
 //
 //   rootless 下宿主就是窗口管理器:服务端维护 EWMH 要求窗口管理器维护的属性(客户端列表、活动窗口、WM_STATE、
 //   _NET_FRAME_EXTENTS……),把客户端经根窗口 ClientMessage 提出的请求翻成 XWindowManagerRequest 交给宿主,
@@ -17,7 +18,9 @@
 
 using System.Buffers.Binary;
 using System.Text;
+using VelaShell.XServer.Drawing;
 using VelaShell.XServer.Protocol;
+using VelaShell.XServer.Resources;
 using VelaShell.XServer.Server;
 using VelaShell.XServer.Windowing;
 
@@ -206,7 +209,15 @@ public sealed partial class X11Server
         {
             return;   // 菜单、提示框之类不归窗口管理器管(ICCCM §4.1.10)
         }
-        uint hidden = (ReadNetWmStates(top) & XWindowStates.Hidden) != 0 ? 3u : 1u;
+        XWindowStates states = ReadNetWmStates(top);
+        if ((states & XWindowStates.Hidden) == 0 && StartsIconic(top))
+        {
+            // ICCCM §4.1.4:从 Withdrawn 映射时按 WM_HINTS 的 initial_state 进 IconicState(xterm -iconic、Tk 的 wm iconify 后再映射)。
+            // 原先一律 Normal;写成 _NET_WM_STATE_HIDDEN,宿主看快照的状态就把原生窗口最小化显示。
+            WriteStates(top, states | XWindowStates.Hidden);
+            states |= XWindowStates.Hidden;
+        }
+        uint hidden = (states & XWindowStates.Hidden) != 0 ? 3u : 1u;
         SetProperty(top, _wmStateAtom, _wmStateAtom, [hidden, 0]);
         SetProperty(top, Intern("_NET_WM_DESKTOP"), XAtom.Cardinal, [0]);
         WriteFrameExtents(top);
@@ -456,40 +467,158 @@ public sealed partial class X11Server
         }
 
         uint[] motif = ReadCard32s(props.GetValueOrDefault(_motifHintsAtom), 5);
-        uint[] size = ReadCard32s(props.GetValueOrDefault(XAtom.WmNormalHints), 18);
-        uint sizeFlags = size.Length >= 11 ? size[0] : 0;
         uint[] hints = ReadCard32s(props.GetValueOrDefault(XAtom.WmHints), 9);
+        uint hintFlags = hints.Length >= 1 ? hints[0] : 0;
         uint[] opacity = ReadCard32s(props.GetValueOrDefault(_netWmOpacityAtom), 1);
         uint[] extents = ReadCard32s(props.GetValueOrDefault(_gtkFrameExtentsAtom), 4);
         uint[] pid = ReadCard32s(props.GetValueOrDefault(_netWmPidAtom), 1);
 
+        // _NET_WM_ICON 优先;没有时取 WM_HINTS 的 icon_pixmap / icon_mask(老程序只给那个)。
         XProperty? icon = props.GetValueOrDefault(_netWmIconAtom);
-        if (!ReferenceEquals(icon, top.ParsedIcons.Source))
+        XProperty? iconSource = icon ?? props.GetValueOrDefault(XAtom.WmHints);
+        if (!ReferenceEquals(iconSource, top.ParsedIcons.Source))
         {
             // 图标动辄几百 KB:只在属性真的换了时重新解析,改标题之类的刷新不重复这份工作(各份快照共用同一个列表)。
-            top.ParsedIcons = (icon, ParseIcons(ReadCard32s(icon, MaxIconWords)));
+            top.ParsedIcons = (iconSource, icon is not null ? ParseIcons(ReadCard32s(icon, MaxIconWords)) : IconFromPixmap(hints));
         }
 
-        return snapshot with
+        uint windowGroup = (hintFlags & WmHintWindowGroup) != 0 && hints.Length >= 9 ? hints[8] : 0;
+        return ReadSizeHints(props, snapshot) with
         {
             States = states,
             WindowType = type,
             Decorated = motif.Length < 3 || (motif[0] & 2) == 0 || motif[2] != 0,
-            MinWidth = (sizeFlags & 16) != 0 ? (int)size[5] : 0,
-            MinHeight = (sizeFlags & 16) != 0 ? (int)size[6] : 0,
-            MaxWidth = (sizeFlags & 32) != 0 ? (int)size[7] : 0,
-            MaxHeight = (sizeFlags & 32) != 0 ? (int)size[8] : 0,
-            WidthIncrement = (sizeFlags & 64) != 0 ? (int)size[9] : 0,
-            HeightIncrement = (sizeFlags & 64) != 0 ? (int)size[10] : 0,
-            AcceptsFocus = hints.Length < 2 || (hints[0] & 1) == 0 || hints[1] != 0,
-            Urgent = (hints.Length >= 1 && (hints[0] & 256) != 0) || (states & XWindowStates.DemandsAttention) != 0,
+            Functions = motif.Length >= 2 && (motif[0] & 1) != 0 ? MotifFunctions(motif[1]) : XWindowFunctions.All,
+            AcceptsFocus = hints.Length < 2 || (hintFlags & 1) == 0 || hints[1] != 0,
+            Urgent = (hintFlags & 256) != 0 || (states & XWindowStates.DemandsAttention) != 0,
+            WindowGroup = windowGroup != 0 && Lookup<XWindow>(windowGroup) is { IsTopLevel: true } leader ? HandleFor(leader) : null,
             Opacity = opacity.Length >= 1 ? opacity[0] / (double)uint.MaxValue : 1,
-            ClientFrameExtents = extents.Length >= 4 ? new XFrameExtents((int)extents[0], (int)extents[1], (int)extents[2], (int)extents[3]) : default,
-            ProcessId = pid.Length >= 1 ? (int)pid[0] : 0,
+            ClientFrameExtents = extents.Length >= 4
+                ? new XFrameExtents(HintSize(extents[0]), HintSize(extents[1]), HintSize(extents[2]), HintSize(extents[3]))
+                : default,
+            ProcessId = pid.Length >= 1 && pid[0] <= int.MaxValue ? (int)pid[0] : 0,
             ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? HostText(machine.Data, utf8: false, MaxHostNameChars) : "",
             Role = props.GetValueOrDefault(_wmRoleAtom) is { Format: 8 } role ? HostText(role.Data, utf8: false, MaxHostNameChars) : "",
             Icons = top.ParsedIcons.Icons,
         };
+    }
+
+    // WM_HINTS 的 flags(ICCCM §4.1.2.4)。
+    private const uint WmHintState = 2, WmHintIconPixmap = 4, WmHintIconMask = 32, WmHintWindowGroup = 64;
+
+    /// <summary>WM_HINTS 的 initial_state 是 IconicState(3):客户端要求一映射就最小化(<c>xterm -iconic</c>)。</summary>
+    private static bool StartsIconic(XWindow top)
+    {
+        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints), 3);
+        return hints.Length >= 3 && (hints[0] & WmHintState) != 0 && hints[2] == 3;
+    }
+
+    /// <summary>
+    /// WM_NORMAL_HINTS(ICCCM §4.1.2.3):flags、4 个作废的字段、最小 / 最大尺寸、步长、最小 / 最大宽高比、基准尺寸、win_gravity。
+    /// 只认 flags 里给了、而且属性里真有的字段(老程序的 WM_SIZE_HINTS 只有 15 个值,没有基准尺寸与重力);
+    /// 数值是 INT32,一律夹进 X 的尺寸范围 —— 原先超过 int.MaxValue 的值强转成负的最小尺寸交给宿主。
+    /// </summary>
+    private static XTopLevelSnapshot ReadSizeHints(Dictionary<uint, XProperty> props, XTopLevelSnapshot snapshot)
+    {
+        uint[] size = ReadCard32s(props.GetValueOrDefault(XAtom.WmNormalHints), 18);
+        uint flags = size.Length >= 1 ? size[0] : 0;
+        bool Has(uint flag, int lastField) => (flags & flag) != 0 && size.Length > lastField;
+        (int Width, int Height) Pair(uint flag, int first) => Has(flag, first + 1) ? (HintSize(size[first]), HintSize(size[first + 1])) : (0, 0);
+        double Aspect(int first) => Has(128, first + 1) && (int)size[first] > 0 && (int)size[first + 1] > 0
+            ? (int)size[first] / (double)(int)size[first + 1]
+            : 0;
+
+        (int minWidth, int minHeight) = Pair(16, 5);
+        (int baseWidth, int baseHeight) = Pair(256, 15);
+        (int maxWidth, int maxHeight) = Pair(32, 7);
+        (int widthInc, int heightInc) = Pair(64, 9);
+        uint gravity = Has(512, 17) ? size[17] : 1;
+        return snapshot with
+        {
+            // 没给基准尺寸就按最小尺寸,反之亦然(ICCCM §4.1.2.3)。
+            MinWidth = Has(16, 6) ? minWidth : baseWidth,
+            MinHeight = Has(16, 6) ? minHeight : baseHeight,
+            BaseWidth = Has(256, 16) ? baseWidth : minWidth,
+            BaseHeight = Has(256, 16) ? baseHeight : minHeight,
+            MaxWidth = maxWidth,
+            MaxHeight = maxHeight,
+            WidthIncrement = widthInc,
+            HeightIncrement = heightInc,
+            MinAspect = Aspect(11),
+            MaxAspect = Aspect(13),
+            WinGravity = gravity is >= 1 and <= 10 ? (XGravity)gravity : XGravity.NorthWest,
+            UserPosition = (flags & 1) != 0,
+            ProgramPosition = (flags & 4) != 0,
+        };
+    }
+
+    /// <summary>提示里的尺寸(INT32):负数当 0,大于 X 的尺寸上限的夹到 32767。</summary>
+    private static int HintSize(uint value) => Math.Clamp((int)value, 0, short.MaxValue);
+
+    /// <summary>_MOTIF_WM_HINTS 的 functions:ALL(1)置位时其余位表示「除了这些」。</summary>
+    private static XWindowFunctions MotifFunctions(uint functions)
+    {
+        XWindowFunctions listed = XWindowFunctions.None;
+        foreach ((uint bit, XWindowFunctions function) in (ReadOnlySpan<(uint, XWindowFunctions)>)
+                 [(2, XWindowFunctions.Resize), (4, XWindowFunctions.Move), (8, XWindowFunctions.Minimize),
+                  (16, XWindowFunctions.Maximize), (32, XWindowFunctions.Close)])
+        {
+            if ((functions & bit) != 0)
+            {
+                listed |= function;
+            }
+        }
+        return (functions & 1) != 0 ? XWindowFunctions.All & ~listed : listed;
+    }
+
+    /// <summary>图标像素图的边长上限:宿主的任务栏图标用不到更大的,也免得一个巨大的像素图每次换提示都整份转换一遍。</summary>
+    private const int MaxIconPixmapSize = 256;
+
+    /// <summary>
+    /// WM_HINTS 的 icon_pixmap(深度 1 时按 ICCCM §4.1.2.4 用黑白两色:1 黑、0 白;根窗口深度时是 RGB)与 icon_mask(深度 1,0 处透明)
+    /// 烙成一幅图标。没给、像素图不在、太大或掩码尺寸不符时为空列表。
+    /// </summary>
+    private IReadOnlyList<XWindowIcon> IconFromPixmap(uint[] hints)
+    {
+        uint flags = hints.Length >= 1 ? hints[0] : 0;
+        if ((flags & WmHintIconPixmap) == 0 || hints.Length < 4
+            || Lookup<XPixmap>(hints[3]) is not { Buffer: var source }
+            || source.Width > MaxIconPixmapSize || source.Height > MaxIconPixmapSize)
+        {
+            return [];
+        }
+        PixelBuffer? mask = (flags & WmHintIconMask) != 0 && hints.Length >= 8 && Lookup<XPixmap>(hints[7]) is { Depth: 1, Buffer: var m }
+                            && m.Width == source.Width && m.Height == source.Height
+            ? m
+            : null;
+        uint[] pixels = new uint[source.Width * source.Height];
+        for (int i = 0; i < pixels.Length; i++)
+        {
+            if (mask is not null && mask.Pixels[i] == 0)
+            {
+                continue;   // 透明
+            }
+            uint p = source.Pixels[i];
+            pixels[i] = source.Depth switch
+            {
+                1 => p != 0 ? 0xFF000000 : 0xFFFFFFFF,
+                32 => Unpremultiply(p),
+                _ => 0xFF000000 | (p & 0xFFFFFF),
+            };
+        }
+        return [new XWindowIcon(source.Width, source.Height, pixels)];
+    }
+
+    /// <summary>预乘的 ARGB → 非预乘(图标是非预乘的)。</summary>
+    private static uint Unpremultiply(uint argb)
+    {
+        uint a = argb >> 24;
+        if (a is 0 or 255)
+        {
+            return a == 0 ? 0 : argb;
+        }
+        uint Channel(int shift) => Math.Min(255u, ((((argb >> shift) & 0xFF) * 255) + (a / 2)) / a) << shift;
+        return (a << 24) | Channel(16) | Channel(8) | Channel(0);
     }
 
     /// <summary>

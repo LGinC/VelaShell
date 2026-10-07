@@ -58,7 +58,11 @@ public sealed record XTopLevelSnapshot
     /// <summary>窗口类型(<c>_NET_WM_WINDOW_TYPE</c>;没设时普通窗口是 Normal,有 <c>WM_TRANSIENT_FOR</c> 的是 Dialog)。</summary>
     public XWindowType WindowType { get; init; }
 
-    /// <summary>窗口状态(<c>_NET_WM_STATE</c>)。映射前客户端可以先设好(比如一开始就全屏);之后由宿主经 <see cref="X11Server.SetTopLevelStates" /> 改。</summary>
+    /// <summary>
+    /// 窗口状态(<c>_NET_WM_STATE</c>)。映射前客户端可以先设好(一开始就最大化、全屏),宿主显示原生窗口时应当照这个状态显示;
+    /// <c>WM_HINTS</c> 的 initial_state 是 IconicState(<c>xterm -iconic</c>)时,服务端在映射时加上 <see cref="XWindowStates.Hidden" />。
+    /// 之后由宿主经 <see cref="X11Server.SetTopLevelStates" /> 改。
+    /// </summary>
     public XWindowStates States { get; init; }
 
     /// <summary>
@@ -67,7 +71,10 @@ public sealed record XTopLevelSnapshot
     /// </summary>
     public bool Decorated { get; init; } = true;
 
-    /// <summary>最小尺寸(<c>WM_NORMAL_HINTS</c>);没有限制为 0。</summary>
+    /// <summary>
+    /// 最小尺寸(<c>WM_NORMAL_HINTS</c>);没有限制为 0。没给最小尺寸而给了基准尺寸时按基准尺寸(ICCCM §4.1.2.3)。
+    /// 尺寸类的值一律夹到 0–32767(X 的尺寸范围),客户端给的负数与超大值不会变成负的约束。
+    /// </summary>
     public int MinWidth { get; init; }
 
     /// <summary>最小尺寸;没有限制为 0。</summary>
@@ -79,13 +86,57 @@ public sealed record XTopLevelSnapshot
     /// <summary>最大尺寸;没有限制为 0。</summary>
     public int MaxHeight { get; init; }
 
-    /// <summary>尺寸步长(终端按字符格缩放);没有为 0。</summary>
+    /// <summary>尺寸步长(终端按字符格缩放);没有为 0。合法的宽度是 <see cref="BaseWidth" /> + i × 步长。</summary>
     public int WidthIncrement { get; init; }
 
     /// <summary>尺寸步长;没有为 0。</summary>
     public int HeightIncrement { get; init; }
 
-    /// <summary>图标(<c>_NET_WM_ICON</c>,可能有多种尺寸);没有为空列表。图标没变时各份快照共用同一个列表实例。</summary>
+    /// <summary>
+    /// 基准尺寸(<c>WM_NORMAL_HINTS</c> 的 base size):按步长缩放时从它算起(xterm 是滚动条与内边距的宽度)。
+    /// 没给时按最小尺寸(ICCCM §4.1.2.3),两个都没给为 0。
+    /// </summary>
+    public int BaseWidth { get; init; }
+
+    /// <summary>基准尺寸;见 <see cref="BaseWidth" />。</summary>
+    public int BaseHeight { get; init; }
+
+    /// <summary>宽高比(宽 / 高)的下限(<c>WM_NORMAL_HINTS</c> 的 min_aspect);没有为 0。</summary>
+    public double MinAspect { get; init; }
+
+    /// <summary>宽高比(宽 / 高)的上限(max_aspect);没有为 0。</summary>
+    public double MaxAspect { get; init; }
+
+    /// <summary>
+    /// 窗口重力(<c>WM_NORMAL_HINTS</c> 的 win_gravity,ICCCM §4.1.2.3):外框加上去之后,窗口的哪个参考点停在客户端请求的位置上。
+    /// 没给时是 <see cref="XGravity.NorthWest" />(外框左上角对准请求的坐标)。
+    /// </summary>
+    public XGravity WinGravity { get; init; } = XGravity.NorthWest;
+
+    /// <summary>
+    /// 位置是用户指定的(<c>WM_NORMAL_HINTS</c> 的 USPosition,比如 <c>xterm -geometry +0+0</c>):宿主应当照这个位置摆,哪怕是 (0, 0)。
+    /// </summary>
+    public bool UserPosition { get; init; }
+
+    /// <summary>位置是程序自己定的(PPosition)。不少程序在 (0, 0) 也设它,宿主可以把那种当成「没给位置」。</summary>
+    public bool ProgramPosition { get; init; }
+
+    /// <summary>
+    /// 窗口组的组长(<c>WM_HINTS</c> 的 window_group):同一个程序的各个顶层指向同一个组长(组长常常是一个不映射的窗口)。
+    /// 没有,或指向的不是顶层窗口时为 null。
+    /// </summary>
+    public XTopLevelWindow? WindowGroup { get; init; }
+
+    /// <summary>
+    /// 窗口管理器可以对它做的操作(<c>_MOTIF_WM_HINTS</c> 的 functions):没说时全部可以。
+    /// 宿主应当据此禁用对应的按钮(不能缩放的对话框、不让最小化的启动画面)。
+    /// </summary>
+    public XWindowFunctions Functions { get; init; } = XWindowFunctions.All;
+
+    /// <summary>
+    /// 图标(<c>_NET_WM_ICON</c>,可能有多种尺寸);没有时取 <c>WM_HINTS</c> 的 icon_pixmap(与 icon_mask)—— 老程序只给那个;
+    /// 都没有为空列表。图标没变时各份快照共用同一个列表实例。
+    /// </summary>
     public IReadOnlyList<XWindowIcon> Icons { get; init; } = [];
 
     /// <summary>要求引起注意(<c>WM_HINTS</c> 的 urgency 或 <c>_NET_WM_STATE_DEMANDS_ATTENTION</c>)。</summary>
@@ -146,6 +197,51 @@ public enum XTopLevelChanges
 
     /// <summary>全部。</summary>
     All = Geometry | Title | States | Icons | Shape | Hints,
+}
+
+/// <summary>X 的重力(协议「CreateWindow」的 win-gravity 取值;ICCCM §4.1.2.3 的 win_gravity 用 1–10)。</summary>
+public enum XGravity
+{
+    /// <summary>左上角(默认)。</summary>
+    NorthWest = 1,
+    /// <summary>上边中点。</summary>
+    North = 2,
+    /// <summary>右上角。</summary>
+    NorthEast = 3,
+    /// <summary>左边中点。</summary>
+    West = 4,
+    /// <summary>中心。</summary>
+    Center = 5,
+    /// <summary>右边中点。</summary>
+    East = 6,
+    /// <summary>左下角。</summary>
+    SouthWest = 7,
+    /// <summary>下边中点。</summary>
+    South = 8,
+    /// <summary>右下角。</summary>
+    SouthEast = 9,
+    /// <summary>内区不动:请求的坐标就是内区左上角(外框长在它外面)。</summary>
+    Static = 10,
+}
+
+/// <summary>窗口管理器可以对窗口做的操作(<c>_MOTIF_WM_HINTS</c> 的 functions)。</summary>
+[Flags]
+public enum XWindowFunctions
+{
+    /// <summary>什么都不行。</summary>
+    None = 0,
+    /// <summary>改尺寸。</summary>
+    Resize = 1 << 0,
+    /// <summary>移动。</summary>
+    Move = 1 << 1,
+    /// <summary>最小化。</summary>
+    Minimize = 1 << 2,
+    /// <summary>最大化。</summary>
+    Maximize = 1 << 3,
+    /// <summary>关闭。</summary>
+    Close = 1 << 4,
+    /// <summary>全部。</summary>
+    All = Resize | Move | Minimize | Maximize | Close,
 }
 
 /// <summary>窗口四边的宽度,像素(<c>_NET_FRAME_EXTENTS</c> / <c>_GTK_FRAME_EXTENTS</c> 的左、右、上、下)。</summary>
