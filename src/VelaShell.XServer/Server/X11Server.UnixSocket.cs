@@ -73,18 +73,30 @@ public sealed partial class X11Server
         TryListen(path, path, cancellationToken);
     }
 
-    /// <summary>这个 Unix 套接字文件后面有没有进程在听。</summary>
+    /// <summary>
+    /// 这个 Unix 套接字文件后面有没有进程在听。限时 300 毫秒:Linux 上对 backlog 已满的 AF_UNIX 流套接字做阻塞 connect 会一直等 ——
+    /// 原先同步 Connect、不设时限,本机任何用户布置一个 backlog 满的套接字就能让 StartAsync 永远卡在这里。到时限按「有人占着」算。
+    /// </summary>
     internal static bool IsUnixSocketLive(string path)
     {
         using Socket probe = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        using CancellationTokenSource limit = new(TimeSpan.FromMilliseconds(300));
         try
         {
-            probe.Connect(new UnixDomainSocketEndPoint(path));
+            probe.ConnectAsync(new UnixDomainSocketEndPoint(path), limit.Token).AsTask().GetAwaiter().GetResult();
             return true;
+        }
+        catch (SocketException e) when (e.SocketErrorCode is SocketError.WouldBlock or SocketError.TryAgain)
+        {
+            return true;   // 有人在听、backlog 满了(Linux 上非阻塞 connect 回 EAGAIN):占着
         }
         catch (SocketException)
         {
             return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return true;
         }
     }
 

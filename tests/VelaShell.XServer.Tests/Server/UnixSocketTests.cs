@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 
 namespace VelaShell.XServer.Tests.Server;
@@ -7,6 +8,49 @@ namespace VelaShell.XServer.Tests.Server;
 [TestCategory("X11Server")]
 public sealed class UnixSocketTests
 {
+    [TestMethod]
+    public void 占用探测有时限_backlog满了的套接字不会把启动卡死()
+    {
+        if (!Socket.OSSupportsUnixDomainSockets)
+        {
+            Assert.Inconclusive("这个系统不支持 Unix 套接字");
+        }
+        string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
+        UnixDomainSocketEndPoint endpoint = new(path);
+        using Socket listener = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        listener.Bind(endpoint);
+        listener.Listen(0);
+        List<Socket> fillers = [];
+        try
+        {
+            for (int i = 0; i < 4; i++)   // 连上不 accept,把 backlog 塞满(Linux 上之后的阻塞 connect 会一直等)
+            {
+                Socket filler = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified) { Blocking = false };
+                fillers.Add(filler);
+                try
+                {
+                    filler.Connect(endpoint);
+                }
+                catch (SocketException)
+                {
+                }
+            }
+            Stopwatch watch = Stopwatch.StartNew();
+            bool live = X11Server.IsUnixSocketLive(path);
+            Assert.IsLessThan(2000L, watch.ElapsedMilliseconds, "原先同步 connect、不设时限,Linux 上挂死在这里");
+            if (OperatingSystem.IsLinux())
+            {
+                Assert.IsTrue(live, "有人在听、只是 backlog 满了:算占着,不去删它的套接字文件");
+            }
+        }
+        finally
+        {
+            fillers.ForEach(f => f.Dispose());
+            listener.Dispose();
+            File.Delete(path);
+        }
+    }
+
     [TestMethod]
     public async Task 经Unix套接字完成连接建立()
     {
