@@ -245,15 +245,13 @@ public sealed partial class X11Server
 
     private void DestroyWindow(XClient c, XRequestReader r) => Destroy(Window(r.U32()));
 
+    /// <summary>协议「DestroySubwindows」:对每个子窗口做一次 DestroyWindow,按堆叠次序从下到上(原先从上到下)。</summary>
     private void DestroySubwindows(XRequestReader r)
     {
         XWindow window = Window(r.U32());
-        for (int i = window.Children.Count - 1; i >= 0; i--)
+        foreach (XWindow child in window.Children.ToArray())   // Children 从下到上排
         {
-            if (i < window.Children.Count)
-            {
-                Destroy(window.Children[i]);
-            }
+            Destroy(child);
         }
     }
 
