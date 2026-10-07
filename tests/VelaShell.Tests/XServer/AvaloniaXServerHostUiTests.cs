@@ -458,6 +458,42 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 桌面类窗口(xfdesktop 一类,<c>_NET_WM_WINDOW_TYPE_DESKTOP</c>)不给原生窗口 —— 原先它是一个铺满虚拟桌面的无边框窗口,
+    /// 一激活就挡住本机所有程序;映射之后才改成桌面类型的收掉,改回来的重新显示。
+    /// </summary>
+    [TestMethod]
+    public async Task DesktopTypeWindow_GetsNoNativeWindow() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, replies: replies);
+        uint type = await InternAsync(client, replies, "_NET_WM_WINDOW_TYPE");
+        uint desktop = await InternAsync(client, replies, "_NET_WM_WINDOW_TYPE_DESKTOP");
+        uint normal = await InternAsync(client, replies, "_NET_WM_WINDOW_TYPE_NORMAL");
+        uint icons = idBase | 1, editor = idBase | 2;
+
+        await SendAsync(client, 1, 24, w => w.U32(icons).U32(root).I16(0).I16(0).U16(800).U16(600).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 18, 0, w => w.U32(icons).U32(type).U32(4).U8(32).Zero(3).U32(1).U32(desktop));   // ATOM
+        await SendAsync(client, 8, 0, w => w.U32(icons));
+        await SendAsync(client, 1, 24, w => w.U32(editor).U32(root).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(editor));
+        XNativeWindow shown = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == editor));
+        Assert.IsFalse(host.Windows.Any(w => w.Handle.Id == icons), "桌面窗口没有原生窗口");
+
+        // 映射之后改成桌面:收掉;再改回普通:重新显示。
+        await SendAsync(client, 18, 0, w => w.U32(editor).U32(type).U32(4).U8(32).Zero(3).U32(1).U32(desktop));
+        await WaitForAsync(() => !shown.IsVisible ? shown : null);
+        Assert.IsFalse(host.Windows.Any(w => w.Handle.Id == editor));
+        await SendAsync(client, 18, 0, w => w.U32(editor).U32(type).U32(4).U8(32).Zero(3).U32(1).U32(normal));
+        await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == editor && w.IsVisible));
+        host.Detach();
+    });
+
+    /// <summary>
     /// owner 级联关闭(Avalonia 关 owner 时先问它拥有的窗口,有一个不肯 owner 就关不掉):
     /// 父窗口在 X 里取消映射、对话框还映射着 → 父窗口收掉,对话框不带 owner 重新显示;停服时一个都不留;
     /// 弹层的关闭不转给客户端(没有 WM_DELETE_WINDOW 的弹层原先一关就断开了整个程序)。

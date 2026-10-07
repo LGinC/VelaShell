@@ -33,6 +33,9 @@ namespace VelaShell.Services.XServer;
 public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 {
     private readonly Dictionary<uint, XNativeWindow> _windows = [];
+
+    /// <summary>映射着、但不给原生窗口的桌面类窗口(见 <see cref="IsDesktop" />)。只在 UI 线程上碰。</summary>
+    private readonly HashSet<XTopLevelWindow> _desktops = [];
     private volatile X11Server? _server;
     private Screens? _watchedScreens;
     private string? _lastClipboard;
@@ -143,6 +146,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             XNativeWindow[] windows = [.. _windows.Values];
             _windows.Clear();
+            _desktops.Clear();
             // 先全部打上标记再关:关 owner 时 Avalonia 先问它的子窗口,子窗口不拦,owner 才关得掉(原先留下关不掉的空壳)。
             foreach (XNativeWindow window in windows)
             {
@@ -314,6 +318,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void TopLevelUnmapped(XTopLevelWindow window) => Dispatcher.UIThread.Post(() =>
     {
+        _desktops.Remove(window);
         if (_windows.Remove(window.Id, out XNativeWindow? native))
         {
             CloseWithOwnedWindows(native);
@@ -349,9 +354,29 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     {
         if (_windows.TryGetValue(window.Id, out XNativeWindow? native))
         {
+            if (IsDesktop(window.Snapshot))
+            {
+                // 映射之后才把类型改成桌面:收掉原生窗口(见 IsDesktop)。
+                _windows.Remove(window.Id);
+                _desktops.Add(window);
+                CloseWithOwnedWindows(native);
+                return;
+            }
             native.ApplyProperties(changes);
         }
+        else if (_desktops.Contains(window) && !IsDesktop(window.Snapshot))
+        {
+            _desktops.Remove(window);   // 不再是桌面了:照常给一个原生窗口
+            Map(window);
+        }
     });
+
+    /// <summary>
+    /// 桌面类窗口(<c>_NET_WM_WINDOW_TYPE_DESKTOP</c>:xfdesktop、caja、pcmanfm 画图标的底层窗口)不给原生窗口。rootless 下没有能放它的
+    /// 「桌面底层」:原先它成了一个与整个虚拟桌面一样大、无边框的普通窗口,一激活就挡住本机所有程序(xs_plan CP-24)。
+    /// 它在 X 里照常映射着,只是看不见。
+    /// </summary>
+    private static bool IsDesktop(XTopLevelSnapshot snapshot) => snapshot.WindowType == XWindowType.Desktop && !snapshot.OverrideRedirect;
 
     /// <inheritdoc />
     /// <remarks>
@@ -513,6 +538,11 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         if (_server is null || _windows.ContainsKey(handle.Id) || handle.Snapshot.InputOnly)
         {
             return;   // InputOnly 的顶层(GtkInvisible 之类)看不见:不开原生窗口(原先多出一个黑窗口)
+        }
+        if (IsDesktop(handle.Snapshot))
+        {
+            _desktops.Add(handle);
+            return;
         }
         XNativeWindow window = new(this, handle);
         _windows[handle.Id] = window;
