@@ -78,6 +78,55 @@ public sealed class CoreDrawingTests
         Assert.AreEqual(0x00FF00u, Pixel(handle, 52, 7), "中间的角");
     }
 
+    private static async Task<byte> ErrorOfAsync(XTestClient c, ushort sequence) =>
+        (await c.NextAsync(m => m.IsError && m.Sequence == sequence)).Detail;
+
+    [TestMethod]
+    public async Task GC的枚举值越界回BadValue_出错的ChangeGC与SetDashes不改任何值()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint window, XTopLevelWindow handle) = await MapWindowAsync(c, host);
+        uint gc = await CreateGcAsync(c, window, (GcForeground, 0xFF0000));
+
+        // function 16 原先被 & 0xF 截成 GXclear;line-style / cap / join / fill-style / fill-rule / subwindow-mode / arc-mode 越界原样收下。
+        foreach ((uint bit, uint value) in new (uint, uint)[] { (0x1, 16), (0x20, 3), (0x40, 4), (0x80, 3), (0x100, 4), (0x200, 2), (0x8000, 2), (0x10000, 2), (0x400000, 2) })
+        {
+            ushort seq = await c.SendAsync(56, 0, b => b.U32(gc).U32(bit).U32(value));   // ChangeGC
+            Assert.AreEqual(2, await ErrorOfAsync(c, seq), $"掩码 0x{bit:x} = {value}:BadValue");
+        }
+
+        // 前景改成绿、同时给一个不存在的平铺像素图:BadPixmap,前景也不该变。
+        ushort bad = await c.SendAsync(56, 0, b => b.U32(gc).U32(GcForeground | 0x400).U32(0x00FF00).U32(0x0BADBAD));
+        Assert.AreEqual(4, await ErrorOfAsync(c, bad), "BadPixmap");
+        await FillRectAsync(c, window, gc, 0, 0, 2, 2);
+        await c.SyncAsync();
+        Assert.AreEqual(0xFF0000u, Pixel(handle, 0, 0), "出错的 ChangeGC 不产生效果");
+
+        // OnOffDash、默认的 [4, 4]:SetDashes(offset 2, [0]) 出错 —— dash-offset 也不能改(改了的话第 2 个像素就落在空白里)。
+        await c.SendAsync(56, 0, b => b.U32(gc).U32(0x20).U32(1));
+        bad = await c.SendAsync(58, 0, b => b.U32(gc).U16(2).U16(1).U8(0).U8(0).U8(0).U8(0));
+        Assert.AreEqual(2, await ErrorOfAsync(c, bad), "dash 为 0:BadValue");
+        await PolyLineAsync(c, window, gc, (0, 10), (7, 10));
+        await c.SyncAsync();
+        Assert.AreEqual(0xFF0000u, Pixel(handle, 2, 10), "dash-offset 仍是 0");
+        Assert.AreEqual(0x000000u, Pixel(handle, 4, 10));
+    }
+
+    [TestMethod]
+    public async Task PutImage位图格式的left_pad不小于32回BadMatch()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint window, _) = await MapWindowAsync(c, host);
+        uint gc = await CreateGcAsync(c, window, (GcForeground, 0xFF0000));
+        // 1×1 的 XYBitmap、left-pad 32:每行 33 位 → 补齐到 8 字节。
+        ushort seq = await c.SendAsync(72, 0, b => b.U32(window).U32(gc).U16(1).U16(1).I16(0).I16(0).U8(32).U8(1).U16(0).U32(0).U32(1));
+        Assert.AreEqual(8, await ErrorOfAsync(c, seq), "BadMatch");
+    }
+
     private static async Task<uint> PixmapAsync(XTestClient c, uint drawable, byte depth, ushort width, ushort height)
     {
         uint pixmap = c.NewId();

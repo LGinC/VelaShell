@@ -796,14 +796,20 @@ public sealed partial class X11Server
     private void FreeGlyphs(XRequestReader r)
     {
         GlyphTable table = GlyphSet(r.U32()).Table;
+        // 先全部核对(不存在的、或者列了两次的 —— 第二次时它已经释放了 —— 回 BadGlyph),再一起释放:出错的请求不产生效果。
+        HashSet<uint> ids = [];
         while (r.Remaining >= 4)
         {
             uint id = r.U32();
-            if (!table.Glyphs.Remove(id, out XRenderGlyph? removed))
+            if (!table.Glyphs.ContainsKey(id) || !ids.Add(id))
             {
                 throw RenderError(4, id);
             }
-            ReleaseGlyphs([removed]);
+        }
+        foreach (uint id in ids)
+        {
+            table.Glyphs.Remove(id, out XRenderGlyph? removed);
+            ReleaseGlyphs([removed!]);
         }
     }
 

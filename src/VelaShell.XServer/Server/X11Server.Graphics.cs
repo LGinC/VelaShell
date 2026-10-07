@@ -141,18 +141,59 @@ public sealed partial class X11Server
         Copy(XGcMask.ArcMode, () => dst.ArcMode = src.ArcMode);
     }
 
+    /// <summary>
+    /// CreateGC / ChangeGC 的值表。先全部读出来、逐项核对(枚举越界回 BadValue,像素图 / 字体不存在或深度不对回相应的错误),
+    /// 都没问题才一起写进 GC —— 核心协议:出错的请求不产生效果(原先边读边改,出错时前面的值已经生效;function 还被 &amp; 0xF 截断)。
+    /// </summary>
     private void ApplyGcValues(XGc gc, uint mask, XRequestReader r)
     {
+        uint[] values = new uint[23];
+        for (int bit = 0; bit < 23; bit++)
+        {
+            if ((mask & (1u << bit)) != 0)
+            {
+                values[bit] = r.U32();
+            }
+        }
+        bool Has(XGcMask m) => (mask & (uint)m) != 0;
+        uint Value(XGcMask m) => values[System.Numerics.BitOperations.TrailingZeroCount((uint)m)];
+        void Range(XGcMask m, uint max)
+        {
+            if (Has(m) && Value(m) > max)
+            {
+                throw new XProtocolError(XErrorCode.Value, Value(m));
+            }
+        }
+        Range(XGcMask.Function, 15);
+        Range(XGcMask.LineStyle, 2);            // Solid / OnOffDash / DoubleDash
+        Range(XGcMask.CapStyle, 3);             // NotLast / Butt / Round / Projecting
+        Range(XGcMask.JoinStyle, 2);            // Miter / Round / Bevel
+        Range(XGcMask.FillStyle, 3);            // Solid / Tiled / Stippled / OpaqueStippled
+        Range(XGcMask.FillRule, 1);             // EvenOdd / Winding
+        Range(XGcMask.SubwindowMode, 1);        // ClipByChildren / IncludeInferiors
+        Range(XGcMask.GraphicsExposures, 1);    // BOOL
+        Range(XGcMask.ArcMode, 1);              // Chord / PieSlice
+        if (Has(XGcMask.Dashes) && (byte)Value(XGcMask.Dashes) == 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, Value(XGcMask.Dashes));
+        }
+        XPixmap? tile = Has(XGcMask.Tile) ? PixmapOfDepth(Value(XGcMask.Tile), gc.Depth) : null;
+        XPixmap? stipple = Has(XGcMask.Stipple) ? PixmapOfDepth(Value(XGcMask.Stipple), 1) : null;
+        XFontResource? font = Has(XGcMask.Font)
+            ? Lookup<XFontResource>(Value(XGcMask.Font)) ?? throw new XProtocolError(XErrorCode.Font, Value(XGcMask.Font))
+            : null;
+        XPixmap? clip = Has(XGcMask.ClipMask) && Value(XGcMask.ClipMask) != 0 ? PixmapOfDepth(Value(XGcMask.ClipMask), 1) : null;
+
         for (int bit = 0; bit < 23; bit++)
         {
             if ((mask & (1u << bit)) == 0)
             {
                 continue;
             }
-            uint v = r.U32();
+            uint v = values[bit];
             switch ((XGcMask)(1u << bit))
             {
-                case XGcMask.Function: gc.Function = (byte)(v & 0xF); break;
+                case XGcMask.Function: gc.Function = (byte)v; break;
                 case XGcMask.PlaneMask: gc.PlaneMask = v; break;
                 case XGcMask.Foreground: gc.Foreground = v; break;
                 case XGcMask.Background: gc.Background = v; break;
@@ -162,66 +203,44 @@ public sealed partial class X11Server
                 case XGcMask.JoinStyle: gc.JoinStyle = (byte)v; break;
                 case XGcMask.FillStyle: gc.FillStyle = (byte)v; break;
                 case XGcMask.FillRule: gc.FillRule = (byte)v; break;
-                case XGcMask.Tile:
-                    XPixmap tile = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (tile.Depth != gc.Depth)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
-                    gc.Tile = tile;
-                    break;
-                case XGcMask.Stipple:
-                    XPixmap stipple = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (stipple.Depth != 1)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
-                    gc.Stipple = stipple;
-                    break;
+                case XGcMask.Tile: gc.Tile = tile; break;
+                case XGcMask.Stipple: gc.Stipple = stipple; break;
                 case XGcMask.TileStipXOrigin: gc.TileStipXOrigin = (short)v; break;
                 case XGcMask.TileStipYOrigin: gc.TileStipYOrigin = (short)v; break;
-                case XGcMask.Font: gc.Font = Lookup<XFontResource>(v) ?? throw new XProtocolError(XErrorCode.Font, v); break;
+                case XGcMask.Font: gc.Font = font; break;
                 case XGcMask.SubwindowMode: gc.SubwindowMode = (byte)v; break;
                 case XGcMask.GraphicsExposures: gc.GraphicsExposures = v != 0; break;
                 case XGcMask.ClipXOrigin: gc.ClipXOrigin = (short)v; break;
                 case XGcMask.ClipYOrigin: gc.ClipYOrigin = (short)v; break;
                 case XGcMask.ClipMask:
                     gc.ClipRects = null;
-                    if (v == 0)
-                    {
-                        gc.ClipPixmap = null;
-                        break;
-                    }
-                    XPixmap clip = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (clip.Depth != 1)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
                     gc.ClipPixmap = clip;
                     break;
                 case XGcMask.DashOffset: gc.DashOffset = (ushort)v; break;
-                case XGcMask.Dashes:
-                    if ((byte)v == 0)
-                    {
-                        throw new XProtocolError(XErrorCode.Value, v);
-                    }
-                    gc.Dashes = [(byte)v, (byte)v];
-                    break;
+                case XGcMask.Dashes: gc.Dashes = [(byte)v, (byte)v]; break;
                 case XGcMask.ArcMode: gc.ArcMode = (byte)v; break;
             }
         }
     }
 
+    /// <summary>GC 引用的像素图:不存在回 BadPixmap,深度不对回 BadMatch。</summary>
+    private XPixmap PixmapOfDepth(uint id, byte depth)
+    {
+        XPixmap pixmap = Lookup<XPixmap>(id) ?? throw new XProtocolError(XErrorCode.Pixmap, id);
+        return pixmap.Depth == depth ? pixmap : throw new XProtocolError(XErrorCode.Match);
+    }
+
     private void SetDashes(XRequestReader r)
     {
         XGc gc = Gc(r.U32());
-        gc.DashOffset = r.U16();
+        ushort offset = r.U16();
         int n = r.U16();
         byte[] dashes = r.BytesPadded(n);
         if (n == 0 || dashes.Any(d => d == 0))
         {
-            throw new XProtocolError(XErrorCode.Value, 0);
+            throw new XProtocolError(XErrorCode.Value, 0);   // 先核对:出错时 dash-offset 也不改
         }
+        gc.DashOffset = offset;
         // 奇数个元素时图案重复一遍(协议规定),保证开 / 关交替。
         gc.Dashes = n % 2 == 1 ? [.. dashes, .. dashes] : dashes;
     }
@@ -755,12 +774,16 @@ public sealed partial class X11Server
     };
 
     /// <summary>格式与深度的搭配(协议「PutImage」):Bitmap 必须深度 1;XYPixmap / ZPixmap 必须与可绘对象同深度,ZPixmap 不许左补。</summary>
+    /// <summary>
+    /// PutImage 的格式与深度:Bitmap 深度为 1、其余与目标同深度;ZPixmap 的 left-pad 必须为 0,Bitmap / XYPixmap 的 left-pad 必须小于
+    /// 连接建立时声明的 bitmap-scanline-pad(32)—— 否则 BadMatch(核心协议「PutImage」)。
+    /// </summary>
     private static void ValidateImageFormat(byte format, byte depth, byte targetDepth, byte leftPad)
     {
         bool ok = format switch
         {
-            0 => depth == 1,
-            1 => depth == targetDepth,
+            0 => depth == 1 && leftPad < 32,
+            1 => depth == targetDepth && leftPad < 32,
             2 => depth == targetDepth && leftPad == 0,
             _ => throw new XProtocolError(XErrorCode.Value, format),
         };

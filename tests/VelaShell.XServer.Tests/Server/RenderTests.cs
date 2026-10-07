@@ -129,6 +129,22 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task FreeGlyphs里有一个不存在时哪个都不释放()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.A8));
+        await c.SendAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65).U16(1).U16(1).I16(0).I16(0).I16(1).I16(0).U32(0xFF));
+        // [65, 66]:66 不存在 —— BadGlyph,而且 65 不能已经释放了(原先边核对边释放)。
+        XMessage bad = await c.RequestAsync(s.Major, 22, b => b.U32(glyphSet).U32(65).U32(66));
+        Assert.IsTrue(bad.IsError);
+        ushort again = await c.SendAsync(s.Major, 22, b => b.U32(glyphSet).U32(65));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError && m.Sequence == again, 150), "65 还在,这次释放成功");
+    }
+
+    [TestMethod]
     public async Task 带遮罩格式的字形_遮罩只按目标上可写的一块分配()
     {
         await using Setup s = await SetupAsync();
