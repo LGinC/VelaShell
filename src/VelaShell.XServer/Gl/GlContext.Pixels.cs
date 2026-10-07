@@ -403,6 +403,12 @@ internal sealed partial class GlContext
         bool hasData = data.Length > 0 && w > 0 && h > 0;
         if (hasData)
         {
+            // 带了数据就得装得下整张图像(含边框),否则命令作废 —— 与 DrawPixels 一样。原先 1 字节的数据也照声明的 2050² 逐个解码。
+            if (!layout.Covers(data.Length, width, oneD ? 1 : height))
+            {
+                SetError(GlEnum.INVALID_VALUE);
+                return;
+            }
             WorkBudget.Charge(2L * w * h);   // 逐个解码
         }
         if (!TryAccountLevel(texture, level, (long)w * h * 4))
@@ -463,6 +469,15 @@ internal sealed partial class GlContext
             return;
         }
         ReadOnlySpan<byte> data = r.Rest();
+        if (data.IsEmpty || width == 0 || height == 0)
+        {
+            return;   // 没有数据(客户端传 NULL):什么都不改
+        }
+        if (!layout.Covers(data.Length, width, height))
+        {
+            SetError(GlEnum.INVALID_VALUE);   // 数据装不下声明的矩形:命令作废(同 DrawPixels)
+            return;
+        }
         WorkBudget.Charge(2L * width * height);   // 逐个解码,直接写进纹素(不先整张解成浮点)
         Span<float> comp = stackalloc float[4];
         for (int y = 0; y < height; y++)

@@ -968,6 +968,23 @@ public sealed class GlxTests
         Assert.IsFalse(await AnyErrorAsync(c), "原先 −x 转回 int 回绕:ArgumentOutOfRange → BadImplementation");
     }
 
+    [TestMethod]
+    public void TexImage与TexSubImage的数据装不下声明的尺寸时作废_不带数据仍然可以()
+    {
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null);
+        gl.ExecuteOrCompile(110, TexImage2DBody(0, 2048, 2048, data: [0xFF]), bigEndian: false);   // 声称 2048²,只带 1 字节
+        Assert.AreEqual(InvalidValue, gl.GetError(), "原先照声明的尺寸逐个解码");
+        Assert.AreEqual(0.0, gl.GetTexLevelParameter(Texture2D, 0, 0x1000)!.Value.Values[0], "这一级没有定义(TEXTURE_WIDTH 为 0)");
+
+        gl.ExecuteOrCompile(110, TexImage2DBody(0, 4, 4), bigEndian: false);                       // 不带数据(客户端传 NULL):照常定义
+        Assert.AreEqual(0u, gl.GetError());
+        XTestClient.Body sub = new(bigEndian: false);
+        sub.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1)
+            .U32(Texture2D).I32(0).I32(0).I32(0).I32(4).I32(4).U32(Rgba).U32(UnsignedByte).U32(0).Bytes([1, 2, 3]);
+        gl.ExecuteOrCompile(4100, sub.ToArray(), bigEndian: false);                                 // TexSubImage2D 4×4,只带 3 字节
+        Assert.AreEqual(InvalidValue, gl.GetError());
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {
