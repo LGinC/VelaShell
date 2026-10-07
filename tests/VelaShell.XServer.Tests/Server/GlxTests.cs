@@ -1286,6 +1286,34 @@ public sealed class GlxTests
         Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 3, 3));
     }
 
+    [TestMethod]
+    public async Task GL_EXT_texture_object的厂商私有请求按核心的纹理命令处理()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        XMessage generated = await c.RequestAsync(glx, 17, b => b.U32(13).U32(tag).I32(2));       // GenTexturesEXT
+        Assert.IsTrue(generated.IsReply, "原先一律回 GLXUnsupportedPrivateRequest");
+        Assert.AreEqual(2u, generated.U32(4), "两个名字");
+        uint name = generated.U32(32);
+        Assert.AreNotEqual(0u, name);
+        await RenderAsync(c, glx, tag, new Commands().Add(4117, b => b.U32(Texture2D).U32(name)));   // BindTextureEXT 与核心同一个渲染命令
+        Assert.AreEqual(1u, (await c.RequestAsync(glx, 17, b => b.U32(14).U32(tag).U32(name))).U32(8), "IsTextureEXT");
+        XMessage resident = await c.RequestAsync(glx, 17, b => b.U32(11).U32(tag).I32(1).U32(name));   // AreTexturesResidentEXT
+        Assert.AreEqual(1u, resident.U32(8));
+        Assert.AreEqual(1, resident.Bytes[32]);
+
+        await c.SendAsync(glx, 16, b => b.U32(12).U32(tag).I32(1).U32(name));                       // DeleteTexturesEXT(VendorPrivate,不回复)
+        Assert.AreEqual(0u, (await c.RequestAsync(glx, 17, b => b.U32(14).U32(tag).U32(name))).U32(8), "删掉了");
+
+        XMessage unknown = await c.RequestAsync(glx, 17, b => b.U32(99).U32(tag));
+        Assert.AreEqual(151 + 8, unknown.Bytes[1], "别的厂商码仍是 GLXUnsupportedPrivateRequest");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

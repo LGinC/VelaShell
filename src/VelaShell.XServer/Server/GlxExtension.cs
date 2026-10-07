@@ -17,6 +17,8 @@
 //   OpenGL Graphics with the X Window System, Version 1.4 —— §3.3.3「Configuration Management」(FBConfig 属性,Table 3.1)、
 //   §3.3.5「On Screen Rendering」、§3.3.7「Rendering Contexts」(第一次成为当前时视口初始化为可绘对象的尺寸)、
 //   §3.3.10「Double Buffering」、§3.5「Backwards Compatibility」(GLX 1.2 的窗口可以直接当 GLX 可绘对象)。
+//   Khronos EXT_texture_object —— 「GLX Protocol」一节(AreTexturesResidentEXT / DeleteTexturesEXT / GenTexturesEXT / IsTextureEXT
+//   走 VendorPrivate(WithReply),厂商码 11 / 12 / 13 / 14,之后是上下文标签与参数)。
 //   Khronos GLX_ARB_create_context / GLX_ARB_create_context_profile —— 「GLX Protocol」一节(SetClientInfoARB 33、
 //   CreateContextAttribsARB 34:context、fbconfig、screen、share_list、isdirect、两个保留字段、num_attribs,再跟属性对、
 //   SetClientInfo2ARB 35)与「Errors」一节(版本与特性组合没有定义 → BadMatch;配置给不了请求的版本 → GLXBadFBConfig;
@@ -307,7 +309,22 @@ internal sealed class GlxExtension(X11Server server)
                 }
             case 16:   // VendorPrivate
             case 17:   // VendorPrivateWithReply
-                throw GlxError(GlxUnsupportedPrivateRequest, r.U32());
+                {
+                    // GL_EXT_texture_object(扩展串里声明了)的四个非渲染命令走厂商私有请求:厂商码之后的正文(标签起)与
+                    // 1.1 的 AreTexturesResident / DeleteTextures / GenTextures / IsTexture(Single 143–146)逐字节相同。
+                    // 原先一律回 GLXUnsupportedPrivateRequest。
+                    uint vendorCode = r.U32();
+                    byte single = (minor, vendorCode) switch
+                    {
+                        (17, 11) => 143,   // AreTexturesResidentEXT
+                        (16, 12) => 144,   // DeleteTexturesEXT
+                        (17, 13) => 145,   // GenTexturesEXT
+                        (17, 14) => 146,   // IsTextureEXT
+                        _ => throw GlxError(GlxUnsupportedPrivateRequest, vendorCode),
+                    };
+                    GlxSingle(c, single, r);
+                    break;
+                }
             case 18:   // QueryExtensionsString
                 CheckGlxScreen(r.U32());
                 ReplyGlxString(c, GlxExtensionsString);
