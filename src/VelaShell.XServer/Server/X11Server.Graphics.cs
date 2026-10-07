@@ -577,17 +577,23 @@ public sealed partial class X11Server
         {
             ArrayPool<uint>.Shared.Return(source.Pixels);
         }
+        SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), avail.Offset(dx - sx, dy - sy), XOpcode.CopyArea);
+    }
 
+    /// <summary>
+    /// CopyArea / CopyPlane 之后:目标矩形里对应源拿不到的部分(<paramref name="copied" /> 之外,只算目标可绘对象范围内的)
+    /// 逐块发 GraphicsExposure 请客户端自己补画;都拿到了发一个 NoExposure(gc 的 graphics-exposures 关着时都不发)。
+    /// </summary>
+    private void SendCopyExposures(XClient c, XGc gc, uint dst, XRect destination, XRect copied, byte major)
+    {
         if (!gc.GraphicsExposures)
         {
             return;
         }
-        // 需要补画的:目标矩形里对应源拿不到的部分,且只算目标可绘对象范围内的(坐标不会是负数)。
-        Region missing = new Region(new XRect(dx, dy, width, height)).Subtract(avail.Offset(dx - sx, dy - sy))
-            .Intersect(DrawableRect(dst));
+        Region missing = new Region(destination).Subtract(copied).Intersect(DrawableRect(dst));
         if (missing.IsEmpty)
         {
-            SendNoExposure(c, gc, dst, XOpcode.CopyArea);
+            SendNoExposure(c, gc, dst, major);
             return;
         }
         List<XRect> rects = [.. missing.Rects];
@@ -597,7 +603,7 @@ public sealed partial class X11Server
             int count = rects.Count - 1 - i;
             c.Event(XEventCode.GraphicsExposure, 0, w => w
                 .U32(dst).U16((ushort)m.X).U16((ushort)m.Y).U16((ushort)m.Width).U16((ushort)m.Height)
-                .U16(0).U16((ushort)count).U8(XOpcode.CopyArea));
+                .U16(0).U16((ushort)count).U8(major));
         }
     }
 
@@ -630,36 +636,42 @@ public sealed partial class X11Server
         short sx = r.I16(), sy = r.I16(), dx = r.I16(), dy = r.I16();
         ushort width = r.U16(), height = r.U16();
         uint plane = r.U32();
-        if (plane == 0 || (plane & (plane - 1)) != 0)
+        XGc gc = Gc(gcId);
+        byte srcDepth = DrawableDepth(src);
+        _ = DrawableDepth(dst);
+        // 协议:bit-plane 恰好一位、且小于 2^源深度(深度 8 的源没有第 8 位以上的平面)。
+        if (plane == 0 || (plane & (plane - 1)) != 0 || (srcDepth < 32 && plane >= 1u << srcDepth))
         {
             throw new XProtocolError(XErrorCode.Value, plane);
         }
-        XGc gc = Gc(gcId);
         if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
         {
-            SendNoExposure(c, gc, dst, XOpcode.CopyPlane);
+            SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), default, XOpcode.CopyPlane);
             return;
         }
         XRect avail = source.Available;
         try
         {
-            Draw(dst, gcId, raster =>
+            // 等于拿源的这一位平面当点画、按 OpaqueStippled 填:位为 1 处是前景、0 处是背景,再按 CopyArea 贴(走光栅操作与平面掩码,
+            // GXcopy + 全平面时整行拷)。原先逐像素 PutPixel。
+            int count = avail.Width * avail.Height;
+            uint foreground = gc.Foreground, background = gc.Background;
+            Span<uint> pixels = source.Pixels.AsSpan(0, count);
+            for (int i = 0; i < pixels.Length; i++)
             {
-                for (int row = avail.Y; row < avail.Bottom; row++)
-                {
-                    for (int col = avail.X; col < avail.Right; col++)
-                    {
-                        uint bit = source.Pixels[((row - avail.Y) * avail.Width) + (col - avail.X)] & plane;
-                        raster.PutPixel(dx + (col - sx), dy + (row - sy), bit != 0 ? gc.Foreground : gc.Background);
-                    }
-                }
-            });
+                pixels[i] = (pixels[i] & plane) != 0 ? foreground : background;
+            }
+            if (!avail.IsEmpty)
+            {
+                Draw(dst, gcId, raster => raster.Blit(source.Pixels, avail.Width, avail.Height, dx + (avail.X - sx), dy + (avail.Y - sy)));
+            }
         }
         finally
         {
             ArrayPool<uint>.Shared.Return(source.Pixels);
         }
-        SendNoExposure(c, gc, dst, XOpcode.CopyPlane);
+        // 与 CopyArea 同样的曝光语义:源拿不到的部分发 GraphicsExposure。
+        SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), avail.Offset(dx - sx, dy - sy), XOpcode.CopyPlane);
     }
 
     // ------------------------------------------------------------------ PutImage / GetImage

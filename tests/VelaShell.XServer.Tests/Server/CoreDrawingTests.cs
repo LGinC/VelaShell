@@ -37,7 +37,7 @@ public sealed class CoreDrawingTests
         return gc;
     }
 
-    private const uint GcFunction = 0x1, GcForeground = 0x4, GcLineWidth = 0x10;
+    private const uint GcFunction = 0x1, GcForeground = 0x4, GcBackground = 0x8, GcLineWidth = 0x10;
 
     private static Task<ushort> PolyLineAsync(XTestClient c, uint drawable, uint gc, params (short X, short Y)[] points) =>
         c.SendAsync(65, 0, b =>
@@ -76,5 +76,49 @@ public sealed class CoreDrawingTests
         await c.SyncAsync();
         Assert.AreEqual(0x00FF00u, Pixel(handle, 27, 7), "起点 / 终点处的角");
         Assert.AreEqual(0x00FF00u, Pixel(handle, 52, 7), "中间的角");
+    }
+
+    private static async Task<uint> PixmapAsync(XTestClient c, uint drawable, byte depth, ushort width, ushort height)
+    {
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, depth, b => b.U32(pixmap).U32(drawable).U16(width).U16(height));
+        return pixmap;
+    }
+
+    private static Task<ushort> FillRectAsync(XTestClient c, uint drawable, uint gc, short x, short y, ushort width, ushort height) =>
+        c.SendAsync(70, 0, b => b.U32(drawable).U32(gc).I16(x).I16(y).U16(width).U16(height));
+
+    private static Task<ushort> CopyPlaneAsync(XTestClient c, uint src, uint dst, uint gc, short sx, short sy, short dx, short dy,
+        ushort width, ushort height, uint plane) =>
+        c.SendAsync(63, 0, b => b.U32(src).U32(dst).U32(gc).I16(sx).I16(sy).I16(dx).I16(dy).U16(width).U16(height).U32(plane));
+
+    [TestMethod]
+    public async Task CopyPlane按位平面贴前景背景_源拿不到的部分发GraphicsExposure_位平面超出源深度回BadValue()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint window, XTopLevelWindow handle) = await MapWindowAsync(c, host);
+
+        // 20×10 的 24 位像素图:左半 0x000100(第 8 位)、右半 0。
+        uint source = await PixmapAsync(c, window, 24, 20, 10);
+        await FillRectAsync(c, source, await CreateGcAsync(c, source, (GcForeground, 0x000100)), 0, 0, 10, 10);
+        uint gc = await CreateGcAsync(c, window, (GcForeground, 0xFF0000), (GcBackground, 0x0000FF));
+
+        // 从 (5, 0) 起拷 20×10:源只有 15 列拿得到,目标 (15..19, 0..9) 那一块要客户端补画。
+        await CopyPlaneAsync(c, source, window, gc, 5, 0, 0, 20, 20, 10, 0x100);
+        XMessage exposure = await c.NextEventAsync(13);   // GraphicsExposure
+        Assert.AreEqual(window, exposure.U32(4));
+        Assert.AreEqual("15,20 5×10", $"{exposure.U16(8)},{exposure.U16(10)} {exposure.U16(12)}×{exposure.U16(14)}");
+        Assert.AreEqual(63, exposure.Bytes[20], "major-opcode = CopyPlane");
+        Assert.AreEqual(0xFF0000u, Pixel(handle, 4, 25), "位为 1:前景");
+        Assert.AreEqual(0x0000FFu, Pixel(handle, 5, 25), "位为 0:背景");
+        Assert.AreEqual(0x000000u, Pixel(handle, 15, 25), "源之外不画");
+
+        // 8 位的源没有第 8 位平面。
+        uint shallow = await PixmapAsync(c, window, 8, 4, 4);
+        ushort bad = await CopyPlaneAsync(c, shallow, window, gc, 0, 0, 0, 0, 4, 4, 0x100);
+        XMessage error = await c.NextAsync(m => m.IsError && m.Sequence == bad);
+        Assert.AreEqual(2, error.Detail, "BadValue");
     }
 }
