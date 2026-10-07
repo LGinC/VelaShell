@@ -119,6 +119,23 @@ public sealed class ProtocolTests
     }
 
     [TestMethod]
+    public void 请求读取器按客户端给的长度取字节时越界一律是BadLength_不会回绕()
+    {
+        // 原先按 _pos + count 判:count 接近 int.MaxValue 时回绕成负数、检查放行,AsSpan 再抛 —— 客户端看到的是 BadImplementation。
+        byte[] request = new byte[16];
+        Protocol.XRequestReader r = new(request, bigEndian: false);
+        r.Skip(4);
+        foreach (int count in (int[])[int.MaxValue, int.MaxValue - 7, 13, -1])
+        {
+            Protocol.XProtocolError error = Assert.ThrowsExactly<Protocol.XProtocolError>(() => r.Bytes(count));
+            Assert.AreEqual(Protocol.XErrorCode.Length, error.Code, $"count = {count}");
+        }
+        Protocol.XProtocolError slice = Assert.ThrowsExactly<Protocol.XProtocolError>(() => r.Slice(int.MaxValue - 4));
+        Assert.AreEqual(Protocol.XErrorCode.Length, slice.Code, "Slice 先核长度再分配");
+        Assert.HasCount(8, r.Bytes(8), "合法的照常读");
+    }
+
+    [TestMethod]
     public async Task 没配cookie时只接受本机连接()
     {
         await using X11Server server = new();
