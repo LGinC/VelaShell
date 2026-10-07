@@ -371,7 +371,8 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// 每条 x11 通道来时才取<b>此刻</b>在运行的服务端,不记住解析显示时的那一个:SSH 会话比服务端活得久,
     /// 用户在标题栏把 X Server 停掉再开之后,已经连着的会话要接到新的那个上 —— 记住旧实例的话,
     /// 每条通道都接进一个已释放的服务端,远端只看到 <c>Failed to open display</c>。
-    /// 此刻没在运行就抛 <see cref="InvalidOperationException" />,转发层按「本机显示连不上」处理。
+    /// 此刻没在运行就抛 <see cref="InvalidOperationException" />:<see cref="LocalXServerSelector" /> 接住它改走本机 TCP
+    /// (用户换成了 VcXsrv),直接用的转发层按「本机显示连不上」处理。
     /// </remarks>
     private ValueTask<Stream> ConnectAsync(string? label, CancellationToken cancellationToken)
     {
