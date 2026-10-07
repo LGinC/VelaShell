@@ -248,6 +248,47 @@ public sealed class WindowStructureTests
     }
 
     [TestMethod]
+    public async Task 几百个互相重叠的子窗口改尺寸重画后每个像素都是最上面那个窗口的颜色()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint frame = await CreateChildAsync(c, c.RootWindow, 0, 0, 200, 200, background: 0x000000);
+        await c.SendAsync(8, 0, b => b.U32(frame));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(frame));
+        // 400 个 15×15 的子窗口,步长 9:相邻的互相压住一块,颜色各不相同;第 i 个在第 i − 1 个之上。
+        List<(int X, int Y, uint Color)> children = [];
+        await c.SendManyAsync(Enumerable.Range(0, 400).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        {
+            uint id = c.NewId();
+            (int x, int y, uint color) = (i % 20 * 9, i / 20 * 9, (uint)((i * 2654435761u) & 0xFFFFFF));
+            children.Add((x, y, color));
+            return (1, 24, b => b.U32(id).U32(frame).I16((short)x).I16((short)y).U16(15).U16(15).U16(0).U16(1).U32(0)
+                .U32(0x802).U32(color).U32(0));
+        }));
+        await c.SendAsync(9, 0, b => b.U32(frame));   // MapSubwindows
+        server.ResizeTopLevel(host.Mapped[frame], 201, 200);   // 整窗重画
+        await c.SyncAsync();
+
+        (uint[] pixels, int width, _) = RecordingHost.Snapshot(host.Mapped[frame]);
+        for (int y = 0; y < 200; y += 3)
+        {
+            for (int x = 0; x < 200; x += 3)
+            {
+                uint expected = 0;
+                foreach ((int cx, int cy, uint color) in children)
+                {
+                    if (x >= cx && x < cx + 15 && y >= cy && y < cy + 15)
+                    {
+                        expected = color;   // 后建的在上面
+                    }
+                }
+                Assert.AreEqual(expected, pixels[(y * width) + x] & 0xFFFFFF, $"({x},{y})");
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task DestroySubwindows按堆叠次序从下到上销毁()
     {
         await using X11Server server = new();

@@ -105,6 +105,44 @@ public sealed class ShapeTests
     }
 
     [TestMethod]
+    public async Task 顶层改输入形状不重画_边界形状变大只Expose新露出来的部分()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        (uint top, _) = await MapTopAsync(c, host, 0x000000, 0x8000);   // ExposureMask
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(30).U16(40));   // 边界:左半边
+        await c.SyncAsync();
+        async Task<List<XRect>> ExposedAsync()
+        {
+            await c.SyncAsync();
+            List<XRect> rects = [];
+            try
+            {
+                while (true)
+                {
+                    XMessage e = await c.NextEventAsync(12, timeoutMs: 100);
+                    rects.Add(new XRect(e.U16(8), e.U16(10), e.U16(12), e.U16(14)));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            return rects;
+        }
+        await ExposedAsync();   // 映射与第一次设形状的 Expose 读掉
+
+        await c.SendAsync(major, 1, b => b.U8(0).U8(2).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(10).U16(10));   // 输入形状
+        Assert.IsEmpty(await ExposedAsync(), "输入形状不改看得见的东西:原先整窗重画、整窗 Expose");
+
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(60).U16(40));   // 边界:整个窗口
+        List<XRect> exposed = await ExposedAsync();
+        Assert.AreEqual(30 * 40, exposed.Sum(r => r.Width * r.Height), "只有新露出来的右半边");
+        Assert.IsTrue(exposed.All(r => r.X >= 30));
+    }
+
+    [TestMethod]
     public async Task 设形状发ShapeNotify且宿主拿到顶层形状()
     {
         using RecordingHost host = new();

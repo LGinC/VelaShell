@@ -174,7 +174,8 @@ public sealed partial class X11Server
     /// <summary>设形状,重画受影响的区域,通知宿主与选了 ShapeNotify 的客户端。</summary>
     private void SetShape(XWindow window, byte kind, Region? shape)
     {
-        Region before = window.IsViewable && !window.IsTopLevel ? VisibleOuter(window) : new Region();
+        // 顶层看的是它自己画得到的部分(边界与裁剪形状都算);子窗口看它在顶层里露出来的外框。
+        Region before = !window.IsViewable ? new Region() : window.IsTopLevel ? VisibleInner(window) : VisibleOuter(window);
         switch (kind)
         {
             case ShapeBounding: window.BoundingShape = shape; break;
@@ -184,10 +185,16 @@ public sealed partial class X11Server
         }
         InvalidateVisibility();
 
-        if (window.IsViewable && window.TopLevel is { Buffer: { } buffer } top)
+        if (window.IsViewable && window.TopLevel is { Buffer: not null } top)
         {
-            Region redraw = window.IsTopLevel ? new Region(buffer.Bounds) : before.Union(VisibleOuter(window));
-            ExposeWindowTree(top, redraw);
+            if (kind != ShapeInput)
+            {
+                // 输入形状不改看得见的东西:不重画。顶层只重画新露出来的部分(缩小的部分宿主按形状透明掉);子窗口重画新旧并集
+                // (缩小时让出来的父窗口与兄弟也要画)。原先任何形状变化都让顶层整窗重画、整窗 Expose —— 客户端随之整窗重画,
+                // 经 SSH 再传一遍整窗像素(GTK 改尺寸时每次都设输入形状)。
+                Region redraw = window.IsTopLevel ? VisibleInner(window).Subtract(before) : before.Union(VisibleOuter(window));
+                ExposeWindowTree(top, redraw);
+            }
             if (window.IsTopLevel)
             {
                 RefreshTopLevel(window);

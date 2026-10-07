@@ -79,13 +79,21 @@ public sealed partial class X11Server
         {
             XWindow parent = cur.Parent!;
             // 父窗口的内区、裁剪形状与边界形状都裁它的全部后代(SHAPE 规范 §2)。
-            region.Intersect(InnerRect(parent));
+            XRect parentInner = InnerRect(parent);
+            region.Intersect(parentInner);
             ApplyShapes(region, parent);
+            if (region.IsEmpty)
+            {
+                return region;
+            }
+            // 先拿外框矩形与这块区域的外接矩形比,不相交的兄弟(多数都是)不建区域、不做减法 —— 原先每个兄弟都建一个区域减一次,
+            // 一层里 n 个兄弟各算一遍可见区域就是 O(n²) 次区域运算(xs_plan WN-P3)。
+            XRect bounds = region.Bounds;
             int index = parent.Children.IndexOf(cur);
             for (int i = index + 1; i < parent.Children.Count; i++)
             {
                 XWindow sibling = parent.Children[i];
-                if (sibling.Mapped && !sibling.IsInputOnly)
+                if (sibling.Mapped && !sibling.IsInputOnly && !OuterIn(parentInner, sibling).Intersect(bounds).IsEmpty)
                 {
                     region.Subtract(ShapedOuter(sibling));
                 }
@@ -93,6 +101,10 @@ public sealed partial class X11Server
         }
         return region.Intersect(buffer.Bounds);
     }
+
+    /// <summary>子窗口的外框(含边框)在顶层缓冲里的矩形,父窗口内区已知时不必再沿祖先往上算。</summary>
+    private static XRect OuterIn(XRect parentInner, XWindow child) =>
+        new(parentInner.X + child.X, parentInner.Y + child.Y, child.Width + (2 * child.BorderWidth), child.Height + (2 * child.BorderWidth));
 
     /// <summary>外框矩形再与边界形状求交(没有形状就是外框本身),顶层缓冲坐标。</summary>
     private static Region ShapedOuter(XWindow w)
@@ -124,9 +136,12 @@ public sealed partial class X11Server
         }
     }
 
-    internal static Region VisibleInner(XWindow w)
+    internal static Region VisibleInner(XWindow w) => InnerOf(w, VisibleOuter(w));
+
+    /// <summary>可见外框(<see cref="VisibleOuter" /> 的结果,就地改)裁到内区与裁剪形状。</summary>
+    private static Region InnerOf(XWindow w, Region visibleOuter)
     {
-        Region region = VisibleOuter(w).Intersect(InnerRect(w));
+        Region region = visibleOuter.Intersect(InnerRect(w));
         if (w.ClipShape is { } clip)
         {
             (int x, int y) = w.OffsetInTopLevel();
@@ -136,17 +151,69 @@ public sealed partial class X11Server
     }
 
     /// <summary>ClipByChildren:可见内区再挖掉已映射子窗口(InputOnly 子窗口不挡画)。</summary>
-    internal static Region ClipByChildren(XWindow w)
+    internal static Region ClipByChildren(XWindow w) => SubtractChildren(w, VisibleInner(w));
+
+    /// <summary>一次减法里最多并这么多个子窗口的外框(并出来的区域不能超过 <see cref="Region.MaxRects" />,超了会退化成外接矩形、减多了)。</summary>
+    private const int ChildBatch = 4096;
+
+    /// <summary>
+    /// 从 <paramref name="region" />(就地改)里挖掉 <paramref name="w" /> 的已映射子窗口。没有形状的子窗口先把外框并成一个区域
+    /// (<see cref="Region.FromRects" />,O(n log n))再减一次;原先逐个子窗口减,上千个子窗口时每减一次区域就碎一点,
+    /// 整个是 O(n²)(xs_plan WN-P3)。与区域的外接矩形不相交的子窗口直接跳过。
+    /// </summary>
+    private static Region SubtractChildren(XWindow w, Region region)
     {
-        Region region = VisibleInner(w);
+        if (region.IsEmpty || w.Children.Count == 0)
+        {
+            return region;
+        }
+        XRect inner = InnerRect(w);
+        XRect bounds = region.Bounds;
+        List<XRect>? plain = null;
         foreach (XWindow child in w.Children)
         {
-            if (child.Mapped && !child.IsInputOnly)
+            if (!child.Mapped || child.IsInputOnly)
+            {
+                continue;
+            }
+            XRect outer = OuterIn(inner, child);
+            if (outer.Intersect(bounds).IsEmpty)
+            {
+                continue;
+            }
+            if (child.BoundingShape is null)
+            {
+                (plain ??= []).Add(outer);
+                if (plain.Count == ChildBatch)
+                {
+                    SubtractAll(region, plain);
+                    plain.Clear();
+                }
+            }
+            else
             {
                 region.Subtract(ShapedOuter(child));
             }
         }
+        if (plain is { Count: > 0 })
+        {
+            SubtractAll(region, plain);
+        }
         return region;
+
+        static void SubtractAll(Region region, List<XRect> rects)
+        {
+            Region union = rects.Count == 1 ? new Region(rects[0]) : Region.FromRects(rects);
+            if (!union.Saturated)
+            {
+                region.Subtract(union);
+                return;
+            }
+            foreach (XRect rect in rects)   // 并出来超限(退化成外接矩形会减多了):逐个减
+            {
+                region.Subtract(rect);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 可绘对象 → 缓冲
@@ -228,12 +295,13 @@ public sealed partial class X11Server
             }
             if (!w.IsInputOnly)
             {
+                Region outer = VisibleOuter(w);   // 边框与背景共用一次(原先各算一遍)
                 if (!w.IsTopLevel && w.BorderWidth > 0)
                 {
-                    Region border = VisibleOuter(w).Intersect(region).Subtract(InnerRect(w));
+                    Region border = outer.Clone().Intersect(region).Subtract(InnerRect(w));
                     PaintBorder(w, border);
                 }
-                Region area = ClipByChildren(w).Intersect(region);
+                Region area = SubtractChildren(w, InnerOf(w, outer)).Intersect(region);
                 if (!area.IsEmpty)
                 {
                     PaintBackground(w, area);
@@ -281,11 +349,7 @@ public sealed partial class X11Server
             {
                 for (int y = r.Y; y < r.Bottom; y++)
                 {
-                    for (int x = r.X; x < r.Right; x++)
-                    {
-                        buffer.Pixels[(y * buffer.Width) + x] =
-                            tile.Buffer.Get(PositiveMod(x - tx, tile.Width), PositiveMod(y - ty, tile.Height)) & mask;
-                    }
+                    TileRow(buffer.Pixels.AsSpan((y * buffer.Width) + r.X, r.Width), tile.Buffer, r.X - tx, y - ty, mask);
                 }
             }
         }
@@ -323,6 +387,36 @@ public sealed partial class X11Server
     }
 
     private static int PositiveMod(int a, int m) => m <= 0 ? 0 : ((a % m) + m) % m;
+
+    /// <summary>
+    /// 平铺一行:目标第一个像素对应图块的 (<paramref name="tileX" />, <paramref name="tileY" />)(可以为负、超出图块,按取模算)。
+    /// 每行只取一次模,之后按图块的一行整段拷、再补掩码 —— 原先每个像素算两次取模(xs_plan WN-P3)。
+    /// </summary>
+    private static void TileRow(Span<uint> destination, PixelBuffer tile, int tileX, int tileY, uint mask)
+    {
+        if (tile.Width <= 0 || tile.Height <= 0)
+        {
+            destination.Clear();
+            return;
+        }
+        ReadOnlySpan<uint> row = tile.Pixels.AsSpan(PositiveMod(tileY, tile.Height) * tile.Width, tile.Width);
+        int column = PositiveMod(tileX, tile.Width);
+        int done = 0;
+        while (done < destination.Length)
+        {
+            int run = Math.Min(row.Length - column, destination.Length - done);
+            row.Slice(column, run).CopyTo(destination.Slice(done, run));
+            done += run;
+            column = 0;
+        }
+        if (mask != uint.MaxValue)
+        {
+            for (int i = 0; i < destination.Length; i++)
+            {
+                destination[i] &= mask;
+            }
+        }
+    }
 
     private static void SendExpose(XWindow w, Region area)
     {
