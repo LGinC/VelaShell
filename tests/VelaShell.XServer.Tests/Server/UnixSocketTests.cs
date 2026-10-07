@@ -323,6 +323,48 @@ public sealed partial class UnixSocketTests
         }
     }
 
+    [TestMethod]
+    public async Task 启动失败之后可以再试_路径太长构造时就拒绝_一种传输也没开起来时抛异常()
+    {
+        // 原先 _started 已经置 1:失败之后再调报「已经在监听了」,这个实例再也开不起来。
+        int display = FreeDisplayNumber();
+        await using (X11Server server = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "" }))
+        {
+            using (TcpListener squatter = new(System.Net.IPAddress.Loopback, 6000 + display))
+            {
+                squatter.Start();
+                await Assert.ThrowsExactlyAsync<SocketException>(() => server.StartAsync());
+            }
+            await server.StartAsync();   // 占着的走了:再来一次
+            Assert.AreEqual(6000 + display, server.Port);
+        }
+
+        // 路径太长:原先到 StartAsync 才抛 ArgumentOutOfRangeException(宿主只接几类异常,状态卡在「启动中」)。
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { UnixSocketPath = "/tmp/" + new string('x', 200) }));
+
+        // 配置了要监听、一种传输也没开起来(放套接字的目录建不了):原先照常返回、Display 为 null。
+        string file = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}");
+        File.WriteAllText(file, "");
+        try
+        {
+            await using X11Server nowhere = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = Path.Combine(file, "X0") });
+            if (OperatingSystem.IsLinux())
+            {
+                await nowhere.StartAsync();   // Linux 上抽象命名空间里的同名套接字照样开得起来
+                Assert.IsNotNull(nowhere.Display);
+            }
+            else if (Socket.OSSupportsUnixDomainSockets)
+            {
+                await Assert.ThrowsExactlyAsync<IOException>(() => nowhere.StartAsync());
+                Assert.IsNull(nowhere.Display);
+            }
+        }
+        finally
+        {
+            File.Delete(file);
+        }
+    }
+
     /// <summary>6000 + N 此刻没人占着的显示号(TCP 监听要用)。</summary>
     private static int FreeDisplayNumber()
     {

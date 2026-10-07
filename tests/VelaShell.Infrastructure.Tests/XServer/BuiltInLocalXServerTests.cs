@@ -196,6 +196,28 @@ public class BuiltInLocalXServerTests
     }
 
     /// <summary>
+    /// 启动途中任何异常都收尾:原先只接 SocketException、取消与 InvalidOperationException,别的(宿主附着时抛的、库的参数校验)
+    /// 一路抛出去,服务端不释放、状态卡在「启动中」。
+    /// </summary>
+    [TestMethod]
+    public async Task Start_AnyFailure_DetachesTheHost_StopsCleanly_AndCanStartAgain()
+    {
+        RecordingHost host = new() { FailAttachWith = new NotSupportedException("the host is broken") };
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), host);
+
+        XServerStartResult failed = await server.StartAsync();
+
+        Assert.IsFalse(failed.Success);
+        Assert.Contains("the host is broken", failed.Error ?? "");
+        Assert.AreEqual(XServerState.Stopped, server.State, "不卡在 Starting");
+        Assert.AreEqual(1, host.Detaches);
+
+        host.FailAttachWith = null;
+        Assert.IsTrue((await server.StartAsync()).Success, "再点一次就开得起来");
+        await server.StopAsync();
+    }
+
+    /// <summary>
     /// 自动选号时,探测说空着的号在开起来那一刻被占了(探测与绑定之间别的程序抢先了,或者别的服务端持着 /tmp/.X{N}-lock):
     /// 换下一个空闲的号再试,原先直接报「显示号被占用」。
     /// </summary>
@@ -293,8 +315,15 @@ public class BuiltInLocalXServerTests
 
         public int Detaches { get; private set; }
 
+        /// <summary>设了就在附着时抛它(模拟宿主出错)。</summary>
+        public Exception? FailAttachWith { get; set; }
+
         public Task AttachAsync(X11Server server, CancellationToken cancellationToken)
         {
+            if (FailAttachWith is { } failure)
+            {
+                throw failure;
+            }
             Attached = server;
             LayoutAtAttach = KeyboardLayout;
             return Task.CompletedTask;

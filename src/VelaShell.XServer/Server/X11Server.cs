@@ -133,7 +133,9 @@ public sealed partial class X11Server : IAsyncDisposable
     /// 类 Unix 上同时按 Xserver(1) 的约定持有 <c>/tmp/.X{N}-lock</c>(Xvfb、<c>xvfb-run -a</c> 挑显示号时看它),收工时删掉。
     /// 别的服务端持着这个锁、TCP 端口被占用、或者 Unix 套接字的名字被别人占着(Linux 的抽象名有人 bind 了、套接字文件后面有人在听或删不掉)时抛
     /// <see cref="SocketException" />(<see cref="SocketError.AddressAlreadyInUse" />),已经开起来的监听一并关掉 —— 这个显示号不能用,换一个;
-    /// Unix 套接字因别的原因建不起来(目录建不了、属主不可信)只记日志。
+    /// Unix 套接字因别的原因建不起来(目录建不了、属主不可信)只记日志 —— 但配置了要监听、结果一种传输也没开起来时抛 <see cref="IOException" />
+    /// (原先照常返回,<see cref="Display" /> 是 null,调用方以为开起来了)。两种都没配置(只经 <see cref="ServeAsync" /> 喂流)时什么也不做。
+    /// 失败之后已经开起来的监听一并关掉,可以再调一次(比如换个显示号之前先等占用的程序退出)。
     /// </summary>
     /// <exception cref="InvalidOperationException">已经开始监听了。</exception>
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -152,10 +154,15 @@ public sealed partial class X11Server : IAsyncDisposable
                 StartTcpListener();
             }
             StartUnixListeners(_lifetime.Token);
+            if (_listener is null && _unixListeners.Count == 0 && (_options.ListenTcp || UnixSocketPath is not null))
+            {
+                throw new IOException("没有一种传输监听起来(Unix 套接字建不起来的原因见日志)。");
+            }
         }
         catch
         {
             StopListeners();
+            Volatile.Write(ref _started, 0);   // 原先失败之后再调报「已经在监听了」,这个实例就再也开不起来
             throw;
         }
         Display = DisplayAddress();

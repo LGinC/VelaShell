@@ -168,28 +168,35 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         byte[] cookie;
         for (int attempt = 1; ; attempt++)
         {
-            cookie = RandomNumberGenerator.GetBytes(16);
-            server = new(new X11ServerOptions
-            {
-                DisplayNumber = display,
-                AuthorizationCookie = cookie,
-                SyncClipboard = options.Clipboard,
-                SyncPrimary = options.Clipboard && options.CopyOnSelection,
-                RestrictForwardedClients = options.RestrictForwardedClients,
-                Log = static line => Trace.WriteLine($"[XServer] {line}"),
-            }, host);
+            X11Server? candidate = null;
             try
             {
+                cookie = RandomNumberGenerator.GetBytes(16);
+                candidate = new(new X11ServerOptions
+                {
+                    DisplayNumber = display,
+                    AuthorizationCookie = cookie,
+                    SyncClipboard = options.Clipboard,
+                    SyncPrimary = options.Clipboard && options.CopyOnSelection,
+                    RestrictForwardedClients = options.RestrictForwardedClients,
+                    Log = static line => Trace.WriteLine($"[XServer] {line}"),
+                }, host);
                 // 先让宿主把显示器布局、DPI、键盘布局告诉服务端,再开门 —— 第一个客户端拿到的就是对的屏幕与键位表。
                 host.UseKeyboardLayout(options.KeyboardLayout);
-                await host.AttachAsync(server, cancellationToken).ConfigureAwait(false);
-                await server.StartAsync(cancellationToken).ConfigureAwait(false);
+                await host.AttachAsync(candidate, cancellationToken).ConfigureAwait(false);
+                await candidate.StartAsync(cancellationToken).ConfigureAwait(false);
+                server = candidate;
                 break;
             }
-            catch (Exception ex) when (ex is SocketException or OperationCanceledException or InvalidOperationException)
+            catch (Exception ex)
             {
+                // 一律收尾:原先只接这三类(SocketException、取消、InvalidOperationException),别的异常(宿主附着时抛的、库的参数校验)
+                // 一路抛出去,服务端不释放、状态卡在「启动中」,X Server 按钮再也点不动。
                 host.Detach();
-                await server.DisposeAsync().ConfigureAwait(false);
+                if (candidate is not null)
+                {
+                    await candidate.DisposeAsync().ConfigureAwait(false);
+                }
                 // 自动选号时,探测说空着的号在绑定时被占了(探测与绑定之间别的程序抢先了;或者别的服务端持着 /tmp/.X{N}-lock、
                 // 抽象名被占 —— 探测看不出来,服务端开的时候才知道):换下一个空闲的号再试。原先直接报「显示号被占用」。
                 if (ex is SocketException && options.DisplayNumber < 0 && attempt < MaxStartAttempts

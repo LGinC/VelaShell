@@ -25,7 +25,7 @@ public sealed class X11ServerOptions
 
     /// <summary>
     /// Unix 套接字路径:null = Windows 以外默认 <c>/tmp/.X11-unix/X{DisplayNumber}</c>(Linux 另在抽象命名空间里监听同名套接字);
-    /// 空字符串 = 不监听。本机客户端用 <c>DISPLAY=:N</c> 连它。
+    /// 空字符串 = 不监听。本机客户端用 <c>DISPLAY=:N</c> 连它。要放得进 Unix 套接字的地址(Linux 上 107 字节左右),否则构造时抛异常。
     /// </summary>
     public string? UnixSocketPath { get; init; }
 
@@ -140,6 +140,8 @@ public sealed class X11ServerOptions
         Require(MaxClientMemory >= 1 && MaxTotalMemory >= 1, $"{nameof(MaxClientMemory)} / {nameof(MaxTotalMemory)} 必须 ≥ 1。");
         Require(AuthorizationCookie is null or { Length: >= MinAuthorizationCookieLength and <= MaxAuthorizationCookieLength },
             $"{nameof(AuthorizationCookie)} 的长度必须在 {MinAuthorizationCookieLength}–{MaxAuthorizationCookieLength} 字节之间。");
+        Require(UnixSocketPath is null or "" || FitsSocketAddress(UnixSocketPath),
+            $"{nameof(UnixSocketPath)} 太长,放不进 Unix 套接字的地址(连同 Linux 抽象命名空间里的同名套接字)。");
 
         static void Require(bool condition, string message)
         {
@@ -147,6 +149,31 @@ public sealed class X11ServerOptions
             {
                 throw new ArgumentException(message, param);
             }
+        }
+    }
+
+    /// <summary>
+    /// 路径放得进 sockaddr_un(Linux 上连同抽象命名空间里多一个前导 NUL 的同名套接字)。原先到 StartAsync 才抛
+    /// ArgumentOutOfRangeException,宿主只接几类异常,服务端不释放、状态卡在「启动中」。不支持 Unix 套接字的系统上不查。
+    /// </summary>
+    private static bool FitsSocketAddress(string path)
+    {
+        if (!System.Net.Sockets.Socket.OSSupportsUnixDomainSockets)
+        {
+            return true;
+        }
+        try
+        {
+            _ = new System.Net.Sockets.UnixDomainSocketEndPoint(path);
+            if (OperatingSystem.IsLinux())
+            {
+                _ = new System.Net.Sockets.UnixDomainSocketEndPoint("\0" + path);
+            }
+            return true;
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 }
