@@ -548,28 +548,42 @@ public sealed partial class X11Server
             }
             SendAlarmNotify(alarm, value);
             // 触发之后按 delta 推进等待值;比较型测试 delta 为 0、或推进会溢出时报警器停用。
-            if (alarm.Delta == 0 && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison)
+            if (!AdvanceAlarm(alarm, value))
             {
                 alarm.State = XSyncAlarm.Inactive;
             }
-            else
-            {
-                int guard = 0;
-                do
-                {
-                    long next = unchecked(t.WaitValue + alarm.Delta);
-                    if ((alarm.Delta > 0 && next < t.WaitValue) || (alarm.Delta < 0 && next > t.WaitValue) || ++guard > 1_000_000)
-                    {
-                        alarm.State = XSyncAlarm.Inactive;
-                        break;
-                    }
-                    t.WaitValue = next;
-                }
-                while (alarm.Delta != 0 && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison
-                       && t.Satisfied(value));
-            }
             t.LastValue = value;
         }
+    }
+
+    /// <summary>
+    /// 报警器触发之后推进等待值(规范 CreateAlarm:反复加 delta 并重新初始化,直到触发器为假)。比较型直接算出要加几次:
+    /// PositiveComparison 要 wait + k·delta &gt; 计数器,NegativeComparison 要 wait + k·delta &lt; 计数器 —— 原先一次一次地加,
+    /// 超过一百万次就把报警器停用,而规范只在溢出时停用(delta = 1、计数器一下跳到几百万的报警器就此失效)。
+    /// 跨越型重新初始化之后就是假的,只加一次。比较型 delta 为 0、或结果超出 INT64 时不改值,返回假。
+    /// </summary>
+    private static bool AdvanceAlarm(XSyncAlarm alarm, long value)
+    {
+        XSyncTrigger t = alarm.Trigger;
+        long delta = alarm.Delta;
+        bool comparison = t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison;
+        if (comparison && delta == 0)
+        {
+            return false;
+        }
+        Int128 steps = 1;
+        if (comparison)
+        {
+            Int128 gap = t.TestType == XSyncTrigger.PositiveComparison ? (Int128)value - t.WaitValue : (Int128)t.WaitValue - value;
+            steps = gap < 0 ? 1 : (gap / Int128.Abs(delta)) + 1;
+        }
+        Int128 next = t.WaitValue + (steps * delta);
+        if (next > long.MaxValue || next < long.MinValue)
+        {
+            return false;
+        }
+        t.WaitValue = (long)next;
+        return true;
     }
 
     /// <summary>

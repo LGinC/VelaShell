@@ -340,6 +340,28 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task 比较型报警器一次跳过很远时按delta一步算到位_不因推进次数多而停用()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint counter = c.NewId(), alarm = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(0));
+        // PositiveComparison、等待值 10、delta 7;计数器一下跳到 10¹²(hi 232、lo 3567587328)。
+        // 原先一次加 7、加到一百万次就把报警器停用;规范只在溢出时停用。
+        await c.SendAsync(sync, 9, b => b.U32(alarm).U32(1 | 2 | 4 | 8 | 16).U32(counter).U32(0).I32(0).U32(10).U32(2).I32(0).U32(7));
+        await c.SendAsync(sync, 3, b => b.U32(counter).I32(232).U32(3567587328));
+        XMessage fired = await c.NextEventAsync((byte)(syncEvent + 1));
+        Assert.AreEqual(alarm, fired.U32(4));
+
+        XMessage query = await c.RequestAsync(sync, 10, b => b.U32(alarm));
+        long wait = ((long)query.U32(16) << 32) | query.U32(20);
+        const long target = 1_000_000_000_000L;
+        Assert.AreEqual(10 + ((((target - 10) / 7) + 1) * 7), wait, "第一个大于计数器的 10 + 7k");
+        Assert.AreEqual(0, query.Bytes[37], "仍是 Active");
+    }
+
+    [TestMethod]
     public async Task SYNC的IDLETIME报警器到点触发()
     {
         await using X11Server server = new();
