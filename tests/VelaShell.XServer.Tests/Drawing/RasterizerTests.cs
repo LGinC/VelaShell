@@ -181,6 +181,54 @@ public sealed class RasterizerTests
     }
 
     [TestMethod]
+    public void 缓冲改尺寸就地挪行时与新建数组的结果相同_新露出的部分按填充值()
+    {
+        Random random = new(11);
+        PixelBuffer buffer = new(40, 30, 24);
+        for (int i = 0; i < buffer.Pixels.Length; i++)
+        {
+            buffer.Pixels[i] = (uint)i;
+        }
+        uint[,] expected = Snapshot(buffer);
+        int allocations = 0;
+        for (int round = 0; round < 400; round++)
+        {
+            int width = random.Next(1, 70), height = random.Next(1, 50);
+            uint fill = random.Next(3) == 0 ? (uint)random.Next() : 0;
+            uint[] before = buffer.Pixels;
+            buffer.Resize(width, height, fill);
+            allocations += ReferenceEquals(before, buffer.Pixels) ? 0 : 1;
+            uint[,] next = new uint[width, height];
+            for (int y = 0; y < height; y++)
+            {
+                for (int x = 0; x < width; x++)
+                {
+                    next[x, y] = x < expected.GetLength(0) && y < expected.GetLength(1) ? expected[x, y] : fill;
+                }
+            }
+            expected = next;
+            CollectionAssert.AreEqual(expected, Snapshot(buffer), $"第 {round} 次:{width}×{height}");
+            // 偶尔画一笔,让内容不只是初始值。
+            buffer.Pixels[random.Next(width * height)] = (uint)round;
+            expected = Snapshot(buffer);
+        }
+        Assert.IsLessThan(400, allocations, "放得下时就地挪,不必每次都新建数组");
+
+        static uint[,] Snapshot(PixelBuffer b)
+        {
+            uint[,] s = new uint[b.Width, b.Height];
+            for (int y = 0; y < b.Height; y++)
+            {
+                for (int x = 0; x < b.Width; x++)
+                {
+                    s[x, y] = b.Get(x, y);
+                }
+            }
+            return s;
+        }
+    }
+
+    [TestMethod]
     public void GC裁剪区域按平移量缓存_换了裁剪矩形或原点就重建()
     {
         XGc gc = new(1, null, 24) { Foreground = 1, ClipRects = [new XRect(0, 0, 2, 2)] };

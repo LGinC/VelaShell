@@ -168,7 +168,7 @@ public sealed partial class X11Server
                 PaintBackground(window, back, (0, 0), new Region(back.Bounds));
                 break;
             case 2 when saved is not null:
-                Array.Copy(saved.Pixels, back.Pixels, Math.Min(saved.Pixels.Length, back.Pixels.Length));
+                Array.Copy(saved.Pixels, back.Pixels, Math.Min(saved.Width * saved.Height, back.Width * back.Height));
                 break;
         }
     }

@@ -46,6 +46,7 @@ internal sealed class PixelBuffer
 
     public byte Depth { get; }
 
+    /// <summary>像素,行优先、行距 <see cref="Width" />。数组可以比 宽 × 高 长(见 <see cref="Resize" />),只有前 宽 × 高 个有效。</summary>
     public uint[] Pixels { get; private set; }
 
     /// <summary>这个深度下像素值的有效位。</summary>
@@ -110,7 +111,7 @@ internal sealed class PixelBuffer
     public PixelBuffer Clone()
     {
         PixelBuffer copy = new(Width, Height, Depth);
-        Array.Copy(Pixels, copy.Pixels, Pixels.Length);
+        Array.Copy(Pixels, copy.Pixels, Width * Height);
         return copy;
     }
 
@@ -134,7 +135,14 @@ internal sealed class PixelBuffer
         }
     }
 
-    /// <summary>改尺寸,左上角对齐保留原内容(bit-gravity NorthWest),新露出的部分填 <paramref name="fill" />。</summary>
+    /// <summary>
+    /// 改尺寸,左上角对齐保留原内容(bit-gravity NorthWest),新露出的部分填 <paramref name="fill" />。
+    /// </summary>
+    /// <remarks>
+    /// 拖动缩放时窗口一秒改几十次尺寸,原先每次都新建整窗数组(几 MB,进大对象堆)。现在数组放得下、又不至于空着一大半
+    /// (不超过所需的两倍)时就地挪行;要新建时多留四分之一,接着往大拖也不必每次都分配。所以 <see cref="Pixels" /> 可以比
+    /// 宽 × 高长 —— 有效的只是前 宽 × 高 个,行距是 <see cref="Width" />。
+    /// </remarks>
     public void Resize(int width, int height, uint fill = 0)
     {
         (width, height) = Clamp(width, height);
@@ -142,18 +150,53 @@ internal sealed class PixelBuffer
         {
             return;
         }
-        uint[] next = new uint[width * height];
-        if (fill != 0)
+        int oldWidth = Width, oldHeight = Height;
+        int copyW = Math.Min(width, oldWidth), copyH = Math.Min(height, oldHeight);
+        long need = (long)width * height;
+        if (need <= Pixels.Length && Pixels.Length <= need * 2)
         {
-            Array.Fill(next, fill);
+            // 就地:行距变大时从下往上挪(目的地在源的后面),变小时从上往下挪,不会踩到还没挪的行。
+            if (width > oldWidth)
+            {
+                for (int y = copyH - 1; y > 0; y--)
+                {
+                    Array.Copy(Pixels, y * oldWidth, Pixels, y * width, copyW);
+                }
+            }
+            else if (width < oldWidth)
+            {
+                for (int y = 1; y < copyH; y++)
+                {
+                    Array.Copy(Pixels, y * oldWidth, Pixels, y * width, copyW);
+                }
+            }
+            // 新露出的部分(数组里是旧数据)填上:保留行的右边一截,与保留行之下的整行。
+            if (width > copyW)
+            {
+                for (int y = 0; y < copyH; y++)
+                {
+                    Array.Fill(Pixels, fill, (y * width) + copyW, width - copyW);
+                }
+            }
+            if (height > copyH)
+            {
+                Array.Fill(Pixels, fill, copyH * width, (height - copyH) * width);
+            }
         }
-        int copyW = Math.Min(width, Width);
-        int copyH = Math.Min(height, Height);
-        for (int y = 0; y < copyH; y++)
+        else
         {
-            Array.Copy(Pixels, y * Width, next, y * width, copyW);
+            long capacity = Math.Min(MaxPixels, Math.Max(need, need + (need / 4)));
+            uint[] next = new uint[capacity];
+            if (fill != 0)
+            {
+                Array.Fill(next, fill);
+            }
+            for (int y = 0; y < copyH; y++)
+            {
+                Array.Copy(Pixels, y * oldWidth, next, y * width, copyW);
+            }
+            Pixels = next;
         }
-        Pixels = next;
         Width = width;
         Height = height;
     }
