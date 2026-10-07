@@ -110,6 +110,23 @@ public sealed class MiscExtensionTests
         Assert.IsLessThan(100u, after.U32(16), $"输入后空闲应归零,实际 {after.U32(16)} ms");
     }
 
+    /// <summary>用户在宿主的本机界面里打字:宿主报一声 NoteUserActivity,远端看到的空闲时间同样归零(不产生任何输入事件)。</summary>
+    [TestMethod]
+    public async Task 宿主报的本机活动让空闲时间归零()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte saver = await MajorAsync(c, "MIT-SCREEN-SAVER");
+        await Task.Delay(120);
+        XMessage before = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
+        Assert.IsGreaterThanOrEqualTo(100u, before.U32(16), $"空闲 {before.U32(16)} ms");
+
+        server.NoteUserActivity();
+        server.NoteUserActivity();   // 连着报只排一个工作项
+        XMessage after = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
+        Assert.IsLessThan(100u, after.U32(16), $"本机有动静之后空闲应归零,实际 {after.U32(16)} ms");
+    }
+
     [TestMethod]
     public async Task DPMS的超时与开关往返()
     {

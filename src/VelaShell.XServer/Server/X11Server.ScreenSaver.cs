@@ -25,8 +25,8 @@ public sealed partial class X11Server
 
     private readonly Dictionary<XClient, uint> _saverSelections = [];
 
-    /// <summary>用户有了输入(宿主注入或 XTEST):空闲计时归零。</summary>
-    private void NoteUserActivity()
+    /// <summary>用户有了输入(宿主注入、XTEST、宿主报的本机活动 <see cref="NoteUserActivity" />):空闲计时归零。</summary>
+    private void NoteInputActivity()
     {
         // 指针每动一下都会走到这里:只有真有触发器挂在 IDLETIME 上时才求值(否则什么都不会因此成立)。
         bool watched = NoteIdleReset(IdleMilliseconds);
@@ -67,7 +67,7 @@ public sealed partial class X11Server
         }
         if (mode == 0)
         {
-            NoteUserActivity();   // Reset:播放器用它防屏保
+            NoteInputActivity();   // Reset:播放器用它防屏保
         }
     }
 

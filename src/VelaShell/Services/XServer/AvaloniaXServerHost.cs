@@ -2,7 +2,9 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
@@ -65,12 +67,39 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     // ================================================================== 生命周期
 
+    /// <summary>当前附着着的宿主:本机活动上报给它的服务端(见 <see cref="HookLocalActivity" />)。</summary>
+    private static volatile AvaloniaXServerHost? s_attached;
+
+    private static bool s_activityHooked;
+
+    /// <summary>
+    /// 用户在 VelaShell 自己的任何窗口里按键、点击、滚动、移动鼠标时告诉服务端(<see cref="X11Server.NoteUserActivity" />):
+    /// 远端程序看到的空闲时间不再只按 X 窗口里的输入算 —— 原先用户整小时在本机终端里打字,远端的「离开」状态与空闲锁屏照样触发。
+    /// 挂一次全局的类处理器(隧道阶段、已处理的事件也算),服务端那边自己节流。只在 UI 线程上调。
+    /// </summary>
+    private static void HookLocalActivity()
+    {
+        if (s_activityHooked)
+        {
+            return;
+        }
+        s_activityHooked = true;
+        InputElement.KeyDownEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerPressedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerMovedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerWheelChangedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+    }
+
+    private static void ReportLocalActivity() => s_attached?._server?.NoteUserActivity();
+
     /// <inheritdoc />
     public async Task AttachAsync(X11Server server, CancellationToken cancellationToken)
     {
         _server = server;
+        s_attached = this;
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
+            HookLocalActivity();
             _keyboardLayout = 0;
             _appliedKeymap = null;   // 新起的服务端是 US 键位表:按当前布局重推一次
             ApplyKeyboardLayout(server);
@@ -106,6 +135,10 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     public void Detach()
     {
         _server = null;
+        if (ReferenceEquals(s_attached, this))
+        {
+            s_attached = null;
+        }
         Dispatcher.UIThread.Post(() =>
         {
             XNativeWindow[] windows = [.. _windows.Values];

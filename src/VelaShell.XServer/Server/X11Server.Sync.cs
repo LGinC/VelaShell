@@ -614,7 +614,7 @@ public sealed partial class X11Server
 
     /// <summary>
     /// 有触发器挂在系统计数器上时,算出最早可能成立的时刻并定一个计时器。
-    /// SERVERTIME 一毫秒一毫秒地涨;IDLETIME 在没有输入时同样一毫秒一毫秒地涨(有输入时由 NoteUserActivity 触发求值)。
+    /// SERVERTIME 一毫秒一毫秒地涨;IDLETIME 在没有输入时同样一毫秒一毫秒地涨(有输入时由 NoteInputActivity 触发求值)。
     /// </summary>
     private void ScheduleSyncTimer()
     {

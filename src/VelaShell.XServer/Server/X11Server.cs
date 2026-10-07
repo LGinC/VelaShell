@@ -321,6 +321,24 @@ public sealed partial class X11Server : IAsyncDisposable
     /// </summary>
     public void SetLockState(bool capsLock, bool numLock) => Post(null, () => ApplyLockState(capsLock, numLock));
 
+    /// <summary>
+    /// 用户在宿主自己的界面里有动静(在本机终端里打字、点鼠标):空闲计时归零,与 X 窗口里的输入一样 —— 远端程序经 MIT-SCREEN-SAVER /
+    /// SYNC 的 IDLETIME 看到的空闲时间不再只按 X 输入算(原先用户整小时在本机终端里打字,远端的「离开」状态、空闲锁屏照样触发)。
+    /// 不产生任何输入事件。可以在任意线程上调,调得再频繁也只是每 250 毫秒至多排一个工作项。
+    /// </summary>
+    public void NoteUserActivity()
+    {
+        long now = Environment.TickCount64;
+        long last = Interlocked.Read(ref _lastHostActivity);
+        if (now - last < 250 || Interlocked.CompareExchange(ref _lastHostActivity, now, last) != last)
+        {
+            return;
+        }
+        Post(null, NoteInputActivity);
+    }
+
+    private long _lastHostActivity = long.MinValue / 2;
+
     // ================================================================== 宿主注入:窗口管理器
 
     /// <summary>宿主让某个顶层窗口得到键盘焦点(用户激活了它的原生窗口);null = 所有顶层都失去焦点。</summary>

@@ -86,7 +86,7 @@ public sealed partial class X11Server
 
         void Run()
         {
-            NoteUserActivity();
+            NoteInputActivity();
             switch (type)
             {
                 case XEventCode.KeyPress or XEventCode.KeyRelease:

@@ -548,6 +548,40 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 用户在 VelaShell 自己的窗口(终端之类)里打字:X 服务端的空闲时间同样归零 —— 远端程序经 MIT-SCREEN-SAVER 看到的不再只是 X 窗口里的输入。
+    /// </summary>
+    [TestMethod]
+    public async Task 本机窗口里的按键让X服务端的空闲时间归零() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (_, uint root) = await HandshakeAsync(client, replies: replies);
+        static ushort Sequence(byte[] reply) => BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(2));
+
+        byte[] name = Encoding.ASCII.GetBytes("MIT-SCREEN-SAVER");
+        await SendAsync(client, 98, 0, w => w.U16((ushort)name.Length).U16(0).Bytes(name).Pad());                   // 序号 1
+        byte saver = (await WaitForAsync(() => replies.FirstOrDefault(r => Sequence(r) == 1)))[9];
+        Avalonia.Controls.Window local = new() { Width = 100, Height = 80 };
+        local.Show();
+        await Task.Delay(150);
+
+        local.KeyPressQwerty(PhysicalKey.A, RawInputModifiers.None);
+        await SendAsync(client, saver, 1, w => w.U32(root));                                                         // QueryInfo,序号 2
+        byte[] info = await WaitForAsync(() => replies.FirstOrDefault(r => Sequence(r) == 2));
+        uint idle = BinaryPrimitives.ReadUInt32LittleEndian(info.AsSpan(16));
+        Assert.IsLessThan(100u, idle, $"本机窗口里刚按了键,空闲应归零,实际 {idle} ms");
+
+        local.Close();
+        host.Detach();
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+    });
+
+    /// <summary>
     /// macOS 上 Command 组合键收不到 KeyUp:Command 松开时把按着它时按下的键一并松开 —— 否则 X 那边以为 C 一直按着。
     /// 在别的系统上打开这个处理来测(macOS 才默认打开)。
     /// </summary>
@@ -729,7 +763,8 @@ public sealed class AvaloniaXServerHostUiTests
 
     // ------------------------------------------------------------------ 最小的 X 客户端(小端)
 
-    private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte>? events = null)
+    private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte>? events = null,
+        System.Collections.Concurrent.ConcurrentQueue<byte[]>? replies = null)
     {
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
@@ -743,8 +778,35 @@ public sealed class AvaloniaXServerHostUiTests
         int vendor = BinaryPrimitives.ReadUInt16LittleEndian(reply.AsSpan(24));
         int formats = reply[29];
         uint root = BinaryPrimitives.ReadUInt32LittleEndian(reply.AsSpan(40 + ((vendor + 3) & ~3) + (formats * 8)));
-        _ = events is null ? ReadAndDiscardAsync(stream) : ReadEventsAsync(stream, events);   // 不看的就读掉,只要别把管道堵住
+        // 不看的就读掉,只要别把管道堵住
+        _ = replies is not null ? ReadRepliesAsync(stream, replies) : events is null ? ReadAndDiscardAsync(stream) : ReadEventsAsync(stream, events);
         return (idBase, root);
+    }
+
+    /// <summary>记下收到的回复(整条,含额外长度);事件与错误跳过。</summary>
+    private static async Task ReadRepliesAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte[]> replies)
+    {
+        byte[] head = new byte[32];
+        try
+        {
+            while (true)
+            {
+                await stream.ReadExactlyAsync(head);
+                byte[] extra = [];
+                if (head[0] == 1 || (head[0] & 0x7F) == 35)
+                {
+                    extra = new byte[BinaryPrimitives.ReadUInt32LittleEndian(head.AsSpan(4)) * 4];
+                    await stream.ReadExactlyAsync(extra);
+                }
+                if (head[0] == 1)
+                {
+                    replies.Enqueue([.. head, .. extra]);
+                }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException or EndOfStreamException)
+        {
+        }
     }
 
     /// <summary>记下收到的事件码(回复与错误跳过)。</summary>

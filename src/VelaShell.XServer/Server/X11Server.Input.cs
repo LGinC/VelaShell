@@ -64,7 +64,7 @@ public sealed partial class X11Server
     /// <summary>指针在顶层窗口里移动(内区坐标)。</summary>
     private void ApplyPointerMotion(XWindow top, int x, int y)
     {
-        NoteUserActivity();
+        NoteInputActivity();
         _pointerTop = top;
         // 根坐标在注入的那一刻算好:指针冻着时事件排队,之后窗口可能挪了。
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
@@ -73,7 +73,7 @@ public sealed partial class X11Server
 
     private void ApplyPointerButton(XWindow top, int x, int y, int button, bool pressed)
     {
-        NoteUserActivity();
+        NoteInputActivity();
         if (pressed)
         {
             _lastUserInputTime = Math.Max(1u, Now);
@@ -90,7 +90,7 @@ public sealed partial class X11Server
     /// <summary>松开一个(物理)按钮,指针留在原处(按下它的那个顶层已经不在了);X 这边并没按着它就什么也不做。</summary>
     private void ApplyPointerButtonRelease(int button)
     {
-        NoteUserActivity();
+        NoteInputActivity();
         ProcessPointerButton(button, pressed: false, () =>
         {
             if (IsPhysicalButtonDown(button))
@@ -109,7 +109,7 @@ public sealed partial class X11Server
 
     private void ApplyKey(byte keycode, bool pressed, bool repeat)
     {
-        NoteUserActivity();
+        NoteInputActivity();
         if (pressed)
         {
             _lastUserInputTime = Math.Max(1u, Now);
