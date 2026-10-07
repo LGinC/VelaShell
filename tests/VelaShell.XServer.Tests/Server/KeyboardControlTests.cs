@@ -3,7 +3,7 @@ using VelaShell.XServer.Tests.TestKit;
 
 namespace VelaShell.XServer.Tests.Server;
 
-/// <summary>键盘与指针的控制:自动重复(核心、XKB、XI2 三种看法)、ChangeKeyboardControl / GetKeyboardControl、响铃音量。</summary>
+/// <summary>键盘与指针:自动重复(核心、XKB、XI2 三种看法)、ChangeKeyboardControl / GetKeyboardControl、响铃音量、按钮与修饰键映射、焦点的退回。</summary>
 [TestClass]
 [TestCategory("X11Server")]
 public sealed class KeyboardControlTests
@@ -203,6 +203,27 @@ public sealed class KeyboardControlTests
         Assert.IsTrue(wrongLength.IsError, "长度与 GetPointerMapping 不一致是 BadValue");
         XMessage duplicate = await c.RequestAsync(116, 9, b => b.Bytes([1, 1, 3, 4, 5, 6, 7, 8, 9]));
         Assert.IsTrue(duplicate.IsError, "非零元素重复是 BadValue");
+    }
+
+    /// <summary>RevertToParent 一路退到根:焦点是根(以 PointerRoot 表示),按键照样送到指针所在的窗口 —— 原先给的是 None,键盘输入一直被丢掉。</summary>
+    [TestMethod]
+    public async Task RevertToParent一路退到根时焦点是根_按键照样送到指针所在的窗口()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host, 0x1);
+        uint other = await MapTopAsync(c, host, 0x1);
+        await c.SendAsync(42, 2, b => b.U32(top).U32(0));   // SetInputFocus(top, RevertToParent)
+        await c.SendAsync(10, 0, b => b.U32(top));          // UnmapWindow:焦点按 revert-to 退回
+        XMessage focus = await c.RequestAsync(43, 0);
+        Assert.AreEqual(1u, focus.U32(8), "退到根(PointerRoot)而不是 None");
+        Assert.AreEqual(0, focus.Bytes[1], "新的 revert-to 是 None");
+
+        server.InjectPointerMotion(host.Mapped[other], 5, 5);
+        server.InjectKey(XKeycodes.A, pressed: true);
+        XMessage key = await c.NextEventAsync(KeyPress);
+        Assert.AreEqual(other, key.U32(12), "按键送到指针所在的窗口");
     }
 
     [TestMethod]

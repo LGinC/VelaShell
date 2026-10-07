@@ -1121,12 +1121,14 @@ public sealed partial class X11Server
                 SetFocus(Root, 1);
                 break;
             case 2:
+                // RevertToParent:最近的可见祖先,新的 revert-to 是 None。根窗口总是可见的,一路退到根就是根(这里以 PointerRoot 表示,
+                // 按键照样送到指针所在的窗口)—— 原先退到根时给的是 None,键盘输入一直被丢掉,直到宿主下一次 FocusTopLevel。
                 XWindow? w = lost.Parent;
                 while (w is not null && !w.IsViewable)
                 {
                     w = w.Parent;
                 }
-                SetFocus(w is null || w.IsRoot ? null : w, 0);
+                SetFocus(w ?? Root, 0);
                 break;
             default:
                 SetFocus(null, 0);
