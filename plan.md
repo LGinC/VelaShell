@@ -1784,3 +1784,13 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **根因**:`HostKeyRotationTests.ConnectAsync` 用「100 × 10 毫秒」轮询 `connection.LastHostKeyUpdate`,是个**固定 1 秒预算**。宣告(`hostkeys-00@openssh.com`)在认证之后才由服务端发出,客户端还要再走一轮证明才给结果;抖动落在这一秒之外时,要么 `update` 直接是 null(`Assert.IsNotNull(first)` 红),要么前一步 TOFU 该补的那把还没落盘就被读了(文件里没有那把 RSA)。就是 §71 那句「固定泵几十毫秒等于赌调度」。
 - **改法**:`TestChannelScript` 加 `HostKeysAnnouncementSent` —— 宣告发出之后打个点;用例等这个**确定事件**,再给客户端 20 秒把它走完(证明 + 写 known_hosts)。**「不会有更新」的那一条**(没打开 `AllowHostKeyUpdates`)没有信号可等,缺席只能等出来,单独给 2 秒并写明:这个方向赌输了是断言变弱(漏判),不是 CI 上红。
 - **验证**:让服务端的宣告迟到 3 秒(临时加的延迟,已撤)撑大窗口 —— **旧写法 5/5 红、新写法 5/5 绿**。全量 `VelaShell.Ssh.Tests` 1351 通过 / 0 失败。
+
+## ✅ 171. 2026-10-07 CI:把「3 核 + 线程池下限 = 核数」这个放大器压下去
+
+- **为什么不再逐个修**。§169 / §170 修掉了四处依赖时序的地方(输出队列记帐是真 bug,另三条是用例在赌调度),可每次运行仍从长尾里冒出别的:[run 37638519269](https://github.com/joesdu/VelaShell/actions/runs/37638519269) 的 ubuntu 连着两次红(轮换用例的两条),[run 37644333884](https://github.com/joesdu/VelaShell/actions/runs/37644333884) 的 macOS 又红了另外两条(`sftp_server起不来时报出退出码与它的stderr`、`SendEofAsync被取消EOF照样发出去`)。逐个修是在打地鼠 —— 共同的放大器一直没动。
+- **放大器**:macOS runner 是 3 核;线程池下限默认就是核数,多出来的线程靠「爬坡」注入(每秒一两条);而每条连接要占读端、写出端、执行循环好几个续延,另有约三套程序集同时跑。于是「谁的续延先排上队」全看运气,运气不好的那条用例就红,而且红法不固定。
+- **改了两处**:
+  - `VelaShell.Ssh.Tests` 与 `VelaShell.XServer.Tests` 各加 `TestSession`(`[AssemblyInitialize]`):`ThreadPool.SetMinThreads(max(16, 核数 × 4))`,工作线程与 I/O 完成端口都抬。它只管「线程到得快不快」,**不管并发度,也不改任何断言** —— 该等信号的照等(见 §170)。
+  - `VelaShell.Ssh.Tests` 的 `Parallelize` `Workers` 从 0(= 核数)压到 **2**:不再把 3 核铺满,CPU / 内存带宽密集的用例不再互相挤。
+- **代价(写在这里,免得以后忘了)**:`Workers=2` 让本机(核多)这套从 **10 秒变 60 秒**;CI 上 3 核,预计 55 秒 → 80 秒左右。`test.runsettings` 是 IDE 与 CI 共用的(仓库刻意如此),要本机不受影响得另做区分。
+- **验证**:临时让 `Init` 抛一次,确认 `AssemblyInitialize` 真的会跑(`程序集初始化方法 …TestSession.Init 引发异常`),探针已撤;`VelaShell.Ssh.Tests` 1351 通过、`VelaShell.XServer.Tests` 429 通过、全解决方案 `-warnaserror` 0 警告 0 错误。
