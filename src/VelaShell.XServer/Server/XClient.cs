@@ -123,7 +123,7 @@ internal sealed class XClient : IDisposable
         }
     }
 
-    /// <summary>写出端写掉了这么多字节。</summary>
+    /// <summary>写出端取走了这么多字节(还没写完):从这一刻起它不再算「排队」。</summary>
     public void NoteWritten(long count) => Interlocked.Add(ref _queuedBytes, -count);
 
     /// <summary>
@@ -176,10 +176,12 @@ internal sealed class XClient : IDisposable
     public XWriter Writer(int capacity = 32) => new(BigEndian, capacity);
 
     /// <summary>
-    /// 排一条消息等写出。之前排着的已经到了 <see cref="MaxQueuedOutputBytes" />(客户端不读了)就断开它。
+    /// 排一条消息等写出。还排着的(没交给套接字)已经到了 <see cref="MaxQueuedOutputBytes" />(客户端不读了)就断开它。
     /// 只看「之前排着的」:单条消息本身可以比上限大(三块 4K 横排时 <c>xwd -root</c> 的 GetImage 回复约 100 MB)——
     /// 原先按「加上这条之后」判,这样的回复整条连接被断,断开之前还白算了一遍。超出的部分最多一条消息,
-    /// 而大回复本身另有上限(<c>X11Server.MaxImageReplyBytes</c>)。
+    /// 而大回复本身另有上限(<c>X11Server.MaxImageReplyBytes</c>)。已经交给套接字的那一批不算:写出端一取走
+    /// 就减(见 <c>X11Server.PumpOutputAsync</c>),否则那条大回复写出去要好一会儿,这期间到达的每条消息都会被
+    /// 误判成积压,连接被白白判死。
     /// </summary>
     public void Send(byte[] bytes)
     {

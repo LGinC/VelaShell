@@ -621,10 +621,12 @@ public sealed partial class X11Server
             while (await reader.WaitToReadAsync(ct).ConfigureAwait(false))
             {
                 int used = 0;
-                long written = 0;
                 while (reader.TryRead(out byte[]? message))
                 {
-                    written += message.Length;
+                    // 取出来就不再算「排队」。整批写完才减的话,单条大回复(GetImage 71 MB 起)在写出去的
+                    // 整个过程中都把计数顶在上限上:客户端读完它之后紧接着发的那条请求,回它时会被当成
+                    // 「客户端不读了」而把连接判死 —— 回复永远发不出去(见 XClient.Send)。
+                    client.NoteWritten(message.Length);
                     if (used + message.Length > batch.Length)
                     {
                         if (used > 0)
@@ -646,7 +648,6 @@ public sealed partial class X11Server
                     await stream.WriteAsync(batch.AsMemory(0, used), ct).ConfigureAwait(false);
                 }
                 await stream.FlushAsync(ct).ConfigureAwait(false);
-                client.NoteWritten(written);
             }
         }
         catch (Exception ex) when (ex is IOException or ObjectDisposedException)

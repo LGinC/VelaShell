@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using VelaShell.XServer.Tests.TestKit;
 
@@ -153,6 +154,74 @@ public sealed class RobustnessTests
         Assert.IsTrue(refused.IsError);
         Assert.AreEqual(11, refused.Detail, "BadAlloc");
         await h.SyncAsync();
+    }
+
+    /// <summary>
+    /// 单条大回复(<c>GetImage</c> 71 MB,超过 <c>XClient.MaxQueuedOutputBytes</c>)**写出去的途中**,
+    /// 后面到达的消息照常排队:记帐要是等整批写完才减,这条回复飞行期间到达的每一条都会被当成
+    /// 「客户端不读了」而把连接判死 —— 客户端读完大回复之后紧接着发的那条请求就永远收不到回复
+    /// (run 37590196560 的 macOS 作业红的就是它)。
+    /// </summary>
+    /// <remarks>
+    /// 客户端故意不把这条回复读完:写出端堵在管道上(对端不读),「大回复还在写」从一瞬间撑成稳态,
+    /// 不必赌调度时机。
+    /// 判据是连接还在不在,所以也不必把那 71 MB 读完。
+    /// </remarks>
+    [TestMethod]
+    public async Task 大回复还在写出去的途中小请求照常排队_不被当成积压判死()
+    {
+        await using X11Server server = new(new X11ServerOptions { ScreenWidth = 8192, ScreenHeight = 2160 });
+        (Stream serverSide, Stream clientSide) = DuplexPair.Create();
+        Task serving = server.ServeAsync(serverSide, isLocal: true);
+
+        // 建立报文(小端、协议 11.0、没有授权数据)与建立回复:之后客户端就不再读了。
+        byte[] hello = [(byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+        await clientSide.WriteAsync(hello);
+        await clientSide.FlushAsync();
+        byte[] head = new byte[8];
+        await clientSide.ReadExactlyAsync(head);
+        await clientSide.ReadExactlyAsync(new byte[BinaryPrimitives.ReadUInt16LittleEndian(head.AsSpan(6)) * 4]);
+
+        // GetImage(ZPixmap,整屏,约 71 MB)。
+        byte[] payload = new byte[16];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(0), X11Server.RootWindowId);   // drawable;x / y 都是 0
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(8), 8192);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(10), 2160);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(12), 0xFFFFFFFF);   // plane-mask
+        await clientSide.WriteAsync(Request(73, 2, payload));
+        await clientSide.FlushAsync();
+
+        // 读 4 KB:证明写出端已经在写这条大回复 —— 也就是已经把它从队列里取走了。
+        await clientSide.ReadExactlyAsync(new byte[4096]);
+
+        // 紧接着发一条 GetInputFocus。它到达时大回复还在写:回它的时候不能把连接判死。
+        await clientSide.WriteAsync(Request(43, 0, []));
+        await clientSide.FlushAsync();
+        await Task.Delay(300);   // 等服务端读完这条请求、执行、回出去
+        IReadOnlyList<XClientInfo> clients = await server.GetClientsAsync();
+        Assert.AreEqual(1, clients.Count, "大回复还在写的时候,紧跟着的请求没有被当成积压");
+
+        await clientSide.DisposeAsync();
+        await serverSide.DisposeAsync();
+        try
+        {
+            await serving.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        catch (Exception)
+        {
+            // 写出端正堵在被丢掉的管道上:收尾时的异常不关心。
+        }
+    }
+
+    /// <summary>一条请求:主 / 次操作码 + 以 4 字节计的长度 + 正文(这里的两条正文都已是 4 的倍数)。</summary>
+    private static byte[] Request(byte opcode, byte data, byte[] body)
+    {
+        byte[] request = new byte[4 + body.Length];
+        request[0] = opcode;
+        request[1] = data;
+        BinaryPrimitives.WriteUInt16LittleEndian(request.AsSpan(2), (ushort)((body.Length + 4) / 4));
+        body.CopyTo(request, 4);
+        return request;
     }
 
     [TestMethod]
