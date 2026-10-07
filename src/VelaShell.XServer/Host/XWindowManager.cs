@@ -119,8 +119,24 @@ public sealed record XMoveResizeRequest(XTopLevelWindow Window, XMoveResizeDirec
 public sealed record XStateChangeRequest(XTopLevelWindow Window, XWindowStates Add, XWindowStates Remove)
     : XWindowManagerRequest(Window);
 
-/// <summary>激活窗口(<c>_NET_ACTIVE_WINDOW</c>):拿到前台、得到焦点。</summary>
-public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+/// <summary>
+/// 激活窗口(<c>_NET_ACTIVE_WINDOW</c>):拿到前台、得到焦点。任何 X 客户端都能随时发它 —— 宿主应当只在 <see cref="UserInitiated" /> 时照办
+/// (而且用户此刻正在用 X 窗口),否则改为提醒(闪任务栏),免得远端程序在用户输口令时跳到前台接走按键(EWMH 的焦点窃取防护)。
+/// </summary>
+public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window)
+{
+    /// <summary>EWMH 的来源指示:0 旧客户端没给、1 普通程序、2 分页器 / 任务栏(直接代表用户的操作)。</summary>
+    public int Source { get; init; }
+
+    /// <summary>请求带的时间戳(引起它的那次用户操作的时间);0 = CurrentTime,说明不了什么。</summary>
+    public uint Timestamp { get; init; }
+
+    /// <summary>
+    /// 服务端的判断:来源是分页器,或时间戳不早于用户最近一次在 X 窗口里按键 / 按按钮的时间 —— 是那次操作引起的。
+    /// CurrentTime、过期的时间戳都不算。
+    /// </summary>
+    public bool UserInitiated { get; init; }
+}
 
 /// <summary>
 /// 把窗口抬到最上面(客户端对顶层发了 stack-mode 为 Above 的 ConfigureWindow:XRaiseWindow、XMapRaised、Java 的 toFront)。

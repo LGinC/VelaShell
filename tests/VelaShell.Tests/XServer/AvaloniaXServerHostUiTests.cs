@@ -372,6 +372,40 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// override-redirect 的弹出层只在用户正在用 X 窗口时才系统级置顶:用户在本机窗口里时映射上来的(远端程序画的假凭据框)不盖住本机程序,
+    /// 用户回到某个 X 窗口时照常置顶(菜单要在最上面)。
+    /// </summary>
+    [TestMethod]
+    public async Task OverrideRedirectPopup_IsTopmostOnlyWhileAnXWindowIsActive() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        uint normal = idBase | 1, popup = idBase | 2;
+        await SendAsync(client, 1, 24, w => w.U32(popup).U32(root).I16(10).I16(10).U16(30).U16(20).U16(0).U16(1).U32(0)
+            .U32(0x200).U32(1));                                                                       // override-redirect
+        await SendAsync(client, 8, 0, w => w.U32(popup));
+        XNativeWindow menu = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == popup));
+        Assert.IsFalse(menu.Topmost, "没有 X 窗口是活动的:原先一直系统级置顶,盖住所有本机程序");
+
+        // 用户回到 X 窗口(映射一个普通窗口,它随之成为活动窗口)。
+        await SendAsync(client, 1, 24, w => w.U32(normal).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(normal));
+        XNativeWindow main = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == normal));
+        main.Activate();
+        await WaitForAsync(() => menu.Topmost ? menu : null);
+
+        main.CloseByHost();
+        menu.CloseByHost();
+        host.Detach();
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+    });
+
+    /// <summary>
     /// 原生窗口按 256 × 256 切块、只取损伤矩形:跨块的窗口、后来只改了右下角一小块、客户端改了尺寸(缓冲变大、块数变多)之后,
     /// 各块的像素都对,没改到的地方保持原样。
     /// </summary>

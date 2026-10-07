@@ -247,7 +247,8 @@ public sealed class XNativeWindow : Window
             : (target & XWindowStates.Hidden) != 0 ? WindowState.Minimized
             : (target & XWindowStates.Maximized) == XWindowStates.Maximized ? WindowState.Maximized
             : WindowState.Normal;
-        Topmost = (target & XWindowStates.Above) != 0 || Handle.Snapshot.OverrideRedirect;
+        _above = (target & XWindowStates.Above) != 0;
+        UpdateTopmost(_host.XActive);
         ReportStates();
     }
 
@@ -263,7 +264,8 @@ public sealed class XNativeWindow : Window
         ShowInTaskbar = !popup && s.TransientFor is null && (s.States & XWindowStates.SkipTaskbar) == 0
                         && s.WindowType is XWindowType.Normal or XWindowType.Dialog;
         ShowActivated = !popup && s.AcceptsFocus;
-        Topmost = popup || (s.States & XWindowStates.Above) != 0;
+        _above = (s.States & XWindowStates.Above) != 0;
+        UpdateTopmost(_host.XActive);
         CanMinimize = !popup;
         CanMaximize = !popup;
         // 有 alpha 的视觉(GTK 的客户端阴影、圆角)与非矩形窗口要透明底;其余不透明,省掉系统合成的开销。
@@ -375,13 +377,22 @@ public sealed class XNativeWindow : Window
         }
     }
 
+    /// <summary>客户端要求的「总在最前」(<c>_NET_WM_STATE_ABOVE</c>);实际的 <c>Topmost</c> 还看用户在不在用 X 窗口。</summary>
+    private bool _above;
+
+    /// <summary>
+    /// 弹出层(override-redirect)与要求「总在最前」的窗口只在用户正在用 X 窗口时才是系统级置顶。原先一直置顶:远端程序映射一个
+    /// 全屏的 override-redirect 窗口就能盖住所有本机程序,画一个像系统凭据框的界面;用户回到本机窗口时它们照常退到后面。
+    /// </summary>
+    public void UpdateTopmost(bool xActive) => Topmost = (_above || Handle.Snapshot.OverrideRedirect) && xActive;
+
     private XWindowStates StatesFromWindow() => WindowState switch
     {
         WindowState.Maximized => XWindowStates.Maximized,
         WindowState.FullScreen => XWindowStates.Fullscreen,
         WindowState.Minimized => XWindowStates.Hidden,
         _ => XWindowStates.None,
-    } | (Topmost && !Handle.Snapshot.OverrideRedirect ? XWindowStates.Above : XWindowStates.None);
+    } | (_above && !Handle.Snapshot.OverrideRedirect ? XWindowStates.Above : XWindowStates.None);
 
     /// <summary>窗口状态(用户点了最大化、系统最小化……)写回 <c>_NET_WM_STATE</c>。</summary>
     private void ReportStates()

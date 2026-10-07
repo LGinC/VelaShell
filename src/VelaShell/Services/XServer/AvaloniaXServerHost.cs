@@ -57,6 +57,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>当前开着的原生窗口(UI 线程上读;测试用)。</summary>
     internal IReadOnlyCollection<XNativeWindow> Windows => _windows.Values;
 
+    /// <summary>用户此刻在用 X 窗口(某个 X 窗口是活动窗口)。UI 线程上读。</summary>
+    public bool XActive => _windows.Values.Any(w => w.IsActive);
+
     /// <summary>根窗口原点在系统虚拟桌面里的位置(物理像素)。只在 UI 线程上读写。</summary>
     public (int X, int Y) RootOrigin { get; private set; }
 
@@ -371,8 +374,13 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             case XStateChangeRequest state:
                 native.ApplyStateRequest(state.Add, state.Remove);
                 break;
-            case XActivateRequest:
+            case XActivateRequest activate when activate.UserInitiated && XActive:
                 native.Activate();
+                break;
+            case XActivateRequest:
+                // 不是用户操作引起的(CurrentTime、过期的时间戳),或用户此刻在用本机窗口:只闪任务栏,不切前台 ——
+                // 原先无条件激活,远端程序能在用户输 sudo 口令时跳到前台接走按键。
+                WindowAttention.Request(native);
                 break;
             case XRaiseRequest when !ReferenceEquals(native, _windows.Values.FirstOrDefault(w => w.IsActive))
                                     && _windows.Values.Any(w => w.IsActive):
@@ -483,6 +491,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             return;
         }
+        UpdateTopmost(xActive: true);
         server.FocusTopLevel(window.Handle);
         if (HostLockState.Read(server.DisplayNumber) is var (capsLock, numLock))
         {
@@ -517,7 +526,19 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             server.FocusTopLevel(null);
         }
+        if (!XActive)
+        {
+            UpdateTopmost(xActive: false);   // 用户回到了本机窗口:X 的弹出层与「总在最前」的窗口退到后面
+        }
     });
+
+    private void UpdateTopmost(bool xActive)
+    {
+        foreach (XNativeWindow window in _windows.Values)
+        {
+            window.UpdateTopmost(xActive);
+        }
+    }
 
     /// <summary>原生窗口已关闭(宿主关的,或系统强制关的)。</summary>
     public void OnWindowClosed(XNativeWindow window)

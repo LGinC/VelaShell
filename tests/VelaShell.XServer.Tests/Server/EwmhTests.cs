@@ -145,6 +145,39 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task NET_ACTIVE_WINDOW只有用户操作引起的才标成UserInitiated_CurrentTime与过期的时间戳不算()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint active = await InternAsync(c, "_NET_ACTIVE_WINDOW");
+        uint top = await CreateTopAsync(c);
+        await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x4));   // ButtonPress
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+
+        async Task<XActivateRequest> ActivateAsync(uint source, uint time)
+        {
+            int before = host.Requests.OfType<XActivateRequest>().Count();
+            await RootClientMessageAsync(c, top, active, source, time, 0);
+            await host.WaitForAsync(() => host.Requests.OfType<XActivateRequest>().Count() > before);
+            return host.Requests.OfType<XActivateRequest>().Last();
+        }
+
+        Assert.IsFalse((await ActivateAsync(1, 0)).UserInitiated, "CurrentTime 说明不了是用户引起的:原先一律激活");
+        Assert.IsTrue((await ActivateAsync(2, 0)).UserInitiated, "分页器 / 任务栏直接代表用户");
+
+        await Task.Delay(20);
+        server.InjectPointerButton(host.Mapped[top], 5, 5, 1, pressed: true);   // 用户在程序里点了一下
+        uint pressed = (await c.NextEventAsync(4)).U32(4);
+        XActivateRequest byClick = await ActivateAsync(1, pressed);
+        Assert.IsTrue(byClick.UserInitiated, "时间戳就是那次点击的:是它引起的");
+        Assert.AreEqual(1, byClick.Source);
+        Assert.AreEqual(pressed, byClick.Timestamp);
+        Assert.IsFalse((await ActivateAsync(1, pressed - 10)).UserInitiated, "早于用户最近一次操作:过期的时间戳");
+    }
+
+    [TestMethod]
     public async Task 焦点给了顶层就更新活动窗口与FOCUSED状态()
     {
         using RecordingHost host = new();

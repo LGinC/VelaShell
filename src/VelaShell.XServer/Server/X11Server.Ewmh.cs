@@ -345,8 +345,17 @@ public sealed partial class X11Server
                     break;
                 }
             case "_NET_ACTIVE_WINDOW":
-                _host.WindowManagerRequested(new XActivateRequest(handle));
-                break;
+                {
+                    // EWMH §「_NET_ACTIVE_WINDOW」:data[0] 是来源(1 普通程序、2 分页器),data[1] 是引起它的那次用户操作的时间戳。
+                    // 时间戳不早于用户最近一次在 X 里按键 / 按按钮才算用户引起的;CurrentTime 与过期的时间戳不算 —— 原先一律转给宿主激活,
+                    // 任何 X 客户端都能在任意时刻把自己的窗口切到系统前台。
+                    int source = (int)Math.Min(data[0], 2u);
+                    uint time = data[1];
+                    bool user = source == 2 || (time != 0 && _lastUserInputTime != 0 && unchecked((int)(time - _lastUserInputTime)) >= 0
+                                                && unchecked((int)(time - Now)) <= 0);
+                    _host.WindowManagerRequested(new XActivateRequest(handle) { Source = source, Timestamp = time, UserInitiated = user });
+                    break;
+                }
             case "_NET_CLOSE_WINDOW":
                 _host.WindowManagerRequested(new XCloseRequest(handle));
                 break;

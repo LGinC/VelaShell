@@ -54,6 +54,9 @@ public sealed partial class X11Server
     /// <summary>协议「SetInputFocus」的 last-focus-change time:客户端带的时间戳早于它的改焦点请求不生效。</summary>
     private uint _lastFocusChangeTime;
 
+    /// <summary>用户最近一次在 X 窗口里按键 / 按按钮(宿主注入)的时间;判断 _NET_ACTIVE_WINDOW 是不是用户操作引起的(见 <see cref="XActivateRequest.UserInitiated" />)。</summary>
+    private uint _lastUserInputTime;
+
     private ushort State => (ushort)(_modifiers | _buttons);
 
     // ================================================================== 宿主注入的输入(见 X11Server.cs 的公开方法)
@@ -71,6 +74,10 @@ public sealed partial class X11Server
     private void ApplyPointerButton(XWindow top, int x, int y, int button, bool pressed)
     {
         NoteUserActivity();
+        if (pressed)
+        {
+            _lastUserInputTime = Math.Max(1u, Now);
+        }
         _pointerTop = top;
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
         ProcessPointerInput(() =>
@@ -103,6 +110,10 @@ public sealed partial class X11Server
     private void ApplyKey(byte keycode, bool pressed)
     {
         NoteUserActivity();
+        if (pressed)
+        {
+            _lastUserInputTime = Math.Max(1u, Now);
+        }
         ProcessKeyboardInput(() => KeyEvent(keycode, pressed));
     }
 
