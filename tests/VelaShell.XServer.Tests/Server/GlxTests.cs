@@ -1008,6 +1008,56 @@ public sealed class GlxTests
         Assert.AreEqual(2u, small.U32(16), "width");
     }
 
+    /// <summary>直接驱动 GlContext 执行一条渲染命令(小端)。</summary>
+    private static void Run(Gl.GlContext gl, ushort opcode, Action<XTestClient.Body>? parameters = null)
+    {
+        XTestClient.Body b = new(bigEndian: false);
+        parameters?.Invoke(b);
+        gl.ExecuteOrCompile(opcode, b.ToArray(), bigEndian: false);
+    }
+
+    /// <summary>一个绑在 <paramref name="width" /> × <paramref name="height" /> 单缓冲表面上的间接上下文(视口即整个表面)。</summary>
+    private static (Gl.GlContext Gl, Gl.GlSurface Surface) DirectContext(int width = 8, int height = 8)
+    {
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null);
+        Gl.GlSurface surface = new(1, width, height, doubleBuffered: false, hasAlpha: false);
+        gl.Bind(surface, surface);
+        return (gl, surface);
+    }
+
+    /// <summary>表面上 GL 窗口坐标 (x, y) 的颜色(RGB;缓冲第 0 行在最上面)。</summary>
+    private static uint SurfacePixel(Gl.GlSurface surface, int x, int y) => surface.Front[((surface.Height - 1 - y) * surface.Width) + x] & 0xFFFFFF;
+
+    /// <summary>铺满视口、深度为 <paramref name="z" /> 的一个四边形。</summary>
+    private static void FullQuad(Gl.GlContext gl, float r, float g, float b, float z = 0)
+    {
+        Run(gl, 8, p => F(p, r, g, b));
+        Run(gl, 4, p => p.U32(Quads));
+        Run(gl, 70, p => F(p, -1, -1, z));
+        Run(gl, 70, p => F(p, 1, -1, z));
+        Run(gl, 70, p => F(p, 1, 1, z));
+        Run(gl, 70, p => F(p, -1, 1, z));
+        Run(gl, 23);
+    }
+
+    [TestMethod]
+    public void PolygonOffsetEXT的bias以深度范围为单位_同一深度的后画的面靠偏移挡住先画的()
+    {
+        (Gl.GlContext gl, Gl.GlSurface surface) = DirectContext();
+        Run(gl, 139, b => b.U32(DepthTest));
+        Run(gl, 127, b => b.U32(ColorBit | DepthBit));
+        FullQuad(gl, 1, 0, 0);                         // 红,窗口深度 0.5
+        Run(gl, 139, b => b.U32(0x8037));               // Enable(POLYGON_OFFSET_FILL)
+        Run(gl, 4098, b => F(b, 0, -0.1f));             // PolygonOffsetEXT(factor 0, bias −0.1)
+        FullQuad(gl, 0, 1, 0);                         // 绿,同一深度:偏移后 0.4 < 0.5
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(0x00FF00u, SurfacePixel(surface, 4, 4), "原先 bias 按 units / 2²⁴ 处理,等于没有偏移");
+        Assert.AreEqual(-0.1, gl.Query(0x8039)!.Value.Values[0], 1e-6, "POLYGON_OFFSET_BIAS_EXT 按深度范围单位报");
+
+        Run(gl, 192, b => F(b, 0, -4));                 // 核心的 PolygonOffset:units 仍以最小可分辨量为单位
+        Assert.AreEqual(-4.0, gl.Query(0x2A00)!.Value.Values[0], 1e-6);
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

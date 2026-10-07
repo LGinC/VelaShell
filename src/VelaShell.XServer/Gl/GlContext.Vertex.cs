@@ -771,6 +771,9 @@ internal sealed partial class GlContext
         }
     }
 
+    /// <summary>24 位深度的分辨级数:最小可分辨量 r = 1 / 2²⁴。EXT_polygon_offset 的 bias(深度范围单位)乘它换成 units。</summary>
+    private const float DepthResolutionSteps = 1 << 24;
+
     /// <summary>深度偏移 o = m·factor + r·units(§3.5.5),m 取多边形里最大的深度斜率,r 取 24 位深度的最小可分辨量。</summary>
     private float OffsetFor(RasterVertex[] w, uint cap)
     {
@@ -787,7 +790,7 @@ internal sealed partial class GlContext
             float dzdy = (((c.Z - a.Z) * (b.X - a.X)) - ((b.Z - a.Z) * (c.X - a.X))) / det;
             m = MathF.Max(MathF.Abs(dzdx), MathF.Abs(dzdy));
         }
-        return (m * State.PolygonOffsetFactor) + (State.PolygonOffsetUnits / (1 << 24));
+        return (m * State.PolygonOffsetFactor) + (State.PolygonOffsetUnits / DepthResolutionSteps);
     }
 
     // ------------------------------------------------------------------ 裁剪

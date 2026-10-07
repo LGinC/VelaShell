@@ -472,10 +472,13 @@ internal sealed partial class GlContext
                     (State.ViewportWidth, State.ViewportHeight) = (Math.Min(w, MaxTextureSize * 8), Math.Min(h, MaxTextureSize * 8));
                     break;
                 }
-            case 192:   // PolygonOffset
-            case 4098:  // PolygonOffsetEXT(偏移单位按 EXT 的约定,这里不区分)
+            case 192:   // PolygonOffset:units 以深度缓冲的最小可分辨量 r 为单位(§3.5.5)
                 State.PolygonOffsetFactor = r.F32();
                 State.PolygonOffsetUnits = r.F32();
+                break;
+            case 4098:  // PolygonOffsetEXT:bias 直接以深度范围 [0, 1] 为单位(EXT_polygon_offset),换算成 units 存
+                State.PolygonOffsetFactor = r.F32();
+                State.PolygonOffsetUnits = r.F32() * DepthResolutionSteps;
                 break;
             case 193:   // DrawArrays
             case 4116:  // DrawArraysEXT

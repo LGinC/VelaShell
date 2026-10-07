@@ -102,6 +102,7 @@ internal sealed partial class GlContext
             0x0B46 => One(State.FrontFace),                   // FRONT_FACE
             0x8038 => One(State.PolygonOffsetFactor),         // POLYGON_OFFSET_FACTOR
             0x2A00 => One(State.PolygonOffsetUnits),          // POLYGON_OFFSET_UNITS
+            0x8039 => One(State.PolygonOffsetUnits / DepthResolutionSteps),   // POLYGON_OFFSET_BIAS_EXT:深度范围单位
 
             // 列表
             0x0B30 => One(ListMode),                          // LIST_MODE
