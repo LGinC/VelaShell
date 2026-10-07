@@ -123,7 +123,7 @@ public sealed partial class X11Server
             case 4:   // QueryCapabilities:可以不等垂直同步就呈现(Async)
                 {
                     uint target = r.U32();
-                    if (Lookup<XResource>(target) is not XWindow && (target < RandRCrtcBase || target >= RandRCrtcBase + _monitors.Count))
+                    if (Lookup<XResource>(target) is not XWindow && MonitorIndexOf(target, RandRCrtcBase) < 0)
                     {
                         throw new XProtocolError(XErrorCode.Window, target);
                     }

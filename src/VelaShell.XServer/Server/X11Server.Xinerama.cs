@@ -15,6 +15,9 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
+    /// <summary>XINERAMA 的屏幕次序:主显示器排第一(老程序把第 0 块当主屏),其余按布局里的先后。各请求都按它编号。</summary>
+    private List<XMonitor> XineramaScreens() => [.. _monitors.Where(m => m.Primary), .. _monitors.Where(m => !m.Primary)];
+
     private void Xinerama(XClient c, XRequestReader r)
     {
         switch (r.Data)
@@ -42,7 +45,7 @@ public sealed partial class X11Server
                     {
                         throw new XProtocolError(XErrorCode.Value, screen);
                     }
-                    XMonitor m = _monitors[(int)screen];
+                    XMonitor m = XineramaScreens()[(int)screen];   // 与 QueryScreens 同一个次序(原先按原下标,主屏排第一时两边对不上)
                     c.Reply(0, w => w.U32((uint)m.Width).U32((uint)m.Height).U32(window.Id).U32(screen).Zero(8));
                     break;
                 }
@@ -51,7 +54,7 @@ public sealed partial class X11Server
                 break;
             case 5:   // XineramaQueryScreens:主显示器排第一(老程序把第 0 块当主屏)
                 {
-                    List<XMonitor> ordered = [.. _monitors.Where(m => m.Primary), .. _monitors.Where(m => !m.Primary)];
+                    List<XMonitor> ordered = XineramaScreens();
                     c.Reply(0, w =>
                     {
                         w.U32((uint)ordered.Count).Zero(20);

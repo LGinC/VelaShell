@@ -35,9 +35,16 @@ public sealed partial class X11Server
     /// <summary>宿主的 DPI / 缩放变了(见 <see cref="SetDisplayScale" />):重新发布 XSETTINGS 与 RESOURCE_MANAGER。</summary>
     private void ApplyDisplayScale(int dpi, int scale)
     {
+        bool dpiChanged = dpi != _dpi;
         _dpi = dpi;
         _scale = scale;
         PublishDisplaySettings();
+        if (dpiChanged)
+        {
+            // 屏幕的毫米数按 DPI 换算:变了要告诉 RANDR 的客户端(原先只有布局变化才发 ScreenChangeNotify)。
+            _layoutTime = Now;
+            NotifyRandRChange(screenOnly: true);
+        }
     }
 
     /// <summary>写 _XSETTINGS_SETTINGS(serial 递增)与 RESOURCE_MANAGER,并发 PropertyNotify。</summary>

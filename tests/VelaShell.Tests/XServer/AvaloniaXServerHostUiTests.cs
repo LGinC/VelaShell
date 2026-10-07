@@ -67,6 +67,18 @@ public sealed class AvaloniaXServerHostUiTests
         Assert.AreEqual(2, abnt2.ToXKeymap().KeysymsPerKeycode);
     }
 
+    /// <summary>显示器多于服务端的上限(16 台)时只交主显示器与排在前面的几台 —— 原先整个列表交过去,服务端抛的异常落在 UI 线程上。</summary>
+    [TestMethod]
+    public void 显示器超过上限时只交主显示器与排在前面的几台()
+    {
+        (int Id, bool Primary)[] screens = [.. Enumerable.Range(0, 20).Select(i => (i, i == 18))];
+        IReadOnlyList<(int Id, bool Primary)> limited = AvaloniaXServerHost.LimitScreens(screens, s => s.Primary);
+        Assert.HasCount(X11Server.MaxMonitors, limited);
+        Assert.AreEqual(18, limited[0].Id, "主显示器留着");
+        Assert.AreEqual(14, limited[^1].Id, "其余按先后取够");
+        Assert.HasCount(3, AvaloniaXServerHost.LimitScreens(screens[..3], s => s.Primary), "没超过就原样交");
+    }
+
     [TestMethod]
     public void HostKeymap_MapsCharactersAndDeadKeysToKeysyms()
     {

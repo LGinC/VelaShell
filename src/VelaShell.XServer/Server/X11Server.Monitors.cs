@@ -20,7 +20,72 @@ public sealed partial class X11Server
     /// <summary>最近一次布局变化的服务端时间(RANDR 的 timestamp 与 config-timestamp)。</summary>
     private uint _layoutTime;
 
-    private void InitMonitors() => _monitors = NormalizeMonitors(_options.Monitors, Root.Width, Root.Height, "options");
+    /// <summary>
+    /// 各显示器的编号(0 … <see cref="MaxMonitors" /> − 1,与 <see cref="_monitors" /> 一一对应):RANDR 的 CRTC / 输出 ID 是基数加它。
+    /// 按名字沿用 —— 原先按下标分配,拔掉一台之后它后面的 ID 全部前移,客户端手里的输出 ID 指向了另一台显示器。
+    /// </summary>
+    private int[] _monitorSlots = [0];
+
+    /// <summary>名字 → 它上次用的编号(拔掉的显示器插回来还是原来的 ID,除非那个编号已经给了别的)。</summary>
+    private readonly Dictionary<string, int> _slotByName = [];
+
+    private void InitMonitors()
+    {
+        _monitors = NormalizeMonitors(_options.Monitors, Root.Width, Root.Height, "options");
+        AssignMonitorSlots();
+    }
+
+    /// <summary>给 <see cref="_monitors" /> 分编号:名字认识且编号没被占的沿用;其余取空着的编号,先取没有名字记着的。</summary>
+    private void AssignMonitorSlots()
+    {
+        int[] slots = new int[_monitors.Count];
+        bool[] used = new bool[MaxMonitors];
+        for (int i = 0; i < slots.Length; i++)
+        {
+            slots[i] = _slotByName.TryGetValue(_monitors[i].Name, out int s) && !used[s] ? s : -1;
+            if (slots[i] >= 0)
+            {
+                used[slots[i]] = true;
+            }
+        }
+        for (int i = 0; i < slots.Length; i++)
+        {
+            if (slots[i] >= 0)
+            {
+                continue;
+            }
+            int free = -1;
+            for (int s = 0; s < MaxMonitors && free < 0; s++)
+            {
+                if (!used[s] && !_slotByName.ContainsValue(s))
+                {
+                    free = s;
+                }
+            }
+            for (int s = 0; s < MaxMonitors && free < 0; s++)
+            {
+                if (!used[s])
+                {
+                    free = s;
+                }
+            }
+            slots[i] = free;
+            used[free] = true;
+            foreach (string stale in _slotByName.Where(p => p.Value == free).Select(p => p.Key).ToArray())
+            {
+                _slotByName.Remove(stale);
+            }
+            _slotByName[_monitors[i].Name] = free;
+        }
+        _monitorSlots = slots;
+    }
+
+    /// <summary>ID(<paramref name="idBase" /> + 编号)对应的显示器下标;不是现有显示器的为 −1。</summary>
+    private int MonitorIndexOf(uint id, uint idBase)
+    {
+        long slot = (long)id - idBase;
+        return slot is >= 0 and < MaxMonitors ? Array.IndexOf(_monitorSlots, (int)slot) : -1;
+    }
 
     /// <summary>空列表 → 一台覆盖整个根窗口的显示器;没有标主显示器的 → 第一台是主显示器。</summary>
     private static IReadOnlyList<XMonitor> NormalizeMonitors(IReadOnlyList<XMonitor>? monitors, int width, int height, string paramName)
@@ -49,6 +114,7 @@ public sealed partial class X11Server
         Root.Width = width;
         Root.Height = height;
         _monitors = monitors;
+        AssignMonitorSlots();
         _layoutTime = Now;
         RebuildRandRModes();
         UpdateDesktopGeometry();

@@ -127,13 +127,15 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// </summary>
     private void ApplyLayout(X11Server server, Screens screens)
     {
-        IReadOnlyList<Screen> all = screens.All;
+        IReadOnlyList<Screen> all = LimitScreens(screens.All);
         if (all.Count == 0)
         {
             return;
         }
         int minX = all.Min(s => s.Bounds.X), minY = all.Min(s => s.Bounds.Y);
-        int maxX = all.Max(s => s.Bounds.Right), maxY = all.Max(s => s.Bounds.Bottom);
+        // 虚拟桌面超出根窗口的上限时截到上限(多出来的部分 X 程序摆不过去);服务端对超限的参数抛异常,原先异常落在 UI 线程上。
+        int maxX = Math.Min(all.Max(s => s.Bounds.Right), minX + X11ServerOptions.MaxScreenSize);
+        int maxY = Math.Min(all.Max(s => s.Bounds.Bottom), minY + X11ServerOptions.MaxScreenSize);
         RootOrigin = (minX, minY);
         List<XMonitor> monitors = [];
         for (int i = 0; i < all.Count; i++)
@@ -155,6 +157,22 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         double scaling = (screens.Primary ?? all[0]).Scaling;
         int scale = scaling >= 2 ? (int)Math.Floor(scaling) : 1;
         server.SetDisplayScale(Math.Max(1, (int)Math.Round(96 * scaling)), scale);
+    }
+
+    /// <summary>
+    /// 服务端最多接受 <see cref="X11Server.MaxMonitors" /> 台显示器:多了只交主显示器与排在前面的几台(原先整个列表交过去,
+    /// 服务端抛的异常落在 UI 线程上,布局一次也没换成)。
+    /// </summary>
+    private static IReadOnlyList<Screen> LimitScreens(IReadOnlyList<Screen> all) => LimitScreens(all, s => s.IsPrimary);
+
+    internal static IReadOnlyList<T> LimitScreens<T>(IReadOnlyList<T> all, Func<T, bool> isPrimary)
+    {
+        if (all.Count <= X11Server.MaxMonitors)
+        {
+            return all;
+        }
+        T[] primary = [.. all.Where(isPrimary).Take(1)];
+        return [.. primary, .. all.Where(s => !isPrimary(s)).Take(X11Server.MaxMonitors - primary.Length)];
     }
 
     /// <summary>
