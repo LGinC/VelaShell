@@ -254,4 +254,32 @@ public sealed class ClipboardTests
         await SendSelectionNotifyAsync(a, request, request.U32(24));
         await host.WaitForAsync(() => host.Clipboard == "从 A 复制");
     }
+    [TestMethod]
+    public async Task SetSelectionOwner的时间戳规则与当前有没有属主无关_未来的时间戳锁不住选区()
+    {
+        await using X11Server server = new();
+        await using XTestClient attacker = await XTestClient.ConnectAsync(server);
+        await using XTestClient victim = await XTestClient.ConnectAsync(server);
+        uint selection = await InternAsync(attacker, "CLIPBOARD");
+        uint evil = await CreateWindowAsync(attacker);
+        uint good = await CreateWindowAsync(victim);
+        async Task<uint> OwnerAsync() => (await victim.RequestAsync(23, 0, b => b.U32(selection))).U32(8);
+
+        // 先放弃(没有属主了),再带一个远在未来的时间戳去占:原先「没属主时不查」,未来时间被接受。
+        await attacker.SendAsync(22, 0, b => b.U32(0).U32(selection).U32(0));
+        await attacker.SendAsync(22, 0, b => b.U32(evil).U32(selection).U32(0x7FFFFFF0));
+        await attacker.SyncAsync();
+        Assert.AreEqual(0u, await OwnerAsync(), "晚于服务端当前时间:无效");
+
+        // 正常程序带真实时间去占:照常成功(原先之后所有人都被当成「早于当前属主」静默忽略)。
+        await Task.Delay(20);
+        await victim.SendAsync(22, 0, b => b.U32(good).U32(selection).U32(0));
+        Assert.AreEqual(good, await OwnerAsync());
+
+        // 属主放弃之后,最后一次换属主的时间还在:带着更早时间戳的请求照样无效。
+        await victim.SendAsync(22, 0, b => b.U32(0).U32(selection).U32(0));
+        await attacker.SendAsync(22, 0, b => b.U32(evil).U32(selection).U32(1));
+        await attacker.SyncAsync();
+        Assert.AreEqual(0u, await OwnerAsync(), "早于最后一次换属主的时间:无效");
+    }
 }

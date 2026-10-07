@@ -35,6 +35,12 @@ public sealed partial class X11Server
     private long _atomNameBytes;
     private readonly Dictionary<uint, (XWindow Window, XClient? Client, uint Time)> _selections = [];
 
+    /// <summary>
+    /// 每个选区最后一次换属主的时间(协议「SetSelectionOwner」的 last-change time)。属主窗口销毁、属主断开、属主放弃时记录整条删掉,
+    /// 这个时间却不随之消失 —— 否则先放弃再带一个未来的时间戳去占,之后所有人带真实事件时间去占都被当成「早于当前属主」静默忽略。
+    /// </summary>
+    private readonly Dictionary<uint, uint> _selectionLastChange = [];
+
     private void InitAtoms()
     {
         _atomNames.Add("");
@@ -347,13 +353,15 @@ public sealed partial class X11Server
         {
             time = now;
         }
+        // 时间早于最后一次换属主的时间,或晚于服务端当前时间:忽略(协议规定)。两条都与当前有没有属主无关。
+        if (unchecked((int)(time - now)) > 0
+            || (_selectionLastChange.TryGetValue(selection, out uint lastChange) && unchecked((int)(time - lastChange)) < 0))
+        {
+            return;
+        }
+        _selectionLastChange[selection] = time;
         if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) current))
         {
-            // 时间早于当前属主的获取时间,或晚于服务端当前时间:忽略(协议规定)。
-            if (unchecked((int)(time - current.Time)) < 0 || unchecked((int)(time - now)) > 0)
-            {
-                return;
-            }
             if (!ReferenceEquals(current.Client, c) || owner is null)
             {
                 XWindow old = current.Window;

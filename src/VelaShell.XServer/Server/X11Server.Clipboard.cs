@@ -90,7 +90,13 @@ public sealed partial class X11Server
 
     private void TakeSelectionForHost(uint selection)
     {
+        // 宿主的占有也是一次换属主:不早于最后一次换属主的时间(否则之后带着更早事件时间的客户端反而能抢回来),并推进它。
         uint now = Now;
+        if (_selectionLastChange.TryGetValue(selection, out uint lastChange) && unchecked((int)(lastChange - now)) > 0)
+        {
+            now = lastChange;
+        }
+        _selectionLastChange[selection] = now;
         if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) current) && current.Client is { } previous)
         {
             XWindow old = current.Window;
