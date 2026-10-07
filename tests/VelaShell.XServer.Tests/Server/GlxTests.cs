@@ -811,7 +811,7 @@ public sealed class GlxTests
         return b.ToArray();
     }
 
-    private const uint InvalidEnum = 0x0500;
+    private const uint InvalidEnum = 0x0500, InvalidOperation = 0x0502;
 
     [TestMethod]
     public void Enable与Disable只认识的开关_别的值记INVALID_ENUM不进状态()
@@ -1056,6 +1056,80 @@ public sealed class GlxTests
 
         Run(gl, 192, b => F(b, 0, -4));                 // 核心的 PolygonOffset:units 仍以最小可分辨量为单位
         Assert.AreEqual(-4.0, gl.Query(0x2A00)!.Value.Values[0], 1e-6);
+    }
+
+    [TestMethod]
+    public void 状态命令收到不合法的枚举值记INVALID_ENUM_状态不变()
+    {
+        (Gl.GlContext gl, _) = DirectContext();
+        const uint garbage = 0x1234;
+        (ushort Opcode, Action<XTestClient.Body> Parameters, uint Query, double Initial)[] cases =
+        [
+            (164, b => b.U32(garbage), 0x0B74, 0x0201),                        // DepthFunc → DEPTH_FUNC 仍是 LESS
+            (101, b => b.U32(0x0408).U32(garbage), 0x0B40, 0x1B02),            // PolygonMode(FRONT_AND_BACK, 垃圾) → FILL
+            (162, b => b.U32(garbage).I32(0).U32(0xFF), 0x0B92, 0x0207),       // StencilFunc → ALWAYS
+            (163, b => b.U32(0x1E00).U32(garbage).U32(0x1E00), 0x0B95, 0x1E00),   // StencilOp → KEEP
+            (160, b => b.U32(1).U32(0x0308), 0x0BE0, 0),                       // BlendFunc(ONE, SRC_ALPHA_SATURATE):只能当源 → 目标仍是 ZERO
+            (126, b => b.U32(garbage), 0x0C01, 0x0404),                        // DrawBuffer → FRONT(单缓冲)
+            (126, b => b.U32(0x0405), 0x0C01, 0x0404),                         // DrawBuffer(BACK):单缓冲没有后缓冲 → INVALID_OPERATION
+            (171, b => b.U32(0x0408), 0x0C02, 0x0404),                         // ReadBuffer(FRONT_AND_BACK)不是读缓冲
+            (111, b => b.U32(0x2300).U32(0x2200).U32(BitConverter.SingleToUInt32Bits(garbage)), 0x2200, 0x2100),   // TexEnvf(MODE) → MODULATE
+            (80, b => b.U32(0x0B65).U32(BitConverter.SingleToUInt32Bits(garbage)), 0x0B65, 0x0800),               // Fogf(FOG_MODE) → EXP
+            (104, b => b.U32(garbage), 0x0B54, 0x1D01),                        // ShadeModel → SMOOTH
+            (4097, b => b.U32(garbage), 0x8009, 0x8006),                       // BlendEquation → FUNC_ADD
+        ];
+        foreach ((ushort opcode, Action<XTestClient.Body> parameters, uint query, double initial) in cases)
+        {
+            Run(gl, opcode, parameters);
+            uint error = gl.GetError();
+            Assert.IsTrue(error is InvalidEnum or InvalidOperation, $"操作码 {opcode}:错误 0x{error:X}");
+            Assert.AreEqual(initial, gl.Query(query)!.Value.Values[0], $"操作码 {opcode}:状态不变");
+        }
+        Run(gl, 107, b => b.U32(Texture2D).U32(MinFilter).U32(garbage));     // TexParameteri(MIN_FILTER, 垃圾)
+        Assert.AreEqual(InvalidEnum, gl.GetError());
+        Assert.AreEqual(0x2702, gl.GetTexParameter(Texture2D, MinFilter)!.Value.Values[0], "仍是 NEAREST_MIPMAP_LINEAR");
+    }
+
+    [TestMethod]
+    public void Begin与End之间只许指定顶点属性_DrawArrays不再并进外层图元()
+    {
+        (Gl.GlContext gl, Gl.GlSurface surface) = DirectContext();
+        Run(gl, 4, b => b.U32(Quads));                                        // Begin(QUADS)
+        Run(gl, 8, b => F(b, 0, 0, 1));                                       // Color3fv:可以
+        Run(gl, 70, b => F(b, -1, -1, 0));
+        Run(gl, 70, b => F(b, 1, -1, 0));
+        Run(gl, 139, b => b.U32(DepthTest));                                  // Enable:不行
+        Assert.AreEqual(InvalidOperation, gl.GetError());
+        Assert.IsFalse(gl.IsEnabled(DepthTest), "原先照常执行");
+        Run(gl, 184);                                                          // PushMatrix:不行
+        Assert.AreEqual(InvalidOperation, gl.GetError());
+        Assert.AreEqual(1.0, gl.Query(0x0BA3)!.Value.Values[0], "模型视图栈深度不变");
+        Run(gl, 193, b => b.I32(1).I32(1).U32(0).U32(0x1406).I32(2).U32(0x8074).Bytes(new byte[8]));   // DrawArrays(POINTS, 1 个顶点)
+        Assert.AreEqual(InvalidOperation, gl.GetError());
+        Assert.IsTrue(gl.InBeginEnd, "原先 DrawArrays 替外层执行了 End");
+        Run(gl, 70, b => F(b, 1, 1, 0));
+        Run(gl, 70, b => F(b, -1, 1, 0));
+        Run(gl, 23);                                                          // End:外层的四边形照常画出
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(0x0000FFu, SurfacePixel(surface, 4, 4));
+    }
+
+    [TestMethod]
+    public void CallLists先核个数与类型_FOUR_BYTES解出全1的偏移不再误报INVALID_ENUM()
+    {
+        (Gl.GlContext gl, _) = DirectContext();
+        gl.NewList(1, Compile);
+        Run(gl, 139, b => b.U32(DepthTest));                                  // 列表 1:Enable(DEPTH_TEST)
+        gl.EndList();
+        Run(gl, 3, b => b.U32(2));                                            // ListBase 2:2 + 0xFFFFFFFF 回绕成 1
+        Run(gl, 2, b => b.I32(1).U32(0x1409).Bytes([0xFF, 0xFF, 0xFF, 0xFF]));   // CallLists(1, FOUR_BYTES, FF FF FF FF)
+        Assert.AreEqual(0u, gl.GetError(), "原先把解出的 0xFFFFFFFF 当成「类型不认识」");
+        Assert.IsTrue(gl.IsEnabled(DepthTest), "调到了列表 1");
+
+        Run(gl, 2, b => b.I32(-1).U32(UnsignedByte));
+        Assert.AreEqual(InvalidValue, gl.GetError(), "n < 0");
+        Run(gl, 2, b => b.I32(1).U32(0x1234).U32(0));
+        Assert.AreEqual(InvalidEnum, gl.GetError());
     }
 
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>

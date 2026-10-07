@@ -18,6 +18,11 @@ internal sealed partial class GlContext
     /// <summary>执行一条渲染命令。认识但没实现的命令照样吃掉(规范只对非法操作码报 GLXBadRenderRequest,那由调用方判断)。</summary>
     private void Execute(int opcode, ReadOnlySpan<byte> body, bool bigEndian)
     {
+        if (InBeginEnd && ForbiddenInBeginEnd(opcode))
+        {
+            SetError(GlEnum.INVALID_OPERATION);
+            return;
+        }
         GlReader r = new(body, bigEndian);
         switch (opcode)
         {
@@ -99,11 +104,20 @@ internal sealed partial class GlContext
                     break;
                 }
             case 78:   // ColorMaterial
-                State.ColorMaterialFace = r.U32();
-                State.ColorMaterialMode = r.U32();
-                break;
+                {
+                    uint face = r.U32(), mode = r.U32();
+                    if (IsFace(face) && mode is GlEnum.EMISSION or GlEnum.AMBIENT or GlEnum.DIFFUSE or GlEnum.SPECULAR or GlEnum.AMBIENT_AND_DIFFUSE)
+                    {
+                        (State.ColorMaterialFace, State.ColorMaterialMode) = (face, mode);
+                    }
+                    else
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                    }
+                    break;
+                }
             case 79:   // CullFace
-                State.CullFaceMode = r.U32();
+                SetEnum(ref State.CullFaceMode, r.U32(), IsFace);
                 break;
             case 80:   // Fogf
                 SetFog(r.U32(), [r.F32()]);
@@ -124,7 +138,7 @@ internal sealed partial class GlContext
                     break;
                 }
             case 84:   // FrontFace
-                State.FrontFace = r.U32();
+                SetEnum(ref State.FrontFace, r.U32(), static m => m is GlEnum.CW or GlEnum.CCW);
                 break;
             case 85:   // Hint:只影响质量取舍,忽略
                 break;
@@ -210,6 +224,11 @@ internal sealed partial class GlContext
             case 101:   // PolygonMode
                 {
                     uint face = r.U32(), mode = r.U32();
+                    if (!IsFace(face) || mode is not (GlEnum.POINT or GlEnum.LINE or GlEnum.FILL))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
                     if (face is GlEnum.FRONT or GlEnum.FRONT_AND_BACK)
                     {
                         State.PolygonModeFront = mode;
@@ -234,7 +253,7 @@ internal sealed partial class GlContext
                     break;
                 }
             case 104:   // ShadeModel
-                State.ShadeModel = r.U32();
+                SetEnum(ref State.ShadeModel, r.U32(), static m => m is GlEnum.FLAT or GlEnum.SMOOTH);
                 break;
             case 105:   // TexParameterf
                 SetTexParameter(r.U32(), r.U32(), [r.F32()]);
@@ -314,7 +333,7 @@ internal sealed partial class GlContext
             case >= 121 and <= 125:   // InitNames / LoadName / PassThrough / PopName / PushName:选择与反馈模式不实现
                 break;
             case 126:   // DrawBuffer
-                State.DrawBuffer = r.U32();
+                SetColorBuffer(ref State.DrawBuffer, r.U32(), forRead: false);
                 break;
             case 127:   // Clear
                 Clear(r.U32());
@@ -360,30 +379,57 @@ internal sealed partial class GlContext
             case >= 143 and <= 158:   // Map / MapGrid / EvalCoord / EvalMesh / EvalPoint:求值器不实现
                 break;
             case 159:   // AlphaFunc
-                State.AlphaFunc = r.U32();
-                State.AlphaRef = Math.Clamp(r.F32(), 0, 1);
-                break;
+                {
+                    uint func = r.U32();
+                    float reference = r.F32();
+                    if (!IsCompareFunc(func))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
+                    (State.AlphaFunc, State.AlphaRef) = (func, Math.Clamp(reference, 0, 1));
+                    break;
+                }
             case 160:   // BlendFunc
                 {
                     uint src = r.U32(), dst = r.U32();
+                    if (!IsBlendFactor(src, source: true) || !IsBlendFactor(dst, source: false))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
                     (State.BlendSrcRgb, State.BlendDstRgb, State.BlendSrcAlpha, State.BlendDstAlpha) = (src, dst, src, dst);
                     break;
                 }
-            case 161:   // LogicOp
-                State.LogicOp = r.U32();
+            case 161:   // LogicOp:CLEAR … SET 十六种
+                SetEnum(ref State.LogicOp, r.U32(), static op => op is >= GlEnum.CLEAR and <= GlEnum.SET);
                 break;
             case 162:   // StencilFunc
-                State.StencilFunc = r.U32();
-                State.StencilRef = r.I32();
-                State.StencilValueMask = r.U32();
-                break;
+                {
+                    uint func = r.U32();
+                    int reference = r.I32();
+                    uint mask = r.U32();
+                    if (!IsCompareFunc(func))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
+                    (State.StencilFunc, State.StencilRef, State.StencilValueMask) = (func, reference, mask);
+                    break;
+                }
             case 163:   // StencilOp
-                State.StencilFail = r.U32();
-                State.StencilDepthFail = r.U32();
-                State.StencilDepthPass = r.U32();
-                break;
-            case 164:   // DepthFunc
-                State.DepthFunc = r.U32();
+                {
+                    uint fail = r.U32(), depthFail = r.U32(), depthPass = r.U32();
+                    if (!IsStencilOp(fail) || !IsStencilOp(depthFail) || !IsStencilOp(depthPass))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
+                    (State.StencilFail, State.StencilDepthFail, State.StencilDepthPass) = (fail, depthFail, depthPass);
+                    break;
+                }
+            case 164:   // DepthFunc:原先照存垃圾值,比较时落到 default 等于 ALWAYS
+                SetEnum(ref State.DepthFunc, r.U32(), IsCompareFunc);
                 break;
             case 165:   // PixelZoom
                 State.ZoomX = r.F32();
@@ -392,7 +438,7 @@ internal sealed partial class GlContext
             case >= 166 and <= 170:   // PixelTransfer / PixelMap:像素传输的缩放、偏置与查表不实现
                 break;
             case 171:   // ReadBuffer
-                State.ReadBuffer = r.U32();
+                SetColorBuffer(ref State.ReadBuffer, r.U32(), forRead: true);
                 break;
             case 172:   // CopyPixels
                 CopyPixels(r.I32(), r.I32(), r.I32(), r.I32(), r.U32());
@@ -496,7 +542,8 @@ internal sealed partial class GlContext
                 State.BlendColor = Vector4.Clamp(new Vector4(r.F32(), r.F32(), r.F32(), r.F32()), Vector4.Zero, Vector4.One);
                 break;
             case 4097:   // BlendEquation
-                State.BlendEquation = r.U32();
+                SetEnum(ref State.BlendEquation, r.U32(),
+                    static e => e is GlEnum.FUNC_ADD or GlEnum.MIN or GlEnum.MAX or GlEnum.FUNC_SUBTRACT or GlEnum.FUNC_REVERSE_SUBTRACT);
                 break;
             case 4099:   // TexSubImage1D
                 TexSubImage(ref r, oneD: true);
@@ -538,11 +585,17 @@ internal sealed partial class GlContext
                 CopyTexSubImage(r.U32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), oneD: false);
                 break;
             case 4134:   // BlendFuncSeparate
-                State.BlendSrcRgb = r.U32();
-                State.BlendDstRgb = r.U32();
-                State.BlendSrcAlpha = r.U32();
-                State.BlendDstAlpha = r.U32();
-                break;
+                {
+                    uint srcRgb = r.U32(), dstRgb = r.U32(), srcAlpha = r.U32(), dstAlpha = r.U32();
+                    if (!IsBlendFactor(srcRgb, source: true) || !IsBlendFactor(dstRgb, source: false)
+                        || !IsBlendFactor(srcAlpha, source: true) || !IsBlendFactor(dstAlpha, source: false))
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                        break;
+                    }
+                    (State.BlendSrcRgb, State.BlendDstRgb, State.BlendSrcAlpha, State.BlendDstAlpha) = (srcRgb, dstRgb, srcAlpha, dstAlpha);
+                    break;
+                }
             default:
                 // 其余(3D 纹理、颜色表、卷积、直方图、顶点属性、…)不实现,按合法命令吃掉。
                 break;
@@ -577,11 +630,116 @@ internal sealed partial class GlContext
         State.Enabled.Remove(cap);
     }
 
+    // ------------------------------------------------------------------ 枚举与 Begin / End 的合法性(§2.5、§2.6.3)
+
+    /// <summary>
+    /// Begin / End 之间不许执行的命令(§2.6.3):除了指定顶点属性的(Vertex、Color、Index、Normal、TexCoord、EdgeFlag、Material、
+    /// EvalCoord / EvalPoint)、CallList(s) 与 End,其余一律 INVALID_OPERATION、不执行。原先 Enable、矩阵操作、PushAttrib 照常执行,
+    /// DrawArrays 把自己的顶点并进外层图元、再替外层执行了 End。这里只列这个实现真正处理的命令;没实现的命令本来就被吃掉,无所谓。
+    /// </summary>
+    private static bool ForbiddenInBeginEnd(int opcode) => opcode is
+        (>= 3 and <= 5)            // ListBase、Begin、Bitmap
+        or (>= 33 and <= 48)       // RasterPos、Rect
+        or (>= 77 and <= 95)       // ClipPlane … LineWidth
+        or (>= 100 and <= 150)     // PointSize … MapGrid(其间的 Material 96–99 不在内)
+        or 155 or 157              // EvalMesh1 / EvalMesh2
+        or (>= 159 and <= 193)     // AlphaFunc … DrawArrays
+        or 197
+        or (>= 4096 and <= 4100)   // BlendColor、BlendEquation、PolygonOffsetEXT、TexSubImage
+        or (>= 4116 and <= 4122)   // DrawArraysEXT、BindTexture、PrioritizeTextures、CopyTex(Sub)Image
+        or 4134;                   // BlendFuncSeparate
+
+    /// <summary>一个只能取几个枚举值的状态:不合法记 INVALID_ENUM、状态不变(原先照存垃圾值)。</summary>
+    private void SetEnum(ref uint field, uint value, Func<uint, bool> valid)
+    {
+        if (valid(value))
+        {
+            field = value;
+        }
+        else
+        {
+            SetError(GlEnum.INVALID_ENUM);
+        }
+    }
+
+    private static bool IsFace(uint face) => face is GlEnum.FRONT or GlEnum.BACK or GlEnum.FRONT_AND_BACK;
+
+    private static bool IsCompareFunc(uint func) => func is >= GlEnum.NEVER and <= GlEnum.ALWAYS;
+
+    private static bool IsStencilOp(uint op) =>
+        op is GlEnum.KEEP or GlEnum.ZERO or GlEnum.REPLACE or GlEnum.INCR or GlEnum.DECR or GlEnum.INVERT or GlEnum.INCR_WRAP or GlEnum.DECR_WRAP;
+
+    /// <summary>混合因子(§4.1.8,含 EXT_blend_color 的常量色);SRC_ALPHA_SATURATE 只能当源因子。</summary>
+    private static bool IsBlendFactor(uint factor, bool source) => factor switch
+    {
+        GlEnum.ZERO or GlEnum.ONE or GlEnum.SRC_COLOR or GlEnum.ONE_MINUS_SRC_COLOR or GlEnum.DST_COLOR or GlEnum.ONE_MINUS_DST_COLOR
+            or GlEnum.SRC_ALPHA or GlEnum.ONE_MINUS_SRC_ALPHA or GlEnum.DST_ALPHA or GlEnum.ONE_MINUS_DST_ALPHA
+            or GlEnum.CONSTANT_COLOR or GlEnum.ONE_MINUS_CONSTANT_COLOR or GlEnum.CONSTANT_ALPHA or GlEnum.ONE_MINUS_CONSTANT_ALPHA => true,
+        GlEnum.SRC_ALPHA_SATURATE => source,
+        _ => false,
+    };
+
+    /// <summary>
+    /// DrawBuffer / ReadBuffer(§4.2.1、§4.3.2):不是缓冲名的记 INVALID_ENUM(ReadBuffer 不收 NONE 与 FRONT_AND_BACK);
+    /// 名字合法、这个配置里却没有那块缓冲的(右眼、辅助缓冲、单缓冲配置的后缓冲)记 INVALID_OPERATION。出错时状态不变。
+    /// </summary>
+    private void SetColorBuffer(ref uint field, uint buffer, bool forRead)
+    {
+        bool known = buffer switch
+        {
+            GlEnum.NONE or GlEnum.FRONT_AND_BACK => !forRead,
+            GlEnum.FRONT_LEFT or GlEnum.FRONT_RIGHT or GlEnum.BACK_LEFT or GlEnum.BACK_RIGHT
+                or GlEnum.FRONT or GlEnum.BACK or GlEnum.LEFT or GlEnum.RIGHT => true,
+            >= GlEnum.AUX0 and <= GlEnum.AUX3 => true,
+            _ => false,
+        };
+        if (!known)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        bool exists = buffer switch
+        {
+            GlEnum.FRONT_RIGHT or GlEnum.BACK_RIGHT or GlEnum.RIGHT => false,   // 没有立体
+            >= GlEnum.AUX0 and <= GlEnum.AUX3 => false,                         // 没有辅助缓冲
+            GlEnum.BACK_LEFT or GlEnum.BACK => DoubleBuffered,
+            _ => true,
+        };
+        if (!exists)
+        {
+            SetError(GlEnum.INVALID_OPERATION);
+            return;
+        }
+        field = buffer;
+    }
+
+    /// <summary>
+    /// CallLists(§5.4):n 为负记 INVALID_VALUE,类型不认识记 INVALID_ENUM,都在调用任何列表之前。原先拿「解出来是 0xFFFFFFFF」
+    /// 当类型不认识的标志 —— FOUR_BYTES / FLOAT 恰好解出这个值时被误判成 INVALID_ENUM。
+    /// </summary>
     private void CallLists(ref GlReader r)
     {
         int n = r.I32();
         uint type = r.U32();
-        for (int i = 0; i < n && r.Remaining > 0; i++)
+        int size = type switch
+        {
+            GlEnum.BYTE or GlEnum.UNSIGNED_BYTE => 1,
+            GlEnum.SHORT or GlEnum.UNSIGNED_SHORT or GlEnum.TWO_BYTES => 2,
+            GlEnum.THREE_BYTES => 3,
+            GlEnum.INT or GlEnum.UNSIGNED_INT or GlEnum.FLOAT or GlEnum.FOUR_BYTES => 4,
+            _ => 0,
+        };
+        if (n < 0)
+        {
+            SetError(GlEnum.INVALID_VALUE);
+            return;
+        }
+        if (size == 0)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        for (int i = 0; i < n && r.Remaining >= size; i++)
         {
             uint offset = type switch
             {
@@ -589,24 +747,22 @@ internal sealed partial class GlContext
                 GlEnum.UNSIGNED_BYTE => r.U8(),
                 GlEnum.SHORT => (uint)r.I16(),
                 GlEnum.UNSIGNED_SHORT => r.U16(),
-                GlEnum.INT or GlEnum.UNSIGNED_INT => r.U32(),
-                GlEnum.FLOAT => (uint)r.F32(),
+                GlEnum.FLOAT => FloatListOffset(r.F32()),
                 GlEnum.TWO_BYTES => (uint)((r.U8() << 8) | r.U8()),
                 GlEnum.THREE_BYTES => (uint)((r.U8() << 16) | (r.U8() << 8) | r.U8()),
                 GlEnum.FOUR_BYTES => (uint)((r.U8() << 24) | (r.U8() << 16) | (r.U8() << 8) | r.U8()),
-                _ => uint.MaxValue,
+                _ => r.U32(),   // INT / UNSIGNED_INT
             };
-            if (offset == uint.MaxValue && type is not (GlEnum.INT or GlEnum.UNSIGNED_INT))
-            {
-                SetError(GlEnum.INVALID_ENUM);
-                return;
-            }
             if (!CallList(State.ListBase + offset))
             {
                 return;   // 预算用完:剩下的不再逐个空转
             }
         }
     }
+
+    /// <summary>FLOAT 类型的列表偏移取整(负数按补码加到 ListBase 上);NaN、无穷当 0 —— 浮点转整数在越界时的结果与平台有关,先夹住。</summary>
+    private static uint FloatListOffset(float value) =>
+        float.IsFinite(value) ? unchecked((uint)(long)Math.Clamp(value, int.MinValue, uint.MaxValue)) : 0;
 
     // ------------------------------------------------------------------ 分量读取
 

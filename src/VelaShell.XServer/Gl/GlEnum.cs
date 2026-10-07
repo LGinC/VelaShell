@@ -26,7 +26,10 @@ internal static class GlEnum
 
     // 缓冲
     public const uint FRONT_LEFT = 0x0400, FRONT_RIGHT = 0x0401, BACK_LEFT = 0x0402, BACK_RIGHT = 0x0403, FRONT = 0x0404,
-        BACK = 0x0405, LEFT = 0x0406, RIGHT = 0x0407, FRONT_AND_BACK = 0x0408, NONE = 0;
+        BACK = 0x0405, LEFT = 0x0406, RIGHT = 0x0407, FRONT_AND_BACK = 0x0408, AUX0 = 0x0409, AUX3 = 0x040C, NONE = 0;
+
+    // 逻辑运算:CLEAR … SET 十六种连续编号
+    public const uint CLEAR = 0x1500, SET = 0x150F;
 
     public const uint COLOR_BUFFER_BIT = 0x4000, DEPTH_BUFFER_BIT = 0x0100, STENCIL_BUFFER_BIT = 0x0400, ACCUM_BUFFER_BIT = 0x0200;
 

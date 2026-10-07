@@ -141,19 +141,22 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
+        // 过滤与环绕方式只收规范列出的值(§3.8.4,含 SGIS_texture_edge_clamp 的 CLAMP_TO_EDGE),别的记 INVALID_ENUM、不改。
+        uint value = EnumParam(v[0]);
         switch (pname)
         {
-            case GlEnum.TEXTURE_MIN_FILTER:
-                t.MinFilter = (uint)v[0];
+            case GlEnum.TEXTURE_MIN_FILTER when value is GlEnum.NEAREST or GlEnum.LINEAR or GlEnum.NEAREST_MIPMAP_NEAREST
+                                                or GlEnum.LINEAR_MIPMAP_NEAREST or GlEnum.NEAREST_MIPMAP_LINEAR or GlEnum.LINEAR_MIPMAP_LINEAR:
+                t.MinFilter = value;
                 break;
-            case GlEnum.TEXTURE_MAG_FILTER:
-                t.MagFilter = (uint)v[0];
+            case GlEnum.TEXTURE_MAG_FILTER when value is GlEnum.NEAREST or GlEnum.LINEAR:
+                t.MagFilter = value;
                 break;
-            case GlEnum.TEXTURE_WRAP_S:
-                t.WrapS = (uint)v[0];
+            case GlEnum.TEXTURE_WRAP_S when IsWrapMode(value):
+                t.WrapS = value;
                 break;
-            case GlEnum.TEXTURE_WRAP_T:
-                t.WrapT = (uint)v[0];
+            case GlEnum.TEXTURE_WRAP_T when IsWrapMode(value):
+                t.WrapT = value;
                 break;
             case GlEnum.TEXTURE_BORDER_COLOR:
                 t.BorderColor = Vector4.Clamp(Vec4(v), Vector4.Zero, Vector4.One);
@@ -168,6 +171,14 @@ internal sealed partial class GlContext
                 break;
         }
     }
+
+    private static bool IsWrapMode(uint mode) => mode is GlEnum.CLAMP or GlEnum.REPEAT or GlEnum.CLAMP_TO_EDGE;
+
+    /// <summary>
+    /// 浮点给的枚举参数(TexParameterf、Fogf、TexEnvf……)换成枚举值。负数、NaN 与超出 32 位的换成一个不是任何枚举的值 ——
+    /// 浮点转无符号整数在越界时的结果与平台有关。
+    /// </summary>
+    private static uint EnumParam(float value) => value is >= 0 and < 4294967296f ? (uint)value : uint.MaxValue;
 
     /// <summary>内部格式 → 基本内部格式(Table 3.15 / 3.16;1–4 是 GL 1.0 的 components 写法)。不认识的返回 0。</summary>
     private static uint BaseInternalFormat(uint internalFormat) => internalFormat switch

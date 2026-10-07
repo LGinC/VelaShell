@@ -252,7 +252,7 @@ internal sealed partial class GlContext
                 State.LightModelTwoSide = v[0] != 0;
                 break;
             case GlEnum.LIGHT_MODEL_COLOR_CONTROL:
-                State.LightModelColorControl = (uint)v[0];
+                SetEnum(ref State.LightModelColorControl, EnumParam(v[0]), static m => m is GlEnum.SINGLE_COLOR or GlEnum.SEPARATE_SPECULAR_COLOR);
                 break;
             default:
                 SetError(GlEnum.INVALID_ENUM);
@@ -265,7 +265,7 @@ internal sealed partial class GlContext
         switch (pname)
         {
             case GlEnum.FOG_MODE:
-                State.FogMode = (uint)v[0];
+                SetEnum(ref State.FogMode, EnumParam(v[0]), static m => m is GlEnum.LINEAR or GlEnum.EXP or GlEnum.EXP2);
                 break;
             case GlEnum.FOG_DENSITY:
                 if (v[0] < 0)
@@ -301,7 +301,9 @@ internal sealed partial class GlContext
         }
         if (pname == GlEnum.TEXTURE_ENV_MODE)
         {
-            State.TexEnvMode = (uint)v[0];
+            // Table 3.22 的五种纹理函数(ADD 来自 1.3,软件管线照样实现了)。
+            SetEnum(ref State.TexEnvMode, EnumParam(v[0]),
+                static m => m is GlEnum.MODULATE or GlEnum.DECAL or GlEnum.BLEND or GlEnum.REPLACE or GlEnum.ADD);
         }
         else if (pname == GlEnum.TEXTURE_ENV_COLOR)
         {
@@ -324,8 +326,19 @@ internal sealed partial class GlContext
         switch (pname)
         {
             case GlEnum.TEXTURE_GEN_MODE:
-                State.TexGenMode[i] = (uint)v[0];
-                break;
+                {
+                    // SPHERE_MAP 只对 S、T 有定义(§2.11.4)。
+                    uint mode = EnumParam(v[0]);
+                    if (mode is GlEnum.OBJECT_LINEAR or GlEnum.EYE_LINEAR || (mode == GlEnum.SPHERE_MAP && i < 2))
+                    {
+                        State.TexGenMode[i] = mode;
+                    }
+                    else
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                    }
+                    break;
+                }
             case GlEnum.OBJECT_PLANE:
                 State.TexGenObjectPlane[i] = Vec4(v);
                 break;
