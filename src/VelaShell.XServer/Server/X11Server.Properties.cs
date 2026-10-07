@@ -337,6 +337,10 @@ public sealed partial class X11Server
         {
             OnSelectionWindowProperty(atom, deleted);
         }
+        else if (deleted && _outgoingIncr.Count != 0)
+        {
+            OnIncrPropertyDeleted(window, atom);   // 服务端当剪贴板属主的 INCR 传输:请求方取走了一块
+        }
     }
 
     // ------------------------------------------------------------------ 选区

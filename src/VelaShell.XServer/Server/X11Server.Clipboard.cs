@@ -27,13 +27,24 @@ public sealed partial class X11Server
     /// <summary>服务端作为选区请求方 / 属主时用的窗口(不映射、不挂进窗口树,客户端的 QueryTree 看不到)。</summary>
     private const uint SelectionWindowId = 0x43;
 
-    /// <summary>从 X 客户端要过来的文本上限;超过就放弃这次同步。</summary>
-    private const int MaxClipboardBytes = 16 * 1024 * 1024;
-
     private XWindow? _selectionWindow;
 
-    /// <summary>宿主最近一次给的文本;服务端占有选区时拿它回应。</summary>
+    /// <summary>宿主最近一次给的文本;服务端占有选区时拿它回应(见 <see cref="SetHostClipboard" />)。</summary>
     private string _hostClipboard = "";
+
+    /// <summary>宿主文本的 UTF-8 / Latin-1 编码:第一次有人要时编一次,之后各次 ConvertSelection 共用(原先每次都重编码)。</summary>
+    private byte[]? _hostClipboardUtf8, _hostClipboardLatin1;
+
+    private void SetHostClipboard(string text)
+    {
+        _hostClipboard = text;
+        _hostClipboardUtf8 = null;
+        _hostClipboardLatin1 = null;
+    }
+
+    private byte[] HostClipboardUtf8 => _hostClipboardUtf8 ??= Encoding.UTF8.GetBytes(_hostClipboard);
+
+    private byte[] HostClipboardLatin1 => _hostClipboardLatin1 ??= Encoding.Latin1.GetBytes(_hostClipboard);
 
     /// <summary>最近一次交给宿主的文本 —— 宿主把它写回来时不再抢选区(防回声)。</summary>
     private string? _lastDeliveredText;
@@ -81,7 +92,7 @@ public sealed partial class X11Server
         {
             return;   // 宿主把我们刚给的写回来了
         }
-        _hostClipboard = text;
+        SetHostClipboard(text);
         TakeSelectionForHost(Intern("CLIPBOARD"));
         if (_options.SyncPrimary)
         {
@@ -117,7 +128,7 @@ public sealed partial class X11Server
     {
         if (IsSyncedSelection(selection) && _lastDeliveredText is { } text && !_selections.ContainsKey(selection))
         {
-            _hostClipboard = text;
+            SetHostClipboard(text);
             TakeSelectionForHost(selection);
         }
     }
@@ -155,7 +166,7 @@ public sealed partial class X11Server
         uint text = Intern("TEXT");
         uint plainUtf8 = Intern("text/plain;charset=utf-8");
 
-        XProperty? value = null;
+        (uint Type, byte Format, byte[] Data)? value = null;
         if (selection != Intern("CLIPBOARD") && selection != XAtom.Primary)
         {
             // 服务端占有的其它选区(_XSETTINGS_S0 这类管理器选区)没有可转换的内容。
@@ -172,39 +183,125 @@ public sealed partial class X11Server
             {
                 BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(i * 4), atoms[i]);
             }
-            value = new XProperty(XAtom.Atom, 32, data);
+            value = (XAtom.Atom, 32, data);
         }
         else if (target == timestamp)
         {
             byte[] data = new byte[4];
             BinaryPrimitives.WriteUInt32LittleEndian(data, ownerTime);
-            value = new XProperty(XAtom.Integer, 32, data);
+            value = (XAtom.Integer, 32, data);
         }
         else if (target == utf8 || target == plainUtf8)
         {
-            value = new XProperty(target, 8, Encoding.UTF8.GetBytes(_hostClipboard));
+            value = (target, 8, HostClipboardUtf8);
         }
         else if (target == text && !IsLatin1(_hostClipboard))
         {
             // TEXT 由属主挑编码(ICCCM §2.6.2):Latin-1 装不下(中日韩)就回 UTF8_STRING —— 原先按 Latin-1 有损转换,汉字变成「?」。
-            value = new XProperty(utf8, 8, Encoding.UTF8.GetBytes(_hostClipboard));
+            value = (utf8, 8, HostClipboardUtf8);
         }
         else if (target == XAtom.String || target == text)
         {
-            value = new XProperty(XAtom.String, 8, Encoding.Latin1.GetBytes(_hostClipboard));
+            value = (XAtom.String, 8, HostClipboardLatin1);
         }
 
-        if (value is null)
+        if (value is not { } v)
         {
             property = 0;   // 不支持的目标:拒绝
         }
+        else if (v.Format == 8 && v.Data.Length > IncrChunkBytes)
+        {
+            StartIncrTransfer(requestor, property, v.Type, v.Data);   // 大的分块交(ICCCM §2.5)
+        }
         else
         {
-            StoreServerProperty(requestor, property, value);
+            StoreServerProperty(requestor, property, new XProperty(v.Type, v.Format, v.Data));
             SendPropertyNotify(requestor, property, deleted: false);
         }
         XClient to = requestor.Owner is { Closed: false } creator ? creator : c;
         to.Event(XEventCode.SelectionNotify, 0, w => w.U32(time).U32(requestor.Id).U32(selection).U32(target).U32(property));
+    }
+
+    /// <summary>
+    /// 服务端当属主时,超过这么多字节的文本按 INCR 分块交,每块这么大。原先整份写成一个属性:绕过了单个属性的上限,
+    /// 请求方一次取回几十 MB 又会撞上输出积压上限被断开。
+    /// </summary>
+    internal const int IncrChunkBytes = 256 * 1024;
+
+    /// <summary>同时进行的 INCR 传输上限(多了丢掉最早的)与每一步等请求方的时限。</summary>
+    private const int MaxOutgoingIncr = 32;
+
+    internal TimeSpan IncrStepTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>一次服务端当属主的 INCR 传输:(请求窗口, 属性) → 进度。</summary>
+    private readonly Dictionary<(XWindow Window, uint Property), OutgoingIncr> _outgoingIncr = [];
+
+    private sealed class OutgoingIncr(uint type, byte[] data)
+    {
+        public uint Type { get; } = type;
+
+        public byte[] Data { get; } = data;
+
+        public int Offset { get; set; }
+
+        /// <summary>最后那块空的已经写出:请求方删掉它就结束。</summary>
+        public bool Finished { get; set; }
+
+        /// <summary>第几步:限时检查只认安排它时的那一步。</summary>
+        public int Step { get; set; }
+    }
+
+    /// <summary>
+    /// ICCCM §2.5:属性先写成类型 INCR、值是总长的下限,发 SelectionNotify;请求方每删一次属性,就写下一块(类型是真正的类型),
+    /// 最后写一块空的表示结束。块之间请求方迟迟不删,传输作废。
+    /// </summary>
+    private void StartIncrTransfer(XWindow requestor, uint property, uint type, byte[] data)
+    {
+        if (_outgoingIncr.Count >= MaxOutgoingIncr)
+        {
+            _outgoingIncr.Remove(_outgoingIncr.Keys.First());
+        }
+        OutgoingIncr transfer = new(type, data);
+        _outgoingIncr[(requestor, property)] = transfer;
+        byte[] size = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(size, (uint)data.Length);
+        StoreServerProperty(requestor, property, new XProperty(Intern("INCR"), 32, size));
+        SendPropertyNotify(requestor, property, deleted: false);
+        ExpireIncrLater(requestor, property, transfer);
+    }
+
+    /// <summary>请求方删掉了属性(见 <see cref="SendPropertyNotify" />):是一次 INCR 传输在等的,就写下一块。</summary>
+    private void OnIncrPropertyDeleted(XWindow window, uint property)
+    {
+        if (!_outgoingIncr.TryGetValue((window, property), out OutgoingIncr? transfer))
+        {
+            return;
+        }
+        if (transfer.Finished)
+        {
+            _outgoingIncr.Remove((window, property));
+            return;
+        }
+        int length = Math.Min(IncrChunkBytes, transfer.Data.Length - transfer.Offset);
+        byte[] chunk = transfer.Data.AsSpan(transfer.Offset, length).ToArray();
+        transfer.Offset += length;
+        transfer.Finished = length == 0;
+        transfer.Step++;
+        StoreServerProperty(window, property, new XProperty(transfer.Type, 8, chunk));
+        SendPropertyNotify(window, property, deleted: false);
+        ExpireIncrLater(window, property, transfer);
+    }
+
+    private void ExpireIncrLater(XWindow window, uint property, OutgoingIncr transfer)
+    {
+        int step = transfer.Step;
+        _ = DelayThenPostAsync((uint)IncrStepTimeout.TotalMilliseconds, () =>
+        {
+            if (_outgoingIncr.TryGetValue((window, property), out OutgoingIncr? current) && ReferenceEquals(current, transfer) && current.Step == step)
+            {
+                _outgoingIncr.Remove((window, property));   // 请求方不再取了(或窗口已经没了)
+            }
+        }, _lifetime.Token);
     }
 
     // ------------------------------------------------------------------ 服务端当请求方

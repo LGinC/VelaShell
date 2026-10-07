@@ -485,12 +485,22 @@ public sealed partial class X11Server : IAsyncDisposable
     }
 
     /// <summary>
-    /// 宿主的剪贴板有了新文本:服务端占有 CLIPBOARD(<see cref="X11ServerOptions.SyncPrimary" /> 时连同 PRIMARY),
-    /// 之后 X 客户端粘贴拿到的就是它。与刚交给宿主的文本相同时什么也不做(那是宿主把我们给的写回来了)。
+    /// 剪贴板文本的上限(UTF-8 字节):宿主交来的(<see cref="SetClipboardText" />)超过它当场拒绝,从 X 客户端取来的超过它不交给宿主。
     /// </summary>
+    public const int MaxClipboardBytes = 16 * 1024 * 1024;
+
+    /// <summary>
+    /// 宿主的剪贴板有了新文本:服务端占有 CLIPBOARD(<see cref="X11ServerOptions.SyncPrimary" /> 时连同 PRIMARY),
+    /// 之后 X 客户端粘贴拿到的就是它(大的分块按 INCR 交)。与刚交给宿主的文本相同时什么也不做(那是宿主把我们给的写回来了)。
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">文本按 UTF-8 超过 <see cref="MaxClipboardBytes" />。</exception>
     public void SetClipboardText(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
+        if (text.Length > MaxClipboardBytes || System.Text.Encoding.UTF8.GetByteCount(text) > MaxClipboardBytes)
+        {
+            throw new ArgumentOutOfRangeException(nameof(text), text.Length, $"剪贴板文本超过 {MaxClipboardBytes} 字节(UTF-8)。");
+        }
         Post(null, () => ApplyClipboardText(text));
     }
 

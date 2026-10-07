@@ -133,6 +133,51 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task 宿主的大文本按INCR分块交给X客户端_超过上限的文本当场拒绝()
+    {
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(c, "CLIPBOARD");
+        uint utf8 = await InternAsync(c, "UTF8_STRING");
+        uint incr = await InternAsync(c, "INCR");
+        uint prop = await InternAsync(c, "PASTED");
+        uint window = await CreateWindowAsync(c);
+        await c.SendAsync(2, 0, b => b.U32(window).U32(0x800).U32(0x400000));   // PropertyChangeMask
+
+        string big = string.Concat(Enumerable.Range(0, 70_000).Select(i => $"{i % 10}中"));   // 约 280 KB(UTF-8)
+        Assert.ThrowsExactly<ArgumentOutOfRangeException>(() => server.SetClipboardText(new string('x', X11Server.MaxClipboardBytes + 1)));
+        server.SetClipboardText(big);
+        while ((await c.RequestAsync(23, 0, b => b.U32(clipboard))).U32(8) == 0)
+        {
+        }
+        await c.SendAsync(24, 0, b => b.U32(window).U32(clipboard).U32(utf8).U32(prop).U32(0));
+        await c.NextEventAsync(SelectionNotify);
+        // 第一次取:类型 INCR、值是总长的下限;取的同时删掉(delete = 1)表示「准备好了」。
+        XMessage head = await c.RequestAsync(20, 1, b => b.U32(window).U32(prop).U32(0).U32(0).U32(1));
+        Assert.AreEqual(incr, head.U32(8), "原先整份写成一个属性");
+        Assert.AreEqual((uint)Encoding.UTF8.GetByteCount(big), head.U32(32));
+
+        List<byte> received = [];
+        int chunks = 0;
+        while (true)
+        {
+            await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == PropertyNotify && m.U32(8) == prop && m.Bytes[16] == 0);
+            XMessage chunk = await c.RequestAsync(20, 1, b => b.U32(window).U32(prop).U32(0).U32(0).U32(1_000_000));
+            Assert.AreEqual(utf8, chunk.U32(8), "每块的类型是真正的类型");
+            int length = (int)chunk.U32(16);
+            if (length == 0)
+            {
+                break;   // 空的一块:结束
+            }
+            Assert.IsLessThanOrEqualTo(X11Server.IncrChunkBytes, length);
+            received.AddRange(chunk.Bytes.AsSpan(32, length).ToArray());
+            chunks++;
+        }
+        Assert.IsGreaterThan(1, chunks);
+        Assert.AreEqual(big, Encoding.UTF8.GetString([.. received]));
+    }
+
+    [TestMethod]
     public async Task X客户端复制的文本交给宿主_写回来不抢选区()
     {
         using RecordingHost host = new();
