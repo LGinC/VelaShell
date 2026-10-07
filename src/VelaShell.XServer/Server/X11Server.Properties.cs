@@ -33,7 +33,19 @@ public sealed partial class X11Server
     private readonly Dictionary<string, uint> _atomsByName = [with(StringComparer.Ordinal)];
     private readonly List<string> _atomNames = [];
     private long _atomNameBytes;
-    private readonly Dictionary<uint, (XWindow Window, XClient? Client, uint Time)> _selections = [];
+    /// <summary>
+    /// 选区表的键:选区原子与它的作用域。作用域为 null 的是全显示共享的选区(协议的本义);开着
+    /// <see cref="X11ServerOptions.ClipboardFollowsFocus" /> 时 PRIMARY、SECONDARY、CLIPBOARD 按会话各存一份(作用域是会话,见 <c>SessionOf</c>)。
+    /// </summary>
+    private readonly record struct SelectionSlot(uint Atom, string? Scope);
+
+    private readonly Dictionary<SelectionSlot, (XWindow Window, XClient? Client, uint Time)> _selections = [];
+
+    /// <summary>
+    /// 每个选区最后一次换属主的时间(协议「SetSelectionOwner」的 last-change time)。属主窗口销毁、属主断开、属主放弃时记录整条删掉,
+    /// 这个时间却不随之消失 —— 否则先放弃再带一个未来的时间戳去占,之后所有人带真实事件时间去占都被当成「早于当前属主」静默忽略。
+    /// </summary>
+    private readonly Dictionary<SelectionSlot, uint> _selectionLastChange = [];
 
     private void InitAtoms()
     {
@@ -75,16 +87,25 @@ public sealed partial class X11Server
         int length = r.U16();
         r.Skip(2);
         string name = r.String8(length);
-        uint atom = _atomsByName.GetValueOrDefault(name);
-        if (atom == 0 && !onlyIfExists)
-        {
-            if (_atomNames.Count >= MaxAtoms || _atomNameBytes + name.Length > MaxAtomNameBytes)
-            {
-                throw new XProtocolError(XErrorCode.Alloc);
-            }
-            atom = Intern(name);
-        }
+        uint atom = onlyIfExists ? _atomsByName.GetValueOrDefault(name) : InternForClient(name);
         c.Reply(0, w => w.U32(atom).Zero(20));
+    }
+
+    /// <summary>
+    /// 客户端要建的原子(InternAtom、XFIXES 的 SetCursorName):原子永不释放,超过 <see cref="MaxAtoms" /> 个或名字合计
+    /// <see cref="MaxAtomNameBytes" /> 回 Alloc。服务端自己用的名字走 <see cref="Intern" />,不受限。
+    /// </summary>
+    private uint InternForClient(string name)
+    {
+        if (_atomsByName.TryGetValue(name, out uint atom))
+        {
+            return atom;
+        }
+        if (_atomNames.Count >= MaxAtoms || _atomNameBytes + name.Length > MaxAtomNameBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
+        return Intern(name);
     }
 
     private void GetAtomName(XClient c, XRequestReader r)
@@ -130,14 +151,32 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 先算再拼:不为一个注定超限的值分配
         }
-        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
-        if (existing is not null)
+        // 记账(xs_plan X-2):新值记在写它的客户端名下,旧值退还给当初写它的客户端;记不下回 Alloc,属性不变。
+        XProperty? replaced = window.Properties.GetValueOrDefault(property);
+        ReleaseProperty(replaced);
+        try
         {
-            data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
+            ChargeMemory(c, byteCount + (existing?.Data.Length ?? 0));
         }
-        window.Properties[property] = new XProperty(type, format, data);
+        catch (XProtocolError)
+        {
+            ChargeMemory(replaced?.ChargedTo, replaced?.Data.Length ?? 0, force: true);
+            throw;
+        }
+        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
+        // 追加接在留了余量的存储后面,只拷新字节(xs_plan WN-P1);前插少见,照旧整份拼一次。
+        window.Properties[property] = existing is null ? new XProperty(type, format, data) { ChargedTo = c }
+            : mode == 2 ? existing.Append(data, c)
+            : new XProperty(type, format, [.. data, .. existing.Data]) { ChargedTo = c };
         SendPropertyNotify(window, property, deleted: false);
         OnTopLevelPropertyChanged(window, property);
+    }
+
+    /// <summary>服务端自己写的属性(EWMH、XSETTINGS、剪贴板的回应……):被替换掉的旧值退还写它的客户端的账。</summary>
+    internal void StoreServerProperty(XWindow window, uint property, XProperty value)
+    {
+        ReleaseProperty(window.Properties.GetValueOrDefault(property));
+        window.Properties[property] = value;
     }
 
     /// <summary>16 / 32 位属性一律按本机序(小端)存放,取出时再按取的人的字节序写出。</summary>
@@ -174,8 +213,9 @@ public sealed partial class X11Server
         XWindow window = Window(r.U32());
         uint property = r.U32();
         CheckAtom(property);
-        if (window.Properties.Remove(property))
+        if (window.Properties.Remove(property, out XProperty? removed))
         {
+            ReleaseProperty(removed);
             SendPropertyNotify(window, property, deleted: true);
             OnTopLevelPropertyChanged(window, property);
         }
@@ -216,7 +256,7 @@ public sealed partial class X11Server
         }
         long l = Math.Min(t, 4L * longLength);
         long after = n - (i + l);
-        byte[] value = prop.Data.AsSpan((int)i, (int)l).ToArray();
+        byte[] value = prop.Data.Slice((int)i, (int)l).ToArray();
         if (c.BigEndian && prop.Format != 8)
         {
             // 本机序 → 大端:与 ToNativeOrder 互逆。
@@ -238,6 +278,7 @@ public sealed partial class X11Server
         if (delete && after == 0)
         {
             window.Properties.Remove(property);
+            ReleaseProperty(prop);
             SendPropertyNotify(window, property, deleted: true);
             OnTopLevelPropertyChanged(window, property);   // 与 DeleteProperty 一样:宿主那边的标题 / 提示跟着变
         }
@@ -263,12 +304,13 @@ public sealed partial class X11Server
         int count = r.U16();
         int delta = r.I16();
         uint[] atoms = new uint[count];
+        HashSet<uint> seen = [with(count)];   // 查重复:原先每个都往前 Array.IndexOf 一遍,65535 个名字就是二十亿次比较
         for (int i = 0; i < count; i++)
         {
             atoms[i] = r.U32();
             CheckAtom(atoms[i]);
             // 属性不存在,或者同一个名字在列表里出现不止一次:Match(协议「RotateProperties」)。
-            if (!window.Properties.ContainsKey(atoms[i]) || Array.IndexOf(atoms, atoms[i], 0, i) >= 0)
+            if (!window.Properties.ContainsKey(atoms[i]) || !seen.Add(atoms[i]))
             {
                 throw new XProtocolError(XErrorCode.Match, atoms[i]);
             }
@@ -302,6 +344,10 @@ public sealed partial class X11Server
         {
             OnSelectionWindowProperty(atom, deleted);
         }
+        else if (deleted && _outgoingIncr.Count != 0)
+        {
+            OnIncrPropertyDeleted(window, atom);   // 服务端当剪贴板属主的 INCR 传输:请求方取走了一块
+        }
     }
 
     // ------------------------------------------------------------------ 选区
@@ -318,13 +364,16 @@ public sealed partial class X11Server
         {
             time = now;
         }
-        if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) current))
+        SelectionSlot slot = SlotOf(selection, c);   // 按会话隔离的选区:只动这个客户端所在会话的那一份
+        // 时间早于最后一次换属主的时间,或晚于服务端当前时间:忽略(协议规定)。两条都与当前有没有属主无关。
+        if (unchecked((int)(time - now)) > 0
+            || (_selectionLastChange.TryGetValue(slot, out uint lastChange) && unchecked((int)(time - lastChange)) < 0))
         {
-            // 时间早于当前属主的获取时间,或晚于服务端当前时间:忽略(协议规定)。
-            if (unchecked((int)(time - current.Time)) < 0 || unchecked((int)(time - now)) > 0)
-            {
-                return;
-            }
+            return;
+        }
+        _selectionLastChange[slot] = time;
+        if (_selections.TryGetValue(slot, out (XWindow Window, XClient? Client, uint Time) current))
+        {
             if (!ReferenceEquals(current.Client, c) || owner is null)
             {
                 XWindow old = current.Window;
@@ -333,16 +382,21 @@ public sealed partial class X11Server
         }
         if (owner is null)
         {
-            _selections.Remove(selection);
+            _selections.Remove(slot);
         }
         else
         {
-            _selections[selection] = (owner, c, time);
+            _selections[slot] = (owner, c, time);
+            NoteClientSelection(slot);
         }
-        NotifySelectionChange(selection, 0, ownerId, time);
-        if (owner is not null)
+        NotifySelectionChange(selection, 0, ownerId, time, client => InScope(client, slot));
+        if (owner is null)
         {
-            OnClientTookSelection(c, owner, selection, time);
+            OnSelectionOwnerLost(slot);
+        }
+        else
+        {
+            OnClientTookSelection(c, owner, slot, time);
         }
     }
 
@@ -350,7 +404,7 @@ public sealed partial class X11Server
     {
         uint selection = r.U32();
         CheckAtom(selection);
-        uint owner = _selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) s) ? s.Window.Id : 0;
+        uint owner = _selections.TryGetValue(SlotOf(selection, c), out (XWindow Window, XClient? Client, uint Time) s) ? s.Window.Id : 0;
         c.Reply(0, w => w.U32(owner).Zero(20));
     }
 
@@ -363,7 +417,13 @@ public sealed partial class X11Server
         uint time = r.U32();
         CheckAtom(selection);
         CheckAtom(target);
-        if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) owner))
+        if (property != 0)
+        {
+            // property 是 ATOM 或 None(协议「ConvertSelection」):不存在的原子回 BadAtom。原先不查,宿主占着剪贴板时服务端
+            // 拿它当属性名写到请求方给的窗口上(可以是根窗口),之后 xprop -root 之类列属性的都收到 BadAtom。
+            CheckAtom(property);
+        }
+        if (_selections.TryGetValue(SlotOf(selection, c), out (XWindow Window, XClient? Client, uint Time) owner))
         {
             if (owner.Client is null)
             {
@@ -583,12 +643,6 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, id);
         }
-        if (IsRetained(owner))
-        {
-            DestroyRetainedClient(owner);   // 已经以 Retain 模式断开:销毁它留下的全部资源
-            return;
-        }
-        owner.Abort();
-        DisconnectClient(owner);
+        KillClientOf(owner);   // 已经以 Retain 模式断开的:销毁它留下的全部资源
     }
 }

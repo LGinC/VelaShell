@@ -5427,7 +5427,7 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>Trusted (-Y)</value>
   </data>
   <data name="Profile_SshX11TrustedHint" xml:space="preserve">
-    <value>Trusted forwarding gives remote X clients full access to your local display. X servers on Windows usually support only this mode; untrusted mode needs xauth installed locally.</value>
+    <value>Trusted forwarding gives remote X clients full access to your local display, and all forwarded sessions share it: they can see each other&apos;s windows, read the clipboard and send input. The built-in X Server and most X servers on Windows support only this mode; untrusted mode needs an external X server with the SECURITY extension and xauth installed locally.</value>
   </data>
   <data name="Ssh_X11ForwardOn" xml:space="preserve">
     <value>X11 forwarding on → local display {0}</value>
@@ -5443,6 +5443,9 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="Ssh_X11BadDisplay" xml:space="preserve">
     <value>unrecognized display &quot;{0}&quot; (expected something like localhost:0.0)</value>
+  </data>
+  <data name="Ssh_X11UntrustedBuiltIn" xml:space="preserve">
+    <value>the built-in X Server supports only trusted forwarding (it has no SECURITY extension). Turn on &quot;Trusted (-Y)&quot; for this connection, or use an external X server.</value>
   </data>
   <data name="SshErr_AgentUnavailable" xml:space="preserve">
     <value>Cannot reach the local ssh-agent: {0}</value>
@@ -5652,13 +5655,13 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>Enable clipboard</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>Share the X CLIPBOARD selection with the system clipboard (VcXsrv: -clipboard).</value>
+    <value>Share the X CLIPBOARD selection with the system clipboard (VcXsrv: -clipboard). With the built-in X Server, only the session whose window has the keyboard focus can read what you copy on this computer, and only copies made in that session reach the system clipboard.</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>Copy on selection</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>Also map the PRIMARY selection, so text selected in an X program is copied to the system clipboard right away (VcXsrv: -primary).</value>
+    <value>Also map the PRIMARY selection, so text selected in an X program is copied to the system clipboard right away (VcXsrv: -primary). Off by default: when on, whatever you copy on this computer can be pasted into X programs with a middle click.</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>Keyboard</value>
@@ -5668,6 +5671,12 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>Keyboard layout used by X programs. Auto follows the system's current layout; a chosen layout is used as is (VcXsrv receives it as -xkblayout).</value>
+  </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>Restrict programs from SSH sessions</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>Programs forwarded over SSH can&apos;t simulate input (XTEST), listen to every key typed in X windows (raw key events) or change input devices. Turn this on when you connect to servers you don&apos;t fully trust; tools like xdotool on those servers stop working.</value>
   </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>auto - Follow the system layout</value>
@@ -5779,6 +5788,24 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   </data>
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server running on {0} — click to stop</value>
+  </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>Not Responding</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>“{0}” is not responding. Force quit this X program? Its other windows will close too, and unsaved work will be lost.</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>Force Quit</value>
+  </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>Stop X Server</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>Stopping the X Server disconnects {0} X program connection(s) and closes all their windows. Unsaved work in them will be lost.</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>Stop</value>
   </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>Start / Stop X Server</value>

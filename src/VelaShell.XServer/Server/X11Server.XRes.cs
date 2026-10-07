@@ -25,7 +25,7 @@ public sealed partial class X11Server
                 break;
             case 1:   // QueryClients
                 {
-                    XClient[] clients = [.. _clients.Values];
+                    XClient[] clients = [.. ClientsWithResources()];
                     c.Reply(0, w =>
                     {
                         w.U32((uint)clients.Length).Zero(20);
@@ -81,7 +81,7 @@ public sealed partial class X11Server
                         {
                             continue;
                         }
-                        foreach (XClient one in client == 0 ? [.. _clients.Values] : (XClient[])[ClientOfXid(client)])
+                        foreach (XClient one in client == 0 ? [.. ClientsWithResources()] : (XClient[])[ClientOfXid(client)])
                         {
                             if (seen.Add(one))
                             {
@@ -107,12 +107,18 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>任意一个 XID 所属的客户端(按 resource-base);不属于任何在线客户端时为 BadValue。</summary>
+    /// <summary>
+    /// 任意一个 XID 所属的客户端(按 resource-base),连同以 Retain 模式断开、资源还留着的;都不是时为 BadValue。
+    /// 保留的客户端原先在这里看不见:占着编号、留着像素图,xrestop 之类却列不出来,也就无从知道该 KillClient 谁。
+    /// </summary>
     private XClient ClientOfXid(uint xid)
     {
         int index = (int)(xid >> 21);
-        return _clients.TryGetValue(index, out XClient? client) ? client : throw new XProtocolError(XErrorCode.Value, xid);
+        return _clients.GetValueOrDefault(index) ?? _retainedClients.GetValueOrDefault(index) ?? throw new XProtocolError(XErrorCode.Value, xid);
     }
+
+    /// <summary>X-Resource 列出的客户端:连着的,连同以 Retain 模式断开、资源还留着的,按编号排。</summary>
+    private IEnumerable<XClient> ClientsWithResources() => _clients.Values.Concat(_retainedClients.Values).OrderBy(c => c.Index);
 
     private static string ResourceTypeName(XResource resource) => resource switch
     {

@@ -23,7 +23,10 @@ public interface IX11ServerHost
     /// <summary>一个顶层窗口映射了(该创建原生窗口并显示)。</summary>
     void TopLevelMapped(XTopLevelWindow window);
 
-    /// <summary>一个顶层窗口取消映射或销毁了(该隐藏 / 关闭原生窗口)。</summary>
+    /// <summary>
+    /// 一个顶层窗口取消映射或销毁了(该隐藏 / 关闭原生窗口)。服务端收工(<see cref="X11Server.DisposeAsync" />)时不再逐个发它:
+    /// 宿主停服时自己收掉所有原生窗口。
+    /// </summary>
     void TopLevelUnmapped(XTopLevelWindow window);
 
     /// <summary>

@@ -34,7 +34,7 @@ public sealed class SecurityKeyTests
 
     internal static byte[] EcdsaSkBlob(string application = "ssh:")
     {
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         ECParameters p = key.ExportParameters(false);
         ArrayBufferWriter<byte> buffer = new();
         SshDataWriter writer = new(buffer);
@@ -49,9 +49,9 @@ public sealed class SecurityKeyTests
     [TestMethod]
     public void 安全密钥的公钥认得出来()
     {
-        using InMemorySshSigner ed = InMemorySshSigner.GenerateEd25519();
+        using var ed = InMemorySshSigner.GenerateEd25519();
         byte[] edBlob = Ed25519SkBlob(ed.PublicKey.Blob[^32..].ToArray(), "ssh:work");
-        SshPublicKey sk = SshPublicKey.Decode(edBlob);
+        var sk = SshPublicKey.Decode(edBlob);
 
         Assert.AreEqual(SshAlgorithmNames.SkSshEd25519, sk.KeyType);
         Assert.AreEqual(256, sk.KeyBits);
@@ -61,7 +61,7 @@ public sealed class SecurityKeyTests
         Assert.AreEqual(sk, SshPublicKey.Parse(sk.ToOpenSshFormat()));
         Assert.IsFalse(sk.VerifySignature([0, 0, 0, 0], [1], SshAlgorithmNames.SkSshEd25519));
 
-        SshPublicKey ecdsa = SshPublicKey.Decode(EcdsaSkBlob());
+        var ecdsa = SshPublicKey.Decode(EcdsaSkBlob());
         Assert.AreEqual(SshAlgorithmNames.SkEcdsaSha2Nistp256, ecdsa.KeyType);
         Assert.AreEqual("ssh:", ecdsa.SecurityKeyApplication);
         Assert.IsFalse(ed.PublicKey.IsSecurityKey);
@@ -88,13 +88,13 @@ public sealed class SecurityKeyTests
     public async Task agent里的安全密钥列得出来也能当凭据()
     {
         TestAgent agent = new();
-        using InMemorySshSigner ed = InMemorySshSigner.GenerateEd25519();
+        using var ed = InMemorySshSigner.GenerateEd25519();
         agent.AddOpaque(Ed25519SkBlob(ed.PublicKey.Blob[^32..].ToArray()), "yubikey");
 
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
-        Task serving = Task.Run(() => agent.ServeAsync(theirs, cts.Token));
-        await using (SshAgentClient client = SshAgentClient.FromStream(ours, "(测试 agent)"))
+        var serving = Task.Run(() => agent.ServeAsync(theirs, cts.Token));
+        await using (var client = SshAgentClient.FromStream(ours, "(测试 agent)"))
         {
             IReadOnlyList<SshAgentIdentity> identities = await client.ListIdentitiesAsync(cts.Token);
             SshAgentIdentity identity = identities.Single();
@@ -102,7 +102,7 @@ public sealed class SecurityKeyTests
             Assert.AreEqual("yubikey", identity.Comment);
 
             IReadOnlyList<SshCredential> credentials = await client.GetCredentialsAsync(cts.Token);
-            PublicKeyCredential credential = (PublicKeyCredential)credentials.Single();
+            var credential = (PublicKeyCredential)credentials.Single();
             Assert.AreSequenceEqual([SshAlgorithmNames.SkSshEd25519], credential.Signer.SignatureAlgorithms.ToArray());
         }
         await cts.CancelAsync();

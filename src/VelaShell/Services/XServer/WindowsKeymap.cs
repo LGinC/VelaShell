@@ -27,13 +27,15 @@ internal static partial class WindowsKeymap
     /// <summary>按 <paramref name="layout" /> 算出主键区与 102 键的键位表。</summary>
     [SupportedOSPlatform("windows")]
     public static HostKeymapResult Build(nint layout) =>
-        HostKeymap.Assemble([.. HostKeymap.Keycodes().Select(keycode =>
-            HostKeymap.Fixed(keycode) is { } fixedSyms ? (fixedSyms.Item1, fixedSyms.Item2, 0u, 0u) : Translate(keycode, layout))]);
+        HostKeymap.WithExtras(
+            HostKeymap.Assemble([.. HostKeymap.Keycodes().Select(keycode =>
+                HostKeymap.Fixed(keycode) is { } fixedSyms ? (fixedSyms.Item1, fixedSyms.Item2, 0u, 0u) : Translate((uint)(keycode - 8), layout))]),
+            [.. HostKeymap.ExtraKeys.Select(k => Translate(k.WindowsScancode, layout))]);
 
+    /// <summary>按 PC 扫描码(set 1)取四种修饰状态下打出的键值:主键区的扫描码就是 evdev 编号(键码 − 8)。</summary>
     [SupportedOSPlatform("windows")]
-    private static (uint L1, uint L2, uint L3, uint L4) Translate(byte keycode, nint layout)
+    private static (uint L1, uint L2, uint L3, uint L4) Translate(uint scancode, nint layout)
     {
-        uint scancode = (uint)(keycode - 8);
         uint vk = MapVirtualKeyExW(scancode, MapvkVscToVkEx, layout);
         if (vk == 0)
         {

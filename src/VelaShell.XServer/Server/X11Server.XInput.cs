@@ -86,22 +86,29 @@ public sealed partial class X11Server
             case 20:  // GetDeviceFocus:键盘设备的焦点就是核心焦点
                 {
                     uint focus = _focus switch { null => 0, { IsRoot: true } => 1, { } f => f.Id };
-                    uint time = Now;
+                    uint time = _lastFocusChangeTime;
                     c.Reply(minor, w => w.U32(focus).U32(time).U8(_focusRevertTo).Zero(15));
                     break;
                 }
             case 21:  // SetDeviceFocus
                 {
-                    uint focusId = r.U32();
-                    r.Skip(4);
+                    uint focusId = r.U32(), time = r.U32();
                     byte revertTo = r.U8();
-                    SetFocus(focusId switch { 0 => null, 1 => Root, _ => Window(focusId) }, revertTo);
+                    if (revertTo > 2)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, revertTo);
+                    }
+                    SetFocusFromClient(focusId switch { 0 => null, 1 => Root, _ => Window(focusId) }, revertTo, time);
                     break;
                 }
             case 24:  // GetDeviceKeyMapping
                 {
                     r.U8();
                     byte first = r.U8(), count = r.U8();
+                    if (first < Keymap.MinKeycode || first + count - 1 > Keymap.MaxKeycode)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, first);   // 同核心 GetKeyboardMapping(原先键码按字节回绕)
+                    }
                     int per = _keymap.KeysymsPerKeycode;
                     c.Reply(minor, w =>
                     {
@@ -122,17 +129,12 @@ public sealed partial class X11Server
                     c.Reply(minor, w => w.U8((byte)_keymap.KeycodesPerModifier).Zero(23).Bytes(map));
                     break;
                 }
-            case 28:  // GetDeviceButtonMapping:恒等映射
-                c.Reply(minor, w =>
+            case 28:  // GetDeviceButtonMapping:与核心 GetPointerMapping 同一份
                 {
-                    w.U8(XiButtonCount).Zero(23);
-                    for (int b = 1; b <= XiButtonCount; b++)
-                    {
-                        w.U8((byte)b);
-                    }
-                    w.Pad4();
-                });
-                break;
+                    byte[] map = [.. _pointerMap];
+                    c.Reply(minor, w => w.U8((byte)map.Length).Zero(23).Bytes(map).Pad4());
+                    break;
+                }
             case 30:  // QueryDeviceState
                 {
                     byte id = r.U8();
@@ -146,7 +148,7 @@ public sealed partial class X11Server
                         {
                             w.U8(2).Zero(23);
                             w.U8(1).U8(36).U8(XiButtonCount).Zero(1).Bytes(_buttonsDown);            // ButtonState
-                            w.U8(2).U8(12).U8(2).U8(1).I32(Math.Max(0, _pointerX)).I32(Math.Max(0, _pointerY));   // ValuatorState
+                            w.U8(2).U8(12).U8(2).U8(1).I32(_pointerX).I32(_pointerY);   // ValuatorState
                         }
                         else
                         {
@@ -191,9 +193,10 @@ public sealed partial class X11Server
                     {
                         throw BadDevice(id);
                     }
+                    c.MotionHint = default;   // 同核心 QueryPointer:客户端来问了位置,下一次移动再给它一条提示
                     (int wx, int wy) = window.AbsoluteInner();
                     uint child = ChildTowardPointer(window);
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    int px = _pointerX, py = _pointerY;
                     c.Reply(minor, w =>
                     {
                         w.U32(Root.Id).U32(child).I32(Fp1616(px)).I32(Fp1616(py)).I32(Fp1616(px - wx)).I32(Fp1616(py - wy))
@@ -209,24 +212,13 @@ public sealed partial class X11Server
                     int srcX = r.I32() >> 16, srcY = r.I32() >> 16;
                     ushort srcW = r.U16(), srcH = r.U16();
                     int dstX = r.I32() >> 16, dstY = r.I32() >> 16;
-                    if (src != 0)
+                    ushort id = r.U16();
+                    if (!IsPointerDevice(id))
                     {
-                        (int sx, int sy) = Window(src).AbsoluteInner();
-                        int w = srcW == 0 ? int.MaxValue : srcW, h = srcH == 0 ? int.MaxValue : srcH;
-                        if (_pointerX < sx + srcX || _pointerY < sy + srcY || _pointerX >= sx + srcX + w || _pointerY >= sy + srcY + h)
-                        {
-                            break;   // 指针不在源矩形里:什么也不做(同核心 WarpPointer)
-                        }
+                        throw BadDevice(id);   // 只能挪主指针或浮动的从指针
                     }
-                    if (dst != 0)
-                    {
-                        (int dx, int dy) = Window(dst).AbsoluteInner();
-                        MovePointer(dx + dstX, dy + dstY);
-                    }
-                    else
-                    {
-                        MovePointer(Math.Max(0, _pointerX) + dstX, Math.Max(0, _pointerY) + dstY);
-                    }
+                    // 与核心 WarpPointer 同一条路(源矩形、夹在根窗口与 confine-to 里、冻结时排队)。
+                    WarpPointerTo(src == 0 ? null : Window(src), srcX, srcY, srcW, srcH, dst == 0 ? null : Window(dst), dstX, dstY);
                     break;
                 }
             case 42:  // XIChangeCursor:同核心的窗口光标
@@ -238,6 +230,10 @@ public sealed partial class X11Server
                     break;
                 }
             case 43:  // XIChangeHierarchy
+                if (IsRestricted(c))
+                {
+                    throw new XProtocolError(XErrorCode.Access);   // 能让物理输入设备失效(见 RestrictForwardedClients)
+                }
                 XiChangeHierarchy(r);
                 break;
             case 44:  // XISetClientPointer:指针位置只有一份,接受即可(设备须是主设备)
@@ -289,8 +285,10 @@ public sealed partial class X11Server
                 }
             case 49:  // XISetFocus
                 {
-                    uint focusId = r.U32();
-                    SetFocus(focusId == 0 ? null : Window(focusId), 1);
+                    // XI 2.2「XISetFocus」:窗口不可见了焦点退到第一个可见的祖先,等于核心的 RevertToParent(原先给的是 PointerRoot);
+                    // PointerRoot 也接受(原先回 BadWindow)。
+                    uint focusId = r.U32(), time = r.U32();
+                    SetFocusFromClient(focusId switch { 0 => null, 1 => Root, _ => Window(focusId) }, 2, time);
                     break;
                 }
             case 50:  // XIGetFocus
@@ -304,17 +302,21 @@ public sealed partial class X11Server
                 break;
             case 52:  // XIUngrabDevice
                 {
-                    r.Skip(4);
+                    uint time = r.U32();
                     ushort id = r.U16();
+                    if (!IsKnownDevice(id))
+                    {
+                        throw BadDevice(id);   // 原先不校验
+                    }
                     if (IsPointerDevice(id))
                     {
-                        if (ReferenceEquals(PointerGrab?.Client, c))
+                        if (ReferenceEquals(PointerGrab?.Client, c) && TimeAcceptable(ref time, _lastPointerGrabTime))
                         {
                             PointerGrab = null;
                             UpdateCursor();
                         }
                     }
-                    else if (ReferenceEquals(KeyboardGrab?.Client, c))
+                    else if (ReferenceEquals(KeyboardGrab?.Client, c) && TimeAcceptable(ref time, _lastKeyboardGrabTime))
                     {
                         KeyboardGrab = null;
                     }
@@ -322,7 +324,7 @@ public sealed partial class X11Server
                 }
             case 53:  // XIAllowEvents:换成核心 AllowEvents 的模式(按设备是指针还是键盘)
                 {
-                    r.Skip(4);   // time
+                    uint time = r.U32();
                     ushort id = r.U16();
                     byte mode = r.U8();
                     if (!IsKnownDevice(id))
@@ -334,7 +336,7 @@ public sealed partial class X11Server
                     {
                         break;   // AcceptTouch / RejectTouch:没有触摸设备
                     }
-                    AllowEvents(c, core);
+                    AllowEvents(c, core, time);
                     break;
                 }
             case 61:  // XIBarrierReleasePointer:指针屏障不生效(XFIXES)
@@ -364,24 +366,20 @@ public sealed partial class X11Server
                     ushort id = r.U16();
                     byte mode = r.U8(), format = r.U8();
                     uint property = r.U32(), type = r.U32(), count = r.U32();
-                    if (format is not (8 or 16 or 32) || mode > 2)
-                    {
-                        throw new XProtocolError(XErrorCode.Value, format);
-                    }
-                    byte[] data = r.Bytes((int)Math.Min(count * (format / 8L), r.Remaining));
-                    Dictionary<uint, XProperty> props = DeviceProperties(id);
-                    if (mode != 0 && props.TryGetValue(property, out XProperty? existing) && existing.Type == type && existing.Format == format)
-                    {
-                        data = mode == 1 ? [.. data, .. existing.Data] : [.. existing.Data, .. data];
-                    }
-                    props[property] = new XProperty(type, format, data);
+                    XiChangeProperty(c, r, id, mode, format, property, type, count);
                     break;
                 }
             case 58:  // XIDeleteProperty
                 {
                     ushort id = r.U16();
                     r.Skip(2);
-                    DeviceProperties(id).Remove(r.U32());
+                    uint property = r.U32();
+                    CheckAtom(property);
+                    if (DeviceProperties(id).Remove(property, out XProperty? removed))
+                    {
+                        ReleaseProperty(removed);
+                        SendXiPropertyEvent(id, property, what: 0);
+                    }
                     break;
                 }
             case 59:  // XIGetProperty
@@ -395,18 +393,10 @@ public sealed partial class X11Server
             case 60:  // XIGetSelectedEvents
                 {
                     XWindow window = Window(r.U32());
-                    List<(ushort Device, ulong Mask)> masks = [];
-                    if (window.Xi2Selections.TryGetValue(c, out (ulong Master, ulong Slave) selected))
-                    {
-                        if (selected.Master != 0)
-                        {
-                            masks.Add((1, selected.Master));
-                        }
-                        if (selected.Slave != 0)
-                        {
-                            masks.Add((0, selected.Slave));
-                        }
-                    }
+                    // 按设备回当初选的那几份(原先只记了合起来的主 / 从两个,回的设备号对不上)。
+                    List<(ushort Device, ulong Mask)> masks = window.Xi2Selections.TryGetValue(c, out XiSelection? selected)
+                        ? [.. selected.ByDevice.Select(p => (p.Key, p.Value))]
+                        : [];
                     c.Reply(minor, w =>
                     {
                         w.U16((ushort)masks.Count).Zero(22);
@@ -433,9 +423,47 @@ public sealed partial class X11Server
         XiDevice device = _xiDevices[id];
         byte[] nameBytes = XWire.Latin1.GetBytes(device.Name);
         bool pointer = device.Pointer;
-        ushort source = pointer ? XiSlavePointer : XiSlaveKeyboard;
-        w.U16(id).U16(device.Use).U16(device.Attachment).U16(pointer ? (ushort)3 : (ushort)1).U16((ushort)nameBytes.Length)
+        w.U16(id).U16(device.Use).U16(device.Attachment).U16(XiClassCount(pointer)).U16((ushort)nameBytes.Length)
             .Bool(device.Enabled).Zero(1).Bytes(nameBytes).Pad4();
+        WriteXiClasses(w, pointer);
+    }
+
+    private static ushort XiClassCount(bool pointer) => pointer ? (ushort)3 : (ushort)1;
+
+    /// <summary>
+    /// XI_DeviceChanged(evtype 1,reason DeviceChange 2):指针设备的轴范围随根窗口的尺寸变了(Abs X / Abs Y 的最大值),
+    /// 给在根窗口上为这个设备选了它的客户端发,带上全部的类。原先从不发,客户端按旧的范围换算轴值。
+    /// </summary>
+    private void SendXiDeviceChanged()
+    {
+        const int xiDeviceChanged = 1, deviceChange = 2;
+        if (!Root.AnyXi2Selects(xiDeviceChanged))
+        {
+            return;
+        }
+        uint time = Now;
+        foreach (XiDevice device in _xiDevices.Values.Where(d => d.Pointer).ToArray())
+        {
+            foreach ((XClient client, (ulong master, ulong slave)) in Root.Xi2Selections)
+            {
+                if (client.Closed || ((device.Master ? master : slave) & (1UL << xiDeviceChanged)) == 0)
+                {
+                    continue;
+                }
+                ushort id = device.Id;
+                client.GenericEvent(XInputMajor, xiDeviceChanged, w =>
+                {
+                    w.U16(id).U32(time).U16(XiClassCount(pointer: true)).U16(id).U8(deviceChange).Zero(11);
+                    WriteXiClasses(w, pointer: true);
+                });
+            }
+        }
+    }
+
+    /// <summary>设备的类(XIQueryDevice 与 XI_DeviceChanged 共用):指针是按钮 + 两个轴,键盘是按键。</summary>
+    private void WriteXiClasses(XWriter w, bool pointer)
+    {
+        ushort source = pointer ? XiSlavePointer : XiSlaveKeyboard;
         if (pointer)
         {
             // ButtonClass:type 1、len、sourceid、num_buttons、state(1 个 32 位)、labels
@@ -445,8 +473,8 @@ public sealed partial class X11Server
             {
                 w.U32(Intern(label));
             }
-            WriteValuatorClass(w, source, 0, "Abs X", Root.Width, Math.Max(0, _pointerX));
-            WriteValuatorClass(w, source, 1, "Abs Y", Root.Height, Math.Max(0, _pointerY));
+            WriteValuatorClass(w, source, 0, "Abs X", Root.Width, _pointerX);
+            WriteValuatorClass(w, source, 1, "Abs Y", Root.Height, _pointerY);
         }
         else
         {
@@ -507,6 +535,90 @@ public sealed partial class X11Server
         });
     }
 
+    /// <summary>
+    /// XIChangeProperty(XI 2.2「XIChangeProperty」,语义同核心 ChangeProperty):原子、格式、模式、长度逐项校验;
+    /// Prepend / Append 的类型或格式与现值不同回 BadMatch;16 / 32 位值按本机序存;单个值不超过 <see cref="MaxPropertyBytes" />,
+    /// 记在写它的客户端名下(设备属性是全局的,客户端断开也不释放 —— 原先既不设上限,追加还每次整份复制)。
+    /// </summary>
+    private void XiChangeProperty(XClient c, XRequestReader r, ushort id, byte mode, byte format, uint property, uint type, uint count)
+    {
+        if (format is not (8 or 16 or 32))
+        {
+            throw new XProtocolError(XErrorCode.Value, format);
+        }
+        if (mode > 2)
+        {
+            throw new XProtocolError(XErrorCode.Value, mode);
+        }
+        CheckAtom(property);
+        CheckAtom(type);
+        long byteCount = count * (format / 8L);
+        if (byteCount > r.Remaining)
+        {
+            throw new XProtocolError(XErrorCode.Length);
+        }
+        Dictionary<uint, XProperty> props = DeviceProperties(id);
+        XProperty? existing = mode != 0 ? props.GetValueOrDefault(property) : null;
+        if (existing is not null && (existing.Type != type || existing.Format != format))
+        {
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        long total = byteCount + (existing?.Length ?? 0);
+        if (total > MaxPropertyBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
+        XProperty? replaced = props.GetValueOrDefault(property);
+        ReleaseProperty(replaced);
+        try
+        {
+            ChargeMemory(c, total);
+        }
+        catch (XProtocolError)
+        {
+            ChargeMemory(replaced?.ChargedTo, replaced?.Length ?? 0, force: true);
+            throw;
+        }
+        byte[] data = ToNativeOrder(r.Bytes((int)byteCount), format, c.BigEndian);
+        props[property] = existing is null ? new XProperty(type, format, data) { ChargedTo = c }
+            : mode == 2 ? existing.Append(data, c)
+            : new XProperty(type, format, [.. data, .. existing.Data]) { ChargedTo = c };
+        SendXiPropertyEvent(id, property, what: replaced is null ? (byte)1 : (byte)2);
+    }
+
+    /// <summary>这个客户端受 <see cref="X11ServerOptions.RestrictForwardedClients" /> 限制(经 SSH 转发进来、且开了限制)。</summary>
+    private bool IsRestricted(XClient client) => _options.RestrictForwardedClients && client.Forwarded;
+
+    /// <summary>XI_PropertyEvent(evtype 12):给在根窗口上选了它的客户端。what:0 删除、1 新建、2 修改。</summary>
+    private void SendXiPropertyEvent(ushort id, uint property, byte what)
+    {
+        const int xiPropertyEvent = 12;
+        if (!Root.AnyXi2Selects(xiPropertyEvent))
+        {
+            return;
+        }
+        uint time = Now;
+        foreach ((XClient client, (ulong master, ulong slave)) in Root.Xi2Selections)
+        {
+            if (!client.Closed && ((master | slave) & (1UL << xiPropertyEvent)) != 0)
+            {
+                client.GenericEvent(XInputMajor, xiPropertyEvent, w => w.U16(id).U32(time).U32(property).U8(what).Zero(11));
+            }
+        }
+    }
+
+    /// <summary>设备被删掉:它的属性一并丢掉,退还写它们的客户端的账。</summary>
+    private void DropDeviceProperties(ushort id)
+    {
+        if (_deviceProperties.Remove(id, out Dictionary<uint, XProperty>? props))
+        {
+            foreach (XProperty property in props.Values)
+            {
+                ReleaseProperty(property);
+            }
+        }
+    }
+
     private Dictionary<uint, XProperty> DeviceProperties(ushort id)
     {
         if (!IsKnownDevice(id))
@@ -536,7 +648,7 @@ public sealed partial class X11Server
         }
         long start = Math.Min(4L * offset, value.Data.Length);
         long count = Math.Min(4L * length, value.Data.Length - start);
-        byte[] slice = value.Data.AsSpan((int)start, (int)count).ToArray();
+        byte[] slice = value.Data.Slice((int)start, (int)count).ToArray();
         uint after = (uint)(value.Data.Length - start - count);
         uint items = (uint)(count / (value.Format / 8));
         c.Reply(minor, w =>
@@ -568,45 +680,103 @@ public sealed partial class X11Server
         XWindow window = Window(r.U32());
         ushort count = r.U16();
         r.Skip(2);
-        (ulong master, ulong slave) = window.Xi2Selections.GetValueOrDefault(c);
+        // 先读完、核对完再改(出错的请求不产生效果);同一个设备出现多次时后一份为准。
+        List<(ushort Device, ulong Mask)> masks = [with(count)];
         for (int i = 0; i < count; i++)
         {
             ushort device = r.U16();
             ushort units = r.U16();
             ulong mask = ReadXiMask(r, units);
+            if (device > 1 && !IsKnownDevice(device))
+            {
+                throw BadDevice(device);
+            }
+            masks.Add((device, mask));
+        }
+        XiSelection selection = window.Xi2Selections.GetValueOrDefault(c) ?? new XiSelection();
+        foreach ((ushort device, ulong mask) in masks)
+        {
+            if (mask == 0)
+            {
+                selection.ByDevice.Remove(device);
+            }
+            else
+            {
+                selection.ByDevice[device] = mask;
+            }
+        }
+        UpdateXiSelection(window, c, selection);
+    }
+
+    /// <summary>只由键盘产生的 evtype:KeyPress、KeyRelease、FocusIn、FocusOut、RawKeyPress、RawKeyRelease。</summary>
+    private const ulong XiKeyboardEvents = (1UL << 2) | (1UL << 3) | (1UL << XiFocusIn) | (1UL << XiFocusOut) | (1UL << XiRawKeyPress) | (1UL << XiRawKeyRelease);
+
+    /// <summary>两类设备都会产生的 evtype:DeviceChanged、HierarchyChanged、PropertyEvent。其余的只由指针产生。</summary>
+    private const ulong XiAnyDeviceEvents = (1UL << 1) | (1UL << XiHierarchyChanged) | (1UL << 12);
+
+    /// <summary>
+    /// 按当前的设备层级把按设备存的掩码合成主 / 从两个,存回去(全空就摘掉)。具体设备那一份只取这类设备产生得了的事件 ——
+    /// 给主指针选的 KeyPress 不会让主键盘的按键也报过来。已经删掉的设备那一份丢掉。
+    /// </summary>
+    private void UpdateXiSelection(XWindow window, XClient client, XiSelection selection)
+    {
+        ulong master = 0, slave = 0;
+        foreach ((ushort device, ulong mask) in selection.ByDevice.ToArray())
+        {
             switch (device)
             {
                 case 0:   // XIAllDevices
-                    master = mask;
-                    slave = mask;
+                    master |= mask;
+                    slave |= mask;
                     break;
                 case 1:   // XIAllMasterDevices
-                    master = mask;
-                    break;
-                case var id when IsMasterDevice(id):
-                    master = mask;
-                    break;
-                case var id when IsKnownDevice(id):
-                    slave = mask;
+                    master |= mask;
                     break;
                 default:
-                    throw BadDevice(device);
+                    if (!_xiDevices.TryGetValue(device, out XiDevice? d))
+                    {
+                        selection.ByDevice.Remove(device);
+                        break;
+                    }
+                    ulong own = mask & (d.Pointer ? ~XiKeyboardEvents : XiKeyboardEvents | XiAnyDeviceEvents);
+                    if (d.Master)
+                    {
+                        master |= own;
+                    }
+                    else
+                    {
+                        slave |= own;
+                    }
+                    break;
             }
         }
-        if (master == 0 && slave == 0)
+        (selection.Master, selection.Slave) = (master, slave);
+        if (selection.ByDevice.Count == 0)
         {
-            window.Xi2Selections.Remove(c);
+            window.Xi2Selections.Remove(client);
         }
         else
         {
-            window.Xi2Selections[c] = (master, slave);
+            window.Xi2Selections[client] = selection;
+        }
+    }
+
+    /// <summary>设备层级变了(加删主设备、挂上 / 摘下从设备):各窗口上的 XI2 选择按新的层级重算。</summary>
+    private void RecomputeXiSelections()
+    {
+        foreach (XWindow window in _resources.Values.OfType<XWindow>().Append(Root).Distinct())
+        {
+            foreach ((XClient client, XiSelection selection) in window.Xi2Selections.ToArray())
+            {
+                UpdateXiSelection(window, client, selection);
+            }
         }
     }
 
     private void XiGrabDevice(XClient c, XRequestReader r)
     {
         XWindow window = Window(r.U32());
-        r.Skip(4);   // time
+        uint time = r.U32();
         uint cursorId = r.U32();
         ushort id = r.U16();
         byte grabMode = r.U8(), pairedMode = r.U8();   // XIGrabModeSync 0、XIGrabModeAsync 1
@@ -620,10 +790,13 @@ public sealed partial class X11Server
         }
         bool pointer = IsPointerDevice(id);
         ActiveGrab? existing = pointer ? PointerGrab : KeyboardGrab;
-        byte status = existing is not null && !ReferenceEquals(existing.Client, c) ? (byte)1   // AlreadyGrabbed
-            : !window.IsViewable ? (byte)3                                                      // GrabNotViewable
-            : (byte)0;
-        if (status == 0)
+        // 失败的次序照 XI 2.2「XIGrabDevice」列的:AlreadyGrabbed、NotViewable、InvalidTime、Frozen。
+        byte status = existing is not null && !ReferenceEquals(existing.Client, c) ? GrabAlreadyGrabbed
+            : !window.IsViewable ? GrabNotViewable
+            : !TimeAcceptable(ref time, pointer ? _lastPointerGrabTime : _lastKeyboardGrabTime) ? GrabInvalidTime
+            : FrozenByOther(pointer, c) ? GrabFrozen
+            : GrabSuccess;
+        if (status == GrabSuccess)
         {
             ActiveGrab grab = new()
             {
@@ -633,6 +806,7 @@ public sealed partial class X11Server
                 Xi2 = true,
                 Xi2Mask = mask,
                 Cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId),
+                Time = time,
             };
             if (pointer)
             {
@@ -662,45 +836,123 @@ public sealed partial class X11Server
         r.Skip(2);   // deviceid:只有一对主设备
         ushort modifierCount = r.U16();
         ushort units = grab ? r.U16() : (ushort)0;
-        byte grabType = r.U8();   // 0 Button、1 Keycode、2 Enter、3 FocusIn、4 TouchBegin
+        byte grabType = r.U8();   // 0 Button、1 Keycode、2 Enter、3 FocusIn、4 TouchBegin、5 / 6 手势(XI 2.4)
+        if (grabType > 6)
+        {
+            throw new XProtocolError(XErrorCode.Value, grabType);
+        }
+        if (grabType >= 2 && detail != 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, detail);   // Enter / FocusIn / Touch / 手势的 detail 必须是 0
+        }
         if (grab)
         {
-            byte grabMode = r.U8(), pairedMode = r.U8();   // Sync 0、Async 1
+            byte grabMode = r.U8(), pairedMode = r.U8();   // Sync 0、Async 1、Touch 2
+            if (grabType == 4 ? grabMode != 2 : grabMode > 1)
+            {
+                throw new XProtocolError(XErrorCode.Value, grabMode);   // TouchBegin 必须是 Touch,别的只能是 Sync / Async
+            }
+            if (pairedMode > 1)
+            {
+                throw new XProtocolError(XErrorCode.Value, pairedMode);
+            }
             bool ownerEvents = r.Bool();
             r.Skip(2);
             ulong mask = ReadXiMask(r, units);
-            List<uint> modifiers = [];
-            for (int i = 0; i < modifierCount; i++)
-            {
-                modifiers.Add(r.U32());
-            }
+            List<(uint Raw, ushort Core)> modifiers = ReadXiGrabModifiers(r, modifierCount);
+            List<uint> failed = [];
             if (grabType is 0 or 1)
             {
-                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-                foreach (uint mods in modifiers)
+                CheckXiGrabDetail(grabType, detail);
+                PassiveGrabTable list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+                // 与别的客户端的被动抓取有共同组合的不登记,回报给客户端(XI 2.2「XIPassiveGrabDevice」:AlreadyGrabbed);
+                // Any 也算(AnyModifier 等于对所有组合各登记一次)。
+                List<PassiveGrab> others = [.. list.Overlapping((int)detail).Where(g => !ReferenceEquals(g.Client, c) && !g.Client.Closed)];
+                int mine = list.Count(g => ReferenceEquals(g.Client, c));
+                bool deviceSync = grabMode == 0, pairedSync = pairedMode == 0;
+                XCursorResource? cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId);
+                foreach ((uint raw, ushort core) in modifiers)
                 {
-                    ushort core = mods == 0x80000000 ? (ushort)0x8000 : (ushort)(mods & 0xFF);   // XIAnyModifier
-                    list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Detail == (int)detail && g.Modifiers == core);
+                    if (others.Any(g => g.Overlaps((int)detail, core)))
+                    {
+                        failed.Add(raw);
+                        continue;
+                    }
+                    // 这个客户端自己在这些组合上的旧 XI2 抓取被取代:整个盖住的删掉,只盖住一部分的减掉那一部分。
+                    int before = list.Count;
+                    SubtractPassiveGrabs(list, c, xi2: true, (int)detail, core);
+                    mine -= before - list.Count;
+                    if (++mine > MaxPassiveGrabsPerWindow)
+                    {
+                        throw new XProtocolError(XErrorCode.Alloc);   // 一个客户端在一个窗口上登记这么多被动抓取,不会是真实程序
+                    }
                     // 按钮抓取:grab_mode 管指针、paired 管键盘;按键抓取反过来。
-                    bool deviceSync = grabMode == 0, pairedSync = pairedMode == 0;
-                    list.Add(new PassiveGrab(c, (int)detail, core, ownerEvents, 0, null,
-                        cursorId == 0 ? null : Lookup<XCursorResource>(cursorId), Xi2: true, Xi2Mask: mask,
+                    list.Add(new PassiveGrab(c, (int)detail, core, ownerEvents, 0, null, cursor, Xi2: true, Xi2Mask: mask,
                         PointerSync: grabType == 0 ? deviceSync : pairedSync, KeyboardSync: grabType == 0 ? pairedSync : deviceSync));
                 }
             }
-            // Enter / FocusIn / Touch 类被动抓取不支持;规范允许以「全部修饰组合都失败」回应 —— 这里回空列表,表示没有冲突。
-            c.Reply(54, w => w.U16(0).Zero(22));
+            else
+            {
+                // Enter / FocusIn / Touch 类被动抓取不支持:按规范以「这些组合都没抓成」回应。
+                failed.AddRange(modifiers.Select(m => m.Raw));
+            }
+            c.Reply(54, w =>
+            {
+                w.U16((ushort)failed.Count).Zero(22);
+                foreach (uint mods in failed)
+                {
+                    w.U32(mods).U8(1).Zero(3);   // GRABMODIFIERINFO:status AlreadyGrabbed
+                }
+            });
         }
         else
         {
             r.Skip(3);
-            for (int i = 0; i < modifierCount; i++)
+            List<(uint Raw, ushort Core)> modifiers = ReadXiGrabModifiers(r, modifierCount);
+            if (grabType is 0 or 1)
             {
-                uint mods = r.U32();
-                ushort core = mods == 0x80000000 ? (ushort)0x8000 : (ushort)(mods & 0xFF);
-                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
-                list.RemoveAll(g => ReferenceEquals(g.Client, c) && g.Xi2 && g.Detail == (int)detail && g.Modifiers == core);
+                // AnyModifier / AnyButton 的抓取只减掉这几个组合,其余照样有效(原先不拆分)。
+                PassiveGrabTable list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+                foreach ((_, ushort core) in modifiers)
+                {
+                    SubtractPassiveGrabs(list, c, xi2: true, (int)detail, core);
+                }
             }
+        }
+    }
+
+    /// <summary>一个客户端在一个窗口上最多登记这么多个(按钮或按键)被动抓取。</summary>
+    internal const int MaxPassiveGrabsPerWindow = 4096;
+
+    /// <summary>
+    /// 被动抓取的修饰组合:XIAnyModifier(0x80000000)换成核心的 AnyModifier(0x8000);其余只认 8 个核心修饰位,
+    /// 带了别的位回 BadValue —— 原先直接截成低 8 位,0x100 会变成「不带修饰」。
+    /// </summary>
+    private static List<(uint Raw, ushort Core)> ReadXiGrabModifiers(XRequestReader r, int count)
+    {
+        if (count * 4L > r.Remaining)
+        {
+            throw new XProtocolError(XErrorCode.Length);
+        }
+        List<(uint, ushort)> modifiers = [with(count)];
+        for (int i = 0; i < count; i++)
+        {
+            uint mods = r.U32();
+            if (mods != 0x80000000 && (mods & ~0xFFu) != 0)
+            {
+                throw new XProtocolError(XErrorCode.Value, mods);
+            }
+            modifiers.Add((mods, mods == 0x80000000 ? (ushort)0x8000 : (ushort)mods));
+        }
+        return modifiers;
+    }
+
+    /// <summary>被动抓取的 detail:按钮 0(XIAnyButton)–255,键码 0(XIAnyKeycode)或 8–255;其余 BadValue。</summary>
+    private static void CheckXiGrabDetail(byte grabType, uint detail)
+    {
+        if (detail > 255 || (grabType == 1 && detail is not 0 and < Keymap.MinKeycode))
+        {
+            throw new XProtocolError(XErrorCode.Value, detail);
         }
     }
 
@@ -739,20 +991,20 @@ public sealed partial class X11Server
         ReferenceEquals(_pointerWindow, window) || !_pointerWindow.IsDescendantOf(window) ? 0 : ChildOnPath(window, _pointerWindow);
 
     /// <summary>XI2 的 DeviceEvent(KeyPress / KeyRelease / ButtonPress / ButtonRelease / Motion)。</summary>
-    private void SendXi2DeviceEvent(XClient client, int evtype, byte detail, XWindow eventWindow, XWindow source, bool slave)
+    private void SendXi2DeviceEvent(XClient client, int evtype, byte detail, XWindow eventWindow, XWindow source, bool slave, uint flags = 0)
     {
         bool key = evtype is XEventCode.KeyPress or XEventCode.KeyRelease;
         ushort sourceId = key ? XiSlaveKeyboard : XiSlavePointer;
         ushort device = slave || IsFloating(!key) ? sourceId : MasterOf(!key);
         (int ex, int ey) = eventWindow.AbsoluteInner();
         uint child = ChildOnPath(eventWindow, source);
-        int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+        int px = _pointerX, py = _pointerY;
         uint time = Now;
         client.GenericEvent(XInputMajor, (ushort)evtype, w =>
         {
             w.U16(device).U32(time).U32(detail).U32(Root.Id).U32(eventWindow.Id).U32(child)
                 .I32(Fp1616(px)).I32(Fp1616(py)).I32(Fp1616(px - ex)).I32(Fp1616(py - ey))
-                .U16(1).U16(key ? (ushort)0 : (ushort)1).U16(sourceId).Zero(2).U32(0);
+                .U16(1).U16(key ? (ushort)0 : (ushort)1).U16(sourceId).Zero(2).U32(flags);
             WriteXiModifiers(w);
             WriteButtonMask(w, 1);
             if (!key)
@@ -778,18 +1030,29 @@ public sealed partial class X11Server
         ushort attached = MasterOf(!focusEvent);
         ushort device = attached != 0 ? attached : sourceId;
         (int ex, int ey) = window.AbsoluteInner();
-        int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+        int px = _pointerX, py = _pointerY;
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
         uint time = Now;
-        IEnumerable<XClient> targets = force && only is not null
-            ? [only]
-            : window.Xi2Selections.Where(s => ((s.Value.Master | s.Value.Slave) & (1UL << evtype)) != 0 && (only is null || ReferenceEquals(s.Key, only)))
-                .Select(s => s.Key);
-        foreach (XClient client in targets.ToArray())
+        // 指针每跨一个窗口都走这里:直接遍历选择表,不为每个窗口建 LINQ 管道再拷成数组(发事件不改这张表)。
+        if (force && only is not null)
+        {
+            Send(only);
+            return;
+        }
+        ulong bit = 1UL << evtype;
+        foreach ((XClient client, XiSelection selection) in window.Xi2Selections)
+        {
+            if (((selection.Master | selection.Slave) & bit) != 0 && (only is null || ReferenceEquals(client, only)))
+            {
+                Send(client);
+            }
+        }
+
+        void Send(XClient client)
         {
             if (client.Closed)
             {
-                continue;
+                return;
             }
             client.GenericEvent(XInputMajor, (ushort)evtype, w =>
             {
@@ -802,8 +1065,11 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>XI2 的原始事件:发给在根窗口上选了它的客户端,不受焦点与抓取影响。</summary>
-    private void SendRawEvent(int evtype, uint detail, int dx, int dy)
+    /// <summary>
+    /// XI2 的原始事件:发给在根窗口上选了它的客户端,不受焦点与抓取影响。移动事件的轴 0、1 是设备的位置 (<paramref name="x" />, <paramref name="y" />)
+    /// —— 与 XIQueryDevice 的声明(Abs X / Abs Y、Absolute)一致;没有加速,处理后的值与原始值相同。
+    /// </summary>
+    private void SendRawEvent(int evtype, uint detail, int x, int y, uint flags = 0)
     {
         if (!Root.AnyXi2Selects(evtype))
         {
@@ -813,24 +1079,35 @@ public sealed partial class X11Server
         bool motion = evtype == XiRawMotion;
         ushort sourceId = key ? XiSlaveKeyboard : XiSlavePointer;
         uint time = Now;
+        ulong bit = 1UL << evtype;
         foreach ((XClient client, (ulong master, ulong slave)) in Root.Xi2Selections)
         {
-            if (client.Closed || ((master | slave) & (1UL << evtype)) == 0)
+            if (client.Closed || ((master | slave) & bit) == 0 || (key && IsRestricted(client)))
             {
                 continue;
             }
-            ushort device = (master & (1UL << evtype)) != 0 && !IsFloating(!key) ? MasterOf(!key) : sourceId;
-            client.GenericEvent(XInputMajor, (ushort)evtype, w =>
+            // 从设备与主设备各一份(选 XIAllDevices 的两份都收);设备浮动时主设备不产生,只选了主设备的照旧收从设备那份。
+            bool floating = IsFloating(!key);
+            if ((slave & bit) != 0 || floating)
             {
-                w.U16(device).U32(time).U32(detail).U16(sourceId).U16(motion ? (ushort)1 : (ushort)0).U32(0).Zero(4);
-                if (motion)
-                {
-                    w.U32(0x3);
-                    w.I32(dx).U32(0).I32(dy).U32(0);   // 处理后的值
-                    w.I32(dx).U32(0).I32(dy).U32(0);   // 原始值
-                }
-            });
+                Send(client, sourceId);
+            }
+            if ((master & bit) != 0 && !floating)
+            {
+                Send(client, MasterOf(!key));
+            }
         }
+
+        void Send(XClient client, ushort device) => client.GenericEvent(XInputMajor, (ushort)evtype, w =>
+        {
+            w.U16(device).U32(time).U32(detail).U16(sourceId).U16(motion ? (ushort)1 : (ushort)0).U32(flags).Zero(4);
+            if (motion)
+            {
+                w.U32(0x3);
+                w.I32(x).U32(0).I32(y).U32(0);   // 处理后的值
+                w.I32(x).U32(0).I32(y).U32(0);   // 原始值
+            }
+        });
     }
 
     /// <summary>客户端断开:摘掉它在各窗口上的 XI2 事件选择。</summary>

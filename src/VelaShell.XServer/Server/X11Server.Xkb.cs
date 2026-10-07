@@ -45,7 +45,8 @@ public sealed partial class X11Server
         ("ALPHABETIC", 0x03, 2, [(0x01, 1), (0x02, 1)], ["Base", "Caps"]),
         ("KEYPAD", 0x11, 2, [(0x01, 1), (0x10, 1)], ["Base", "Number"]),
         ("FOUR_LEVEL", 0x81, 4, [(0x01, 1), (0x80, 2), (0x81, 3)], ["Base", "Shift", "Alt Base", "Shift Alt"]),
-        ("FOUR_LEVEL_ALPHABETIC", 0x83, 4, [(0x01, 1), (0x02, 1), (0x80, 2), (0x81, 3), (0x82, 3)], ["Base", "Caps", "Alt Base", "Shift Alt"]),
+        // Shift + Lock 互相抵消回到第一级;再加 Mod5 时同理回到第三级(原先缺这一条,Shift + Caps + AltGr 落回第一级)。
+        ("FOUR_LEVEL_ALPHABETIC", 0x83, 4, [(0x01, 1), (0x02, 1), (0x80, 2), (0x81, 3), (0x82, 3), (0x83, 2)], ["Base", "Caps", "Alt Base", "Shift Alt"]),
     ];
 
     private const byte XkbFourLevel = 4, XkbFourLevelAlphabetic = 5;
@@ -242,7 +243,9 @@ public sealed partial class X11Server
             case 9:   // SetMap:上传的键值与修饰键映射写回核心键位表(X11Server.XkbSetMap.cs)
                 XkbSetMap(r);
                 break;
-            case 7:   // SetControls
+            case 7:   // SetControls:自动重复的几项生效(X11Server.KeyboardControl.cs)
+                XkbSetControls(r);
+                break;
             case 11:  // SetCompatMap
             case 14:  // SetIndicatorMap
             case 16:  // SetNamedIndicator
@@ -279,10 +282,15 @@ public sealed partial class X11Server
     {
         uint s0 = _keymap.Keysym(keycode, 0), s1 = _keymap.KeysymsPerKeycode > 1 ? _keymap.Keysym(keycode, 1) : 0;
         uint s4 = _keymap.Keysym(keycode, 4), s5 = _keymap.Keysym(keycode, 5);
+        // 核心协议第 5 节:一组的第二个键值是 NoSymbol、第一个是有大小写之分的字母时,按「小写、大写」两级看待(xmodmap 常这样写单列)。
+        if (s1 == 0 && KeysymCase.CasePair(s0) is (uint lower, uint upper))
+        {
+            (s0, s1) = (lower, upper);
+        }
         if (s4 != 0 || s5 != 0)
         {
             uint l1 = s0, l2 = s1 == 0 ? s0 : s1, l3 = s4 == 0 ? s5 : s4, l4 = s5 == 0 ? l3 : s5;
-            bool alphabetic = IsLowerLetter(l1) && l2 == UpperOf(l1);
+            bool alphabetic = KeysymCase.IsCasePair(l1, l2);
             return (alphabetic ? XkbFourLevelAlphabetic : XkbFourLevel, 4, [l1, l2, l3, l4]);
         }
         if (s0 == 0 && s1 == 0)
@@ -297,7 +305,8 @@ public sealed partial class X11Server
         {
             return (3, 2, [s0, s1]);
         }
-        if (IsLowerLetter(s0) && s1 == UpperOf(s0))
+        // 字母类型认所有有大小写之分的字母(西里尔、希腊、Latin-2 … 与 Unicode 键值),不只是拉丁字母。
+        if (KeysymCase.IsCasePair(s0, s1))
         {
             return (2, 2, [s0, s1]);
         }
@@ -305,10 +314,6 @@ public sealed partial class X11Server
     }
 
     private static bool IsKeypadKeysym(uint sym) => sym is >= 0xff80 and <= 0xffbd;
-
-    private static bool IsLowerLetter(uint sym) => sym is >= 'a' and <= 'z' or >= 0xe0 and <= 0xfe and not 0xf7;
-
-    private static uint UpperOf(uint sym) => sym is >= 'a' and <= 'z' ? sym - 32 : sym is >= 0xe0 and <= 0xfe ? sym - 32 : sym;
 
     /// <summary>修饰键的动作:Lock 类是 LockMods,其余是 SetMods(都用修饰键表里的修饰位)。</summary>
     private bool XkbActionOf(byte keycode, out byte type)
@@ -615,23 +620,6 @@ public sealed partial class X11Server
         });
     }
 
-    // ------------------------------------------------------------------ GetControls
-
-    private static void XkbGetControls(XClient c) => c.Reply(XkbDeviceId, w =>
-    {
-        w.U8(0).U8(1).U8(0).U8(0).U8(0).U8(0).U8(0).Zero(1)   // mouseKeysDfltBtn、numGroups = 1、groupsWrap、内部 / 忽略锁定修饰
-            .U16(0).U16(0)
-            .U16(660).U16(40)                                  // repeatDelay、repeatInterval(毫秒)
-            .U16(300).U16(300).U16(160).U16(40).U16(30).U16(10).I16(0)
-            .U16(0).U16(120).U16(0).U16(0).Zero(2)
-            .U32(0).U32(0)
-            .U32(1);                                           // enabledControls:RepeatKeys
-        for (int i = 0; i < 32; i++)
-        {
-            w.U8(0xFF);                                        // 每个键都自动重复
-        }
-    });
-
     // ------------------------------------------------------------------ 事件
 
     private void XkbSelectEvents(XClient c, XRequestReader r)
@@ -745,7 +733,7 @@ public sealed partial class X11Server
     {
         uint property = Intern("_XKB_RULES_NAMES");
         byte[] value = XWire.Latin1.GetBytes($"evdev\0pc105\0{KeyboardLayout}\0\0\0");
-        Root.Properties[property] = new XProperty(XAtom.String, 8, value);
+        StoreServerProperty(Root, property, new XProperty(XAtom.String, 8, value));
         SendPropertyNotify(Root, property, deleted: false);
     }
 

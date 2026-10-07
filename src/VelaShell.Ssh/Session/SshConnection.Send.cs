@@ -201,7 +201,6 @@ public sealed partial class SshConnection
             },
             cancellationToken);
 
-
     /// <summary>投递一个报文、不等它上线、不受背压限制；与入队同一时刻问 <paramref name="admit"/>。</summary>
     /// <remarks>
     /// 接收循环回复通道报文用（它不能在背压上等）。理由同 <see cref="Channels.ISshChannelHost.SendIfAsync"/>。

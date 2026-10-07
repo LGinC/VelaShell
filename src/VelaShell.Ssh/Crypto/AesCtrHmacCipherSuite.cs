@@ -311,7 +311,6 @@ internal sealed class AesCtrHmacCipherSuite : ISshCipherSuite
         return SshOpenStatus.Opened;
     }
 
-
     /// <summary>从已解密的 <c>padding_length ‖ payload ‖ padding</c> 区里取出载荷。</summary>
     private static void EmitPayload(ReadOnlySpan<byte> region, int packetLength, IBufferWriter<byte> payload)
     {

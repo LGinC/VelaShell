@@ -527,7 +527,7 @@ internal sealed class TestSshServer : IAsyncDisposable
     {
         try
         {
-            using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             limit.CancelAfter(TimeSpan.FromSeconds(2));
             await read(limit.Token);
         }

@@ -12,11 +12,90 @@ using VelaShell.XServer.Server;
 
 namespace VelaShell.XServer.Windowing;
 
+/// <summary>
+/// 一个客户端在一个窗口上的 XI2 事件选择。按 deviceid 分开存(XI2 协议「XISelectEvents」:每个设备一份掩码,再选同一个设备只换它那一份,
+/// 掩码长度为 0 清掉它;0 = XIAllDevices、1 = XIAllMasterDevices),投递时看按设备种类合起来的 <see cref="Master" /> / <see cref="Slave" />
+/// (由服务端按当前的设备层级算)。原先每窗口每客户端只记主、从两个掩码:先给 XIAllMasterDevices 选原始事件、再给 XIAllDevices 选
+/// HierarchyChanged,前一份就被盖掉;一次请求里给设备 2 选指针事件、给设备 3 选按键,指针事件也全丢。
+/// </summary>
+internal sealed class XiSelection
+{
+    /// <summary>deviceid → 掩码(按 evtype 的位)。</summary>
+    public SortedDictionary<ushort, ulong> ByDevice { get; } = [];
+
+    /// <summary>主设备的事件看的掩码:XIAllDevices、XIAllMasterDevices 与各主设备那一份的并集。</summary>
+    public ulong Master { get; set; }
+
+    /// <summary>从设备的事件看的掩码:XIAllDevices 与各从设备那一份的并集。</summary>
+    public ulong Slave { get; set; }
+
+    public void Deconstruct(out ulong master, out ulong slave) => (master, slave) = (Master, Slave);
+}
+
 /// <summary>窗口上的一个属性(ChangeProperty 存进来的东西)。</summary>
-/// <param name="Type">类型原子。</param>
-/// <param name="Format">8 / 16 / 32。</param>
-/// <param name="Data">原始字节 —— 按<b>存进来的那个客户端的字节序</b>规整成本机序存放,取出时再按取的人的字节序写出。</param>
-internal sealed record XProperty(uint Type, byte Format, byte[] Data);
+/// <remarks>
+/// 不可变:改一个属性就换一个新对象(快照、图标缓存按引用判断变没变)。追加(ChangeProperty 的 Append)与上一版共用一块
+/// 留了余量的存储,只拷新加的那几个字节 —— 原先每次追加都整份复制,往 30 MB 的属性上一次追加 4 字节就是 30 MB 的复制。
+/// 旧对象看到的仍是它自己的那一段(新加的字节写在它的长度之外)。
+/// </remarks>
+internal sealed class XProperty
+{
+    private readonly Storage _storage;
+
+    public XProperty(uint type, byte format, byte[] data)
+        : this(type, format, new Storage(data, data.Length), data.Length)
+    {
+    }
+
+    private XProperty(uint type, byte format, Storage storage, int length)
+    {
+        Type = type;
+        Format = format;
+        _storage = storage;
+        Length = length;
+    }
+
+    /// <summary>类型原子。</summary>
+    public uint Type { get; }
+
+    /// <summary>8 / 16 / 32。</summary>
+    public byte Format { get; }
+
+    /// <summary>值的字节数。</summary>
+    public int Length { get; }
+
+    /// <summary>值:按<b>存进来的那个客户端的字节序</b>规整成本机序存放,取出时再按取的人的字节序写出(只在执行线程上读)。</summary>
+    public ReadOnlySpan<byte> Data => _storage.Bytes.AsSpan(0, Length);
+
+    /// <summary>值记在谁的账上(写它的客户端);服务端自己写的为 null(见 <c>X11Server.ChargeMemory</c>)。</summary>
+    public XClient? ChargedTo { get; init; }
+
+    /// <summary>在末尾接上 <paramref name="tail" />,返回新的属性对象(本对象不变)。</summary>
+    public XProperty Append(ReadOnlySpan<byte> tail, XClient? chargedTo)
+    {
+        int length = Length + tail.Length;
+        Storage storage = _storage;
+        if (storage.Used != Length || storage.Bytes.Length < length)
+        {
+            // 存储已被别的版本接着写过、或者放不下:另起一块,容量翻倍(最多到单个属性的上限),之后的追加就只拷新字节。
+            int capacity = (int)Math.Clamp(Length * 2L, length, Math.Max(length, X11Server.MaxPropertyBytes));
+            byte[] bigger = new byte[capacity];
+            Data.CopyTo(bigger);
+            storage = new Storage(bigger, Length);
+        }
+        tail.CopyTo(storage.Bytes.AsSpan(Length));
+        storage.Used = length;
+        return new XProperty(Type, Format, storage, length) { ChargedTo = chargedTo };
+    }
+
+    /// <summary>几个版本共用的一块存储;<see cref="Used" /> 是最新那个版本的长度。</summary>
+    private sealed class Storage(byte[] bytes, int used)
+    {
+        public byte[] Bytes { get; } = bytes;
+
+        public int Used { get; set; } = used;
+    }
+}
 
 /// <summary>一个窗口。</summary>
 /// <remarks>
@@ -79,6 +158,12 @@ internal sealed class XWindow : XResource
     public bool OverrideRedirect { get; set; }
 
     /// <summary>
+    /// 顶层窗口的位置是客户端自己给的(建窗口、移动窗口、reparent 到根窗口时),窗口管理器(宿主)还没按重力摆过
+    /// (ICCCM §4.1.2.3、§4.1.5;见 <see cref="XTopLevelSnapshot.NeedsPlacement" />)。宿主报回摆好的位置时清掉。
+    /// </summary>
+    public bool PositionRequested { get; set; } = true;
+
+    /// <summary>
     /// 顶层窗口:解析出宿主快照里图标的那份 _NET_WM_ICON 属性值与解析结果。属性值总是整份替换,
     /// 同一个引用就不必重新解析(图标动辄几百 KB)。
     /// </summary>
@@ -97,15 +182,18 @@ internal sealed class XWindow : XResource
     /// <summary>各客户端在这个窗口上选择的事件。</summary>
     public Dictionary<XClient, uint> EventSelections { get; } = [];
 
+    /// <summary>最近一次报出去(或登记时算出)的 VisibilityNotify 状态:0 Unobscured、1 PartiallyObscured、2 FullyObscured、255 不可见。</summary>
+    public byte VisibilityState { get; set; } = 255;
+
     /// <summary>可见区域缓存(ClipByChildren / VisibleInner),按服务端的可见性代号与顶层缓冲尺寸失效。只读共享,用的人自己 Clone。</summary>
     internal (int Generation, int BufferWidth, int BufferHeight, Region? ClipByChildren, Region? VisibleInner) VisibilityCache { get; set; }
 
-    /// <summary>XInput2 的事件选择:客户端 → 按 evtype 的位掩码(选主设备的、选从设备的分开记)。</summary>
-    public Dictionary<XClient, (ulong Master, ulong Slave)> Xi2Selections { get; } = [];
+    /// <summary>XInput2 的事件选择:客户端 → 它在这个窗口上按设备选的掩码(见 <see cref="XiSelection" />)。</summary>
+    public Dictionary<XClient, XiSelection> Xi2Selections { get; } = [];
 
     /// <summary>这个客户端在这个窗口上有没有经 XI2 选 <paramref name="evtype" />。</summary>
     public bool Xi2Selects(XClient client, int evtype) =>
-        Xi2Selections.TryGetValue(client, out (ulong Master, ulong Slave) masks) && ((masks.Master | masks.Slave) & (1UL << evtype)) != 0;
+        Xi2Selections.TryGetValue(client, out XiSelection? masks) && ((masks.Master | masks.Slave) & (1UL << evtype)) != 0;
 
     /// <summary>这个窗口上有没有客户端经 XI2 选了 <paramref name="evtype" />。</summary>
     public bool AnyXi2Selects(int evtype)
@@ -125,11 +213,14 @@ internal sealed class XWindow : XResource
     /// <summary>顶层窗口(根的直接子窗口)的像素缓冲;子窗口画在所属顶层的缓冲里(架构 §6)。</summary>
     public PixelBuffer? Buffer { get; set; }
 
+    /// <summary><see cref="Buffer" /> 记在 <see cref="XResource.Owner" /> 名下的字节数(见 <c>X11Server.SyncBufferCharge</c>)。</summary>
+    public long BufferCharged { get; set; }
+
     /// <summary>被动按钮抓取(GrabButton)。</summary>
-    public List<Input.PassiveGrab> ButtonGrabs { get; } = [];
+    public Input.PassiveGrabTable ButtonGrabs { get; } = [];
 
     /// <summary>被动按键抓取(GrabKey)。</summary>
-    public List<Input.PassiveGrab> KeyGrabs { get; } = [];
+    public Input.PassiveGrabTable KeyGrabs { get; } = [];
 
     /// <summary>SHAPE 扩展的边界形状(窗口坐标,原点是内区左上角,可以为负以覆盖边框);null = 默认矩形。</summary>
     public Region? BoundingShape { get; set; }

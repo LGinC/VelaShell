@@ -26,7 +26,7 @@ public sealed class TcpDialerTests
     {
         using TcpListener listener = new(IPAddress.Loopback, 0);
         listener.Start();
-        SshDialTarget target = SshDialTarget.Direct("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
+        var target = SshDialTarget.Direct("127.0.0.1", ((IPEndPoint)listener.LocalEndpoint).Port);
 
         // 目标只有 IPv4 地址，却只许 IPv6：没有能连的地址，不去试。
         SshConnectException none = await Assert.ThrowsExactlyAsync<SshConnectException>(

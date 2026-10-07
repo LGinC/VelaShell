@@ -55,7 +55,7 @@ public sealed class ProtocolTests
     [TestMethod]
     public async Task 授权规则_按对端的来路逐条判断()
     {
-        byte[] cookie = [9, 9, 9, 9];
+        byte[] cookie = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
         await using X11Server withCookie = new(new X11ServerOptions { AuthorizationCookie = cookie });
         await using X11Server without = new();
         const string mit = "MIT-MAGIC-COOKIE-1";
@@ -65,7 +65,7 @@ public sealed class ProtocolTests
         X11Server.Peer otherUser = new(IsLocal: true, SameHost: true, Uid: 4242, LocalUser: false, Authenticated: false);
 
         Assert.IsNull(withCookie.Authorize(mit, cookie, tcpRemote), "对的 cookie");
-        Assert.IsNotNull(withCookie.Authorize(mit, [9, 9, 9, 8], tcpLocal), "错的 cookie");
+        Assert.IsNotNull(withCookie.Authorize(mit, [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8], tcpLocal), "错的 cookie");
         Assert.IsNotNull(withCookie.Authorize("", [], tcpLocal), "配了 cookie:环回 TCP 不带就拒");
         Assert.IsNull(withCookie.Authorize("", [], ownerSocket), "只有属主能连的套接字文件:同一个用户");
         Assert.IsNull(withCookie.Authorize(mit, cookie, otherUser), "别的用户带了对的 cookie 也行");
@@ -74,6 +74,65 @@ public sealed class ProtocolTests
         Assert.IsNull(without.Authorize("", [], tcpLocal), "没配 cookie:本机放行");
         Assert.IsNotNull(without.Authorize("", [], tcpRemote), "没配 cookie:外面的拒");
         Assert.IsNotNull(without.Authorize("", [], otherUser), "抽象命名空间里连进来的别的用户:没配 cookie 也拒");
+    }
+
+    [TestMethod]
+    public async Task cookie太短构造时就拒绝_构造之后改调用方的数组不影响授权()
+    {
+        // 空数组曾让任何带空数据的 MIT-MAGIC-COOKIE-1 都通过(FixedTimeEquals([], []) 为真),比不配还宽,远端也进得来。
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = [] }));
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = new byte[15] }));
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = new byte[257] }));
+
+        byte[] cookie = [.. Enumerable.Range(1, 16).Select(i => (byte)i)];
+        byte[] original = [.. cookie];
+        await using X11Server server = new(new X11ServerOptions { AuthorizationCookie = cookie });
+        Array.Clear(cookie);   // 调用方事后改了自己的数组
+        X11Server.Peer remote = new(IsLocal: false, SameHost: false, Uid: null, LocalUser: false, Authenticated: false);
+        Assert.IsNotNull(server.Authorize("MIT-MAGIC-COOKIE-1", new byte[16], remote), "全零不是配置时的 cookie");
+        Assert.IsNull(server.Authorize("MIT-MAGIC-COOKIE-1", original, remote), "授权按构造时的那份");
+    }
+
+    [TestMethod]
+    public async Task 主机访问控制报开着_增删主机与关掉访问控制回BadAccess()
+    {
+        await using X11Server server = new(new X11ServerOptions { AuthorizationCookie = new byte[16] });
+        await using XTestClient c = await XTestClient.ConnectAsync(server, authenticated: true);
+
+        // 原先报 Disabled:xhost 显示「clients can connect from any host」,实际不带 cookie 谁也进不来。
+        XMessage hosts = await c.RequestAsync(110, 0);   // ListHosts
+        Assert.AreEqual(1, hosts.Detail, "mode = Enabled");
+        Assert.AreEqual(0, hosts.U16(8), "主机清单是空的");
+
+        // 原先静默成功:xhost +host 看起来生效了,其实什么也没变。
+        byte[] address = [10, 0, 0, 1];
+        XMessage insert = await c.RequestAsync(109, 0, b => b.U8(0).U8(0).U16((ushort)address.Length).Bytes(address));   // ChangeHosts(Insert, Internet)
+        Assert.IsTrue(insert.IsError);
+        Assert.AreEqual(10, insert.Detail, "BadAccess");
+        XMessage disable = await c.RequestAsync(111, 0);   // SetAccessControl(Disable)
+        Assert.AreEqual(10, disable.Detail, "BadAccess");
+        XMessage badMode = await c.RequestAsync(111, 7);
+        Assert.AreEqual(2, badMode.Detail, "mode 只有 0、1:BadValue");
+        await c.SendAsync(111, 1);   // SetAccessControl(Enable):本来就开着,什么也不做
+        await c.SyncAsync();
+        Assert.IsFalse((await c.RequestAsync(43, 0)).IsError);
+    }
+
+    [TestMethod]
+    public void 请求读取器按客户端给的长度取字节时越界一律是BadLength_不会回绕()
+    {
+        // 原先按 _pos + count 判:count 接近 int.MaxValue 时回绕成负数、检查放行,AsSpan 再抛 —— 客户端看到的是 BadImplementation。
+        byte[] request = new byte[16];
+        Protocol.XRequestReader r = new(request, bigEndian: false);
+        r.Skip(4);
+        foreach (int count in (int[])[int.MaxValue, int.MaxValue - 7, 13, -1])
+        {
+            Protocol.XProtocolError error = Assert.ThrowsExactly<Protocol.XProtocolError>(() => r.Bytes(count));
+            Assert.AreEqual(Protocol.XErrorCode.Length, error.Code, $"count = {count}");
+        }
+        Protocol.XProtocolError slice = Assert.ThrowsExactly<Protocol.XProtocolError>(() => r.Slice(int.MaxValue - 4));
+        Assert.AreEqual(Protocol.XErrorCode.Length, slice.Code, "Slice 先核长度再分配");
+        Assert.HasCount(8, r.Bytes(8), "合法的照常读");
     }
 
     [TestMethod]

@@ -6,6 +6,7 @@
 //   (客户端开场 12 字节 + 授权名 / 数据;成功回复的定长部分、FORMAT、SCREEN、DEPTH、VISUALTYPE 的布局;失败回复)
 //   BIG-REQUESTS Extension(请求长度字段为 0 时后跟 4 字节的扩展长度;BigReqEnable,次操作码 0:回复 maximum-request-length)
 //   第 10 节「Connection Close」(CloseDownMode = Destroy 时释放该连接的全部资源、选区、抓取)
+//   请求「SetCloseDownMode」「ChangeHosts」「ListHosts」「SetAccessControl」(访问控制策略固定,不可改)
 
 using System.Buffers;
 using System.Buffers.Binary;
@@ -43,6 +44,13 @@ public sealed partial class X11Server
     /// </summary>
     private readonly Dictionary<int, XClient> _retainedClients = [];
 
+    /// <summary>
+    /// 同时以 Retain 模式留着资源的客户端上限,超了的断开时照 Destroy 处理。保留的客户端占着编号:原先不设限,
+    /// 任何已授权的客户端循环「连上 → RetainPermanent → 断开」254 次(不到一秒),之后所有新连接都收到「客户端已满」,
+    /// 连不上就发不了 KillClient,只能重启服务端。真实用途(xsetroot 留下根窗口的像素图、会话管理器)只要一两个。
+    /// </summary>
+    internal const int MaxRetainedClients = 16;
+
     /// <summary>经 TCP / Unix 套接字接进来的连接(收工时等它们结束)。</summary>
     private readonly ConcurrentDictionary<Task, byte> _connections = new();
 
@@ -51,13 +59,40 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ TCP
 
+    /// <summary>这次要不要听 TCP:<see cref="X11ServerOptions.ListenTcp" /> 没给时看配没配 cookie(零值取安全值)。</summary>
+    private bool ListensOnTcp => _options.ListenTcp ?? _cookie is not null;
+
     private void StartTcpListener()
     {
+        if (_cookie is null)
+        {
+            Log($"listening on TCP {_options.ListenAddress}:{6000 + _options.DisplayNumber} without a cookie: "
+                + "any local user can connect, read windows and inject input");
+        }
         TcpListener listener = new(_options.ListenAddress, 6000 + _options.DisplayNumber);
+        if (OperatingSystem.IsWindows())
+        {
+            // SO_EXCLUSIVEADDRUSE:没设的话,同一个用户的别的进程(包括低完整性的)用 SO_REUSEADDR 绑更具体的地址照样绑得上 ——
+            // 听 0.0.0.0 时它绑 127.0.0.1:6000+N,本机的连接就都落到它那里(实测 Windows 11)。别的系统上 SO_REUSEADDR 本来就绑不上正在听的端口。
+            listener.ExclusiveAddressUse = true;
+        }
         listener.Start();
         _listener = listener;
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         _acceptTask = AcceptLoopAsync(listener, _lifetime.Token);
+    }
+
+    /// <summary>TCP 监听独占着地址(Windows 的 SO_EXCLUSIVEADDRUSE,见 <see cref="StartTcpListener" />);测试用。</summary>
+    internal bool TcpListenerIsExclusive => _listener?.ExclusiveAddressUse == true;
+
+    /// <summary>关掉全部监听(收工,或 <see cref="StartAsync" /> 半途失败时撤回已经开起来的)。接受循环随之结束。</summary>
+    private void StopListeners()
+    {
+        _listener?.Stop();
+        _listener = null;
+        Port = 0;
+        StopUnixListeners();
+        ReleaseDisplayLock();
     }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)
@@ -69,15 +104,64 @@ public sealed partial class X11Server
             {
                 tcp = await listener.AcceptTcpClientAsync(cancellationToken).ConfigureAwait(false);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or SocketException)
+            catch (Exception ex) when (ex is OperationCanceledException or ObjectDisposedException or InvalidOperationException)
             {
-                return;
+                return;   // 收工,或者监听已经关了(TcpListener 停了之后再 Accept 抛 InvalidOperationException)
             }
-            tcp.NoDelay = true;
-            bool local = tcp.Client.RemoteEndPoint is IPEndPoint { Address: var address } && IPAddress.IsLoopback(address);
-            TrackConnection(ServeAndDisposeAsync(tcp, local, cancellationToken));
+            catch (SocketException ex)
+            {
+                if (cancellationToken.IsCancellationRequested || !ReferenceEquals(Volatile.Read(ref _listener), listener))
+                {
+                    return;
+                }
+                await AcceptFailedAsync("TCP", ex, cancellationToken).ConfigureAwait(false);
+                continue;
+            }
+            try
+            {
+                tcp.NoDelay = true;
+                bool local = tcp.Client.RemoteEndPoint is IPEndPoint { Address: var address } && IPAddress.IsLoopback(address);
+                TrackConnection(ServeAndDisposeAsync(tcp, local, cancellationToken));
+            }
+            catch (Exception ex) when (ex is SocketException or ObjectDisposedException)
+            {
+                tcp.Dispose();   // 刚接进来对端就复位了:只丢这一条
+            }
         }
     }
+
+    /// <summary>
+    /// 接受连接失败了,但监听还在:记一行(限流),按原因退避一下再接着接。原先接受循环遇到任何 SocketException 就永久退出 ——
+    /// fd 用完(EMFILE / ENFILE)、accept 之前对端就复位(Windows 的 ConnectionReset、BSD 的 ECONNABORTED)都是暂时的,
+    /// 之后本机 X 程序却再也连不进来,一行日志都没有(经 SSH 连接器来的不受影响,所以很难察觉)。
+    /// </summary>
+    private async Task AcceptFailedAsync(string transport, SocketException error, CancellationToken cancellationToken)
+    {
+        SocketError code = error.SocketErrorCode;
+        Post(null, () =>
+        {
+            if (ShouldLogFrequent())
+            {
+                LogFrequent($"{transport} accept failed ({code}); still listening");
+            }
+        });
+        if (code is SocketError.ConnectionReset or SocketError.ConnectionAborted)
+        {
+            return;   // 只是那一条连接没了
+        }
+        // fd 用完之类:立刻再 accept 还是失败,原地打转就是占满一个核。
+        try
+        {
+            await Task.Delay(AcceptRetryDelay, cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            // 收工:下一轮循环看到取消就退出。
+        }
+    }
+
+    /// <summary>接受连接失败(fd 用完之类)后等这么久再试。</summary>
+    private static readonly TimeSpan AcceptRetryDelay = TimeSpan.FromMilliseconds(100);
 
     private async Task ServeAndDisposeAsync(TcpClient tcp, bool local, CancellationToken cancellationToken)
     {
@@ -120,18 +204,30 @@ public sealed partial class X11Server
 
     /// <summary>连接的对端:服务端对它知道多少(授权检查与 MIT-SHM 用)。</summary>
     /// <param name="IsLocal">来自本机(环回 TCP、Unix 套接字、进程内的流)。没配置 cookie 时只接受本机连接。</param>
-    /// <param name="SameHost">经 Unix 套接字连进来的:MIT-SHM 对它可见。</param>
-    /// <param name="Uid">对端的 uid(Linux 上经 SO_PEERCRED);取不到为 null。</param>
+    /// <param name="SameHost">经 Unix 套接字连进来、与服务端在同一个 IPC 命名空间里的:MIT-SHM 对它可见。</param>
+    /// <param name="Uid">对端的 uid(Linux 上经 SO_PEERCRED,macOS / FreeBSD 上经 getpeereid);取不到为 null。</param>
     /// <param name="LocalUser">能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 uid 与本进程相同)。</param>
-    /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync" />),不再查授权。</param>
-    internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated);
+    /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />),不再查授权。</param>
+    /// <param name="Label">宿主给这条连接起的名字(比如它来自哪个 SSH 会话);进日志与 <see cref="XClientInfo" />。</param>
+    internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated, string? Label = null);
 
     /// <summary>
     /// 连接建立的时限:读连接建立报文(12 字节的头与授权名 / 数据)、回失败,都要在这之内做完。
     /// 对端连上来却迟迟不发完(卡住的,或者故意占着不放的),到点就断开 —— 否则每个这样的连接都一直占着一个套接字和一个任务,
     /// 而 <see cref="MaxClients" /> 只数已经建立的客户端,拦不住它们。握手只是一个往返,走 SSH 转发的慢链路也绰绰有余。
     /// </summary>
-    internal TimeSpan SetupTimeout { get; set; } = TimeSpan.FromSeconds(30);
+    internal TimeSpan SetupTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// 同时处在连接建立阶段(还没登记成客户端)的连接上限,超了新来的当场关掉。<see cref="MaxClients" /> 只数已经建立的客户端:
+    /// 本机任何用户不带 cookie 开几万条连接、每条只发个头就挂着,每条占一个套接字、一个任务和缓冲,原先没有任何上限。
+    /// </summary>
+    internal const int MaxPendingSetups = 32;
+
+    /// <summary>授权名与授权数据各自的长度上限(与 SSH 侧转发的 X11SetupMessage 一致;MIT-MAGIC-COOKIE-1 只要 16 字节)。</summary>
+    internal const int MaxAuthFieldLength = 256;
+
+    private int _pendingSetups;
 
     private async Task ServeCoreAsync(Stream stream, Peer peer, CancellationToken cancellationToken)
     {
@@ -142,6 +238,20 @@ public sealed partial class X11Server
         CancellationTokenSource? connection = null;
         // 连接建立阶段的读写用它:到了 SetupTimeout 还没发完就取消。等执行线程登记客户端那一步不计在内 ——
         // 那一步半途取消的话,执行线程照样登记了,却没人再用这个客户端。
+        if (Interlocked.Increment(ref _pendingSetups) > MaxPendingSetups)
+        {
+            Interlocked.Decrement(ref _pendingSetups);
+            return;   // 正在握手的连接太多:当场关掉(流由调用方释放)
+        }
+        bool pending = true;
+        void SetupDone()
+        {
+            if (pending)
+            {
+                pending = false;
+                Interlocked.Decrement(ref _pendingSetups);
+            }
+        }
         using var setup = CancellationTokenSource.CreateLinkedTokenSource(ct);
         setup.CancelAfter(SetupTimeout);
 
@@ -160,6 +270,12 @@ public sealed partial class X11Server
             ushort major = Read16(head.AsSpan(2), bigEndian);
             int nameLength = Read16(head.AsSpan(6), bigEndian);
             int dataLength = Read16(head.AsSpan(8), bigEndian);
+            if (nameLength > MaxAuthFieldLength || dataLength > MaxAuthFieldLength)
+            {
+                // 先按客户端给的长度分配的话,每条连接各 128 KB(进大对象堆);真实的授权数据只有几十字节。
+                await SendSetupFailureAsync(stream, bigEndian, "Authorization data too long", setup.Token).ConfigureAwait(false);
+                return;
+            }
             byte[] rest = new byte[XWire.Pad(nameLength) + XWire.Pad(dataLength)];
             await stream.ReadExactlyAsync(rest, setup.Token).ConfigureAwait(false);
             string authName = XWire.Latin1.GetString(rest, 0, nameLength);
@@ -176,7 +292,7 @@ public sealed partial class X11Server
                 {
                     if (ShouldLogFrequent())
                     {
-                        Log($"connection refused: {reason}");
+                        LogFrequent($"connection refused: {reason}");
                     }
                 });
                 await SendSetupFailureAsync(stream, bigEndian, reason, setup.Token).ConfigureAwait(false);
@@ -184,15 +300,36 @@ public sealed partial class X11Server
             }
 
             setup.CancelAfter(Timeout.InfiniteTimeSpan);   // 报文收齐了:下面等执行线程登记,不计时
-            client = await InvokeAsync(() => RegisterClient(bigEndian)).WaitAsync(ct).ConfigureAwait(false);
+            Task<XClient?> registering = InvokeAsync(() => RegisterClient(bigEndian, peer));
+            try
+            {
+                client = await registering.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // 等的时候调用方取消了:登记照样会在执行线程上执行,登记成了就当场断开 —— 原先没人管它,永久占着一个编号。
+                _ = registering.ContinueWith(t =>
+                {
+                    if (t.Result is { } orphan)
+                    {
+                        Post(null, () =>
+                        {
+                            DisconnectClient(orphan);
+                            orphan.Abort();
+                            orphan.Dispose();
+                        });
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                throw;
+            }
             if (client is null)
             {
                 setup.CancelAfter(SetupTimeout);
                 await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", setup.Token).ConfigureAwait(false);
                 return;
             }
-            client.SameHost = peer.SameHost;
-            client.PeerUid = peer.Uid;
+            SetupDone();   // 登记成了客户端:不再占「正在握手」的名额
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
             connection = CancellationTokenSource.CreateLinkedTokenSource(ct, client.Aborted);
             ct = connection.Token;
@@ -213,13 +350,14 @@ public sealed partial class X11Server
                 {
                     if (ShouldLogFrequent())
                     {
-                        Log("connection setup timed out");
+                        LogFrequent("connection setup timed out");
                     }
                 });
             }
         }
         finally
         {
+            SetupDone();
             if (client is not null)
             {
                 XClient gone = client;
@@ -246,9 +384,9 @@ public sealed partial class X11Server
 
     /// <summary>
     /// 授权检查;通过返回 null,否则返回给客户端看的原因。依次:
-    /// ① 调用方已经验过身份的流(<see cref="ServeAuthenticatedAsync" />)放行;
+    /// ① 调用方已经验过身份的流(<see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />)放行;
     /// ② 带了对的 MIT-MAGIC-COOKIE-1 放行;
-    /// ③ 能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 SO_PEERCRED 的 uid 相同)放行;
+    /// ③ 能确定对端就是运行服务端的这个用户(取得到对端 uid 时 uid 相同;取不到时连的是权限 0600 的套接字文件)放行;
     /// ④ 知道对端 uid 而它是别的用户:拒 —— Linux 抽象命名空间里的套接字没有文件权限可言,不看 uid 的话
     ///    本机任何用户都能连进来读窗口、记键盘、经 XTEST 注入输入;
     /// ⑤ 配置了 cookie 时其余一律拒(环回 TCP 也一样:本机别的进程、别的用户都连得到那个端口);
@@ -261,7 +399,7 @@ public sealed partial class X11Server
             return null;
         }
         // ⚠️ 常数时间比较:逐字节短路会泄漏「前几个字节对了几个」。
-        if (_options.AuthorizationCookie is { } cookie && name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie))
+        if (_cookie is { } cookie && name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie))
         {
             return null;
         }
@@ -273,11 +411,44 @@ public sealed partial class X11Server
         {
             return "Authorization required: the connecting user does not own this display";
         }
-        if (_options.AuthorizationCookie is not null)
+        if (_cookie is not null)
         {
             return "Authorization required, but no authorization protocol specified";
         }
         return peer.IsLocal ? null : "No protocol specified: only local connections are accepted";
+    }
+
+    // ------------------------------------------------------------------ 主机访问控制(协议「ChangeHosts」「ListHosts」「SetAccessControl」)
+    //
+    // 访问策略是固定的(见 Authorize):带对的 cookie,或者能确定是本机 / 本用户;没有可增删的主机清单。原先 ListHosts 报 Disabled ——
+    // xhost 据此显示「access control disabled, clients can connect from any host」,实际谁也不能不带 cookie 从别处连进来 ——
+    // ChangeHosts / SetAccessControl 又静默成功,xhost +host 看起来生效了、其实什么也没变。
+
+    /// <summary>ListHosts:访问控制开着(Enabled),主机清单是空的。</summary>
+    private static void ListHosts(XClient c) => c.Reply(1, static w => w.U16(0).Zero(22));
+
+    /// <summary>ChangeHosts:主机清单改不了 —— 合法的请求回 BadAccess(协议允许服务端不让改)。</summary>
+    private static void ChangeHosts(XRequestReader r)
+    {
+        if (r.Data > 1)
+        {
+            throw new XProtocolError(XErrorCode.Value, r.Data);   // mode:0 Insert、1 Delete
+        }
+        throw new XProtocolError(XErrorCode.Access);
+    }
+
+    /// <summary>SetAccessControl:访问控制本来就开着,Enable 什么也不做;Disable 回 BadAccess。</summary>
+    private static void SetAccessControl(XRequestReader r)
+    {
+        switch (r.Data)
+        {
+            case 1:   // Enable
+                return;
+            case 0:   // Disable
+                throw new XProtocolError(XErrorCode.Access);
+            default:
+                throw new XProtocolError(XErrorCode.Value, r.Data);
+        }
     }
 
     private static async Task SendSetupFailureAsync(Stream stream, bool bigEndian, string reason, CancellationToken ct)
@@ -296,7 +467,7 @@ public sealed partial class X11Server
     internal const int MaxClients = 255;
 
     /// <summary>分一个空闲的客户端编号并发出连接建立回复;编号用完了返回 null。</summary>
-    private XClient? RegisterClient(bool bigEndian)
+    private XClient? RegisterClient(bool bigEndian, Peer peer)
     {
         int index = _nextClientIndex;
         for (int tried = 0; tried < MaxClients; tried++, index = index >= MaxClients ? 1 : index + 1)
@@ -306,18 +477,26 @@ public sealed partial class X11Server
                 continue;
             }
             _nextClientIndex = index >= MaxClients ? 1 : index + 1;
-            XClient client = new(index, bigEndian);
+            // 对端的身份在执行线程上随登记一起写进去(之后不再变):原先连接线程在登记之后才写,违反 XClient「只在执行线程上读写」的约定,
+            // 只是恰好靠工作队列的先后关系(写完才开始读请求)没出事。
+            XClient client = new(index, bigEndian)
+            {
+                Label = peer.Label,
+                SameHost = peer.SameHost,
+                Forwarded = peer.Authenticated,
+                PeerUid = peer.Uid,
+            };
             _clients[index] = client;
             client.Send(BuildSetupReply(client));
             if (ShouldLogFrequent())
             {
-                Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
+                LogFrequent($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
             }
             return client;
         }
         if (ShouldLogFrequent())
         {
-            Log($"connection refused: {MaxClients} clients already connected");
+            LogFrequent($"connection refused: {MaxClients} clients already connected");
         }
         return null;
     }
@@ -470,6 +649,13 @@ public sealed partial class X11Server
                 client.NoteWritten(written);
             }
         }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            // 写不出去:对端已经断了。读端这时可能正卡在背压上(这个客户端的请求被 SYNC Await、XTEST 的延迟、别人的 GrabServer 挂着,
+            // 未执行的请求到了上限),根本没去读套接字,察觉不到 —— 原先连接就一直挂着,窗口成了关不掉的僵尸。主动断开它。
+            client.Abort();
+            throw;
+        }
         finally
         {
             ArrayPool<byte>.Shared.Return(batch);
@@ -485,30 +671,51 @@ public sealed partial class X11Server
     /// </summary>
     private void DisconnectClient(XClient client)
     {
-        if (!_clients.Remove(client.Index))
+        // 按对象比对再摘:KillClient / 关窗当场调一次,连接收尾时再排一次;中间这个编号可能已经分给了新客户端,
+        // 原先按编号摘,第二次就把新客户端摘了 —— 它照样收发请求,编号却又能分给下一个,两个客户端的资源 ID 范围撞在一起。
+        if (!_clients.TryGetValue(client.Index, out XClient? current) || !ReferenceEquals(current, client))
         {
             return;
         }
+        _clients.Remove(client.Index);
         client.Closed = true;
         if (ShouldLogFrequent())
         {
-            Log($"{client} disconnected");
+            LogFrequent($"{client} disconnected");
         }
         try
         {
-            if (client.CloseDownMode is 1 or 2)
+            ProcessSaveSet(client);   // 先还回别人的窗口,再销毁资源(协议「Connection Close」)
+        }
+        catch (Exception ex)
+        {
+            if (ShouldLogFrequent())
+            {
+                LogFailure($"save-set of {client} failed:", "save-set", ex);
+            }
+        }
+        try
+        {
+            if (client.CloseDownMode is 1 or 2 && _retainedClients.Count < MaxRetainedClients)
             {
                 ReleaseConnectionState(client);
                 _retainedClients[client.Index] = client;
             }
             else
             {
+                if (client.CloseDownMode is 1 or 2 && ShouldLogFrequent())
+                {
+                    LogFrequent($"{client} asked to retain its resources, but {MaxRetainedClients} clients already do: destroying them");
+                }
                 CleanupClient(client);
             }
         }
         catch (Exception ex)
         {
-            Log($"cleanup of {client} failed: {ex}");
+            if (ShouldLogFrequent())
+            {
+                LogFailure($"cleanup of {client} failed:", "cleanup", ex);
+            }
         }
         if (ReferenceEquals(_serverGrabber, client))
         {
@@ -516,12 +723,26 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>SetCloseDownMode(协议「SetCloseDownMode」):0 Destroy、1 RetainPermanent、2 RetainTemporary,别的值是 BadValue。</summary>
+    private static void SetCloseDownMode(XClient c, XRequestReader r)
+    {
+        if (r.Data > 2)
+        {
+            throw new XProtocolError(XErrorCode.Value, r.Data);   // 原先照单全收,3–255 断开时也按 Destroy 处理
+        }
+        c.CloseDownMode = r.Data;
+    }
+
     /// <summary>以 RetainPermanent / RetainTemporary 收尾的客户端的资源:KillClient 指到它们时销毁,编号随之放回。</summary>
     private void DestroyRetainedClient(XClient client)
     {
         if (_retainedClients.Remove(client.Index))
         {
-            CleanupClient(client);
+            // 连接状态在断开时已经清过(ReleaseConnectionState),这里只销毁留下的资源。
+            DestroyClientResources(client);
+            NotifyClientResourcesDestroyed(client);
+            UpdatePointerWindow();
+            UpdateCursor();
         }
     }
 
@@ -537,6 +758,40 @@ public sealed partial class X11Server
     /// <summary>这个客户端已经以 Retain 模式断开、资源还留着。</summary>
     private bool IsRetained(XClient client) => _retainedClients.TryGetValue(client.Index, out XClient? retained) && ReferenceEquals(retained, client);
 
+    /// <summary>KillClient 语义:还连着的断开;已经以 Retain 模式断开的,销毁它留下的全部资源。</summary>
+    private void KillClientOf(XClient client)
+    {
+        if (IsRetained(client))
+        {
+            DestroyRetainedClient(client);
+            return;
+        }
+        client.Abort();
+        DisconnectClient(client);
+    }
+
+    /// <summary>见 <see cref="GetClientsAsync" />。</summary>
+    private IReadOnlyList<XClientInfo> SnapshotClients()
+    {
+        Dictionary<XClient, int> resources = [];
+        foreach (XResource resource in _resources.Values)
+        {
+            if (resource.Owner is { } owner)
+            {
+                resources[owner] = resources.GetValueOrDefault(owner) + 1;
+            }
+        }
+        return
+        [
+            .. _clients.Values.Select(c => (Client: c, Retained: false))
+                .Concat(_retainedClients.Values.Select(c => (Client: c, Retained: true)))
+                .OrderBy(e => e.Client.Index)
+                .Select(e => new XClientInfo(e.Client.Index, e.Client.Label, e.Retained, resources.GetValueOrDefault(e.Client),
+                    e.Client.MemoryInUse,
+                    [.. _topLevelHandles.Where(p => ReferenceEquals(p.Key.Owner, e.Client)).Select(p => p.Value)])),
+        ];
+    }
+
     /// <summary>连接收尾时与资源无关的那一半:选区、抓取、别人窗口上的事件选择与被动抓取、各扩展的每连接状态。</summary>
     private void ReleaseConnectionState(XClient client)
     {
@@ -544,28 +799,39 @@ public sealed partial class X11Server
         ReleaseEventSelections(client);
     }
 
-    /// <summary>断开的客户端:释放它的资源、选区、抓取与事件选择,再让各扩展清掉自己的那份状态(<see cref="Extension.ClientClosed" />)。</summary>
+    /// <summary>
+    /// 以 Destroy 模式断开的客户端:释放它的选区、抓取、资源与事件选择,再让各扩展清掉自己的那份状态
+    /// (<see cref="Extension.ClientClosed" /> 与 <see cref="Extension.ClientResourcesDestroyed" />,各一次)。
+    /// </summary>
     private void CleanupClient(XClient client)
     {
         ReleaseSelectionsAndGrabs(client);
         DestroyClientResources(client);
         ReleaseEventSelections(client);
+        NotifyClientResourcesDestroyed(client);
+    }
+
+    /// <summary>客户端的资源刚销毁完:各扩展清挂在那些资源上的状态(<see cref="Extension.ClientResourcesDestroyed" />)。</summary>
+    private void NotifyClientResourcesDestroyed(XClient client)
+    {
+        foreach (Extension extension in _extensionList)
+        {
+            extension.ClientResourcesDestroyed?.Invoke(client);
+        }
     }
 
     private void ReleaseSelectionsAndGrabs(XClient client)
     {
-        foreach ((uint atom, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
+        foreach ((SelectionSlot slot, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
         {
             if (ReferenceEquals(owner.Client, client))
             {
-                _selections.Remove(atom);
-                NotifySelectionChange(atom, 2, 0, owner.Time);
+                _selections.Remove(slot);
+                NotifySelectionChange(slot.Atom, 2, 0, owner.Time, client => InScope(client, slot));
+                OnSelectionOwnerLost(slot);
             }
         }
-        if (_fetch is { } fetch && !_selections.ContainsKey(fetch.Selection))
-        {
-            _fetch = null;   // 正在取的选区,属主走了
-        }
+        DropOrphanedFetches();   // 正在取的选区,属主走了
         if (ReferenceEquals(PointerGrab?.Client, client))
         {
             PointerGrab = null;
@@ -610,7 +876,7 @@ public sealed partial class X11Server
         DetachShmSegments(others);
         foreach (XResource resource in others)
         {
-            _resources.Remove(resource.Id);
+            RemoveResource(resource.Id);
             if (resource is XPixmap pixmap)
             {
                 CleanupDamage(pixmap);   // 客户端走了,它的像素图随之销毁:别的客户端建在上面的 Damage 一并销毁

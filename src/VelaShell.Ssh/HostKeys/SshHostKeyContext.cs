@@ -33,7 +33,6 @@ public sealed class SshHostKeyContext
     /// <summary>协商出的主机密钥算法名（可能与 <see cref="SshPublicKey.KeyType"/> 不同，见 RSA）。</summary>
     public required string NegotiatedAlgorithm { get; init; }
 
-
     /// <summary>对端的版本标识串。</summary>
     public string PeerVersion { get; init; } = "";
 

@@ -30,7 +30,7 @@ public sealed class TlsDialerTests
     /// <summary>一张自签证书（服务端用），签给 <c>tls.example</c>。</summary>
     private static X509Certificate2 CreateServerCertificate()
     {
-        using ECDsa key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         CertificateRequest request = new("CN=tls.example", key, HashAlgorithmName.SHA256);
         SubjectAlternativeNameBuilder names = new();
         names.AddDnsName("tls.example");

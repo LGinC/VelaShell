@@ -6,6 +6,7 @@ using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.XServer;
 using VelaShell.Infrastructure.XServer;
+using VelaShell.Ssh.Forwarding;
 using VelaShell.XServer;
 
 namespace VelaShell.Infrastructure.Tests.XServer;
@@ -24,6 +25,10 @@ public class BuiltInLocalXServerTests
         settings.GetSettingsAsync().Returns(new AppSettings { XServer = options });
         return settings;
     }
+
+    /// <summary>读一份 .Xauthority(必须每一条都认得全)。</summary>
+    private static IReadOnlyList<XAuthorityEntry> Decode(string path) =>
+        XAuthority.TryDecode(File.ReadAllBytes(path), out IReadOnlyList<XAuthorityEntry>? entries) ? entries : throw new AssertFailedException("解不全");
 
     /// <summary>0–9 当作被占用,自动模式挑到 :10。</summary>
     private static Task<bool> LowDisplaysBusy(int display, CancellationToken _) => Task.FromResult(display < 10);
@@ -102,12 +107,29 @@ public class BuiltInLocalXServerTests
 
         Assert.AreEqual("localhost:10.0", resolution.Display);
         Assert.IsNotNull(resolution.Connector);
-        await using Stream stream = await resolution.Connector(CancellationToken.None);
+        await using Stream stream = await resolution.Connector("user@host:22", CancellationToken.None);
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
         byte[] head = new byte[8];
         await stream.ReadExactlyAsync(head).AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.AreEqual(1, head[0], "Success —— 经连接器来的连接按本机连接放行");
+    }
+
+    /// <summary>停之前数得出连着几个 X 程序(标题栏按钮据此确认「会断开 N 个程序」);没在运行时为 0。</summary>
+    [TestMethod]
+    public async Task CountConnectedClients_CountsConnections()
+    {
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), new RecordingHost());
+        Assert.AreEqual(0, await server.CountConnectedClientsAsync(), "没在运行");
+        XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
+        await using Stream first = await resolution.Connector!("user@host:22", CancellationToken.None);
+        await using Stream second = await resolution.Connector!("user@host:22", CancellationToken.None);
+        Assert.AreEqual(1, await HandshakeAsync(first));
+        Assert.AreEqual(1, await HandshakeAsync(second));
+        Assert.AreEqual(2, await server.CountConnectedClientsAsync());
+
+        await server.StopAsync();
+        Assert.AreEqual(0, await server.CountConnectedClientsAsync());
     }
 
     /// <summary>
@@ -122,10 +144,10 @@ public class BuiltInLocalXServerTests
         Assert.IsNotNull(resolution.Connector);
 
         await server.StopAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await resolution.Connector(CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await resolution.Connector("user@host:22", CancellationToken.None));
 
         Assert.IsTrue((await server.StartAsync()).Success);
-        await using Stream stream = await resolution.Connector(CancellationToken.None);
+        await using Stream stream = await resolution.Connector("user@host:22", CancellationToken.None);
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
         byte[] head = new byte[8];
@@ -164,11 +186,11 @@ public class BuiltInLocalXServerTests
                 _ => Task.FromResult(false), xauthority);
             Assert.IsTrue((await server.StartAsync()).Success);
 
-            XAuthorityFile.Entry entry = XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single();
-            Assert.AreEqual(XAuthorityFile.FamilyLocal, entry.Family);
-            Assert.AreEqual(Dns.GetHostName(), Encoding.ASCII.GetString(entry.Address));
-            Assert.AreEqual("10", entry.Number);
-            Assert.HasCount(16, entry.Data);
+            XAuthorityEntry entry = Decode(xauthority).Single();
+            Assert.AreEqual(XAuthority.FamilyLocal, entry.Family);
+            Assert.AreEqual(Dns.GetHostName(), Encoding.ASCII.GetString(entry.Address.Span));
+            Assert.AreEqual("10", entry.DisplayNumber);
+            Assert.AreEqual(16, entry.Data.Length);
 
             using (TcpClient anonymous = new())
             {
@@ -178,16 +200,93 @@ public class BuiltInLocalXServerTests
             using (TcpClient authorized = new())
             {
                 await authorized.ConnectAsync(IPAddress.Loopback, 6010);
-                Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data), "带上 .Xauthority 里的 cookie:Success");
+                Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data.ToArray()), "带上 .Xauthority 里的 cookie:Success");
             }
             XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
-            await using (Stream channel = await resolution.Connector!(CancellationToken.None))
+            await using (Stream channel = await resolution.Connector!("user@host:22", CancellationToken.None))
             {
                 Assert.AreEqual(1, await HandshakeAsync(channel), "SSH 的连接器:转发层核对过假 cookie,不再要");
             }
 
             await server.StopAsync();
-            Assert.IsEmpty(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!, "停下时撤出");
+            Assert.IsEmpty(Decode(xauthority), "停下时撤出");
+        }
+        finally
+        {
+            File.Delete(xauthority);
+        }
+    }
+
+    /// <summary>
+    /// 启动途中任何异常都收尾:原先只接 SocketException、取消与 InvalidOperationException,别的(宿主附着时抛的、库的参数校验)
+    /// 一路抛出去,服务端不释放、状态卡在「启动中」。
+    /// </summary>
+    [TestMethod]
+    public async Task Start_AnyFailure_DetachesTheHost_StopsCleanly_AndCanStartAgain()
+    {
+        RecordingHost host = new() { FailAttachWith = new NotSupportedException("the host is broken") };
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), host);
+
+        XServerStartResult failed = await server.StartAsync();
+
+        Assert.IsFalse(failed.Success);
+        Assert.Contains("the host is broken", failed.Error ?? "");
+        Assert.AreEqual(XServerState.Stopped, server.State, "不卡在 Starting");
+        Assert.AreEqual(1, host.Detaches);
+
+        host.FailAttachWith = null;
+        Assert.IsTrue((await server.StartAsync()).Success, "再点一次就开得起来");
+        await server.StopAsync();
+    }
+
+    /// <summary>
+    /// 自动选号时,探测说空着的号在开起来那一刻被占了(探测与绑定之间别的程序抢先了,或者别的服务端持着 /tmp/.X{N}-lock):
+    /// 换下一个空闲的号再试,原先直接报「显示号被占用」。
+    /// </summary>
+    [TestMethod]
+    public async Task Start_AutomaticDisplayTakenBetweenProbeAndBind_TriesTheNextOne()
+    {
+        using TcpListener squatter = new(IPAddress.Loopback, 6010);   // 探测(注入的)看不见它
+        squatter.Start();
+        RecordingHost host = new();
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), host);
+        List<XServerState> states = [];
+        server.StateChanged += (_, _) => states.Add(server.State);
+
+        XServerStartResult result = await server.StartAsync();
+
+        Assert.IsTrue(result.Success, result.Error);
+        Assert.AreEqual(11, server.DisplayNumber, ":10 开不起来,换到 :11");
+        Assert.AreEqual(XServerState.Running, states[^1]);
+        Assert.DoesNotContain(XServerState.Stopped, states, "换号期间一直是 Starting");
+        await server.StopAsync();
+    }
+
+    /// <summary>
+    /// macOS 换了网络主机名常跟着变,Xlib 按连接那一刻的主机名在 .Xauthority 里找:主机名变了就按新名字重登、撤掉旧的那一条
+    /// (原先一直是启动时的名字,之后本机 X 程序一律被拒)。
+    /// </summary>
+    [TestMethod]
+    public async Task HostNameChange_RegistersTheCookieUnderTheNewName_AndStopRetractsIt()
+    {
+        string xauthority = Path.Combine(Path.GetTempPath(), $"vx-xauth-{Guid.NewGuid():N}");
+        string hostName = "box-a";
+        try
+        {
+            await using BuiltInLocalXServer server = new(Settings(new XServerOptions()), () => new RecordingHost(), LowDisplaysBusy,
+                _ => Task.FromResult(false), xauthority, () => hostName);
+            Assert.IsTrue((await server.StartAsync()).Success);
+            Assert.AreEqual("box-a", Encoding.ASCII.GetString(Decode(xauthority).Single().Address.Span));
+
+            await server.RepublishCookieAsync();   // 主机名没变:什么也不做
+            hostName = "box-b";
+            await server.RepublishCookieAsync();
+            XAuthorityEntry entry = Decode(xauthority).Single();
+            Assert.AreEqual("box-b", Encoding.ASCII.GetString(entry.Address.Span), "按新名字登记,旧的那条撤掉");
+            Assert.AreEqual("10", entry.DisplayNumber);
+
+            await server.StopAsync();
+            Assert.IsEmpty(Decode(xauthority), "停下时撤出的是新名字的那一条");
         }
         finally
         {
@@ -238,8 +337,15 @@ public class BuiltInLocalXServerTests
 
         public int Detaches { get; private set; }
 
+        /// <summary>设了就在附着时抛它(模拟宿主出错)。</summary>
+        public Exception? FailAttachWith { get; set; }
+
         public Task AttachAsync(X11Server server, CancellationToken cancellationToken)
         {
+            if (FailAttachWith is { } failure)
+            {
+                throw failure;
+            }
             Attached = server;
             LayoutAtAttach = KeyboardLayout;
             return Task.CompletedTask;

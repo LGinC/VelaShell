@@ -79,23 +79,25 @@ public sealed partial class X11Server
             XEventCode.ButtonPress or XEventCode.ButtonRelease when detail != 0 =>
                 () => ButtonEvent(detail, type == XEventCode.ButtonPress),
             XEventCode.MotionNotify => detail != 0
-                ? () => MovePointer(Math.Max(0, _pointerX) + rootX, Math.Max(0, _pointerY) + rootY)
+                ? () => MovePointer(_pointerX + rootX, _pointerY + rootY)
                 : () => MovePointer(rootX, rootY),
             _ => throw new XProtocolError(XErrorCode.Value, detail),
         };
 
-        bool keyboard = type is XEventCode.KeyPress or XEventCode.KeyRelease;
-
         void Run()
         {
-            NoteUserActivity();
-            if (keyboard)
+            NoteInputActivity();
+            switch (type)
             {
-                ProcessKeyboardInput(inject);
-            }
-            else
-            {
-                ProcessPointerInput(inject, motion: type == XEventCode.MotionNotify);
+                case XEventCode.KeyPress or XEventCode.KeyRelease:
+                    ProcessKeyboardInput(detail, type == XEventCode.KeyPress, inject);
+                    break;
+                case XEventCode.ButtonPress or XEventCode.ButtonRelease:
+                    ProcessPointerButton(detail, type == XEventCode.ButtonPress, inject);
+                    break;
+                default:
+                    ProcessPointerMotion(inject);
+                    break;
             }
         }
 
@@ -120,10 +122,7 @@ public sealed partial class X11Server
         }
         pending.Timer.Dispose();
         inject();
-        foreach (WorkItem item in pending.Deferred)
-        {
-            RunItem(item);
-        }
+        Requeue(pending.Deferred);
     }
 
     /// <summary>执行循环在跑一项工作之前问一句:这个客户端是不是在等 FakeInput 的延迟?是就把请求暂存。</summary>

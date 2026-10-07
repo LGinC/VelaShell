@@ -10,7 +10,9 @@
 //   (GetProviders)、§7.5「…version 1.5」(GetMonitors)、附录「Protocol Encoding」
 //
 //   只读:每台显示器(见 X11Server.Monitors)一个 CRTC、一个输出、一个模式。布局由宿主经 SetScreenLayout 决定,
-//   客户端改配置的请求一律回 Failed 或 BadAccess;布局变化时按 SelectInput 的掩码发事件。
+//   客户端改配置的请求回 Failed 或 BadAccess;SetScreenSize 给当前尺寸、SetCrtcGamma、SetOutputPrimary 接受但不生效 ——
+//   它们回 BadAccess 时,用 Xlib 默认错误处理的程序(调色温的、桌面会话)会因此退出。布局与 DPI 变化时按 SelectInput 的掩码发事件。
+//   CRTC / 输出的 ID 按显示器的名字沿用(X11Server.Monitors.cs),插拔一台不会让别的显示器换 ID。
 
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Server;
@@ -48,18 +50,13 @@ public sealed partial class X11Server
 
     private uint ModeIdOf(XMonitor m) => RandRModeBase + (uint)_randrModes.IndexOf((m.Width, m.Height, m.RefreshRate));
 
-    private static uint CrtcIdOf(int monitor) => RandRCrtcBase + (uint)monitor;
+    private uint CrtcIdOf(int monitor) => RandRCrtcBase + (uint)_monitorSlots[monitor];
 
-    private static uint OutputIdOf(int monitor) => RandROutputBase + (uint)monitor;
+    private uint OutputIdOf(int monitor) => RandROutputBase + (uint)_monitorSlots[monitor];
 
     /// <summary>CRTC / 输出 ID → 显示器下标;不存在时抛对应的 RANDR 错误(BadOutput = +0,BadCrtc = +1)。</summary>
-    private int MonitorOf(uint id, uint idBase, int errorOffset)
-    {
-        long index = (long)id - idBase;
-        return index >= 0 && index < _monitors.Count
-            ? (int)index
-            : throw new XProtocolError((XErrorCode)(RandRErrorBase + errorOffset), id);
-    }
+    private int MonitorOf(uint id, uint idBase, int errorOffset) =>
+        MonitorIndexOf(id, idBase) is >= 0 and var index ? index : throw new XProtocolError((XErrorCode)(RandRErrorBase + errorOffset), id);
 
     private void RandR(XClient c, XRequestReader r)
     {
@@ -239,7 +236,37 @@ public sealed partial class X11Server
                     });
                     break;
                 }
-            case 7:   // SetScreenSize
+            case 7:   // SetScreenSize:范围(GetScreenSizeRange)只有当前尺寸 —— 同尺寸照样成功,别的 BadValue(毫米数须非零)
+                {
+                    _ = Window(r.U32());
+                    ushort w = r.U16(), h = r.U16();
+                    uint mmWidth = r.U32(), mmHeight = r.U32();
+                    if (w != width || h != height || mmWidth == 0 || mmHeight == 0)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, w != width ? w : h != height ? h : 0u);
+                    }
+                    break;
+                }
+            case 24:  // SetCrtcGamma:接受但不生效(gamma 由宿主的系统管);长度须是 GetCrtcGammaSize 报的
+                {
+                    MonitorOf(r.U32(), RandRCrtcBase, 1);
+                    ushort size = r.U16();
+                    if (size != RandRGammaSize)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, size);
+                    }
+                    break;
+                }
+            case 30:  // SetOutputPrimary:接受但不生效(主显示器由宿主定);output 须是 None 或现有的输出
+                {
+                    _ = Window(r.U32());
+                    uint output = r.U32();
+                    if (output != 0)
+                    {
+                        MonitorOf(output, RandROutputBase, 0);
+                    }
+                    break;
+                }
             case 12:  // ConfigureOutputProperty
             case 13:  // ChangeOutputProperty
             case 14:  // DeleteOutputProperty
@@ -247,9 +274,7 @@ public sealed partial class X11Server
             case 17:  // DestroyMode
             case 18:  // AddOutputMode
             case 19:  // DeleteOutputMode
-            case 24:  // SetCrtcGamma
             case 26:  // SetCrtcTransform
-            case 30:  // SetOutputPrimary
             case 43:  // SetMonitor
             case 44:  // DeleteMonitor
                 throw new XProtocolError(XErrorCode.Access);
@@ -276,8 +301,11 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>布局变了:按各客户端 SelectInput 的掩码发 ScreenChangeNotify、CrtcChange、OutputChange。</summary>
-    private void NotifyRandRChange()
+    /// <summary>
+    /// 布局变了:按各客户端 SelectInput 的掩码发 ScreenChangeNotify、CrtcChange、OutputChange。<paramref name="screenOnly" /> 时
+    /// (只是 DPI 变了,毫米数跟着变)只发 ScreenChangeNotify。
+    /// </summary>
+    private void NotifyRandRChange(bool screenOnly = false)
     {
         if (_randrSelections.Count == 0)
         {
@@ -298,7 +326,7 @@ public sealed partial class X11Server
                     .U32(time).U32(time).U32(RootWindowId).U32(window.Id).U16(0).U16(0)
                     .U16((ushort)width).U16((ushort)height).U16((ushort)mmW).U16((ushort)mmH));
             }
-            for (int i = 0; i < _monitors.Count; i++)
+            for (int i = 0; i < _monitors.Count && !screenOnly; i++)
             {
                 XMonitor m = _monitors[i];
                 uint crtc = CrtcIdOf(i), output = OutputIdOf(i), mode = ModeIdOf(m);
@@ -318,11 +346,15 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>MODEINFO:行总长 = 宽、帧总行数 = 高,点时钟按刷新率反推(刷新率 = 点时钟 / (htotal × vtotal))。</summary>
+    /// <summary>
+    /// MODEINFO:行总长 = 宽、帧总行数 = 高,点时钟按刷新率反推(刷新率 = 点时钟 / (htotal × vtotal))。点时钟只有 32 位:
+    /// 8K@144 之类算出来超过 4 GHz 时取最大值(原先截断回绕,报出来的刷新率乱七八糟)。
+    /// </summary>
     private static void WriteModeInfo(XWriter w, uint id, (int Width, int Height, int Refresh) mode, int nameLength)
     {
         (int width, int height, int refresh) = mode;
-        w.U32(id).U16((ushort)width).U16((ushort)height).U32((uint)((long)width * height * refresh))
+        uint clock = (uint)Math.Min(uint.MaxValue, (long)width * height * Math.Max(0, refresh));
+        w.U32(id).U16((ushort)width).U16((ushort)height).U32(clock)
             .U16((ushort)width).U16((ushort)width).U16((ushort)width).U16(0)
             .U16((ushort)height).U16((ushort)height).U16((ushort)height)
             .U16((ushort)nameLength).U32(0);

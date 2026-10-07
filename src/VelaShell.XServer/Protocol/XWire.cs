@@ -13,7 +13,7 @@ namespace VelaShell.XServer.Protocol;
 /// <summary>请求执行失败:按协议发一条错误给客户端。</summary>
 /// <param name="code">错误码。</param>
 /// <param name="badValue">出错的值(资源 ID、原子、越界的数);没有意义时为 0。</param>
-internal sealed class XProtocolError(XErrorCode code, uint badValue = 0)
+internal class XProtocolError(XErrorCode code, uint badValue = 0)
     : Exception($"X error {code} (bad value 0x{badValue:x})")
 {
     /// <summary>错误码。</summary>
@@ -62,8 +62,9 @@ internal sealed class XRequestReader
     /// </summary>
     public XRequestReader Slice(int length)
     {
-        byte[] copy = new byte[4 + length];
-        Take(length).CopyTo(copy.AsSpan(4));
+        ReadOnlySpan<byte> part = Take(length);   // 先核长度再分配:原先先按客户端给的长度 new,再在 Take 里回 BadLength
+        byte[] copy = new byte[4 + part.Length];
+        part.CopyTo(copy.AsSpan(4));
         return new XRequestReader(copy, _bigEndian);
     }
 
@@ -78,7 +79,7 @@ internal sealed class XRequestReader
 
     private ReadOnlySpan<byte> Take(int count)
     {
-        if (count < 0 || _pos + count > Length)
+        if (count < 0 || count > Length - _pos)   // 原先 _pos + count:count 接近 int.MaxValue 时回绕成负数,检查放行,AsSpan 再抛,成了 BadImplementation
         {
             throw new XProtocolError(XErrorCode.Length);
         }

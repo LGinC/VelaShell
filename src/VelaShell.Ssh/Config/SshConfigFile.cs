@@ -615,7 +615,6 @@ public static partial class SshConfigFile
         return true;
     }
 
-
     /// <summary><c>Match</c> 块的条件都满足吗（条件之间是与）。</summary>
     /// <remarks>
     /// ⚠️ <b>判不了的条件让整块不生效 —— 取反也一样。</b>曾经「判不了」算成「不满足」，

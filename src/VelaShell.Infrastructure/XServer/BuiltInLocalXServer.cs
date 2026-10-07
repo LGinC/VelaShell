@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using VelaShell.Core.Data;
@@ -25,7 +26,7 @@ namespace VelaShell.Infrastructure.XServer;
 /// <b>授权</b>:每次启动生成一个随机的 <c>MIT-MAGIC-COOKIE-1</c>,TCP 连接(包括环回 —— 本机别的进程、别的用户都连得到那个端口)
 /// 必须带上它;cookie 写进用户的 <c>.Xauthority</c>(<see cref="XAuthorityFile" />,停下时撤出),本机 X 程序经 Xlib 自动带上。
 /// Unix 套接字只有同一个用户连得进来,不要 cookie。SSH 的 x11 通道经连接器进来,转发层已经核对过远端的假 cookie,
-/// 走 <see cref="X11Server.ServeAuthenticatedAsync" />。
+/// 走 <see cref="X11Server.ServeAuthenticatedAsync(Stream, string?, CancellationToken)" />。
 /// </para>
 /// <para>
 /// 状态变化(<see cref="StateChanged" />)在调用启动 / 停止的那个线程上触发,界面侧自己切回 UI 线程。
@@ -54,24 +55,29 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// <param name="settings">设置服务(显示号、剪贴板、自动启动)。</param>
     /// <param name="host">取宿主;<see langword="null" /> 表示界面层没有提供,启动会失败。</param>
     public BuiltInLocalXServer(ISettingsService settings, Func<IEmbeddedXServerHost?> host)
-        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync, XAuthorityFile.DefaultPath)
+        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync, VelaShell.Ssh.Forwarding.XAuthority.DefaultPath)
     {
     }
 
-    /// <summary>可注入显示探测与 .Xauthority 的位置(单测用;<paramref name="xauthorityPath" /> 为 null 时不写)。</summary>
+    /// <summary>可注入显示探测、.Xauthority 的位置与本机主机名(单测用;<paramref name="xauthorityPath" /> 为 null 时不写)。</summary>
     internal BuiltInLocalXServer(
         ISettingsService settings,
         Func<IEmbeddedXServerHost?> host,
         Func<int, CancellationToken, Task<bool>> isDisplayInUse,
         Func<CancellationToken, Task<bool>> hasOtherDisplay,
-        string? xauthorityPath = null)
+        string? xauthorityPath = null,
+        Func<string?>? hostName = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _isDisplayInUse = isDisplayInUse;
         _hasOtherDisplay = hasOtherDisplay;
         _xauthorityPath = xauthorityPath;
+        _hostName = hostName ?? HostName;
     }
+
+    /// <summary>本机主机名(.Xauthority 记录的地址;Xlib 连本机时按它找)。</summary>
+    private readonly Func<string?> _hostName;
 
     /// <inheritdoc />
     public bool IsSupported => true;
@@ -129,6 +135,9 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
     }
 
+    /// <summary>自动选号时,启动失败(号被占)最多换这么多次号。</summary>
+    private const int MaxStartAttempts = 4;
+
     private async Task<XServerStartResult> StartCoreAsync(AppXServerOptions options, CancellationToken cancellationToken)
     {
         if (_host() is not { } host)
@@ -155,34 +164,58 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
 
         SetState(XServerState.Starting, display);
-        byte[] cookie = RandomNumberGenerator.GetBytes(16);
-        X11Server server = new(new X11ServerOptions
+        X11Server server;
+        byte[] cookie;
+        for (int attempt = 1; ; attempt++)
         {
-            DisplayNumber = display,
-            AuthorizationCookie = cookie,
-            SyncClipboard = options.Clipboard,
-            SyncPrimary = options.Clipboard && options.CopyOnSelection,
-            Log = static line => Trace.WriteLine($"[XServer] {line}"),
-        }, host);
-        try
-        {
-            // 先让宿主把显示器布局、DPI、键盘布局告诉服务端,再开门 —— 第一个客户端拿到的就是对的屏幕与键位表。
-            host.UseKeyboardLayout(options.KeyboardLayout);
-            await host.AttachAsync(server, cancellationToken).ConfigureAwait(false);
-            await server.StartAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SocketException or OperationCanceledException or InvalidOperationException)
-        {
-            host.Detach();
-            await server.DisposeAsync().ConfigureAwait(false);
-            SetStopped();
-            if (ex is OperationCanceledException)
+            X11Server? candidate = null;
+            try
             {
-                throw;
+                cookie = RandomNumberGenerator.GetBytes(16);
+                candidate = new(new X11ServerOptions
+                {
+                    DisplayNumber = display,
+                    AuthorizationCookie = cookie,
+                    SyncClipboard = options.Clipboard,
+                    SyncPrimary = options.Clipboard && options.CopyOnSelection,
+                    RestrictForwardedClients = options.RestrictForwardedClients,
+                    Log = static line => Trace.WriteLine($"[XServer] {line}"),
+                }, host);
+                // 先让宿主把显示器布局、DPI、键盘布局告诉服务端,再开门 —— 第一个客户端拿到的就是对的屏幕与键位表。
+                host.UseKeyboardLayout(options.KeyboardLayout);
+                await host.AttachAsync(candidate, cancellationToken).ConfigureAwait(false);
+                await candidate.StartAsync(cancellationToken).ConfigureAwait(false);
+                server = candidate;
+                break;
             }
-            return XServerStartResult.Fail(ex is SocketException
-                ? Strings.Format("XServer_ErrDisplayInUse", display)
-                : Strings.Format("XServer_ErrLaunch", ex.Message));
+            catch (Exception ex)
+            {
+                // 一律收尾:原先只接这三类(SocketException、取消、InvalidOperationException),别的异常(宿主附着时抛的、库的参数校验)
+                // 一路抛出去,服务端不释放、状态卡在「启动中」,X Server 按钮再也点不动。
+                host.Detach();
+                if (candidate is not null)
+                {
+                    await candidate.DisposeAsync().ConfigureAwait(false);
+                }
+                // 自动选号时,探测说空着的号在绑定时被占了(探测与绑定之间别的程序抢先了;或者别的服务端持着 /tmp/.X{N}-lock、
+                // 抽象名被占 —— 探测看不出来,服务端开的时候才知道):换下一个空闲的号再试。原先直接报「显示号被占用」。
+                if (ex is SocketException && options.DisplayNumber < 0 && attempt < MaxStartAttempts
+                    && await VcXsrvLocalXServer.SelectFreeDisplayAsync(_isDisplayInUse, cancellationToken, display + 1).ConfigureAwait(false) is { } next)
+                {
+                    Trace.WriteLine($"[XServer] display :{display} was taken while starting; trying :{next}");
+                    display = next;
+                    SetState(XServerState.Starting, display);
+                    continue;
+                }
+                SetStopped();
+                if (ex is OperationCanceledException)
+                {
+                    throw;
+                }
+                return XServerStartResult.Fail(ex is SocketException
+                    ? Strings.Format("XServer_ErrDisplayInUse", display)
+                    : Strings.Format("XServer_ErrLaunch", ex.Message));
+            }
         }
 
         PublishCookie(display, cookie);
@@ -235,13 +268,14 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// <summary>把 cookie 写进 .Xauthority,本机 X 程序经 Xlib 自动带上;写不成只记日志(SSH 转发不受影响)。</summary>
     private void PublishCookie(int display, byte[] cookie)
     {
-        if (_xauthorityPath is not { } path || HostName() is not { } hostName)
+        if (_xauthorityPath is not { } path || _hostName() is not { } hostName)
         {
             return;
         }
         if (XAuthorityFile.Add(path, hostName, display, cookie))
         {
             _published = (path, hostName, display, cookie);
+            NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         }
     }
 
@@ -250,8 +284,39 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     {
         if (_published is { } published)
         {
+            NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             _published = null;
             _ = XAuthorityFile.Remove(published.Path, published.Host, published.Display, published.Cookie);
+        }
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e) => _ = RepublishCookieAsync();
+
+    /// <summary>
+    /// 主机名变了就按新名字重登 cookie、撤掉旧的那一条。记录的地址是登记时的主机名,Xlib 连本机(包括 localhost 的 TCP)时按
+    /// <b>连接那一刻</b>的主机名找:macOS 换了网络,主机名常跟着 DHCP / Bonjour 变,按启动时的名字登记的那条从此对不上,
+    /// 本机 X 程序一律 <c>Authorization required</c>。网络地址变化时(<see cref="NetworkChange.NetworkAddressChanged" />)核对一次。
+    /// </summary>
+    internal async Task RepublishCookieAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_published is not { } published || _hostName() is not { } hostName
+                || string.Equals(hostName, published.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            if (XAuthorityFile.Add(published.Path, hostName, published.Display, published.Cookie))
+            {
+                _ = XAuthorityFile.Remove(published.Path, published.Host, published.Display, published.Cookie);
+                _published = published with { Host = hostName };
+                Trace.WriteLine($"[XServer] host name changed to {hostName}: the cookie was registered again");
+            }
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 
@@ -286,6 +351,29 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         return result.Success && Current() is { } started ? started : new(Display: null, result.Error);
     }
 
+    /// <inheritdoc />
+    /// <remarks>以 Retain 模式断开、只剩资源的不算:它们已经没有连接了。</remarks>
+    public async Task<int> CountConnectedClientsAsync()
+    {
+        X11Server? server;
+        lock (_stateLock)
+        {
+            server = _state == XServerState.Running ? _server : null;
+        }
+        if (server is null)
+        {
+            return 0;
+        }
+        try
+        {
+            return (await server.GetClientsAsync().ConfigureAwait(false)).Count(c => !c.Retained);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            return 0;   // 刚好停了
+        }
+    }
+
     /// <summary>在运行时给出显示地址与连接器。</summary>
     private XServerDisplayResolution? Current()
     {
@@ -306,9 +394,10 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// 每条 x11 通道来时才取<b>此刻</b>在运行的服务端,不记住解析显示时的那一个:SSH 会话比服务端活得久,
     /// 用户在标题栏把 X Server 停掉再开之后,已经连着的会话要接到新的那个上 —— 记住旧实例的话,
     /// 每条通道都接进一个已释放的服务端,远端只看到 <c>Failed to open display</c>。
-    /// 此刻没在运行就抛 <see cref="InvalidOperationException" />,转发层按「本机显示连不上」处理。
+    /// 此刻没在运行就抛 <see cref="InvalidOperationException" />:<see cref="LocalXServerSelector" /> 接住它改走本机 TCP
+    /// (用户换成了 VcXsrv),直接用的转发层按「本机显示连不上」处理。
     /// </remarks>
-    private ValueTask<Stream> ConnectAsync(CancellationToken cancellationToken)
+    private ValueTask<Stream> ConnectAsync(string? label, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         X11Server? server;
@@ -322,17 +411,17 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
             throw new InvalidOperationException("The built-in X server is not running.");
         }
         (InMemoryDuplexStream serverSide, InMemoryDuplexStream clientSide) = InMemoryTransport.CreatePair();
-        _ = ServeAsync(server, serverSide);
+        _ = ServeAsync(server, serverSide, label);
         return ValueTask.FromResult<Stream>(clientSide);
     }
 
-    private static async Task ServeAsync(X11Server server, InMemoryDuplexStream stream)
+    private static async Task ServeAsync(X11Server server, InMemoryDuplexStream stream, string? label)
     {
         try
         {
             // 服务端不拥有流:连接结束(客户端断开、服务端停下)后在这里释放,SSH 那一端随之读到 EOF。
             // SSH 转发层已经核对过远端给的假 cookie:这条流不再查授权(服务端的 cookie 只给 TCP 上的本机程序)。
-            await server.ServeAuthenticatedAsync(stream).ConfigureAwait(false);
+            await server.ServeAuthenticatedAsync(stream, label).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or IOException or OperationCanceledException)
         {
@@ -344,10 +433,14 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
     }
 
-    /// <summary>本机是否已经有别的 X 显示在用:Windows 上看 <c>localhost:0</c>,其它平台看 <c>DISPLAY</c>。</summary>
+    /// <summary>
+    /// 本机是否已经有别的 X 显示在用:Windows 上看 <c>localhost:0</c>,而且在那里监听的进程要在当前用户会话里 —— 终端服务器上
+    /// 那可能是别的用户开着的 VcXsrv(常带 <c>-ac</c>),原先只要有人在听就不自动启动、转发落到别人的 X 服务端上
+    /// (见 <see cref="XDisplayProbe.IsTcpListenerInThisSession" />);其它平台看 <c>DISPLAY</c>。
+    /// </summary>
     private static async Task<bool> HasOtherDisplayAsync(CancellationToken cancellationToken) =>
         OperatingSystem.IsWindows()
-            ? await XDisplayProbe.IsTcpListeningAsync(0, cancellationToken).ConfigureAwait(false)
+            ? await XDisplayProbe.IsTcpListeningAsync(0, cancellationToken).ConfigureAwait(false) && XDisplayProbe.IsTcpListenerInThisSession(0)
             : !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"));
 
     private void SetState(XServerState state, int display)

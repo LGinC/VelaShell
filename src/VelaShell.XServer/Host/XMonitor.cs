@@ -26,4 +26,11 @@ public sealed record XMonitor(int X, int Y, int Width, int Height)
 
     /// <summary>刷新率,Hz。</summary>
     public int RefreshRate { get; init; } = 60;
+
+    /// <summary>
+    /// 工作区:这台显示器去掉任务栏、Dock 之后可以摆窗口的部分(根窗口坐标,必须落在显示器的矩形里);null = 整台显示器。
+    /// 服务端据此算 <c>_NET_WORKAREA</c>:各台显示器在虚拟桌面边缘上让出来的部分从整个根窗口里扣掉(EWMH 只有一个工作区矩形,
+    /// 两台显示器之间的任务栏扣不出来)—— 菜单、最大化、对话框据此避开任务栏。
+    /// </summary>
+    public XRect? WorkArea { get; init; }
 }

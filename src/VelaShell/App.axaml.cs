@@ -237,6 +237,9 @@ public class App : Application
             var mainWindow = new MainWindow { DataContext = viewModel };
             StartupTrace.Mark("MainWindowView");
             desktop.MainWindow = mainWindow;
+            // 主窗口真正关闭(不是缩到托盘):内置 X Server 一起停掉。X 窗口原先让进程退不出去 ——
+            // 停服、.Xauthority 收尾都要等到应用退出才做,而客户端不理 WM_DELETE_WINDOW 时应用永远退不了。
+            mainWindow.Closed += (_, _) => FireAndForget.Run(viewModel.XServer.StopAsync);
 
             // 启动时窗口状态(设置 → 外观):记住上次 / 最大化 / 默认大小。
             ApplyStartupWindowState(mainWindow, _startupSettings);

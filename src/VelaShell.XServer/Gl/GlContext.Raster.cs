@@ -17,6 +17,7 @@
 //   帧缓冲按 X 的行序存(第 0 行在最上面):窗口坐标 y(GL,向上)落在第 H−1−y 行。
 
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -54,9 +55,26 @@ internal sealed partial class GlContext
     private GlTexture? _activeTexture;
     private Vector4 _fogColor;
 
-    /// <summary>取当前状态,准备写片元;没有表面或没有可写的颜色缓冲时返回 false。</summary>
+    /// <summary>
+    /// <see cref="PrepareRaster" /> 已经为当前这条命令取过状态(结果在 <see cref="_rasterReady" />):一个图元拆出的各个三角形、
+    /// 各段线共用一份,不每个都重新查一遍开关、重新判断纹理完整(xs_plan GL-P1)。每条命令开始执行、换表面时作废。
+    /// </summary>
+    private bool _rasterPrepared;
+    private bool _rasterReady;
+
+    /// <summary>状态可能变了:下一次光栅化重新取。</summary>
+    private void InvalidateRaster() => _rasterPrepared = false;
+
+    /// <summary>取当前状态,准备写片元;没有表面或没有可写的颜色缓冲时返回 false。同一条命令里只取一次。</summary>
     private bool PrepareRaster()
     {
+        if (_rasterPrepared)
+        {
+            return _rasterReady;
+        }
+        FlushDrawn();   // 目标缓冲可能要变了:之前画过的先按原来的目标记下
+        _rasterPrepared = true;
+        _rasterReady = false;
         if (Draw is not { } surface || RenderModeValue != GlEnum.RENDER)
         {
             return false;
@@ -71,41 +89,42 @@ internal sealed partial class GlContext
         _fbWidth = surface.Width;
         _fbHeight = surface.Height;
         (_clipX0, _clipY0, _clipX1, _clipY1) = (0, 0, _fbWidth, _fbHeight);
-        if (State.Enabled.Contains(GlEnum.SCISSOR_TEST))
+        if (State.Enabled.Has(GlEnum.SCISSOR_TEST))
         {
             _clipX0 = Math.Max(_clipX0, State.ScissorX);
             _clipY0 = Math.Max(_clipY0, State.ScissorY);
             _clipX1 = Math.Min(_clipX1, State.ScissorX + State.ScissorWidth);
             _clipY1 = Math.Min(_clipY1, State.ScissorY + State.ScissorHeight);
         }
-        _depthTest = State.Enabled.Contains(GlEnum.DEPTH_TEST);
-        _stencilTest = State.Enabled.Contains(GlEnum.STENCIL_TEST);
-        _alphaTest = State.Enabled.Contains(GlEnum.ALPHA_TEST);
-        _logicOp = State.Enabled.Contains(GlEnum.COLOR_LOGIC_OP);
-        _blend = !_logicOp && State.Enabled.Contains(GlEnum.BLEND);
-        _fog = State.Enabled.Contains(GlEnum.FOG);
+        _depthTest = State.Enabled.Has(GlEnum.DEPTH_TEST);
+        _stencilTest = State.Enabled.Has(GlEnum.STENCIL_TEST);
+        _alphaTest = State.Enabled.Has(GlEnum.ALPHA_TEST);
+        _logicOp = State.Enabled.Has(GlEnum.COLOR_LOGIC_OP);
+        _blend = !_logicOp && State.Enabled.Has(GlEnum.BLEND);
+        _fog = State.Enabled.Has(GlEnum.FOG);
         _fogColor = State.FogColor;
-        _colorSum = State.Enabled.Contains(GlEnum.LIGHTING) && State.LightModelColorControl == GlEnum.SEPARATE_SPECULAR_COLOR;
+        _colorSum = State.Enabled.Has(GlEnum.LIGHTING) && State.LightModelColorControl == GlEnum.SEPARATE_SPECULAR_COLOR;
         _anyColorMask = State.ColorMask[0] || State.ColorMask[1] || State.ColorMask[2] || State.ColorMask[3];
         _colorKeep = (State.ColorMask[0] ? 0 : 0x00FF0000u) | (State.ColorMask[1] ? 0 : 0x0000FF00u)
                      | (State.ColorMask[2] ? 0 : 0x000000FFu) | (State.ColorMask[3] ? 0 : 0xFF000000u);
         _surfaceAlpha = surface.HasAlpha;
         _targetIsFront = ReferenceEquals(_targetFront, surface.Front);
         _activeTexture = CompleteTexture();
-        return _clipX0 < _clipX1 && _clipY0 < _clipY1;
+        _rasterReady = _clipX0 < _clipX1 && _clipY0 < _clipY1;
+        return _rasterReady;
     }
 
     /// <summary>当前生效的纹理:2D 优先于 1D,不完整的视为未启用(§3.8.10、§3.8.15)。</summary>
     private GlTexture? CompleteTexture()
     {
-        (uint cap, uint bound) = State.Enabled.Contains(GlEnum.TEXTURE_2D) ? (GlEnum.TEXTURE_2D, State.Texture2D)
-            : State.Enabled.Contains(GlEnum.TEXTURE_1D) ? (GlEnum.TEXTURE_1D, State.Texture1D)
-            : (0u, 0u);
+        uint cap = State.Enabled.Has(GlEnum.TEXTURE_2D) ? GlEnum.TEXTURE_2D
+            : State.Enabled.Has(GlEnum.TEXTURE_1D) ? GlEnum.TEXTURE_1D
+            : 0u;
         if (cap == 0)
         {
             return null;
         }
-        GlTexture? t = bound == 0 ? DefaultTexture(cap) : Shared.Textures.GetValueOrDefault(bound);
+        GlTexture? t = BoundTexture(cap);
         return t is not null && t.IsComplete ? t : null;
     }
 
@@ -138,10 +157,21 @@ internal sealed partial class GlContext
         // 共享边只归一个三角形:边函数为 0 时只有「上边或左边」算在内。
         bool topLeft0 = IsTopLeft(b, c), topLeft1 = IsTopLeft(c, a), topLeft2 = IsTopLeft(a, b);
         float inv = 1 / area;
+        // 只插值这次真用得上的属性:没有纹理不插纹理坐标,没开颜色求和不插副颜色,没开雾不插雾坐标,三个顶点同色不插颜色。
+        bool flatColor = a.Color == b.Color && b.Color == c.Color;
+        bool texture = _activeTexture is not null, spec = _colorSum, fog = _fog;
         for (int y = minY; y <= maxY; y++)
         {
             float py = y + 0.5f;
-            for (int x = minX; x <= maxX; x++)
+            // 扫描线:先由三条边函数解出这一行可能被覆盖的那一段,只在段里逐像素判定 —— 细长的斜三角形不再白扫整个包围盒
+            // (原先每个包围盒像素都算三条边函数)。段放宽了一个像素,逐像素仍按原式判定,覆盖与原先一样。
+            if (!RowSpan(a, b, c, py, minX, maxX, out int x0, out int x1))
+            {
+                WorkBudget.Charge(1);
+                continue;
+            }
+            WorkBudget.Charge(1 + ((long)(x1 - x0 + 1) * (1 + FragmentWork)));   // 段里每个像素:边函数,加上可能的片元
+            for (int x = x0; x <= x1; x++)
             {
                 float px = x + 0.5f;
                 float w0 = ((c.X - b.X) * (py - b.Y)) - ((c.Y - b.Y) * (px - b.X));
@@ -161,13 +191,45 @@ internal sealed partial class GlContext
                 {
                     (p0, p1, p2) = (p0 / sum, p1 / sum, p2 / sum);
                 }
-                Fragment(x, y, z,
-                    (p0 * a.Color) + (p1 * b.Color) + (p2 * c.Color),
-                    (p0 * a.Spec) + (p1 * b.Spec) + (p2 * c.Spec),
-                    (p0 * a.Tex) + (p1 * b.Tex) + (p2 * c.Tex),
-                    (p0 * a.Fog) + (p1 * b.Fog) + (p2 * c.Fog));
+                ShadeFragment(x, y, z,
+                    flatColor ? a.Color : (p0 * a.Color) + (p1 * b.Color) + (p2 * c.Color),
+                    spec ? (p0 * a.Spec) + (p1 * b.Spec) + (p2 * c.Spec) : default,
+                    texture ? (p0 * a.Tex) + (p1 * b.Tex) + (p2 * c.Tex) : default,
+                    fog ? (p0 * a.Fog) + (p1 * b.Fog) + (p2 * c.Fog) : 0);
             }
         }
+    }
+
+    /// <summary>
+    /// 扫描线 <paramref name="py" /> 上三条边函数都可能 ≥ 0 的像素列 [<paramref name="x0" />, <paramref name="x1" />](已夹到包围盒,
+    /// 两头各放宽一个像素);一个都没有返回 false。边函数在一行里是 px 的一次函数 A·px + K:A &gt; 0 给下界,A &lt; 0 给上界。
+    /// </summary>
+    private static bool RowSpan(in RasterVertex a, in RasterVertex b, in RasterVertex c, float py, int minX, int maxX, out int x0, out int x1)
+    {
+        double lo = double.NegativeInfinity, hi = double.PositiveInfinity;
+        static bool Edge(double slope, double constant, ref double low, ref double high)
+        {
+            if (slope > 0)
+            {
+                low = Math.Max(low, -constant / slope);
+            }
+            else if (slope < 0)
+            {
+                high = Math.Min(high, -constant / slope);
+            }
+            return slope != 0 || constant >= 0;   // 水平的边:整行都在外侧时这一行没有像素
+        }
+        bool any = Edge(b.Y - c.Y, ((c.X - b.X) * (py - b.Y)) + ((c.Y - b.Y) * b.X), ref lo, ref hi)
+                   & Edge(c.Y - a.Y, ((a.X - c.X) * (py - c.Y)) + ((a.Y - c.Y) * c.X), ref lo, ref hi)
+                   & Edge(a.Y - b.Y, ((b.X - a.X) * (py - a.Y)) + ((b.Y - a.Y) * a.X), ref lo, ref hi);
+        if (double.IsNaN(lo) || double.IsNaN(hi))
+        {
+            (x0, x1) = (minX, maxX);   // 坐标大到算溢出了:整行逐像素判定(与原先一样)
+            return true;
+        }
+        x0 = (int)Math.Clamp(Math.Floor(lo - 0.5) - 1, minX, maxX + 1.0);
+        x1 = (int)Math.Clamp(Math.Ceiling(hi - 0.5) + 1, minX - 1.0, maxX);
+        return any && x0 <= x1;
     }
 
     /// <summary>从 p 到 q 的边在逆时针三角形里是上边(水平且向左)或左边(向下)。</summary>
@@ -245,8 +307,18 @@ internal sealed partial class GlContext
 
     // ------------------------------------------------------------------ 片元
 
-    /// <summary>一个片元:纹理、颜色求和、雾,然后逐片元测试、混合、写入(x、y 是 GL 窗口坐标,已在剪裁框内)。</summary>
+    /// <summary>一个片元(纹理、雾、逐片元测试、混合)按这么多个工作量单位计。</summary>
+    private const int FragmentWork = 8;
+
+    /// <summary>一个片元:扣工作量,然后着色、测试、写入(x、y 是 GL 窗口坐标,已在剪裁框内)。</summary>
     private void Fragment(int x, int y, float z, Vector4 color, Vector3 spec, Vector4 tex, float fog)
+    {
+        WorkBudget.Charge(FragmentWork);
+        ShadeFragment(x, y, z, color, spec, tex, fog);
+    }
+
+    /// <summary>一个片元:纹理、颜色求和、雾,然后逐片元测试、混合、写入。工作量由调用方扣(三角形按扫描线成段扣)。</summary>
+    private void ShadeFragment(int x, int y, float z, Vector4 color, Vector3 spec, Vector4 tex, float fog)
     {
         if (_activeTexture is { } texture)
         {
@@ -316,15 +388,42 @@ internal sealed partial class GlContext
         if (_targetFront is { } front)
         {
             front[index] = Blend(front[index], color);
-            if (_targetIsFront)
+            // 画过的范围先在这里攒着(几次比较),一条命令执行完再一次记进表面(FlushDrawn)—— 原先每个片元调一次 MarkFrontDirty。
+            int row = _fbHeight - 1 - y;
+            if (x < _drawnX0)
             {
-                surface.MarkFrontDirty(x, _fbHeight - 1 - y);
+                _drawnX0 = x;
+            }
+            if (x >= _drawnX1)
+            {
+                _drawnX1 = x + 1;
+            }
+            if (row < _drawnY0)
+            {
+                _drawnY0 = row;
+            }
+            if (row >= _drawnY1)
+            {
+                _drawnY1 = row + 1;
             }
         }
         if (_targetBack is { } back)
         {
             back[index] = Blend(back[index], color);
         }
+    }
+
+    // 这条命令里片元写过的范围(缓冲的列、行,第 0 行在最上面);没写过时是空的。
+    private int _drawnX0 = int.MaxValue, _drawnY0 = int.MaxValue, _drawnX1, _drawnY1;
+
+    /// <summary>一条命令执行完:片元写过的范围记进表面(写的是前缓冲的话记成要拷出的脏范围)。</summary>
+    private void FlushDrawn()
+    {
+        if (_drawnX1 > _drawnX0 && _targetIsFront && Draw is { } surface)
+        {
+            surface.MarkFrontDirty(new XRect(_drawnX0, _drawnY0, _drawnX1 - _drawnX0, _drawnY1 - _drawnY0));
+        }
+        (_drawnX0, _drawnY0, _drawnX1, _drawnY1) = (int.MaxValue, int.MaxValue, 0, 0);
     }
 
     private static bool Compare(uint func, float a, float b) => func switch
@@ -458,6 +557,7 @@ internal sealed partial class GlContext
         {
             return;
         }
+        WorkBudget.Charge(2L * (_clipX1 - _clipX0) * (_clipY1 - _clipY0));   // 颜色、深度、模板各扫一遍剪裁框
         uint color = Pack(State.ClearColor);
         if (!surface.HasAlpha)
         {

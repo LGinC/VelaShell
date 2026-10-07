@@ -105,6 +105,116 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task AddGlyphs的尺寸与个数按不会回绕的算法核长度_回BadLength而不是分配几个GB()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.Argb32));
+        // 32768² 的 a8r8g8b8:每行 131072 字节 × 32768 行 = 2³²,按 int 算回绕成 0 —— 原先长度检查放行、随后分配 4 GB。
+        XMessage huge = await c.RequestAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65)
+            .U16(32768).U16(32768).I16(0).I16(0).I16(0).I16(0));
+        Assert.IsTrue(huge.IsError);
+        Assert.AreEqual(16, huge.Detail, "BadLength");
+
+        // 个数 ≥ 2³¹:按 int 读是负数。
+        XMessage negative = await c.RequestAsync(s.Major, 20, b => b.U32(glyphSet).U32(0x80000000));
+        Assert.IsTrue(negative.IsError);
+        Assert.AreEqual(16, negative.Detail, "BadLength 而不是 BadImplementation");
+
+        // 渐变的色标个数同理(CreateLinearGradient)。
+        XMessage stops = await c.RequestAsync(s.Major, 34, b => b.U32(c.NewId()).I32(0).I32(0).I32(0x10000).I32(0).U32(0x80000000));
+        Assert.IsTrue(stops.IsError);
+        Assert.AreEqual(16, stops.Detail);
+    }
+
+    [TestMethod]
+    public async Task 源picture的裁剪也限制读_裁剪之外的目标不合成()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        // 10×10 的红像素图做源,源 picture 只留左上 5×5。
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(s.Window).U16(10).U16(10));
+        uint gc = c.NewId();
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4).U32(0xFF0000));
+        await c.SendAsync(70, 0, b => b.U32(pixmap).U32(gc).I16(0).I16(0).U16(10).U16(10));
+        uint source = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(source).U32(pixmap).U32(s.Formats.Rgb24).U32(0));
+        await c.SendAsync(s.Major, 6, b => b.U32(source).I16(0).I16(0).I16(0).I16(0).U16(5).U16(5));   // SetPictureClipRectangles
+
+        // Src 合成 10×10 到白底窗口的 (20, 5):RENDER 规范说 clip-mask 也限制读,裁剪之外的源读不到、对应的目标不动。
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(source).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(20).I16(5).U16(10).U16(10));
+        await c.SyncAsync();
+        Assert.AreEqual(0xFF0000u, s.Pixel(22, 7), "裁剪之内照常合成");
+        Assert.AreEqual(0xFFFFFFu, s.Pixel(27, 12), "裁剪之外不合成");
+    }
+
+    [TestMethod]
+    public async Task CreateCursor的热点落在图外回BadMatch()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 32, b => b.U32(pixmap).U32(s.Window).U16(16).U16(16));
+        uint picture = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(picture).U32(pixmap).U32(s.Formats.Argb32).U32(0));
+        XMessage outside = await c.RequestAsync(s.Major, 27, b => b.U32(c.NewId()).U32(picture).U16(16).U16(3));
+        Assert.IsTrue(outside.IsError);
+        Assert.AreEqual(8, outside.Detail, "BadMatch");
+        ushort inside = await c.SendAsync(s.Major, 27, b => b.U32(c.NewId()).U32(picture).U16(15).U16(15));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError && m.Sequence == inside, 100));
+    }
+
+    [TestMethod]
+    public async Task FreeGlyphs里有一个不存在时哪个都不释放()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.A8));
+        await c.SendAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65).U16(1).U16(1).I16(0).I16(0).I16(1).I16(0).U32(0xFF));
+        // [65, 66]:66 不存在 —— BadGlyph,而且 65 不能已经释放了(原先边核对边释放)。
+        XMessage bad = await c.RequestAsync(s.Major, 22, b => b.U32(glyphSet).U32(65).U32(66));
+        Assert.IsTrue(bad.IsError);
+        ushort again = await c.SendAsync(s.Major, 22, b => b.U32(glyphSet).U32(65));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError && m.Sequence == again, 150), "65 还在,这次释放成功");
+    }
+
+    [TestMethod]
+    public async Task 带遮罩格式的字形_遮罩只按目标上可写的一块分配()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        // 40×20 的顶层里一个 32000×32000 的子窗口:可绘对象很大,可写的只有顶层那一小块。
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(s.Window).I16(0).I16(0).U16(32000).U16(32000).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        uint picture = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(picture).U32(child).U32(s.Formats.Rgb24).U32(0));
+        uint glyphSet = c.NewId();
+        await c.SendAsync(s.Major, 17, b => b.U32(glyphSet).U32(s.Formats.A8));
+        await c.SendAsync(s.Major, 20, b => b.U32(glyphSet).U32(1).U32(65)
+            .U16(2).U16(2).I16(0).I16(0).I16(0).I16(0)
+            .U32(0x0000FFFF).U32(0x0000FFFF));
+        uint black = c.NewId();
+        await c.SendAsync(s.Major, 33, b => b.U32(black).U16(0).U16(0).U16(0).U16(0xFFFF));
+
+        // 两个字形相距 31000:外接矩形约 10^9 像素。原先按它分配遮罩(a8 就是 1 GB)。
+        var watch = System.Diagnostics.Stopwatch.StartNew();
+        await c.SendAsync(s.Major, 23, b => b.U8(3).U8(0).U8(0).U8(0).U32(black).U32(picture).U32(s.Formats.A8).U32(glyphSet)
+            .I16(0).I16(0)
+            .U8(1).U8(0).U8(0).U8(0).I16(5).I16(5).U8(65).U8(0).U8(0).U8(0)
+            .U8(1).U8(0).U8(0).U8(0).I16(31000).I16(31000).U8(65).U8(0).U8(0).U8(0));
+        await c.SyncAsync();
+        Assert.AreEqual(0x000000u, s.Pixel(5, 5), "第一个字形画上了");
+        Assert.IsLessThan(2_000, watch.ElapsedMilliseconds);
+    }
+
+    [TestMethod]
     public async Task 字形用纯色源画到窗口()
     {
         await using Setup s = await SetupAsync();
@@ -144,6 +254,30 @@ public sealed class RenderTests
         uint edge = s.Pixel(2, 2) & 0xFF;
         Assert.IsTrue(edge is >= 0x7E and <= 0x82, $"左边缘半覆盖:{edge:x}");
         Assert.AreEqual(0xFFFFFFu, s.Pixel(6, 2));
+    }
+
+    [TestMethod]
+    public async Task 渐变的色标越界或没排好序回BadValue()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        static Action<XTestClient.Body> Linear(uint id, int first, int second) => b => b.U32(id).I32(0).I32(0).I32(40 << 16).I32(0).U32(2)
+            .I32(first).I32(second)
+            .U16(0).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF);
+        XMessage reversed = await c.RequestAsync(s.Major, 34, Linear(c.NewId(), 1 << 16, 0));
+        Assert.IsTrue(reversed.IsError);
+        Assert.AreEqual(2, reversed.Detail, "BadValue:没按大小排好");
+        XMessage outside = await c.RequestAsync(s.Major, 34, Linear(c.NewId(), 0, 2 << 16));
+        Assert.IsTrue(outside.IsError);
+        Assert.AreEqual(2, outside.Detail, "BadValue:色标超过 1");
+        // 相等的色标(硬过渡)照收。
+        uint equal = c.NewId();
+        await c.SendAsync(s.Major, 34, Linear(equal, 1 << 15, 1 << 15));
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(equal).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(0).I16(0).U16(40).U16(20));
+        await c.SyncAsync();
+        Assert.AreEqual(0x000000u, s.Pixel(5, 10) & 0xFF);
+        Assert.AreEqual(0xFFu, s.Pixel(35, 10) & 0xFF);
     }
 
     [TestMethod]
@@ -198,5 +332,28 @@ public sealed class RenderTests
         Assert.AreEqual(0xFF0000u, s.Pixel(5, 1));
         Assert.AreEqual(0x00FF00u, s.Pixel(5, 2), "原来第 1 行的绿");
         Assert.AreEqual(0x0000FFu, s.Pixel(5, 3), "原来第 2 行的蓝");
+    }
+    [TestMethod]
+    public async Task 伸出顶层的子窗口做源合成到另一个顶层_只取缓冲里的部分_不回BadImplementation()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint other = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(other).U32(c.RootWindow).I16(100).I16(0).U16(40).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(other));
+        await s.Host.WaitForAsync(() => s.Host.Mapped.ContainsKey(other));
+        uint child = c.NewId();   // 左边 20 列伸出它的顶层
+        await c.SendAsync(1, 0, b => b.U32(child).U32(other).I16(-20).I16(0).U16(40).U16(10).U16(0).U16(1).U32(0)
+            .U32(0x2).U32(0x0000FF));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        uint source = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(source).U32(child).U32(s.Formats.Rgb24).U32(0));
+
+        // Src,源 (0, 0) 40×10 → 目标 (0, 10)。原先快路径只查 picture 尺寸,按缓冲取下标时越界。
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(source).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(0).I16(10).U16(40).U16(10));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError, 200));
+        Assert.AreEqual(0x0000FFu, s.Pixel(25, 12), "源在缓冲里的部分照常取到");
     }
 }

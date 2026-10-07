@@ -150,16 +150,90 @@ internal sealed class ImageSource(PixelBuffer buffer, int originX, int originY, 
     public PictFormat Format { get; } = format;
 
     /// <summary>
-    /// 拷出一份不再与原缓冲共享的源:要读的只是 <paramref name="needed" />(picture 坐标)时只拷这一块,
-    /// 有变换或重复时整张拷(读哪里算不准)。源与目标是同一块缓冲时用 —— 合成要像「先读完源再写」。
+    /// 拷出一份不再与原缓冲共享的源,只拷取样 <paramref name="needed" />(变换前的 picture 坐标)时会读到的那一块。
+    /// 源与目标是同一块缓冲时用 —— 合成要像「先读完源再写」。
     /// </summary>
     public ImageSource Detach(XRect needed)
     {
-        XRect whole = new(0, 0, Width, Height);
-        XRect area = Transform is null && Repeat == RepeatNone ? needed.Intersect(whole) : whole;
+        XRect area = SampledArea(needed);
         PixelBuffer copy = new(Math.Max(1, area.Width), Math.Max(1, area.Height), Buffer.Depth);
         PixelBuffer.CopyRect(Buffer, OriginX + area.X, OriginY + area.Y, copy, 0, 0, area.Width, area.Height);
         return new ImageSource(copy, -area.X, -area.Y, Width, Height, Format) { Transform = Transform, Repeat = Repeat, Bilinear = Bilinear };
+    }
+
+    /// <summary>
+    /// 取样 <paramref name="needed" /> 里的像素时会读到图像的哪一块(图像坐标,已与图像求交)。有变换时取四个角的像素中心变换后的外接矩形
+    /// (投影变换把矩形映成四边形,只要齐次坐标 w 在矩形里不变号);双线性再往外扩一格;折回之后可能落到任何地方的方向取整条边。
+    /// 原先有变换或重复就整张拷 —— 窗口的 picture 至多 256 MB,每条请求拷一遍。
+    /// </summary>
+    internal XRect SampledArea(XRect needed)
+    {
+        if (needed.IsEmpty || Width <= 0 || Height <= 0)
+        {
+            return default;
+        }
+        long x0, y0, x1, y1;   // 读到的像素坐标(含两端)
+        if (Transform is not { } t)
+        {
+            (x0, y0, x1, y1) = (needed.X, needed.Y, needed.Right - 1L, needed.Bottom - 1L);
+        }
+        else
+        {
+            double minX = double.MaxValue, minY = double.MaxValue, maxX = double.MinValue, maxY = double.MinValue;
+            int sign = 0;
+            foreach ((double px, double py) in (ReadOnlySpan<(double, double)>)[(needed.X + 0.5, needed.Y + 0.5), (needed.Right - 0.5, needed.Y + 0.5),
+                (needed.X + 0.5, needed.Bottom - 0.5), (needed.Right - 0.5, needed.Bottom - 0.5)])
+            {
+                double w = (t[6] * px) + (t[7] * py) + t[8];
+                int s = Math.Sign(w);
+                if (s == 0 || (sign != 0 && s != sign) || double.IsNaN(w))
+                {
+                    return new XRect(0, 0, Width, Height);   // 穿过无穷远:读哪里算不准
+                }
+                sign = s;
+                double sx = ((t[0] * px) + (t[1] * py) + t[2]) / w, sy = ((t[3] * px) + (t[4] * py) + t[5]) / w;
+                if (!double.IsFinite(sx) || !double.IsFinite(sy))
+                {
+                    return new XRect(0, 0, Width, Height);
+                }
+                (minX, minY, maxX, maxY) = (Math.Min(minX, sx), Math.Min(minY, sy), Math.Max(maxX, sx), Math.Max(maxY, sy));
+            }
+            // 最近邻读 floor(s);双线性读 floor(s − 0.5) 与它右(下)边一个。
+            double shift = Bilinear ? 0.5 : 0;
+            x0 = Floor(minX - shift);
+            y0 = Floor(minY - shift);
+            x1 = Floor(maxX - shift) + (Bilinear ? 1 : 0);
+            y1 = Floor(maxY - shift) + (Bilinear ? 1 : 0);
+        }
+        (int ax, int aw) = AxisRange(x0, x1, Width);
+        (int ay, int ah) = AxisRange(y0, y1, Height);
+        return aw <= 0 || ah <= 0 ? default : new XRect(ax, ay, aw, ah);
+
+        static long Floor(double v) => (long)Math.Floor(Math.Clamp(v, int.MinValue, int.MaxValue));
+    }
+
+    /// <summary>一个方向上读到 [lo, hi] 时,按 repeat 折回之后落在图像的哪一段。</summary>
+    private (int Start, int Length) AxisRange(long lo, long hi, int size)
+    {
+        if (lo >= 0 && hi < size)
+        {
+            return ((int)lo, (int)(hi - lo + 1));
+        }
+        switch (Repeat)
+        {
+            case RepeatNone:
+                {
+                    long s = Math.Max(lo, 0), e = Math.Min(hi, size - 1L);
+                    return e < s ? (0, 0) : ((int)s, (int)(e - s + 1));
+                }
+            case RepeatPad:
+                {
+                    long s = Math.Clamp(lo, 0, size - 1L), e = Math.Clamp(hi, 0, size - 1L);
+                    return ((int)s, (int)(e - s + 1));
+                }
+            default:
+                return (0, size);   // Normal / Reflect:越过边界就可能折到任何地方
+        }
     }
 
     private Argb Texel(int x, int y) =>
@@ -352,6 +426,9 @@ internal sealed class ColorMaskSource(uint[] pixels, int x0, int y0, int width, 
 /// <summary>渐变:色标位置 0–1,颜色非预乘;取样时算出参数 t,按 repeat 折回后插值。</summary>
 internal abstract class GradientSource(double[] stops, Argb[] colors) : RenderSource
 {
+    /// <summary>色标个数(内存账按它算)。</summary>
+    public int StopCount => stops.Length;
+
     protected Argb ColorAt(double t)
     {
         if (stops.Length == 0 || double.IsNaN(t))
@@ -389,11 +466,21 @@ internal abstract class GradientSource(double[] stops, Argb[] colors) : RenderSo
         }
         else
         {
-            int i = 1;
-            while (stops[i] < t)
+            // 第一个不小于 t 的色标(二分;色标在创建时已核过不递减)。原先逐个往后找,色标可以有上百万个,每个像素都扫一遍。
+            int lo = 1, hi = stops.Length - 1;
+            while (lo < hi)
             {
-                i++;
+                int mid = (lo + hi) >>> 1;
+                if (stops[mid] < t)
+                {
+                    lo = mid + 1;
+                }
+                else
+                {
+                    hi = mid;
+                }
             }
+            int i = lo;
             double span = stops[i] - stops[i - 1];
             float f = span <= 0 ? 1 : (float)((t - stops[i - 1]) / span);
             Argb a = colors[i - 1], b = colors[i];

@@ -157,5 +157,16 @@ internal sealed class Keymap
         (127, 0xff13, 0xff13),                                // Pause
         (133, 0xffeb, 0xffeb), (134, 0xffec, 0xffec),         // Super_L、Super_R
         (135, 0xff67, 0xff67),                                // Menu
+        // 日文 / 韩文键盘的键:Ro 与 Yen 起步按 JIS 键帽(\ _、\ |),宿主跟随系统布局时再按布局换掉。
+        (97, 0x5c, 0x5f), (132, 0x5c, 0x7c),                  // Ro:backslash underscore;Yen:backslash bar
+        (100, 0xff23, 0xff23), (101, 0xff27, 0xff27), (102, 0xff22, 0xff22),                     // Henkan_Mode Hiragana_Katakana Muhenkan
+        (125, 0xffbd, 0xffbd),                                // KP_Equal
+        (130, 0xff31, 0xff31), (131, 0xff34, 0xff34),         // Hangul Hangul_Hanja
+        (121, 0x1008ff12, 0x1008ff12), (122, 0x1008ff11, 0x1008ff11), (123, 0x1008ff13, 0x1008ff13),   // XF86AudioMute / LowerVolume / RaiseVolume
+        (171, 0x1008ff17, 0x1008ff17), (172, 0x1008ff14, 0x1008ff14),                                // XF86AudioNext / Play
+        (173, 0x1008ff16, 0x1008ff16), (174, 0x1008ff15, 0x1008ff15),                                // XF86AudioPrev / Stop
+        (191, 0xffca, 0xffca), (192, 0xffcb, 0xffcb), (193, 0xffcc, 0xffcc), (194, 0xffcd, 0xffcd),   // F13–F16
+        (195, 0xffce, 0xffce), (196, 0xffcf, 0xffcf), (197, 0xffd0, 0xffd0), (198, 0xffd1, 0xffd1),   // F17–F20
+        (199, 0xffd2, 0xffd2), (200, 0xffd3, 0xffd3), (201, 0xffd4, 0xffd4), (202, 0xffd5, 0xffd5),   // F21–F24
     ];
 }

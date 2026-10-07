@@ -51,7 +51,17 @@ internal sealed class RecordingHost : IX11ServerHost, IDisposable
         Note($"changed {window.Id:x} {changes} '{window.Snapshot.Title}'");
     }
 
-    public void TopLevelDamaged(XTopLevelWindow window, IReadOnlyList<XRect> damage) => Note($"damaged {window.Id:x} {damage.Count}");
+    /// <summary>收到的损伤矩形(按顺序,不分窗口)。</summary>
+    public ConcurrentQueue<XRect> DamageRects { get; } = new();
+
+    public void TopLevelDamaged(XTopLevelWindow window, IReadOnlyList<XRect> damage)
+    {
+        foreach (XRect rect in damage)
+        {
+            DamageRects.Enqueue(rect);
+        }
+        Note($"damaged {window.Id:x} {damage.Count}");
+    }
 
     public void CursorChanged(XTopLevelWindow? window, XCursor cursor)
     {

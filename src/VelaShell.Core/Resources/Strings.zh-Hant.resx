@@ -5881,7 +5881,7 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>受信任(-Y)</value>
   </data>
   <data name="Profile_SshX11TrustedHint" xml:space="preserve">
-    <value>受信任轉送讓遠端 X 程式對本機顯示擁有完整存取權。Windows 上的 X 伺服器通常只支援這種模式;非受信任模式需要本機安裝 xauth。</value>
+    <value>受信任轉送讓遠端 X 程式對本機顯示擁有完整存取權,而且所有轉送的工作階段共用這一個顯示:能看到彼此的視窗、讀取剪貼簿、注入輸入。內建 X Server 與 Windows 上的多數 X 伺服器只支援這種模式;非受信任模式需要支援 SECURITY 擴充的外部 X 伺服器,並在本機安裝 xauth。</value>
   </data>
   <data name="Ssh_X11ForwardOn" xml:space="preserve">
     <value>X11 轉送已開啟 → 本機顯示 {0}</value>
@@ -5897,6 +5897,9 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="Ssh_X11BadDisplay" xml:space="preserve">
     <value>無法辨識顯示位址「{0}」(應形如 localhost:0.0)</value>
+  </data>
+  <data name="Ssh_X11UntrustedBuiltIn" xml:space="preserve">
+    <value>內建 X Server 只支援受信任轉送(它沒有 SECURITY 擴充)。請為這個連線勾選「受信任(-Y)」,或改用外部 X 伺服器。</value>
   </data>
   <data name="SshErr_AgentUnavailable" xml:space="preserve">
     <value>無法連線到本機 ssh-agent:{0}</value>
@@ -6106,13 +6109,13 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>啟用剪貼簿</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>讓 X 的 CLIPBOARD 選取區與系統剪貼簿互通(VcXsrv:-clipboard)。</value>
+    <value>讓 X 的 CLIPBOARD 選取區與系統剪貼簿互通(VcXsrv:-clipboard)。內建 X Server 只讓鍵盤焦點所在的那個工作階段讀到本機複製的內容,也只把那個工作階段裡的複製寫進系統剪貼簿。</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>選取即複製</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>把 PRIMARY 選取區也對應過去:在 X 程式裡選取文字就直接進入系統剪貼簿(VcXsrv:-primary)。</value>
+    <value>把 PRIMARY 選取區也對應過去:在 X 程式裡選取文字就直接進入系統剪貼簿(VcXsrv:-primary)。預設關閉:開啟後,本機複製的內容在 X 程式裡按一下滑鼠中鍵就能貼出來。</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>鍵盤</value>
@@ -6122,6 +6125,12 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>X 程式使用的鍵盤配置。自動 = 跟隨系統目前的配置;選了具體配置就照它來(VcXsrv 以 -xkblayout 傳入)。</value>
+  </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>限制經 SSH 轉送來的程式</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>經 SSH 轉送來的程式不能模擬輸入(XTEST)、不能監聽在 X 視窗裡敲的所有按鍵(原始按鍵事件)、不能變更輸入裝置。連線到不完全信任的伺服器時建議開啟;開啟後那些伺服器上的 xdotool 之類的工具會失效。</value>
   </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>自動 - 跟隨系統目前配置</value>
@@ -6233,6 +6242,24 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   </data>
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 執行中({0}),點擊停止</value>
+  </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>程式沒有回應</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>「{0}」沒有回應。要強制結束這個 X 程式嗎？它的其他視窗也會一起關閉，未儲存的內容會遺失。</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>強制結束</value>
+  </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>停止 X Server</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>停止 X Server 會中斷 {0} 個 X 程式的連線，它們的視窗會全部關閉，未儲存的內容會遺失。</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>停止</value>
   </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>啟動 / 停止 X Server</value>

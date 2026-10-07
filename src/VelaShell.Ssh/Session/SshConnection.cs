@@ -1952,7 +1952,7 @@ public sealed partial class SshConnection : ISshChannelHost, IAsyncDisposable
         // 等收发循环收工要有时限：底层流的读写不一定响应取消（Windows 上 ProxyCommand 的匿名管道
         // 在线程池上阻塞完成，architecture.md §11.2.19），曾经那时释放就一直挂着。
         // 到点先释放传输（关掉底层流，卡着的读写随之结束），再等一次。
-        Task loops = Task.WhenAll(
+        var loops = Task.WhenAll(
             new[] { _receiveLoop, _keepAliveLoop, _rekeyMonitorLoop, _sendPump }.OfType<Task>());
         if (!await CompletesWithinAsync(loops, LoopShutdownTimeout).ConfigureAwait(false))
         {

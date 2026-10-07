@@ -57,7 +57,7 @@ public sealed class KeyExchangeTests
         using HybridKeyExchange.BouncyCastleMlKem bouncy = new(parameters);
         byte[] bouncyPublic = bouncy.GenerateKeyPairAndGetPublicKey();
         Assert.AreEqual(algorithm.CiphertextSizeInBytes, bouncy.CiphertextBytes);
-        using MLKem encapsulationKey = MLKem.ImportEncapsulationKey(algorithm, bouncyPublic);
+        using var encapsulationKey = MLKem.ImportEncapsulationKey(algorithm, bouncyPublic);
         encapsulationKey.Encapsulate(out byte[] ciphertext2, out byte[] secret2);
         Assert.AreSequenceEqual(secret2, bouncy.Decapsulate(ciphertext2));
     }
@@ -146,7 +146,7 @@ public sealed class KeyExchangeTests
         };
 
         // 平台造出来的公钥一定在曲线上。
-        using ECDiffieHellman peer = ECDiffieHellman.Create(curve);
+        using var peer = ECDiffieHellman.Create(curve);
         ECParameters q = peer.ExportParameters(includePrivateParameters: false);
         byte[] x = new byte[coord];
         byte[] y = new byte[coord];

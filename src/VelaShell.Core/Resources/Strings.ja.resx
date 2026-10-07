@@ -5422,7 +5422,7 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>信頼済み(-Y)</value>
   </data>
   <data name="Profile_SshX11TrustedHint" xml:space="preserve">
-    <value>信頼済み転送では、リモートの X クライアントがローカルのディスプレイに完全にアクセスできます。Windows の X サーバーは通常このモードにしか対応していません。非信頼モードにはローカルに xauth が必要です。</value>
+    <value>信頼済み転送では、リモートの X クライアントがローカルのディスプレイに完全にアクセスできます。転送中のセッションはすべて同じディスプレイを共有するため、互いのウィンドウを見たり、クリップボードを読んだり、入力を送ったりできます。内蔵 X Server と Windows の多くの X サーバーはこのモードにしか対応していません。非信頼モードには SECURITY 拡張に対応した外部の X サーバーと、ローカルの xauth が必要です。</value>
   </data>
   <data name="Ssh_X11ForwardOn" xml:space="preserve">
     <value>X11 転送が有効です → ローカル ディスプレイ {0}</value>
@@ -5438,6 +5438,9 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="Ssh_X11BadDisplay" xml:space="preserve">
     <value>ディスプレイ「{0}」を認識できません(localhost:0.0 のような形式にしてください)</value>
+  </data>
+  <data name="Ssh_X11UntrustedBuiltIn" xml:space="preserve">
+    <value>内蔵 X Server は信頼済み転送にしか対応していません(SECURITY 拡張がありません)。この接続で「信頼済み(-Y)」をオンにするか、外部の X サーバーを使ってください。</value>
   </data>
   <data name="SshErr_AgentUnavailable" xml:space="preserve">
     <value>ローカルの ssh-agent に接続できません: {0}</value>
@@ -5647,13 +5650,13 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>クリップボードを有効にする</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>X の CLIPBOARD 選択をシステムのクリップボードと共有します(VcXsrv:-clipboard)。</value>
+    <value>X の CLIPBOARD 選択をシステムのクリップボードと共有します(VcXsrv:-clipboard)。内蔵 X Server では、このコンピューターでコピーした内容を読めるのはキーボードフォーカスのあるセッションだけで、システムのクリップボードに入るのもそのセッションでのコピーだけです。</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>選択時にコピー</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>PRIMARY 選択も対応付け、X プログラムで選択したテキストをすぐシステムのクリップボードへ入れます(VcXsrv:-primary)。</value>
+    <value>PRIMARY 選択も対応付け、X プログラムで選択したテキストをすぐシステムのクリップボードへ入れます(VcXsrv:-primary)。既定ではオフです。オンにすると、このコンピューターでコピーした内容を X プログラムでマウスの中ボタンをクリックするだけで貼り付けられます。</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>キーボード</value>
@@ -5663,6 +5666,12 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>X プログラムが使うキーボードレイアウト。自動はシステムの現在のレイアウトに従い、レイアウトを選ぶとそれを使います(VcXsrv には -xkblayout で渡します)。</value>
+  </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>SSH 経由のプログラムを制限</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>SSH で転送されたプログラムは、入力の模擬(XTEST)、X ウィンドウで入力したすべてのキーの監視(生のキーイベント)、入力デバイスの変更ができなくなります。完全には信頼できないサーバーに接続するときはオンにしてください。オンにすると、それらのサーバー上の xdotool などのツールは動かなくなります。</value>
   </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>自動 - システムの現在のレイアウト</value>
@@ -5774,6 +5783,24 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   </data>
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 実行中({0})— クリックで停止</value>
+  </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>応答なし</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>「{0}」は応答していません。この X プログラムを強制終了しますか?ほかのウィンドウも閉じられ、保存していない内容は失われます。</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>強制終了</value>
+  </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>X Server を停止</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>X Server を停止すると {0} 個の X プログラムの接続が切断され、そのウィンドウはすべて閉じられます。保存していない内容は失われます。</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>停止</value>
   </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>X Server を起動 / 停止</value>

@@ -33,7 +33,6 @@ public sealed class SftpTests
         private readonly TestSshServer _server;
         private readonly TestChannelServer _channelServer;
         private readonly Task _serverChannels;
-        private readonly SshConnection _connection;
         private readonly CancellationTokenSource _cts;
 
         private Harness(
@@ -48,7 +47,7 @@ public sealed class SftpTests
             _server = server;
             _channelServer = channelServer;
             _serverChannels = serverChannels;
-            _connection = connection;
+            Connection = connection;
             Sftp = sftp;
             SftpServer = sftpServer;
             _cts = cts;
@@ -58,7 +57,7 @@ public sealed class SftpTests
 
         public TestSftpServer SftpServer { get; }
 
-        public SshConnection Connection => _connection;
+        public SshConnection Connection { get; }
 
         public CancellationToken Token => _cts.Token;
 
@@ -132,7 +131,7 @@ public sealed class SftpTests
         {
             await Sftp.DisposeAsync();
             await _cts.CancelAsync();
-            await _connection.DisposeAsync();
+            await Connection.DisposeAsync();
             try
             {
                 await _serverChannels;
@@ -1323,7 +1322,7 @@ public sealed class SftpTests
             new TestSftpOptions { DelayCloseReplies = TimeSpan.FromMilliseconds(800) });
 
         SftpFileStream reading = await harness.Sftp.OpenReadAsync("/home/joe/a.txt", harness.Token);
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await reading.DisposeAsync();
         Assert.IsLessThan(500, watch.ElapsedMilliseconds, "只读流的关闭不该等 CLOSE 的应答");
 

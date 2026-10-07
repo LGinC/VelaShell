@@ -50,6 +50,9 @@ internal sealed class XClient : IDisposable
 
     public int Index { get; }
 
+    /// <summary>宿主给这条连接起的名字(<see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" />);没给为 null。</summary>
+    public string? Label { get; init; }
+
     public uint ResourceBase { get; }
 
     public bool BigEndian { get; }
@@ -64,10 +67,14 @@ internal sealed class XClient : IDisposable
     /// <summary>SetCloseDownMode:0 Destroy(默认),1 RetainPermanent,2 RetainTemporary。</summary>
     public byte CloseDownMode { get; set; }
 
-    public HashSet<uint> SaveSet { get; } = [];
+    /// <summary>save-set(ChangeSaveSet):窗口 ID → XFIXES 的 target(挂到根窗口)与 map(补映射)。断开时见 X11Server.ProcessSaveSet。</summary>
+    public Dictionary<uint, (bool ToRoot, bool Map)> SaveSet { get; } = [];
 
     /// <summary>这个客户端眼下拥有的窗口数(见 <c>X11Server.MaxWindowsPerClient</c>)。</summary>
     public int WindowCount { get; set; }
+
+    /// <summary>记在这个客户端名下的内存(字节,见 <c>X11Server.ChargeMemory</c>);断开之后还没释放的(保留的资源、写在别人窗口上的属性)照样算。</summary>
+    public long MemoryInUse { get; set; }
 
     // 最近几条请求的主、次操作码(主 << 16 | 次),环形覆盖;出错时一并打印,便于看出错前客户端在干什么。
     // 每条请求都记,所以记成整数 —— 拼字符串只在真要打印时做。
@@ -168,13 +175,19 @@ internal sealed class XClient : IDisposable
 
     public XWriter Writer(int capacity = 32) => new(BigEndian, capacity);
 
+    /// <summary>
+    /// 排一条消息等写出。之前排着的已经到了 <see cref="MaxQueuedOutputBytes" />(客户端不读了)就断开它。
+    /// 只看「之前排着的」:单条消息本身可以比上限大(三块 4K 横排时 <c>xwd -root</c> 的 GetImage 回复约 100 MB)——
+    /// 原先按「加上这条之后」判,这样的回复整条连接被断,断开之前还白算了一遍。超出的部分最多一条消息,
+    /// 而大回复本身另有上限(<c>X11Server.MaxImageReplyBytes</c>)。
+    /// </summary>
     public void Send(byte[] bytes)
     {
         if (Closed)
         {
             return;
         }
-        if (Interlocked.Add(ref _queuedBytes, bytes.Length) > MaxQueuedOutputBytes)
+        if (Interlocked.Add(ref _queuedBytes, bytes.Length) - bytes.Length >= MaxQueuedOutputBytes)
         {
             Abort();   // 客户端不读了:与其让内存涨到进程崩溃,不如断开它(X.Org 同样会断开写不出去的客户端)
             return;
@@ -264,14 +277,14 @@ internal sealed class XClient : IDisposable
         Send(Finish(w, w.Length));
     }
 
-    /// <summary>这个客户端经 Generic Event Extension 声明过的版本;没声明过的客户端不该收到 GenericEvent。</summary>
-    public bool GenericEventsEnabled { get; set; }
+    /// <summary>经 Unix 套接字连进来、与服务端在同一个 IPC 命名空间里的(Linux,见 X11Server.SameIpcNamespace):MIT-SHM 只对这样的客户端可见。</summary>
+    public bool SameHost { get; init; }
 
-    /// <summary>经 Unix 套接字连进来的(与服务端在同一台机器上):MIT-SHM 只对这样的客户端可见。</summary>
-    public bool SameHost { get; set; }
+    /// <summary>经 <see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" /> 进来的(SSH 转发):<see cref="X11ServerOptions.RestrictForwardedClients" /> 管它。</summary>
+    public bool Forwarded { get; init; }
 
-    /// <summary>连接对端的 uid(Linux 上经 SO_PEERCRED 取得);取不到时为 null。MIT-SHM 按它核对段的访问权限。</summary>
-    public uint? PeerUid { get; set; }
+    /// <summary>连接对端的 uid(Linux 上经 SO_PEERCRED、macOS / FreeBSD 上经 getpeereid 取得);取不到时为 null。MIT-SHM 按它核对段的访问权限。</summary>
+    public uint? PeerUid { get; init; }
 
     /// <summary>
     /// 选了 PointerMotionHint 时已经发过提示的那个事件窗口,和发的时候的提示轮次(<c>X11Server</c> 在
@@ -287,5 +300,5 @@ internal sealed class XClient : IDisposable
         Send(Finish(w, 32));
     }
 
-    public override string ToString() => $"client#{Index}";
+    public override string ToString() => Label is null ? $"client#{Index}" : $"client#{Index} ({Label})";
 }

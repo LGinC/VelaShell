@@ -92,9 +92,9 @@ public sealed class HostKeyRotationTests
     public async Task 证实了的新钥补记进known_hosts()
     {
         await using Rig rig = NewKnownHosts();
-        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-        using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
-        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        using var ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using var ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
+        using var rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
         KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
         SshHostKeyUpdate? first = await ConnectAsync(policy, ed25519, [ed25519, ecdsa, rsa]);
@@ -113,9 +113,9 @@ public sealed class HostKeyRotationTests
     public async Task 证明有一把是假的就一把都不记()
     {
         await using Rig rig = NewKnownHosts();
-        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-        using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
-        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        using var ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using var ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
+        using var rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
         KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
         SshHostKeyUpdate? update = await ConnectAsync(policy, ed25519, [ed25519, ecdsa, rsa], corruptProof: true);
@@ -133,9 +133,9 @@ public sealed class HostKeyRotationTests
     public async Task 服务端不再出示的旧钥从known_hosts删掉()
     {
         await using Rig rig = NewKnownHosts();
-        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-        using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
-        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        using var ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using var ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
+        using var rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
         SshPublicKey rsaKey = SshPublicKey.Decode(rsa.PublicKeyBlob), ecdsaKey = SshPublicKey.Decode(ecdsa.PublicKeyBlob);
         KnownHostsPolicy policy = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist, AllowHostKeyUpdates = true };
 
@@ -170,8 +170,8 @@ public sealed class HostKeyRotationTests
     public async Task 宣告不完整时不删旧钥()
     {
         await using Rig rig = NewKnownHosts();
-        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-        using TestHostKey rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
+        using var ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using var rsa = TestHostKey.Create(SshAlgorithmNames.RsaSha512);
         TestHostKey[] many = [.. Enumerable.Range(0, 16).Select(_ => TestHostKey.Create(SshAlgorithmNames.SshEd25519))];
         try
         {
@@ -200,8 +200,8 @@ public sealed class HostKeyRotationTests
     public async Task 没打开或者当前的钥没记着就不做()
     {
         await using Rig rig = NewKnownHosts();
-        using TestHostKey ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-        using TestHostKey ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
+        using var ed25519 = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+        using var ecdsa = TestHostKey.Create(SshAlgorithmNames.EcdsaSha2Nistp256);
 
         KnownHostsPolicy off = new(rig.KnownHosts) { UnknownHost = UnknownHostBehavior.AcceptAndPersist };
         Assert.IsNull(await ConnectAsync(off, ed25519, [ed25519, ecdsa]), "没打开就一直为 null");

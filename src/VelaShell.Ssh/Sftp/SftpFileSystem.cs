@@ -245,7 +245,7 @@ public sealed partial class SftpFileSystem : IAsyncDisposable
         }
         pipeline.Start();
 
-        using CancellationTokenSource deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         deadline.CancelAfter(effective.HandshakeTimeout);
         bool versionReceived = false;
         try

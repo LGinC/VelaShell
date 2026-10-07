@@ -626,7 +626,6 @@ public sealed class VelaSftpClientWrapper(Func<CancellationToken, ValueTask<Sftp
             return true;
         }, ct).ConfigureAwait(false);
 
-
     private static async ValueTask DisposeQuietlyAsync(SftpFileSystem fs)
     {
         try

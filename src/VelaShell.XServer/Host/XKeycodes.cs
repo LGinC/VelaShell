@@ -30,5 +30,16 @@ public static class XKeycodes
     public const byte Home = 110, Up = 111, PageUp = 112, Left = 113, Right = 114;
     public const byte End = 115, Down = 116, PageDown = 117, Insert = 118, Delete = 119;
     public const byte Pause = 127, SuperLeft = 133, SuperRight = 134, Menu = 135;
+
+    // 日文 JIS / 巴西 ABNT2 / 韩文键盘上的键(evdev KEY_RO、KEY_YEN、KEY_HENKAN……)
+    public const byte IntlRo = 97, Henkan = 100, HiraganaKatakana = 101, Muhenkan = 102, KeypadEqual = 125;
+    public const byte Hangul = 130, HangulHanja = 131, IntlYen = 132;
+
+    // 多媒体键
+    public const byte AudioMute = 121, AudioLowerVolume = 122, AudioRaiseVolume = 123;
+    public const byte AudioNext = 171, AudioPlay = 172, AudioPrev = 173, AudioStop = 174;
+
+    public const byte F13 = 191, F14 = 192, F15 = 193, F16 = 194, F17 = 195, F18 = 196;
+    public const byte F19 = 197, F20 = 198, F21 = 199, F22 = 200, F23 = 201, F24 = 202;
 #pragma warning restore CS1591
 }

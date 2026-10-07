@@ -120,7 +120,7 @@ public sealed class NistHybridKeyExchangeTests
         (HybridKeyExchange client, byte[] reply) = Exchange(name);
         using (client)
         {
-            reply[reply.Length - (1 + (2 * Sizes(name).Coordinate))] = tag;
+            reply[^(1 + (2 * Sizes(name).Coordinate))] = tag;
             Assert.ThrowsExactly<SshKeyExchangeException>(() => client.ComputeSharedSecret(reply));
         }
     }

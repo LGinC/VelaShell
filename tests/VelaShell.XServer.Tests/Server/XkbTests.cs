@@ -51,6 +51,47 @@ public sealed class XkbTests
         Assert.AreEqual('A', map.U32(o + 12));
     }
 
+    /// <summary>
+    /// 字母类型认所有有大小写之分的字母:Unicode 键值的西里尔字母、传统键值的西里尔字母都是 ALPHABETIC;只有一列的希腊字母按核心规则
+    /// 展开成小写、大写两级;FOUR_LEVEL_ALPHABETIC 有 Shift + Lock + Mod5 这一条。原先只认拉丁字母,CapsLock 在 XKB 客户端里无效。
+    /// </summary>
+    [TestMethod]
+    public async Task 非拉丁字母也推成ALPHABETIC_单列字母展开成大小写两级_四级字母类型有Shift加Lock加Mod5()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte xkb, _) = await XkbAsync(c);
+        // ChangeKeyboardMapping:38 = ф Ф(Unicode 键值),39 = Cyrillic_ef Cyrillic_EF(传统键值),40 = Greek_alpha、第二列 NoSymbol。
+        await c.SendAsync(100, 3, b => b.U8(38).U8(2).U16(0).U32(0x0100_0444).U32(0x0100_0424).U32(0x6c6).U32(0x6e6).U32(0x7e1).U32(0));
+        // GetMap:全部类型 + 键码 38 起 3 个键的键值。
+        XMessage map = await c.RequestAsync(xkb, 8, b => b.U16(UseCoreKbd).U16(0x1).U16(0x2).U8(0).U8(0).U8(38).U8(3).Bytes(new byte[14]));
+        int nTypes = map.Bytes[15];
+        int o = 40;
+        int fourLevelAlphabeticEntries = 0;
+        for (int t = 0; t < nTypes; t++)
+        {
+            int entries = map.Bytes[o + 5];
+            if (t == 5)
+            {
+                fourLevelAlphabeticEntries = entries;
+            }
+            o += 8 + (entries * 8);
+        }
+        Assert.AreEqual(6, fourLevelAlphabeticEntries, "FOUR_LEVEL_ALPHABETIC:Shift、Lock、Mod5、Shift+Mod5、Lock+Mod5、Shift+Lock+Mod5");
+
+        List<(byte Type, uint[] Syms)> keys = [];
+        for (int k = 0; k < 3; k++)
+        {
+            int n = map.U16(o + 6);
+            keys.Add((map.Bytes[o], [.. Enumerable.Range(0, n).Select(i => map.U32(o + 8 + (4 * i)))]));
+            o += 8 + (n * 4);
+        }
+        Assert.AreEqual(2, keys[0].Type, "Unicode 键值的 ф Ф 是 ALPHABETIC");
+        Assert.AreEqual(2, keys[1].Type, "传统键值的 Cyrillic_ef / EF 是 ALPHABETIC");
+        Assert.AreEqual(2, keys[2].Type, "单列的 Greek_alpha 是 ALPHABETIC");
+        CollectionAssert.AreEqual(new uint[] { 0x7e1, 0x7c1 }, keys[2].Syms, "按核心规则展开成 alpha、ALPHA");
+    }
+
     [TestMethod]
     public async Task 按Shift发StateNotify_CapsLock锁定并点亮指示灯()
     {
@@ -222,5 +263,42 @@ public sealed class XkbTests
             .U8(50).U8(0x04).U16(0));
         Assert.IsTrue(refused.IsError);
         Assert.AreEqual(2, refused.Bytes[1], "BadValue");
+    }
+
+    [TestMethod]
+    public async Task 宿主换进锁定键状态_不合成按键_客户端读得到()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte xkb, _) = await XkbAsync(c);
+        server.SetLockState(capsLock: true, numLock: true);
+        await c.SyncAsync();
+        XMessage state = await c.RequestAsync(xkb, 4, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(0x02 | 0x10, state.Bytes[11], "locked:Lock 与 Mod2(Num_Lock)");
+        Assert.AreEqual(0x02 | 0x10, state.Bytes[8] & 0x12, "生效的修饰里也有");
+
+        server.SetLockState(capsLock: false, numLock: true);
+        await c.SyncAsync();
+        state = await c.RequestAsync(xkb, 4, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(0x10, state.Bytes[11]);
+        Assert.IsTrue((await c.RequestAsync(44, 0)).Bytes.Skip(8).All(b => b == 0), "QueryKeymap:没有按着的键(没合成按键)");
+    }
+
+    [TestMethod]
+    public async Task 日文键盘的Ro与Yen_F13到F24_多媒体键都有键值与XKB键名()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XMessage map = await c.RequestAsync(101, 0, b => b.U8(97).U8(1).U16(0));   // GetKeyboardMapping:键码 97(Ro)
+        int per = map.Bytes[1];
+        Assert.AreEqual(0x5Cu, map.U32(32), "Ro:backslash");
+        Assert.AreEqual(0x5Fu, map.U32(36), "Shift+Ro:underscore(JIS 打下划线就靠它)");
+        XMessage yen = await c.RequestAsync(101, 0, b => b.U8(132).U8(1).U16(0));
+        Assert.AreEqual(0x7Cu, yen.U32(36), "Shift+Yen:bar");
+        XMessage f13 = await c.RequestAsync(101, 0, b => b.U8(191).U8(1).U16(0));
+        Assert.AreEqual(0xFFCAu, f13.U32(32), "F13");
+        XMessage mute = await c.RequestAsync(101, 0, b => b.U8(121).U8(1).U16(0));
+        Assert.AreEqual(0x1008FF12u, mute.U32(32), "XF86AudioMute");
+        Assert.IsGreaterThanOrEqualTo(2, per);
     }
 }

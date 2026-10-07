@@ -135,7 +135,7 @@ public sealed class HostCertificateTests
         Assert.AreEqual(KnownHostStatus.CertificateInvalid, lookup.Status);
         Assert.Contains("生效", lookup.CertificateProblem!);
 
-        OpenSshCertificate cert = OpenSshCertificate.Decode(ReadBlob("hostcert-farfuture-cert.pub"));
+        var cert = OpenSshCertificate.Decode(ReadBlob("hostcert-farfuture-cert.pub"));
         Assert.AreEqual(1UL << 48, cert.ValidAfter);
         Assert.AreEqual(1UL << 62, cert.ValidBefore);
         Assert.AreEqual(DateTimeOffset.MaxValue, cert.ValidAfterTime, "9999 年以后才生效：取可表示的最晚时刻");

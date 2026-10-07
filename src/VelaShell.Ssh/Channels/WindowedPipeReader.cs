@@ -24,11 +24,18 @@ namespace VelaShell.Ssh.Channels;
 /// 回调是同步的、必须很快 —— 它在调用方的 <c>AdvanceTo</c> 里跑。
 /// 实现只记账并唤醒一个泵，真正的发送在别处。
 /// </para>
+/// <para>
+/// <paramref name="deliveryGate"/> 是写入方往管道里写时持有的那把锁：读的一方收尾时在它里面标记
+/// <see cref="IsAbandoned"/>，写入方在同一把锁里看它（见 <see cref="ReleaseUnread"/>）。
+/// </para>
 /// </remarks>
-internal sealed class WindowedPipeReader(PipeReader inner, Action<long> onConsumed) : PipeReader
+internal sealed class WindowedPipeReader(PipeReader inner, Action<long> onConsumed, Lock deliveryGate) : PipeReader
 {
     private ReadOnlySequence<byte> _currentBuffer;
     private bool _hasBuffer;
+
+    /// <summary>读的一方收尾了：写入方不再往管道里写，到的数据丢弃并自己回补窗口。在 <c>deliveryGate</c> 里读写。</summary>
+    internal bool IsAbandoned { get; private set; }
 
     /// <inheritdoc />
     public override async ValueTask<ReadResult> ReadAsync(CancellationToken cancellationToken = default)
@@ -94,13 +101,26 @@ internal sealed class WindowedPipeReader(PipeReader inner, Action<long> onConsum
 
     /// <summary>消费者不读了：把管道里还没读的字节当作「已消费」报上去。</summary>
     /// <remarks>
+    /// <para>
     /// 消费者提前收尾（只关心开头几行，读完就 <c>Complete</c>）时，
     /// 管道里剩下的字节永远不会被 <see cref="AdvanceTo(SequencePosition, SequencePosition)"/> 消费 ——
     /// 不把它们报上去，那部分窗口就永远不会回补，对端停在一个再也不会涨的窗口上，
     /// 而通道的关闭流程（对端的 EOF / exit-status）也就一起卡住了。
+    /// </para>
+    /// <para>
+    /// ⚠️ <b>先叫写入方停手，再清点。</b>曾经直接清点：清点完到完成内层读端之间，接收循环照样往管道里写，
+    /// 那几包随读端完成一起丢掉、没人回补。调度慢的机器上这段空隙里能进来半个窗口以上，
+    /// 攒着的回补就再也够不到阈值，对端停在零窗口上（CI 上偶发 30 秒超时）。
+    /// 在写入方的锁里标记之后，后到的数据走写入方「丢弃并回补」那条路，这里清点到的就是全部。
+    /// </para>
     /// </remarks>
     private void ReleaseUnread()
     {
+        lock (deliveryGate)
+        {
+            IsAbandoned = true;
+        }
+
         long unread = 0;
         try
         {

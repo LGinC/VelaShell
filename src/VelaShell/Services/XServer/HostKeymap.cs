@@ -17,16 +17,31 @@ internal sealed record HostKeymapResult(int PerKeycode, uint[] Main, uint[] Intl
     /// <summary>有 AltGr 层:右 Alt(Option)要设成 ISO_Level3_Shift 并挪进 Mod5。</summary>
     public bool HasAltGr => PerKeycode > 2;
 
+    /// <summary>
+    /// 按系统布局推出的额外几个键(<see cref="HostKeymap.ExtraKeys" />:日文 / 巴西键盘的 Ro、Yen),每个与主键区同样的列数。
+    /// 随程序带的布局表里没有它们:手选布局时为空,服务端沿用起步的键值(JIS 键帽)。
+    /// </summary>
+    public IReadOnlyList<(byte Keycode, uint[] Columns)> Extras { get; init; } = [];
+
     /// <summary>两份键位表是不是同一个结果(布局没变时不必重推给服务端)。</summary>
     public bool SameAs(HostKeymapResult? other) =>
         other is not null && other.PerKeycode == PerKeycode && other.Main.AsSpan().SequenceEqual(Main)
-        && other.IntlBackslash.AsSpan().SequenceEqual(IntlBackslash);
+        && other.IntlBackslash.AsSpan().SequenceEqual(IntlBackslash)
+        && other.Extras.Count == Extras.Count
+        && other.Extras.Zip(Extras).All(p => p.First.Keycode == p.Second.Keycode && p.First.Columns.AsSpan().SequenceEqual(p.Second.Columns));
 
     /// <summary>交给服务端的键位表(<see cref="X11Server.SetKeymap" />):主键区一段加 102 键,有 AltGr 层时右 Alt 当 AltGr。</summary>
-    public XKeymap ToXKeymap() =>
-        new XKeymap(Layout, PerKeycode) { AltGr = HasAltGr }
+    public XKeymap ToXKeymap()
+    {
+        XKeymap keymap = new XKeymap(Layout, PerKeycode) { AltGr = HasAltGr }
             .MapRange(HostKeymap.FirstKeycode, Main)
             .Map(XKeycodes.IntlBackslash, IntlBackslash);
+        foreach ((byte keycode, uint[] columns) in Extras)
+        {
+            keymap = keymap.Map(keycode, columns);
+        }
+        return keymap;
+    }
 }
 
 /// <summary>
@@ -77,6 +92,31 @@ internal static class HostKeymap
         }
         int keys = LastKeycode - FirstKeycode + 1;
         return new HostKeymapResult(altGr ? 6 : 2, [.. levels.Take(keys).SelectMany(Row)], Row(levels[keys]), layout ?? ClosestLayout(levels));
+    }
+
+    /// <summary>
+    /// 按布局推导、但不在随程序带的布局表里的键:Ro(JIS 的 \ _,ABNT2 的 / ?)与 Yen(JIS 的 ¥ |)。只有跟随系统布局时才推,
+    /// 各平台按自己的扫描码 / 虚拟键取(evdev 的编号在这两个键上与 PC 扫描码对不上)。
+    /// </summary>
+    public static readonly (byte Keycode, uint WindowsScancode, int MacVirtualKey)[] ExtraKeys =
+        [(XKeycodes.IntlRo, 0x73, 0x5E), (XKeycodes.IntlYen, 0x7D, 0x5D)];
+
+    /// <summary>把 <see cref="ExtraKeys" /> 各键四层的键值(按同样的次序;第一层为 0 的键跳过)排成与主键区相同的列,并进结果。</summary>
+    public static HostKeymapResult WithExtras(HostKeymapResult result, IReadOnlyList<(uint L1, uint L2, uint L3, uint L4)> extras)
+    {
+        List<(byte, uint[])> rows = [];
+        for (int i = 0; i < extras.Count && i < ExtraKeys.Length; i++)
+        {
+            (uint l1, uint l2, uint l3, uint l4) = extras[i];
+            if (l1 == 0)
+            {
+                continue;
+            }
+            l2 = l2 == 0 ? l1 : l2;
+            l4 = l4 == 0 ? l3 : l4;
+            rows.Add((ExtraKeys[i].Keycode, result.HasAltGr ? [l1, l2, l1, l2, l3, l4] : [l1, l2]));
+        }
+        return result with { Extras = rows };
     }
 
     /// <summary>

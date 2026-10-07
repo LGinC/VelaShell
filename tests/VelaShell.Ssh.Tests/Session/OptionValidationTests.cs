@@ -50,7 +50,7 @@ public sealed class OptionValidationTests
     [TestMethod]
     public void 环境变量选项不可变且不跟着传入的字典变()
     {
-        IDictionary<string, string> shared = (IDictionary<string, string>)SshCommandOptions.Default.Environment;
+        var shared = (IDictionary<string, string>)SshCommandOptions.Default.Environment;
         Assert.IsTrue(shared.IsReadOnly);
         Assert.ThrowsExactly<NotSupportedException>(() => shared["LANG"] = "C");
         Assert.IsEmpty(SshShellOptions.Default.Environment);
@@ -99,8 +99,8 @@ public sealed class OptionValidationTests
     [TestMethod]
     public void 只转发的钥设值后调用方再改也不影响()
     {
-        using InMemorySshSigner first = InMemorySshSigner.GenerateEd25519();
-        using InMemorySshSigner second = InMemorySshSigner.GenerateEd25519();
+        using var first = InMemorySshSigner.GenerateEd25519();
+        using var second = InMemorySshSigner.GenerateEd25519();
         List<SshPublicKey> keys = [first.PublicKey];
         AgentForwardOptions options = new() { AllowedKeys = keys };
         keys.Add(second.PublicKey);

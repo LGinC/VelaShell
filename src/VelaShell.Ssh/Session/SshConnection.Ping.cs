@@ -93,7 +93,7 @@ public sealed partial class SshConnection
         {
             long startedAt = Time.GetTimestamp();
             await SendAsync(BuildPing(id), cancellationToken).ConfigureAwait(false);
-            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, Disconnected);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, Disconnected);
             await waiter.Task.WaitAsync(linked.Token).ConfigureAwait(false);
             TimeSpan elapsed = Time.GetElapsedTime(startedAt);
             RecordRoundTrip(elapsed);

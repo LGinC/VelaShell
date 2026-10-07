@@ -354,7 +354,7 @@ public sealed class SonnetDbQuickCommandRepository(
 
         // 系统分组(内置 + 未分组)的标识、名称与来源以目录为准;用户拖出来的顺序沿用存档 ——
         // 内置分组之间的先后(#555)与每个分组的组内顺序。未分组固定垫底,它的 SortOrder 不跟存档走。
-        Dictionary<Guid, QuickCommandGroup> stored = data
+        var stored = data
             .Groups.Where(group => group is not null)
             .GroupBy(group => group.Id)
             .ToDictionary(group => group.Key, group => group.First());

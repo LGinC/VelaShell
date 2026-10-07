@@ -185,7 +185,7 @@ public sealed class SshKeyServiceTests : IDisposable
     {
         Directory.CreateDirectory(_external);
         string path = Path.Combine(_external, "sealed");
-        using (RSA rsa = RSA.Create(2048))
+        using (var rsa = RSA.Create(2048))
         {
             await File.WriteAllTextAsync(path, rsa.ExportEncryptedPkcs8PrivateKeyPem(
                 "pw", new PbeParameters(PbeEncryptionAlgorithm.Aes256Cbc, HashAlgorithmName.SHA256, 1000)));

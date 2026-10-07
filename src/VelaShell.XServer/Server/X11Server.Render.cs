@@ -12,8 +12,10 @@
 //   CompositeGlyphs8/16/32」(GLYPHITEM、len = 255 时切换字形集;源与第一个元素的 delta 对齐)、
 //   §13「CreateCursor / CreateAnimCursor」(光标的处理与交给宿主见 X11Server.Cursors.cs)
 //
-//   不做的:alpha-map(接受但忽略)、源 picture 的裁剪(只裁目标)、索引色格式(没有)、
-//   poly-edge / poly-mode / dither(接受但忽略,多边形一律平滑边)。
+//   源 / 遮罩 picture 的裁剪(§7 clip-mask「restricts reads and writes … including sources」):Composite 里源与遮罩
+//   没有变换、不重复时,裁剪之外的部分不合成;有变换或重复时、以及梯形 / 字形的源,仍只裁目标。
+//   源窗口的 subwindow-mode 按规范忽略(被挡住的像素内容未定义)。
+//   不做的:alpha-map(接受但忽略)、索引色格式(没有)、poly-edge / poly-mode / dither(接受但忽略,多边形一律平滑边)。
 
 using System.Buffers;
 using VelaShell.XServer.Drawing;
@@ -61,7 +63,7 @@ public sealed partial class X11Server
             case 17: CreateGlyphSet(c, r); break;
             case 18: ReferenceGlyphSet(c, r); break;
             case 19: FreeGlyphSet(r); break;
-            case 20: AddGlyphs(r); break;
+            case 20: AddGlyphs(c, r); break;
             case 22: FreeGlyphs(r); break;
             case 23: case 24: case 25: CompositeGlyphs(r); break;
             case 26: FillRectangles(r); break;
@@ -316,15 +318,21 @@ public sealed partial class X11Server
     /// <summary>色标:n 个位置(FIXED),再 n 个颜色(非预乘)。</summary>
     private static (double[] Stops, Argb[] Colors) ReadStops(XRequestReader r)
     {
-        int count = (int)r.U32();
-        if ((long)count * 12 > r.Remaining)
+        uint count = r.U32();   // 按无符号读:当成 int 时 2³¹ 以上是负数,检查放行、随后分配抛异常(BadImplementation)
+        if (count * 12L > r.Remaining)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
         double[] stops = new double[count];
         for (int i = 0; i < count; i++)
         {
-            stops[i] = r.I32() / 65536.0;
+            int raw = r.I32();
+            stops[i] = raw / 65536.0;
+            // RENDER「CreateLinearGradient」等:色标要在 0–1 之间、按大小排好,否则 Value 错误。相等的色标照收(硬过渡,cairo 会这么发)。
+            if (stops[i] is < 0 or > 1 || (i > 0 && stops[i] < stops[i - 1]))
+            {
+                throw new XProtocolError(XErrorCode.Value, unchecked((uint)raw));
+            }
         }
         var colors = new Argb[count];
         for (int i = 0; i < count; i++)
@@ -356,8 +364,8 @@ public sealed partial class X11Server
         return new ImageSource(buffer, ox, oy, w.Width, w.Height, format);
     }
 
-    /// <summary>目标:可写区域 = 可绘对象范围 ∩ 窗口可见部分 ∩ picture 的裁剪。画不了(未映射等)时为 null。</summary>
-    private (RenderTarget Target, XWindow? TopLevel)? TargetOf(XPicture p)
+    /// <summary>目标:可写区域 = 可绘对象范围 ∩ 窗口可见部分 ∩ picture 的裁剪(∩ <paramref name="readable" />,目标坐标)。画不了(未映射等)时为 null。</summary>
+    private (RenderTarget Target, XWindow? TopLevel)? TargetOf(XPicture p, Region? readable = null)
     {
         if (p.Drawable is null || p.Format is null)
         {
@@ -386,13 +394,27 @@ public sealed partial class X11Server
         {
             region.Intersect(clip.Clone().Translate(p.ClipX + ox, p.ClipY + oy));
         }
+        if (readable is not null)
+        {
+            region.Intersect(readable.Clone().Translate(ox, oy));
+        }
         return region.IsEmpty ? null : (new RenderTarget(buffer, ox, oy, p.Format, [.. region.Rects]), top);
     }
 
+    /// <summary>
+    /// 源 / 遮罩 picture 的裁剪换到目标坐标(源的 (0, 0) 对着目标的 (<paramref name="dx" />, <paramref name="dy" />)):RENDER 规范说 clip-mask
+    /// 限制对这个 picture 的读写,裁剪之外的源像素读不到,对应的目标像素就不合成。只在源没有变换、不重复时这样做 ——
+    /// 有变换或重复时读到的源像素与目标不是一一平移的关系,仍只裁目标。没有裁剪时为 null。
+    /// </summary>
+    private static Region? ReadableIn(XPicture? p, int dx, int dy) =>
+        p is { Clip: { } clip, Transform: null, Repeat: 0, Drawable: not null }
+            ? clip.Clone().Translate(p.ClipX + dx, p.ClipY + dy)
+            : null;
+
     private void CompositeTo(XPicture dst, byte op, RenderSource src, RenderSource? mask, bool componentAlpha,
-        int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
+        int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height, Region? readable = null)
     {
-        if (width <= 0 || height <= 0 || TargetOf(dst) is not { } target)
+        if (width <= 0 || height <= 0 || TargetOf(dst, readable) is not { } target)
         {
             return;
         }
@@ -433,8 +455,14 @@ public sealed partial class X11Server
         CheckOp(op);
         // 分量 alpha 只对有颜色通道的遮罩有意义(纯色 / 渐变也算有)。
         bool componentAlpha = mask is { ComponentAlpha: true } && (mask.Format?.HasColor ?? true);
+        // 源与遮罩的裁剪也限制读:裁剪之外的像素读不到,目标上对应的地方不合成。
+        Region? readable = ReadableIn(src, dstX - srcX, dstY - srcY);
+        if (ReadableIn(mask, dstX - maskX, dstY - maskY) is { } maskReadable)
+        {
+            readable = readable?.Intersect(maskReadable) ?? maskReadable;
+        }
         CompositeTo(dst, op, SourceOf(src), mask is null ? null : SourceOf(mask), componentAlpha,
-            srcX, srcY, maskX, maskY, dstX, dstY, width, height);
+            srcX, srcY, maskX, maskY, dstX, dstY, width, height, readable);
     }
 
     private void FillRectangles(XRequestReader r)
@@ -694,11 +722,11 @@ public sealed partial class X11Server
         RemoveResource(id);
     }
 
-    private void AddGlyphs(XRequestReader r)
+    private void AddGlyphs(XClient c, XRequestReader r)
     {
         GlyphTable table = GlyphSet(r.U32()).Table;
-        int count = (int)r.U32();
-        if ((long)count * 16 > r.Remaining)
+        uint count = r.U32();
+        if (count * 16L > r.Remaining)
         {
             throw new XProtocolError(XErrorCode.Length);
         }
@@ -717,15 +745,22 @@ public sealed partial class X11Server
         for (int i = 0; i < count; i++)
         {
             (ushort w, ushort h, short x, short y, short xOff, short yOff) = infos[i];
-            int size = BitmapStride(w * bpp) * h;
+            // 按 long 算:32768² 的 a8r8g8b8 字形是 4 GB,按 int 算回绕成 0,长度检查放行、随后按宽 × 高分配 4 GB。
+            long size = (long)BitmapStride(w * bpp) * h;
             if (size > r.Remaining)
             {
                 throw new XProtocolError(XErrorCode.Length);
             }
-            byte[] data = r.Bytes(size);
+            byte[] data = r.Bytes((int)size);
+            // 字形位图记在加它的客户端名下(xs_plan X-2),在解码分配之前核账;同一个 ID 的旧字形退还。
+            ChargeMemory(c, (long)w * h * (format.HasColor ? 4 : 1));
+            if (table.Glyphs.TryGetValue(ids[i], out XRenderGlyph? previous))
+            {
+                ReleaseGlyphs([previous]);
+            }
             table.Glyphs[ids[i]] = format.HasColor
-                ? new XRenderGlyph(w, h, x, y, xOff, yOff, null, DecodeColorGlyph(data, w, h, bpp, format))
-                : new XRenderGlyph(w, h, x, y, xOff, yOff, DecodeAlphaGlyph(data, w, h, bpp, format), null);
+                ? new XRenderGlyph(w, h, x, y, xOff, yOff, null, DecodeColorGlyph(data, w, h, bpp, format)) { ChargedTo = c }
+                : new XRenderGlyph(w, h, x, y, xOff, yOff, DecodeAlphaGlyph(data, w, h, bpp, format), null) { ChargedTo = c };
         }
     }
 
@@ -783,13 +818,20 @@ public sealed partial class X11Server
     private void FreeGlyphs(XRequestReader r)
     {
         GlyphTable table = GlyphSet(r.U32()).Table;
+        // 先全部核对(不存在的、或者列了两次的 —— 第二次时它已经释放了 —— 回 BadGlyph),再一起释放:出错的请求不产生效果。
+        HashSet<uint> ids = [];
         while (r.Remaining >= 4)
         {
             uint id = r.U32();
-            if (!table.Glyphs.Remove(id))
+            if (!table.Glyphs.ContainsKey(id) || !ids.Add(id))
             {
                 throw RenderError(4, id);
             }
+        }
+        foreach (uint id in ids)
+        {
+            table.Glyphs.Remove(id, out XRenderGlyph? removed);
+            ReleaseGlyphs([removed!]);
         }
     }
 
@@ -886,11 +928,15 @@ public sealed partial class X11Server
             bounds = any ? Union(bounds, g) : g;
             any = true;
         }
-        bounds = bounds.Intersect(DrawableBounds(dst));
+        // 遮罩只覆盖目标上真正可写的那一块(同 CompositeShapes):两个相距很远的字形原先按外接矩形分配,32000² 的窗口上就是 1 GB。
+        XRect writable = BoundsOf(target.Target.Clip).Offset(-target.Target.OriginX, -target.Target.OriginY);
+        bounds = bounds.Intersect(DrawableBounds(dst)).Intersect(writable);
         if (!any || bounds.IsEmpty)
         {
             return;
         }
+        // 先按遮罩的大小扣工作量(带颜色的遮罩每像素 16 字节,按 4 倍算),再分配。
+        WorkBudget.Charge((long)bounds.Width * bounds.Height * (maskFormat.HasColor || placed.Any(p => p.Glyph.Alpha is null) ? 4 : 1));
         if (!maskFormat.HasColor && placed.All(p => p.Glyph.Alpha is not null))
         {
             // 常态(Xft):只有 alpha 的字形累加进只有 alpha 的遮罩 —— 字节饱和加,池化,整数快路径合成。

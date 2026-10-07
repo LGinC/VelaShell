@@ -2065,7 +2065,7 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
     {
         string marker = Guid.NewGuid().ToString("N");
         List<Exception> unobserved = [];
-        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        void handler(object? _, UnobservedTaskExceptionEventArgs e)
         {
             if (e.Exception.InnerExceptions.Any(x => x is SshChannelException { PeerDescription: { } said } && said == marker))
             {
@@ -2074,7 +2074,7 @@ SshProtocolNames.KeepAliveOpenSsh, harness.ChannelServer.Observation.GlobalReque
                     unobserved.Add(e.Exception);
                 }
             }
-        };
+        }
 
         TaskCompletionSource never = new(TaskCreationOptions.RunContinuationsAsynchronously);
         await using Harness harness = await Harness.StartAsync(new TestChannelScript { HoldOpenConfirmationUntil = never.Task });

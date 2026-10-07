@@ -101,9 +101,6 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
 
     /// <summary>Unix 套接字变体：本机要连过去的那个套接字路径。</summary>
     private readonly string? _targetSocketPath;
-
-    /// <summary>远程动态转发的放行名单；不是动态转发时为 <see langword="null"/>。</summary>
-    private readonly RemoteOpenPolicy? _permitRemoteOpen;
     private readonly SemaphoreSlim _connectionSlots;
 
     /// <summary>
@@ -154,7 +151,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         _targetPort = targetPort;
         RemoteSocketPath = remoteSocketPath;
         _targetSocketPath = targetSocketPath;
-        _permitRemoteOpen = permitRemoteOpen;
+        PermitRemoteOpen = permitRemoteOpen;
         ConfigureRateLimit(options.MaxBytesPerSecond);
         _boundPort = boundPort;
         _connectionSlots = new SemaphoreSlim(options.MaxConnections, options.MaxConnections);
@@ -232,10 +229,10 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     private bool IsStreamLocal => RemoteSocketPath is not null;
 
     /// <summary>本机目标的名字（进日志与事件）。动态转发的目标要等 SOCKS 握手才知道。</summary>
-    private string TargetName => _targetSocketPath ?? (_permitRemoteOpen is null ? $"{_targetHost}:{_targetPort}" : "SOCKS");
+    private string TargetName => _targetSocketPath ?? (PermitRemoteOpen is null ? $"{_targetHost}:{_targetPort}" : "SOCKS");
 
     /// <summary>远程动态转发的放行名单；不是动态转发时为 <see langword="null"/>。</summary>
-    public RemoteOpenPolicy? PermitRemoteOpen => _permitRemoteOpen;
+    public RemoteOpenPolicy? PermitRemoteOpen { get; }
 
     /// <summary>
     /// Unix 套接字变体里，服务端监听的那个套接字路径；TCP 变体下是
@@ -542,7 +539,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
         }
 
         // 动态转发的目标要等 SOCKS 握手才知道：先确认，握手在 HandleAsync 里跑。
-        if (_permitRemoteOpen is not null)
+        if (PermitRemoteOpen is not null)
         {
             return _options.Channel;
         }
@@ -608,7 +605,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
     /// <remarks>还回 <c>GetOptionsAsync</c> 占的连接槽位，关掉为它连好的那个本机目标。</remarks>
     void IIncomingChannelHandler.OnOpenAborted(string channelType, ReadOnlyMemory<byte> typeSpecificPayload)
     {
-        if (_permitRemoteOpen is null && _readyTargets.TryDequeue(out Socket? ready))
+        if (PermitRemoteOpen is null && _readyTargets.TryDequeue(out Socket? ready))
         {
             ready.Dispose();
         }
@@ -628,7 +625,7 @@ public sealed class RemotePortForwarder : PortForwarder, IIncomingChannelHandler
             CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _lifetime.Token);
         cancellationToken = linked.Token;
 
-        if (_permitRemoteOpen is { } permit)
+        if (PermitRemoteOpen is { } permit)
         {
             try
             {

@@ -67,7 +67,7 @@ public sealed class AgentConnectTests
         // 不带时限的管道连接会一直重试到管道出现 —— 曾经 agent 转发那一路就是这样，
         // 服务没起时远端的 ssh / git 一直挂到 shell 关掉。
         string pipe = $@"\\.\pipe\velashell-no-agent-{Guid.NewGuid():N}";
-        Stopwatch elapsed = Stopwatch.StartNew();
+        var elapsed = Stopwatch.StartNew();
 
         SshAgentException error = await Assert.ThrowsExactlyAsync<SshAgentException>(
             () => SshAgentClient.ConnectAsync(pipe).AsTask().WaitAsync(TimeSpan.FromSeconds(30)));

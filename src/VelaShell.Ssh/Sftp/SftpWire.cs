@@ -417,7 +417,7 @@ internal static class SftpWire
         static IReadOnlyList<string?> ReadNames(byte[] packed, int expected)
         {
             SshDataReader names = new(new ReadOnlySequence<byte>(packed));
-            List<string?> result = new(expected);
+            List<string?> result = [with(expected)];
             for (int i = 0; i < expected; i++)
             {
                 string name = names.ReadUtf8String(SftpProtocol.MaxPathLength);

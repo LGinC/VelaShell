@@ -33,6 +33,10 @@ internal static class XkbKeyNames
         Row(38, "AC", 11);   // A S D … '
         Row(52, "AB", 10);   // Z X C … /
         Row(67, "FK", 10);   // F1–F10
+        for (int i = 0; i < 12; i++)
+        {
+            names[191 + i] = $"FK{13 + i}";   // F13–F24
+        }
         (int Code, string Name)[] fixedNames =
         [
             (9, "ESC"), (22, "BKSP"), (23, "TAB"), (36, "RTRN"), (37, "LCTL"), (49, "TLDE"), (50, "LFSH"), (51, "BKSL"),

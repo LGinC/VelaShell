@@ -310,52 +310,37 @@ internal static class DuplexRelay
 }
 
 /// <summary>把一条 <see cref="Stream"/>（通常是 TCP）接进搬运循环。</summary>
-internal sealed class StreamRelayEndpoint : IRelayEndpoint
+/// <remarks>包一条流。</remarks>
+/// <param name="stream">底层流。</param>
+/// <param name="shutdownSend">
+/// 单向关写端的动作。<b>给不出来就传 <see langword="null"/></b> ——
+/// 那样半关闭会退化成「什么都不做」，对面要等到整条连接关掉才知道我们发完了。
+/// </param>
+/// <param name="ownsStream">释放时是否连底层流一起释放。</param>
+/// <param name="abort">
+/// 异常收尾的动作（见 <see cref="IRelayEndpoint.AbortAsync"/>）。TCP 上用 <see cref="Reset"/>，对面收到 RST。
+/// 给不出来就传 <see langword="null"/>：那样中止退化成释放底层流（<paramref name="ownsStream"/> 时）——
+/// 对面知道连接没了，只是分不出是出错还是正常结束。
+/// </param>
+internal sealed class StreamRelayEndpoint(Stream stream, Action? shutdownSend = null, bool ownsStream = true, Action? abort = null) : IRelayEndpoint
 {
-    private readonly Stream _stream;
-    private readonly Action? _shutdownSend;
-    private readonly Action? _abort;
-    private readonly bool _ownsStream;
 
-    /// <summary>包一条流。</summary>
-    /// <param name="stream">底层流。</param>
-    /// <param name="shutdownSend">
-    /// 单向关写端的动作。<b>给不出来就传 <see langword="null"/></b> ——
-    /// 那样半关闭会退化成「什么都不做」，对面要等到整条连接关掉才知道我们发完了。
-    /// </param>
-    /// <param name="ownsStream">释放时是否连底层流一起释放。</param>
-    /// <param name="abort">
-    /// 异常收尾的动作（见 <see cref="IRelayEndpoint.AbortAsync"/>）。TCP 上用 <see cref="Reset"/>，对面收到 RST。
-    /// 给不出来就传 <see langword="null"/>：那样中止退化成释放底层流（<paramref name="ownsStream"/> 时）——
-    /// 对面知道连接没了，只是分不出是出错还是正常结束。
-    /// </param>
-    public StreamRelayEndpoint(Stream stream, Action? shutdownSend = null, bool ownsStream = true, Action? abort = null)
-    {
-        _stream = stream ?? throw new ArgumentNullException(nameof(stream));
-        _shutdownSend = shutdownSend;
-        _ownsStream = ownsStream;
-        _abort = abort;
-
-        Input = PipeReader.Create(stream, new StreamPipeReaderOptions(
+    /// <inheritdoc />
+    public PipeReader Input { get; } = PipeReader.Create(stream, new StreamPipeReaderOptions(
             bufferSize: DuplexRelay.BufferSize, leaveOpen: true));
-        Output = PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true));
-    }
 
     /// <inheritdoc />
-    public PipeReader Input { get; }
+    public PipeWriter Output { get; } = PipeWriter.Create(stream, new StreamPipeWriterOptions(leaveOpen: true));
 
     /// <inheritdoc />
-    public PipeWriter Output { get; }
-
-    /// <inheritdoc />
-    public Stream? DirectOutput => _stream;
+    public Stream DirectOutput { get; } = stream ?? throw new ArgumentNullException(nameof(stream));
 
     /// <inheritdoc />
     public async ValueTask CompleteSendAsync(CancellationToken cancellationToken)
     {
         await Output.FlushAsync(cancellationToken).ConfigureAwait(false);
         await Output.CompleteAsync().ConfigureAwait(false);
-        _shutdownSend?.Invoke();
+        shutdownSend?.Invoke();
     }
 
     /// <inheritdoc />
@@ -363,13 +348,13 @@ internal sealed class StreamRelayEndpoint : IRelayEndpoint
     {
         try
         {
-            if (_abort is not null)
+            if (abort is not null)
             {
-                _abort();
+                abort();
             }
-            else if (_ownsStream)
+            else if (ownsStream)
             {
-                await _stream.DisposeAsync().ConfigureAwait(false);
+                await DirectOutput.DisposeAsync().ConfigureAwait(false);
             }
         }
         catch (Exception)
@@ -422,9 +407,9 @@ internal sealed class StreamRelayEndpoint : IRelayEndpoint
             // 释放路径不抛。
         }
 
-        if (_ownsStream)
+        if (ownsStream)
         {
-            await _stream.DisposeAsync().ConfigureAwait(false);
+            await DirectOutput.DisposeAsync().ConfigureAwait(false);
         }
     }
 }

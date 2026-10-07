@@ -1,4 +1,3 @@
-using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Avalonia;
 using Avalonia.Controls;
@@ -17,8 +16,9 @@ namespace VelaShell.Views.XServer;
 /// <remarks>
 /// <para>
 /// <b>坐标一律按物理像素。</b>X 客户端看到的根窗口是整个虚拟桌面(所有显示器的外接矩形,原点平移到 0,0),
-/// 顶层的 X / Y 是它<b>内容区</b>在根窗口里的位置;原生窗口的系统标题栏与边框在内容区之外,
-/// 尺寸经 <c>_NET_FRAME_EXTENTS</c> 告诉客户端。DIP 只在给 Avalonia 设尺寸时换算一次。
+/// 顶层的 X / Y 是它边框外沿在根窗口里的位置,<b>内容区</b>在 (X + 边框宽, Y + 边框宽);X 的边框不画,原生窗口的系统标题栏与边框
+/// 在内容区之外,尺寸经 <c>_NET_FRAME_EXTENTS</c> 告诉客户端。客户端自己给的位置像窗口管理器那样按重力摆外框(ICCCM §4.1.2.3),
+/// 摆好之后把 X 窗口的实际位置报回服务端。DIP 只在给 Avalonia 设尺寸时换算一次。
 /// </para>
 /// <para>
 /// 只在 UI 线程上碰;服务端的回调由 <see cref="AvaloniaXServerHost" /> 切过来。
@@ -29,6 +29,9 @@ public sealed class XNativeWindow : Window
     private readonly AvaloniaXServerHost _host;
     private readonly XSurface _surface;
     private readonly HashSet<byte> _heldKeys = [];
+
+    /// <summary>按着 Command 时按下的键(见 <see cref="CommandKeyUpMayBeLost" />)。</summary>
+    private readonly HashSet<byte> _pressedWithCommand = [];
     private PointerPressedEventArgs? _lastPress;
 
     /// <summary>
@@ -38,13 +41,34 @@ public sealed class XNativeWindow : Window
     private readonly HashSet<int> _heldButtons = [];
     private (int X, int Y) _lastPointer;
     private bool _applying;
-    private bool _closingByHost;
+
+    /// <summary>最后一次按服务端的几何设的内容区尺寸(物理像素):迟到的 Resized 与它相同就是我们自己设的(见 OnResized)。</summary>
+    private (int Width, int Height) _appliedSize;
     private Vector _wheelRemainder;
-    private XFrameExtents _frame;
     private XWindowStates _reportedStates;
-    private (int X, int Y)? _placed;
     private WindowState _resizeState = WindowState.Normal;
+
+    /// <summary>原生窗口已经显示出来(<c>Opened</c>):外框尺寸量得到了,摆好的位置才报回服务端。</summary>
+    private bool _opened;
+
+    /// <summary>宿主替没给位置的窗口选的外框左上角(根窗口坐标);服务端那边摆好之后清掉。</summary>
+    private (int X, int Y)? _frameAt;
+
+    /// <summary>已经按哪一份快照把摆好的位置报回服务端了(同一份快照不重复报)。</summary>
+    private XTopLevelSnapshot? _placedFor;
+
+    /// <summary>最近一次摆的:客户端请求的位置,与摆好之后 X 窗口的位置。</summary>
+    private ((int X, int Y) Request, (int X, int Y) Placed)? _placement;
     private long _controlLeftDownAt;
+
+    /// <summary>上一份快照要求引起注意(只在变成要求时闪一次任务栏)。</summary>
+    private bool _urgent;
+
+    /// <summary>窗口区域裁成了哪个形状(null = 整个矩形)。</summary>
+    private IReadOnlyList<XRect>? _regionShape;
+
+    /// <summary>系统边框的尺寸已经报给服务端了(显示之前用的是宿主预估的,不算)。</summary>
+    private bool _frameReported;
 
     internal XNativeWindow(AvaloniaXServerHost host, XTopLevelWindow handle)
     {
@@ -57,19 +81,23 @@ public sealed class XNativeWindow : Window
         WindowStartupLocation = WindowStartupLocation.Manual;
         Focusable = true;
         ApplyStyle(handle.Snapshot);
+        // 系统边框的尺寸要等显示出来才量得到:先按宿主上一个有边框的窗口量到的预估,第一帧就摆在对的地方,
+        // 不必等 Opened 之后再挪(原先按 0 摆,显示出来跳一下)。
+        FrameExtents = WindowDecorations == WindowDecorations.None ? default : host.LastDecoratedFrame;
 
         PositionChanged += (_, _) => OnMovedByUser();
         Resized += OnResized;
         Activated += (_, _) => _host.OnWindowActivated(this);
         Deactivated += (_, _) => OnDeactivated();
         ScalingChanged += (_, _) => ApplyGeometry();
-        Opened += (_, _) => { UpdateFrameExtents(); ApplyGeometry(); _surface.Start(); };
+        Opened += (_, _) => { _opened = true; UpdateFrameExtents(); ApplyGeometry(); UpdateRegion(Handle.Snapshot); _surface.Start(); };
     }
 
     /// <summary>服务端那边的顶层窗口。</summary>
     public XTopLevelWindow Handle { get; }
 
-    private X11Server? Server => _host.Server;
+    /// <summary>这个窗口的服务端,只在它就是宿主此刻附着的那个时给出:停服后马上重启,旧窗口的事件不会把旧句柄交给新服务端。</summary>
+    private X11Server? Server => _host.CurrentServer(Handle);
 
     private double Scale => RenderScaling > 0 ? RenderScaling : 1;
 
@@ -90,16 +118,23 @@ public sealed class XNativeWindow : Window
         if ((changes & (XTopLevelChanges.Hints | XTopLevelChanges.Shape)) != 0)
         {
             _surface.PropertiesChanged();
+            UpdateRegion(s);
         }
         if ((changes & XTopLevelChanges.Hints) != 0)
         {
+            if (s.Urgent && !_urgent && !IsActive)
+            {
+                WindowAttention.Request(this);   // WM_HINTS 的 urgency / DEMANDS_ATTENTION:闪任务栏(原先什么也不做)
+            }
+            _urgent = s.Urgent;
             Opacity = Math.Clamp(s.Opacity, 0.05, 1);
             double scale = Scale;
             MinWidth = s.MinWidth > 0 ? s.MinWidth / scale : 0;
             MinHeight = s.MinHeight > 0 ? s.MinHeight / scale : 0;
             MaxWidth = s.MaxWidth > 0 ? s.MaxWidth / scale : double.PositiveInfinity;
             MaxHeight = s.MaxHeight > 0 ? s.MaxHeight / scale : double.PositiveInfinity;
-            CanResize = !s.OverrideRedirect && (s.MaxWidth == 0 || s.MaxWidth != s.MinWidth || s.MaxHeight != s.MinHeight);
+            CanResize = !s.OverrideRedirect && (s.Functions & XWindowFunctions.Resize) != 0
+                        && (s.MaxWidth == 0 || s.MaxWidth != s.MinWidth || s.MaxHeight != s.MinHeight);
         }
         if ((changes & XTopLevelChanges.Icons) != 0 && s.Icons.Count > 0 && _host.IconFor(s.Icons) is { } icon)
         {
@@ -112,16 +147,26 @@ public sealed class XNativeWindow : Window
     }
 
     /// <summary>
-    /// 宿主替没给位置的窗口选了一个位置(已经告诉服务端,但服务端那边的几何还没更新过来):在那之前按这个摆。
+    /// 宿主替没给位置的窗口选了外框的位置(根窗口坐标,外框左上角):代替按重力摆,摆好之后照常报回服务端。
     /// </summary>
-    public void PlaceAt(int x, int y) => _placed = (x, y);
+    public void PlaceFrameAt(int x, int y) => _frameAt = (x, y);
 
-    /// <summary>按服务端的几何摆放原生窗口。</summary>
+    /// <summary>系统边框的四边宽(物理像素;显示出来之前是 0)。</summary>
+    public XFrameExtents FrameExtents { get; private set; }
+
+    /// <summary>
+    /// 按服务端的几何摆放原生窗口:内容区对准 X 窗口的内区(边框外沿 + 边框宽)。快照说位置是客户端请求的
+    /// (<see cref="XTopLevelSnapshot.NeedsPlacement" />)时像窗口管理器那样摆:外框按重力对准它(ICCCM §4.1.2.3)——
+    /// 原先一律让内容区对准请求的坐标,请求 y = 0 的窗口标题栏落在屏幕外 —— 显示出来、外框尺寸量到之后,把 X 窗口摆好的位置报回服务端。
+    /// </summary>
     public void ApplyGeometry()
     {
         if (WindowState is WindowState.Maximized or WindowState.FullScreen)
         {
-            return;   // 最大化 / 全屏时尺寸由系统定,再按旧几何摆会把它拉回去
+            // 最大化 / 全屏时尺寸与位置由系统定,再按旧几何摆会把它拉回去。客户端自己改了尺寸(XResizeWindow、gtk_window_resize)
+            // 就把原生窗口此刻的尺寸推回给它 —— 原先直接返回,X 缓冲从此与原生窗口对不上(多出来的地方是空的,或者内容被裁)。
+            PushNativeGeometry();
+            return;
         }
         double scale = Scale;
         _applying = true;
@@ -129,24 +174,55 @@ public sealed class XNativeWindow : Window
         {
             // 设 Width / Height(内容区的 DIP 尺寸)才会真的改原生窗口;显示之后再设 ClientSize 只改了属性值。
             XTopLevelSnapshot s = Handle.Snapshot;
-            Width = Math.Max(1, s.Width) / scale;
-            Height = Math.Max(1, s.Height) / scale;
+            _appliedSize = (Math.Max(1, s.Width), Math.Max(1, s.Height));
+            Width = _appliedSize.Width / scale;
+            Height = _appliedSize.Height / scale;
             (int ox, int oy) = _host.RootOrigin;
             (int x, int y) = (s.X, s.Y);
-            if (_placed is { } placed)
+            if (s.NeedsPlacement)
             {
-                if (placed == (x, y))
+                if (_placement is { } done && done.Request == (s.X, s.Y))
                 {
-                    _placed = null;   // 服务端已经跟上
+                    (x, y) = done.Placed;   // 这个请求已经摆过(服务端还没跟上,或者客户端又请求了同一个位置)
                 }
-                (x, y) = placed;
+                else
+                {
+                    (x, y) = _frameAt is { } at
+                        ? (at.X + FrameExtents.Left - s.BorderWidth, at.Y + FrameExtents.Top - s.BorderWidth)
+                        : s.PlaceInFrame(FrameExtents);
+                    (x, y) = (Math.Clamp(x, short.MinValue, short.MaxValue), Math.Clamp(y, short.MinValue, short.MaxValue));
+                }
+                if (_opened && !ReferenceEquals(_placedFor, s) && Server is { } server)
+                {
+                    _placedFor = s;
+                    _placement = ((s.X, s.Y), (x, y));
+                    _frameAt = null;   // 选的位置用过了:之后客户端再自己挪,就按重力摆
+                    server.MoveTopLevel(Handle, x, y);
+                }
             }
-            Position = new PixelPoint(x + ox - _frame.Left, y + oy - _frame.Top);
+            Position = new PixelPoint(x + s.BorderWidth + ox - FrameExtents.Left, y + s.BorderWidth + oy - FrameExtents.Top);
         }
         finally
         {
             _applying = false;
         }
+    }
+
+    /// <summary>原生窗口此刻的内容区尺寸与位置报给服务端(与快照不同时):系统定几何(最大化 / 全屏)时客户端改不动它。</summary>
+    private void PushNativeGeometry()
+    {
+        if (!_opened || Server is not { } server)
+        {
+            return;
+        }
+        XTopLevelSnapshot s = Handle.Snapshot;
+        int width = Math.Clamp((int)Math.Round(ClientSize.Width * Scale), 1, X11ServerOptions.MaxScreenSize);
+        int height = Math.Clamp((int)Math.Round(ClientSize.Height * Scale), 1, X11ServerOptions.MaxScreenSize);
+        if (width != s.Width || height != s.Height)
+        {
+            server.ResizeTopLevel(Handle, width, height);
+        }
+        OnMovedByUser();
     }
 
     /// <summary>有内容画进来了(顶层内区坐标的矩形):下一帧取这几块像素。</summary>
@@ -157,7 +233,7 @@ public sealed class XNativeWindow : Window
     {
         if (cursor is { Image: { } image, Shape: not XCursorShape.Hidden })
         {
-            Cursor = ImageCursors.GetValue(image, CreateImageCursor);
+            Cursor = ImageCursor(image);
             return;
         }
         StandardCursorType type = XInputMap.Cursor(cursor.Shape);
@@ -171,8 +247,52 @@ public sealed class XNativeWindow : Window
     /// <summary>建过的系统光标(UI 线程上用)。</summary>
     private static readonly Dictionary<StandardCursorType, Cursor> StandardCursors = [];
 
-    /// <summary>按图像建过的光标:服务端对同一个光标总给同一份图像;图像没人引用了,光标随之回收。</summary>
-    private static readonly ConditionalWeakTable<XCursorImage, Cursor> ImageCursors = [];
+    /// <summary>这个窗口按图像建过的光标(服务端对同一个光标总给同一份图像),最近用的排在后面。</summary>
+    private readonly List<(XCursorImage Image, Cursor Cursor)> _imageCursors = [];
+
+    /// <summary>每个窗口最多留这么多个图像光标;再多就释放最久没用的。</summary>
+    private const int MaxImageCursors = 16;
+
+    /// <summary>
+    /// 图像光标:建过的直接用,否则建一个。每个光标背后是一个系统光标句柄(Windows 上是 GDI 对象),要显式释放 —— 原先放在
+    /// ConditionalWeakTable 里等图像被回收,光标对象没人释放,句柄一直漏到进程退出;不停换光标的程序能把 GDI 对象耗尽。
+    /// 现在每个窗口留最近用的几个,多了释放最久没用的(此刻正显示的不动),窗口关闭时全部释放。
+    /// </summary>
+    private Cursor ImageCursor(XCursorImage image)
+    {
+        int index = _imageCursors.FindIndex(c => ReferenceEquals(c.Image, image));
+        (XCursorImage, Cursor) entry = index >= 0 ? _imageCursors[index] : (image, CreateImageCursor(image));
+        if (index >= 0)
+        {
+            _imageCursors.RemoveAt(index);
+        }
+        _imageCursors.Add(entry);
+        for (int i = 0; _imageCursors.Count > MaxImageCursors && i < _imageCursors.Count - 1;)
+        {
+            if (ReferenceEquals(_imageCursors[i].Cursor, Cursor))
+            {
+                i++;   // 正显示着,不释放
+                continue;
+            }
+            _imageCursors[i].Cursor.Dispose();
+            _imageCursors.RemoveAt(i);
+        }
+        return entry.Item2;
+    }
+
+    /// <summary>释放这个窗口建过的图像光标(窗口关了)。</summary>
+    private void ReleaseImageCursors()
+    {
+        Cursor = null;
+        foreach ((_, Cursor cursor) in _imageCursors)
+        {
+            cursor.Dispose();
+        }
+        _imageCursors.Clear();
+    }
+
+    /// <summary>这个窗口此刻留着的图像光标数(测试用)。</summary>
+    internal int ImageCursorCount => _imageCursors.Count;
 
     private static unsafe Cursor CreateImageCursor(XCursorImage image)
     {
@@ -182,7 +302,7 @@ public sealed class XNativeWindow : Window
         {
             for (int y = 0; y < image.Height; y++)
             {
-                MemoryMarshal.AsBytes(image.Pixels.AsSpan(y * image.Width, image.Width))
+                MemoryMarshal.AsBytes(image.Pixels.Span.Slice(y * image.Width, image.Width))
                     .CopyTo(new Span<byte>((void*)(frame.Address + (y * frame.RowBytes)), image.Width * 4));
             }
         }
@@ -192,9 +312,18 @@ public sealed class XNativeWindow : Window
     /// <summary>宿主要关它(客户端取消映射 / 销毁、服务端停下)。</summary>
     public void CloseByHost()
     {
-        _closingByHost = true;
-        Close();
+        ClosingByHost = true;
+        if (!_closed)
+        {
+            Close();
+        }
     }
+
+    /// <summary>已经关了(随 owner 一起关、或宿主关过一次)。</summary>
+    private bool _closed;
+
+    /// <summary>只做标记、先不关(宿主一次收掉一批窗口时,先给全部打上标记,owner 级联关子窗口时子窗口才不会拦)。</summary>
+    public void MarkClosingByHost() => ClosingByHost = true;
 
     /// <summary>客户端经 <c>_NET_WM_MOVERESIZE</c> 要求拖动 / 缩放:用系统的拖动循环(要一次还按着的按下事件)。</summary>
     public void BeginInteractive(XMoveResizeDirection direction)
@@ -226,6 +355,26 @@ public sealed class XNativeWindow : Window
         }
     }
 
+    /// <summary>
+    /// 显示之前按快照里的状态摆:客户端映射前设好的 <c>_NET_WM_STATE</c>(一开始就最大化、全屏),或 <c>WM_HINTS</c> 的
+    /// initial_state 为 IconicState(服务端把它写成 Hidden)。原先这些只在收到 ClientMessage 时才生效,映射时一律按普通窗口显示。
+    /// 状态本来就是客户端自己写的,不再回报给服务端。
+    /// </summary>
+    public void ApplyInitialStates()
+    {
+        XTopLevelSnapshot s = Handle.Snapshot;
+        if (s.OverrideRedirect)
+        {
+            return;
+        }
+        WindowState = (s.States & XWindowStates.Fullscreen) != 0 ? WindowState.FullScreen
+            : (s.States & XWindowStates.Hidden) != 0 ? WindowState.Minimized
+            : (s.States & XWindowStates.Maximized) == XWindowStates.Maximized ? WindowState.Maximized
+            : WindowState.Normal;
+        _resizeState = WindowState;
+        _reportedStates = StatesFromWindow();
+    }
+
     /// <summary>客户端要求改状态(最大化、全屏、最小化……)。</summary>
     public void ApplyStateRequest(XWindowStates add, XWindowStates remove)
     {
@@ -234,8 +383,17 @@ public sealed class XNativeWindow : Window
             : (target & XWindowStates.Hidden) != 0 ? WindowState.Minimized
             : (target & XWindowStates.Maximized) == XWindowStates.Maximized ? WindowState.Maximized
             : WindowState.Normal;
-        Topmost = (target & XWindowStates.Above) != 0 || Handle.Snapshot.OverrideRedirect;
+        _above = (target & XWindowStates.Above) != 0;
+        UpdateTopmost(_host.XActive);
         ReportStates();
+        // 原生窗口不管的那几个(SkipTaskbar、Sticky、Below、DemandsAttention……)照客户端要的记进服务端:快照随之变,
+        // 是否进任务栏之类按它重新应用。原先只回写原生窗口管的,客户端映射之后再请求的这几个状态都被丢掉。
+        XWindowStates extraAdd = add & ~WindowManagedStates & ~XWindowStates.Focused;
+        XWindowStates extraRemove = remove & ~WindowManagedStates & ~XWindowStates.Focused & ~extraAdd;
+        if (extraAdd != XWindowStates.None || extraRemove != XWindowStates.None)
+        {
+            Server?.ChangeTopLevelStates(Handle, extraAdd, extraRemove);
+        }
     }
 
     // ================================================================== 窗口 → 服务端
@@ -249,25 +407,37 @@ public sealed class XNativeWindow : Window
         WindowDecorations = undecorated ? WindowDecorations.None : WindowDecorations.Full;
         ShowInTaskbar = !popup && s.TransientFor is null && (s.States & XWindowStates.SkipTaskbar) == 0
                         && s.WindowType is XWindowType.Normal or XWindowType.Dialog;
-        ShowActivated = !popup && s.AcceptsFocus;
-        Topmost = popup || (s.States & XWindowStates.Above) != 0;
-        CanMinimize = !popup;
-        CanMaximize = !popup;
-        // 有 alpha 的视觉(GTK 的客户端阴影、圆角)与非矩形窗口要透明底;其余不透明,省掉系统合成的开销。
-        TransparencyLevelHint = s.HasAlpha || s.Shape is not null
+        ShowActivated = !popup && s.AcceptsFocus && (s.States & XWindowStates.Hidden) == 0;   // 一映射就最小化的窗口不抢前台
+        _above = (s.States & XWindowStates.Above) != 0;
+        UpdateTopmost(_host.XActive);
+        CanMinimize = !popup && (s.Functions & XWindowFunctions.Minimize) != 0;
+        CanMaximize = !popup && (s.Functions & XWindowFunctions.Maximize) != 0;
+        // 有 alpha 的视觉(GTK 的客户端阴影、圆角)、非矩形窗口与半透明的窗口(_NET_WM_WINDOW_OPACITY)要透明底;其余不透明,
+        // 省掉系统合成的开销。不透明的底上设 Opacity 只是和窗口自己的底色混,看不到后面的窗口。
+        TransparencyLevelHint = s.HasAlpha || s.Shape is not null || s.Opacity < 1
             ? [WindowTransparencyLevel.Transparent]
             : [WindowTransparencyLevel.None];
     }
 
+    /// <summary>按原生窗口此刻的位置把 X 坐标报给服务端(显示器布局变了、根原点挪了之后由宿主调)。</summary>
+    public void ReportPosition() => OnMovedByUser();
+
     private void OnMovedByUser()
     {
-        if (_applying || Server is not { } server || WindowState is WindowState.Minimized)
+        // 显示出来之前外框尺寸还不知道,算出来的位置不对(位置等 Opened 之后由 ApplyGeometry 摆好再报)。
+        if (_applying || !_opened || Server is not { } server || WindowState is WindowState.Minimized)
         {
             return;
         }
         (int ox, int oy) = _host.RootOrigin;
-        int x = Position.X + _frame.Left - ox, y = Position.Y + _frame.Top - oy;
-        if (Handle.Snapshot is var s && (x != s.X || y != s.Y))
+        XTopLevelSnapshot s = Handle.Snapshot;
+        // 内容区对准 X 窗口的内区:X 窗口的位置(边框外沿)再往左上退一个边框宽。
+        int x = Position.X + FrameExtents.Left - ox - s.BorderWidth, y = Position.Y + FrameExtents.Top - oy - s.BorderWidth;
+        if (x is < short.MinValue or > short.MaxValue || y is < short.MinValue or > short.MaxValue)
+        {
+            return;   // X 的坐标是 16 位:离谱的位置不报(服务端会当场拒绝)
+        }
+        if (x != s.X || y != s.Y)
         {
             server.MoveTopLevel(Handle, x, y);
         }
@@ -277,16 +447,22 @@ public sealed class XNativeWindow : Window
     {
         UpdateFrameExtents();
         ReportStates();
-        // 只有用户拖边框、以及窗口状态变了(最大化 / 全屏 / 还原)才回报给服务端。我们自己按服务端的几何设 ClientSize
-        // 引起的 Resized 可能晚一拍才到,那时 _applying 早已复位 —— 再回报就会拿旧尺寸把客户端刚设的新尺寸改回去。
+        // 只把「不是我们自己按服务端的几何设出来的」尺寸回报给服务端:用户拖边框、窗口状态变了(最大化 / 全屏 / 还原)。
+        // 不靠 Reason 判断 —— Avalonia 的 X11 后端在 ConfigureNotify 里一律给 Unspecified(只有 XEmbed 给 User),原先 Linux 上
+        // 用户拖大窗口,X 缓冲还是原尺寸。我们自己设的尺寸引起的 Resized 可能晚一拍才到(那时 _applying 早已复位),
+        // 按「与最后一次按服务端几何设的尺寸相同(差一个像素以内,分数缩放的取整)」认出来:再回报就会拿旧尺寸把客户端刚设的新尺寸改回去。
         bool stateChanged = WindowState != _resizeState;
         _resizeState = WindowState;
-        if (_applying || (e.Reason != WindowResizeReason.User && !stateChanged)
-            || Server is not { } server || WindowState is WindowState.Minimized)
+        if (_applying || Server is not { } server || WindowState is WindowState.Minimized)
         {
             return;
         }
         int width = (int)Math.Round(e.ClientSize.Width * Scale), height = (int)Math.Round(e.ClientSize.Height * Scale);
+        bool ours = Math.Abs(width - _appliedSize.Width) <= 1 && Math.Abs(height - _appliedSize.Height) <= 1;
+        if (ours && e.Reason != WindowResizeReason.User && !stateChanged)
+        {
+            return;
+        }
         if (width > 0 && height > 0 && Handle.Snapshot is var s && (width != s.Width || height != s.Height))
         {
             server.ResizeTopLevel(Handle, width, height);
@@ -305,6 +481,7 @@ public sealed class XNativeWindow : Window
             }
         }
         _heldKeys.Clear();
+        _pressedWithCommand.Clear();
         ReleaseHeldButtons();
         _host.OnWindowDeactivated(this);
     }
@@ -325,6 +502,17 @@ public sealed class XNativeWindow : Window
     }
 
     /// <inheritdoc />
+    /// <remarks>窗口状态一变就写回服务端:有的平台最小化 / 最大化时尺寸没变,不来 Resized。</remarks>
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == WindowStateProperty && _opened)
+        {
+            ReportStates();
+        }
+    }
+
+    /// <inheritdoc />
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
@@ -341,13 +529,41 @@ public sealed class XNativeWindow : Window
             int side = Math.Max(0, (int)Math.Round((outer.Width - ClientSize.Width) * scale / 2));
             int top = Math.Max(0, (int)Math.Round((outer.Height - ClientSize.Height) * scale) - side);
             frame = new XFrameExtents(side, side, top, side);
+            if (frame != default)
+            {
+                _host.LastDecoratedFrame = frame;   // 下一个有边框的窗口显示之前就按它摆
+            }
         }
-        if (frame != _frame)
+        if (frame != FrameExtents || !_frameReported)
         {
-            _frame = frame;
-            Server?.SetTopLevelFrameExtents(Handle, _frame);
+            FrameExtents = frame;
+            _frameReported = true;
+            Server?.SetTopLevelFrameExtents(Handle, FrameExtents);
         }
     }
+
+    /// <summary>
+    /// 无装饰的非矩形窗口把命中范围裁成形状(Windows 的窗口区域,见 <see cref="WindowRegion" />):形状以外画成全透明,
+    /// 原先却照样接住鼠标,用户点不到下面的窗口。只裁边界形状 —— 窗口区域连绘制一起裁,按更小的输入形状裁会把看得见的部分裁掉。
+    /// </summary>
+    private void UpdateRegion(XTopLevelSnapshot s)
+    {
+        IReadOnlyList<XRect>? shape = WindowDecorations == WindowDecorations.None ? s.Shape : null;
+        if (_opened && !ReferenceEquals(shape, _regionShape))
+        {
+            _regionShape = shape;
+            WindowRegion.Apply(this, shape);
+        }
+    }
+
+    /// <summary>客户端要求的「总在最前」(<c>_NET_WM_STATE_ABOVE</c>);实际的 <c>Topmost</c> 还看用户在不在用 X 窗口。</summary>
+    private bool _above;
+
+    /// <summary>
+    /// 弹出层(override-redirect)与要求「总在最前」的窗口只在用户正在用 X 窗口时才是系统级置顶。原先一直置顶:远端程序映射一个
+    /// 全屏的 override-redirect 窗口就能盖住所有本机程序,画一个像系统凭据框的界面;用户回到本机窗口时它们照常退到后面。
+    /// </summary>
+    public void UpdateTopmost(bool xActive) => Topmost = (_above || Handle.Snapshot.OverrideRedirect) && xActive;
 
     private XWindowStates StatesFromWindow() => WindowState switch
     {
@@ -355,16 +571,24 @@ public sealed class XNativeWindow : Window
         WindowState.FullScreen => XWindowStates.Fullscreen,
         WindowState.Minimized => XWindowStates.Hidden,
         _ => XWindowStates.None,
-    } | (Topmost && !Handle.Snapshot.OverrideRedirect ? XWindowStates.Above : XWindowStates.None);
+    } | (_above && !Handle.Snapshot.OverrideRedirect ? XWindowStates.Above : XWindowStates.None);
 
-    /// <summary>窗口状态(用户点了最大化、系统最小化……)写回 <c>_NET_WM_STATE</c>。</summary>
+    /// <summary>原生窗口自己管的那几个状态(<see cref="StatesFromWindow" /> 给得出的);其余的(SkipTaskbar、Modal、Sticky……)记在服务端。</summary>
+    private const XWindowStates WindowManagedStates =
+        XWindowStates.Maximized | XWindowStates.Fullscreen | XWindowStates.Hidden | XWindowStates.Above;
+
+    /// <summary>
+    /// 窗口状态(用户点了最大化、系统最小化……)写回 <c>_NET_WM_STATE</c>:只改原生窗口管的那几个。原先整组覆盖,
+    /// 第一次最大化 / 最小化就把客户端映射前设的 SkipTaskbar、Modal、Sticky、Below、DemandsAttention 清掉了 ——
+    /// 本不进任务栏的窗口出现在任务栏里。
+    /// </summary>
     private void ReportStates()
     {
         XWindowStates states = StatesFromWindow();
         if (states != _reportedStates)
         {
             _reportedStates = states;
-            Server?.SetTopLevelStates(Handle, states);
+            Server?.ChangeTopLevelStates(Handle, states, WindowManagedStates & ~states);
         }
     }
 
@@ -372,20 +596,52 @@ public sealed class XNativeWindow : Window
     protected override void OnClosing(WindowClosingEventArgs e)
     {
         base.OnClosing(e);
-        if (_closingByHost)
+        if (ClosingByHost)
         {
             return;
         }
-        // 关闭按钮 / Alt+F4:请客户端自己关(有 WM_DELETE_WINDOW 时),窗口等它取消映射再收。
-        e.Cancel = true;
-        Server?.CloseTopLevel(Handle);
+        switch (e.CloseReason)
+        {
+            case WindowCloseReason.WindowClosing:
+                // 关闭按钮 / Alt+F4:请客户端自己关(有 WM_DELETE_WINDOW 时),窗口等它取消映射再收。
+                // 弹层(override-redirect:菜单、提示框)不归窗口管理器管,它的关闭不转给客户端 —— 原先没有 WM_DELETE_WINDOW
+                // 的弹层一关就断开了整个 X 程序。
+                e.Cancel = true;
+                if (!Handle.Snapshot.OverrideRedirect)
+                {
+                    Server?.CloseTopLevel(Handle);
+                }
+                break;
+            case WindowCloseReason.OwnerWindowClosing when Owner is XNativeWindow { ClosingByHost: true }:
+                // owner 被宿主收掉(停服、它在 X 里取消映射了):跟着关。还映射着的,宿主随后会不带 owner 重新显示。
+                ClosingByHost = true;
+                break;
+            case WindowCloseReason.OwnerWindowClosing:
+                // 用户点了 owner 的关闭键:Avalonia 先问各个子窗口,有一个不肯 owner 就关不了、它自己的 Closing 也不会来。
+                // 子窗口不能就这么跟着关(X 里它还映射着,就成了看不见的幽灵);改为替用户请 owner 的客户端自己关。
+                e.Cancel = true;
+                if (Owner is XNativeWindow owner && !owner.Handle.Snapshot.OverrideRedirect)
+                {
+                    Server?.CloseTopLevel(owner.Handle);
+                }
+                break;
+            default:
+                // 应用退出、系统注销 / 关机:不拦(原先一律取消,表现为「VelaShell 阻止关机」)。
+                ClosingByHost = true;
+                break;
+        }
     }
+
+    /// <summary>宿主正在收掉这个窗口(<see cref="CloseByHost" />)。</summary>
+    public bool ClosingByHost { get; private set; }
 
     /// <inheritdoc />
     protected override void OnClosed(EventArgs e)
     {
+        _closed = true;
         base.OnClosed(e);
         _surface.Release();
+        ReleaseImageCursors();
         _host.OnWindowClosed(this);
     }
 
@@ -499,10 +755,32 @@ public sealed class XNativeWindow : Window
             e.Handled = true;
             return;
         }
-        _heldKeys.Add(keycode);
-        Server?.InjectKey(keycode, pressed: true);
+        // 已经按着又来一次按下:系统的自动重复(Avalonia 的 X11 后端开了 XKB 的 detectable autorepeat,中间没有 KeyUp)。
+        // 告诉服务端这是重复,由它按 X 的语义决定发不发、怎么发(xset r off、修饰键不重复、DetectableAutoRepeat)。
+        bool repeat = !_heldKeys.Add(keycode);
+        if (!repeat)
+        {
+            _host.RefreshKeyboardLayoutOnKey();   // 布局可能刚在 X 窗口里切过:先换键位表,再注入这个键
+        }
+        if (CommandKeyUpMayBeLost && (e.KeyModifiers & KeyModifiers.Meta) != 0 && keycode is not (XKeycodes.SuperLeft or XKeycodes.SuperRight))
+        {
+            if (repeat && _pressedWithCommand.Contains(keycode))
+            {
+                Server?.InjectKey(keycode, pressed: false);   // 上一次的 KeyUp 没来:先松开,这次当新的按下
+                repeat = false;
+            }
+            _pressedWithCommand.Add(keycode);
+        }
+        Server?.InjectKey(keycode, pressed: true, repeat);
         e.Handled = true;
     }
+
+    /// <summary>
+    /// macOS:AppKit 不给带 Command 的组合键发 KeyUp(❓ 未在真机上确认;Avalonia 若已补上,下面的处理只是多余,不出错)。
+    /// X 那边会以为那个键一直按着,由它激活的被动键抓取也不解除。为真时:Command 松开时把按着 Command 时按下、还没松开的键一并松开;
+    /// 按着 Command 再按一次同一个键当成新的按下(先补一个松开)而不是自动重复。内部可写,测试在别的系统上打开它。
+    /// </summary>
+    internal static bool CommandKeyUpMayBeLost { get; set; } = OperatingSystem.IsMacOS();
 
     /// <summary>
     /// Windows 上有 AltGr 的布局,按 AltGr 时系统先补一个假的左 Ctrl 按下(按住时连同自动重复一起补)。
@@ -535,16 +813,35 @@ public sealed class XNativeWindow : Window
     {
         base.OnKeyUp(e);
         byte keycode = XInputMap.Keycode(e.PhysicalKey);
-        if (keycode == 0 || !_heldKeys.Remove(keycode))
+        if (keycode == 0)
         {
             return;
         }
-        Server?.InjectKey(keycode, pressed: false);
-        e.Handled = true;
+        _pressedWithCommand.Remove(keycode);
+        if (_heldKeys.Remove(keycode))
+        {
+            Server?.InjectKey(keycode, pressed: false);
+            e.Handled = true;
+        }
+        if (keycode is XKeycodes.SuperLeft or XKeycodes.SuperRight && _pressedWithCommand.Count != 0)
+        {
+            // Command 松开了:按着它时按下的键的 KeyUp 不会再来,在 X 那边替它们松开。
+            foreach (byte key in _pressedWithCommand)
+            {
+                if (_heldKeys.Remove(key))
+                {
+                    Server?.InjectKey(key, pressed: false);
+                }
+            }
+            _pressedWithCommand.Clear();
+        }
     }
 
+    /// <summary>内区的物理像素坐标,夹到 X 的 16 位范围(服务端的注入方法超出就抛异常;拖动时指针可以远在窗口外)。</summary>
     private (int X, int Y) ToPixels(Point point) =>
-        ((int)Math.Floor(point.X * Scale), (int)Math.Floor(point.Y * Scale));
+        (ClampCoordinate(Math.Floor(point.X * Scale)), ClampCoordinate(Math.Floor(point.Y * Scale)));
+
+    private static int ClampCoordinate(double value) => (int)Math.Clamp(value, short.MinValue, short.MaxValue);
 
     /// <summary>
     /// 画顶层像素的控件:位图与窗口像素一一对应,按 1/缩放 的 DIP 尺寸画,不插值。
@@ -568,6 +865,9 @@ public sealed class XNativeWindow : Window
 
         private readonly XNativeWindow _owner;
         private readonly XTopLevelWindow _handle;
+        /// <summary>每帧取像素时最多等像素锁这么久;等不到就把这一帧让给界面,下一帧再取。</summary>
+        private static readonly TimeSpan PixelLockWait = TimeSpan.FromMilliseconds(8);
+
         private readonly XPixelReader _reader;
         private readonly Action<TimeSpan> _onFrame;
         private readonly List<XRect> _damage = [];
@@ -682,18 +982,23 @@ public sealed class XNativeWindow : Window
                     _damage.Add(new XRect(0, 0, _width, _height));
                 }
                 LockDamagedTiles();
-                bool read;
+                XPixelReadResult read;
                 try
                 {
-                    read = _handle.ReadPixels(_reader);
+                    // 限时拿像素锁:服务端正在执行一条慢请求时跳过这一帧(损伤留着,下一帧再取),UI 线程不陪着等。
+                    read = _handle.TryReadPixels(_reader, PixelLockWait);
                 }
                 finally
                 {
                     UnlockTiles();
                 }
-                if (!read)
+                if (read == XPixelReadResult.Busy)
                 {
-                    return;   // 窗口已经没有缓冲(取消映射 / 销毁):等宿主把原生窗口收掉
+                    break;
+                }
+                if (read == XPixelReadResult.NoBuffer)
+                {
+                    return;   // 窗口已经没有缓冲(销毁 / 被 reparent 走):等宿主把原生窗口收掉
                 }
                 if (_resizeTo is { } size)
                 {

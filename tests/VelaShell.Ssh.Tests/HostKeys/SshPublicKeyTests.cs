@@ -49,7 +49,7 @@ public sealed class SshPublicKeyTests
         ReadOnlySpan<byte> t = magnitude[start..];
         if (t.IsEmpty)
         {
-            WriteString(w, ReadOnlySpan<byte>.Empty);
+            WriteString(w, []);
             return;
         }
         if ((t[0] & 0x80) != 0)
@@ -137,7 +137,7 @@ public sealed class SshPublicKeyTests
         byte[] data = RandomNumberGenerator.GetBytes(32);
         byte[] signature = await signer.SignAsync(data, algorithm);
 
-        SshPublicKey key = SshPublicKey.Decode(signer.PublicKey.Blob);
+        var key = SshPublicKey.Decode(signer.PublicKey.Blob);
         Assert.IsFalse(key.HasNativeKey, "只解析不该建原生钥");
 
         Assert.IsTrue(key.VerifySignature(signature, data, algorithm));
@@ -169,8 +169,8 @@ public sealed class SshPublicKeyTests
     [TestMethod]
     public void 签名算法与钥的类型对不上时验不过()
     {
-        using RSA rsa = RSA.Create(2048);
-        SshPublicKey key = SshPublicKey.Decode(Blob(w =>
+        using var rsa = RSA.Create(2048);
+        var key = SshPublicKey.Decode(Blob(w =>
         {
             WriteString(w, SshAlgorithmNames.SshRsa);
             WriteMpint(w, rsa.ExportParameters(false).Exponent!);
@@ -488,7 +488,7 @@ public sealed class SshPublicKeyTests
     public void 指纹图与ssh_keygen画的一致(string name)
     {
         string directory = Path.Combine(AppContext.BaseDirectory, "HostKeys", "Fixtures");
-        SshPublicKey key = SshPublicKey.Parse(File.ReadAllText(Path.Combine(directory, $"randomart-{name}.pub")));
+        var key = SshPublicKey.Parse(File.ReadAllText(Path.Combine(directory, $"randomart-{name}.pub")));
         string expected = File.ReadAllText(Path.Combine(directory, $"randomart-{name}.txt")).Replace("\r\n", "\n").TrimEnd('\n');
 
         Assert.AreEqual(expected, key.RandomArt);

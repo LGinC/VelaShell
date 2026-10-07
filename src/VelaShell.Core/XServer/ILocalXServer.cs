@@ -33,10 +33,11 @@ public sealed record XServerStartResult(bool Success, string? Error = null)
 /// <param name="Error">自动启动失败的原因(已本地化);没有尝试启动或启动成功时为 <see langword="null" />。</param>
 /// <param name="Connector">
 /// 内置 X 服务端给的本机连接器:调一次得到一条直接接进服务端的双工流,SSH 的 x11 通道不必再去连本机端口。
+/// 第一个参数是这条连接的来历(比如 <c>user@host:22</c>),服务端记进日志与客户端清单,说得出是哪个会话的程序。
 /// <see langword="null" /> = 按 <paramref name="Display" /> 走套接字(VcXsrv 等外部 X 服务端)。
 /// </param>
 public sealed record XServerDisplayResolution(
-    string? Display, string? Error = null, Func<CancellationToken, ValueTask<Stream>>? Connector = null)
+    string? Display, string? Error = null, Func<string?, CancellationToken, ValueTask<Stream>>? Connector = null)
 {
     /// <summary>不接管。</summary>
     public static XServerDisplayResolution None { get; } = new(Display: null);
@@ -88,11 +89,18 @@ public interface ILocalXServer
     /// 没在运行且设置允许自动启动时先启动。
     /// </summary>
     /// <remarks>
-    /// 本机已经有别的 X 服务端在用(Windows 上 6000 端口有人在听 —— X410、用户手开的 VcXsrv;其它平台上设了
+    /// 本机已经有别的 X 服务端在用(Windows 上当前用户会话里的进程在 6000 端口上听 —— X410、用户手开的 VcXsrv;别的会话的不算,
+    /// 终端服务器上那是别的用户的;其它平台上设了
     /// <c>DISPLAY</c>)时不自动启动,返回 <see cref="XServerDisplayResolution.None" /> —— 用户已经有一个在用的显示,
     /// 再开一个只会让窗口出现在意料之外的地方。VcXsrv 引擎找不到可执行文件时同样静默不接管:
     /// 没装 VcXsrv 的人不该在每次连接时收到一条提示。内置引擎在运行时一并给出
     /// <see cref="XServerDisplayResolution.Connector" />。
     /// </remarks>
     Task<XServerDisplayResolution> ResolveForwardingDisplayAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 此刻连着的 X 程序(客户端连接)有几个 —— 停掉之前告诉用户「会断开 N 个程序」。只有内置引擎数得出来;
+    /// 外部 X 服务端(VcXsrv)、没在运行时为 0。
+    /// </summary>
+    Task<int> CountConnectedClientsAsync() => Task.FromResult(0);
 }

@@ -67,6 +67,12 @@ public sealed class XServerToggleViewModel : ReactiveObject
     /// <summary>开 / 关。</summary>
     public ReactiveCommand<RxVoid, RxVoid> ToggleCommand { get; }
 
+    /// <summary>
+    /// 停之前请用户确认(参数是会断开的 X 程序连接数,只在大于 0 时问);返回 false 就不停。确认框只有视图层拿得到,由它注入;
+    /// 没注入时直接停。原先一点就停,所有会话的 X 程序一起断开,也不说会断几个。
+    /// </summary>
+    public Func<int, Task<bool>>? ConfirmStopAsync { get; set; }
+
     /// <summary>启动(已在运行则什么都不做);失败发错误提示。启动时自动打开(设置里那一项)也走这里。</summary>
     public async Task StartAsync()
     {
@@ -107,6 +113,9 @@ public sealed class XServerToggleViewModel : ReactiveObject
         }
     }
 
+    /// <summary>停掉(没在运行时什么也不做)。主窗口真正关闭时调:X 窗口随之收掉,应用才退得出去。</summary>
+    public Task StopAsync() => _server is { State: XServerState.Running } server ? server.StopAsync() : Task.CompletedTask;
+
     private async Task ToggleAsync()
     {
         if (_server is null)
@@ -115,6 +124,11 @@ public sealed class XServerToggleViewModel : ReactiveObject
         }
         if (_server.State == XServerState.Running)
         {
+            if (ConfirmStopAsync is { } confirm && await _server.CountConnectedClientsAsync() is > 0 and var clients
+                && !await confirm(clients))
+            {
+                return;
+            }
             await _server.StopAsync();
             Refresh();
             return;

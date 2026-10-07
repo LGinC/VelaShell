@@ -52,7 +52,6 @@ public sealed class SftpFileStream : Stream
     private Exception? _writeFault;
     private bool _closed;
 
-
     // ---- 流水线写的攒块：不足一块的尾巴留在本端，凑满一块再发（velashell-docs/zh/ssh/spec/06 §5.2）----
 
     /// <summary>攒块缓冲（租来的，至少一块大）；还没攒过时为 <see langword="null"/>。</summary>
