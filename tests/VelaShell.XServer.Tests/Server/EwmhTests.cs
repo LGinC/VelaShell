@@ -372,4 +372,27 @@ public sealed class EwmhTests
         Assert.IsEmpty(host.Mapped, "宿主没有多出一个原生窗口");
         Assert.IsTrue((await c.RequestAsync(3, 0, b => b.U32(check))).IsReply, "还在");
     }
+    [TestMethod]
+    public async Task NET_MOVERESIZE_WINDOW的宽高越界整个不理_坐标夹到16位()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint moveResize = await InternAsync(c, "_NET_MOVERESIZE_WINDOW");
+        uint top = await CreateTopAsync(c);
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        XTopLevelWindow handle = host.Mapped[top];
+
+        // 别的会话的客户端:x = 0x7FFFFFF0、宽 = 0x7FFFFFFF —— 原先原样交给 Configure。
+        await RootClientMessageAsync(c, top, moveResize, 0xF00, 0x7FFFFFF0, 0, 0x7FFFFFFF, 50);
+        await c.SyncAsync();
+        XMessage geometry = await c.RequestAsync(14, 0, b => b.U32(top));   // GetGeometry
+        Assert.AreEqual(100, geometry.U16(16), "宽高越界:整个请求不理");
+        Assert.AreEqual(0, geometry.I16(12));
+
+        await RootClientMessageAsync(c, top, moveResize, 0x300, 0x7FFFFFF0, unchecked((uint)-100000), 0, 0);   // 只给 x / y
+        await host.WaitForAsync(() => handle.Snapshot.X == short.MaxValue);
+        Assert.AreEqual(short.MinValue, handle.Snapshot.Y, "坐标夹到 16 位");
+    }
 }

@@ -370,12 +370,30 @@ public sealed partial class X11Server
                 break;
             case "_NET_MOVERESIZE_WINDOW":
                 {
-                    // data[0]:低 8 位重力,第 8–11 位表示 x / y / 宽 / 高各给没给
+                    // data[0]:低 8 位重力,第 8–11 位表示 x / y / 宽 / 高各给没给。值是任意 32 位整数,而 X 的坐标是 16 位、
+                    // 尺寸 1–32767:宽高越界的请求整个不理,坐标夹到 16 位 —— 原先原样交给 Configure,别的会话的客户端发一个
+                    // 2³¹ 的宽度,GetGeometry 与 ConfigureNotify 截断成乱值、指针的根坐标溢出、宿主收到 2³¹ 大小的原生窗口。
+                    // (重力与外框的换算与 ConfigureWindow 一致,见 API-M3。)
                     uint flags = data[0];
-                    int x = (flags & (1 << 8)) != 0 ? (int)data[1] : top.X;
-                    int y = (flags & (1 << 9)) != 0 ? (int)data[2] : top.Y;
-                    int w = (flags & (1 << 10)) != 0 ? Math.Max(1, (int)data[3]) : top.Width;
-                    int h = (flags & (1 << 11)) != 0 ? Math.Max(1, (int)data[4]) : top.Height;
+                    int x = (flags & (1 << 8)) != 0 ? Math.Clamp((int)data[1], short.MinValue, short.MaxValue) : top.X;
+                    int y = (flags & (1 << 9)) != 0 ? Math.Clamp((int)data[2], short.MinValue, short.MaxValue) : top.Y;
+                    int w = (flags & (1 << 10)) != 0 ? (int)data[3] : top.Width;
+                    int h = (flags & (1 << 11)) != 0 ? (int)data[4] : top.Height;
+                    if (w is < 1 or > short.MaxValue || h is < 1 or > short.MaxValue)
+                    {
+                        break;
+                    }
+                    if (top.Buffer is not null && (w != top.Width || h != top.Height))
+                    {
+                        try
+                        {
+                            RequireBufferMemory(top, w, h);   // 缓冲要跟着变大:先核账(与 ConfigureWindow 一样)
+                        }
+                        catch (XProtocolError)
+                        {
+                            break;
+                        }
+                    }
                     Configure(top, x, y, w, h, top.BorderWidth, null, -1);
                     break;
                 }
