@@ -230,9 +230,9 @@ public sealed partial class X11Server : IAsyncDisposable
             {
                 await task.ConfigureAwait(false);
             }
-            catch (OperationCanceledException)
+            catch (Exception)
             {
-                // 收工。
+                // 收工(OperationCanceledException);别的异常也不在这里重抛 —— 重抛就跳过了下面断开客户端、摘共享内存段的收尾。
             }
         }
         foreach (XClient client in _clients.Values)

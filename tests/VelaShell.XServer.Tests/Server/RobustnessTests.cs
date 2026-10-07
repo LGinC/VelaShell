@@ -359,6 +359,61 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 宿主的日志委托抛异常不会拖垮执行循环_收工照常()
+    {
+        // 宿主回调抛异常 → 记「host callback failed」→ 宿主的日志也抛:原先这一下在放锁之后直接调、没人接,
+        // 执行循环随之退出,之后所有客户端都卡住,DisposeAsync 也在等执行循环时重抛。
+        int logCalls = 0;
+        X11Server server = new(new X11ServerOptions
+        {
+            Log = _ =>
+            {
+                Interlocked.Increment(ref logCalls);
+                throw new InvalidOperationException("the host's log is broken");
+            },
+        }, new BellThrowingHost());
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await c.SendAsync(104, 0);   // Bell:宿主的 BellRequested 抛异常
+        await c.SyncAsync();
+        await Task.Delay(50);
+        await c.SendAsync(104, 0);
+        await c.SyncAsync();
+        Assert.IsGreaterThan(0, Volatile.Read(ref logCalls), "宿主的日志确实被调到了(并抛了异常)");
+        Assert.IsTrue((await c.RequestAsync(43, 0)).IsReply, "执行循环还在跑");
+        await server.DisposeAsync();   // 不抛
+    }
+
+    /// <summary>BellRequested 抛异常的宿主,其余什么也不做。</summary>
+    private sealed class BellThrowingHost : IX11ServerHost
+    {
+        public void TopLevelMapped(XTopLevelWindow window)
+        {
+        }
+
+        public void TopLevelUnmapped(XTopLevelWindow window)
+        {
+        }
+
+        public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes)
+        {
+        }
+
+        public void TopLevelDamaged(XTopLevelWindow window, IReadOnlyList<XRect> damage)
+        {
+        }
+
+        public void CursorChanged(XTopLevelWindow? window, XCursor cursor)
+        {
+        }
+
+        public void BellRequested(int volume) => throw new InvalidOperationException("the host's bell is broken");
+
+        public void ClipboardChanged(string text)
+        {
+        }
+    }
+
+    [TestMethod]
     public async Task 客户端给的字符串进日志前去掉控制字符并截断_刷屏的日志按字节限额()
     {
         System.Collections.Concurrent.ConcurrentQueue<string> lines = new();

@@ -74,7 +74,8 @@ public sealed partial class X11Server
 
     /// <summary>
     /// 诊断日志的唯一出口(<see cref="X11ServerOptions.Log" />)。执行线程持锁时先攒着,放锁之后按原顺序交出去;
-    /// 连接的读写线程上直接交。
+    /// 连接的读写线程上直接交。宿主的日志委托抛的异常一律吞掉:原先放锁之后(DeferredHost 记「宿主回调失败」的那一行)直接调,
+    /// 异常一路抛出执行循环,之后所有客户端都卡住,DisposeAsync 也在等执行循环时重抛、不收尾。
     /// </summary>
     internal void Log(string message)
     {
@@ -87,7 +88,14 @@ public sealed partial class X11Server
             _pendingLog.Add(message);
             return;
         }
-        log(message);
+        try
+        {
+            log(message);
+        }
+        catch (Exception)
+        {
+            // 宿主的日志出错不能拖垮执行线程(或者连接线程)。
+        }
     }
 
     /// <summary>放锁之后:把持锁期间攒下的日志交给宿主。</summary>
@@ -250,38 +258,56 @@ public sealed partial class X11Server
             while (_ready.Count != 0 || await reader.WaitToReadAsync(_lifetime.Token).ConfigureAwait(false))
             {
                 _lifetime.Token.ThrowIfCancellationRequested();
-                // lock 不公平:刚放锁就再拿,等着读像素的宿主线程可能一直抢不到。宿主在等就先让它读完。
-                _pixelGate.YieldToHost();
-                lock (_pixelGate.Lock)
+                try
                 {
-                    _lockThread = Environment.CurrentManagedThreadId;
-                    try
+                    RunBatch(reader);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    // 兜底:单项工作的异常 RunItem 已经接住了,能到这里的是放锁之后那几步(宿主回调、日志、损伤)里漏网的。
+                    // 执行循环一退出,所有客户端都卡住,宁可记一行接着跑。
+                    if (ShouldLogFrequent())
                     {
-                        long deadline = Stopwatch.GetTimestamp() + LockBudgetTicks;
-                        while (TryTakeItem(reader, out WorkItem item))
-                        {
-                            RunItem(item);
-                            if (Stopwatch.GetTimestamp() >= deadline || _pixelGate.HostWaiting)
-                            {
-                                break;
-                            }
-                        }
-                    }
-                    finally
-                    {
-                        _lockThread = 0;
+                        LogFailure("execution loop:", "loop", ex);
                     }
                 }
-                // 宿主回调与日志一律在放锁之后调:回调里同步等 UI 线程、而 UI 线程正在 ReadPixels 里等这把锁,就是死锁。
-                FlushLog();
-                FlushDamage();
-                _host.Flush();
             }
         }
         catch (OperationCanceledException)
         {
             // 收工。
         }
+    }
+
+    /// <summary>持锁跑一批工作项(到预算或宿主在等就停),放锁之后交日志、损伤与宿主回调。</summary>
+    private void RunBatch(ChannelReader<WorkItem> reader)
+    {
+        // lock 不公平:刚放锁就再拿,等着读像素的宿主线程可能一直抢不到。宿主在等就先让它读完。
+        _pixelGate.YieldToHost();
+        lock (_pixelGate.Lock)
+        {
+            _lockThread = Environment.CurrentManagedThreadId;
+            try
+            {
+                long deadline = Stopwatch.GetTimestamp() + LockBudgetTicks;
+                while (TryTakeItem(reader, out WorkItem item))
+                {
+                    RunItem(item);
+                    if (Stopwatch.GetTimestamp() >= deadline || _pixelGate.HostWaiting)
+                    {
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                _lockThread = 0;
+            }
+        }
+        // 宿主回调与日志一律在放锁之后调:回调里同步等 UI 线程、而 UI 线程正在 ReadPixels 里等这把锁,就是死锁。
+        FlushLog();
+        FlushDamage();
+        _host.Flush();
     }
 
     private void RunItem(WorkItem item)
