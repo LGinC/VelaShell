@@ -2,17 +2,19 @@
 // Copyright 2026 VelaShell Labs
 //
 // 规范依据(AGENTS.md §2 纪律 1):
-//   X Window System Protocol, X Version 11 —— 「CreateCursor」(source / mask 是深度 1 的像素图,mask 与 source 同尺寸;
+//   X Window System Protocol, X Version 11 —— 「CreateGlyphCursor」(源与掩码字形的原点重合、即热点;没有掩码时整个源字形都显示;
+//   字形没定义回 BadValue)、「CreateCursor」(source / mask 是深度 1 的像素图,mask 与 source 同尺寸;
 //   mask 为 None 时整个 source 都显示;source 为 1 的像素用前景色、0 用背景色;热点必须落在 source 里,否则 BadMatch)、
-//   「CreateGlyphCursor」「FreeCursor」「QueryBestSize」;Xlib 附录 B「X Font Cursors」(cursor 字体的字形号与名字)
+//   「FreeCursor」「QueryBestSize」;Xlib 附录 B「X Font Cursors」(cursor 字体的字形号与名字)
 //   The X Rendering Extension, Version 0.11 —— 「CreateCursor」(ARGB 光标取 picture 的像素,预乘 alpha)
 //   X Fixes Extension —— §7「Cursor Names」(SetCursorName / GetCursorName)
 //   CSS Basic User Interface Module Level 4 —— §5.1「cursor」的关键字(光标主题按它们给光标起名)
 //
-//   光标怎么交给宿主:cursor 字体的光标按字形号推出语义形状;位图与 ARGB 光标在创建时烙好图像,
+//   光标怎么交给宿主:cursor 字体的光标按字形号推出语义形状;位图、别的字体的字形与 ARGB 光标在创建时烙好图像,
 //   形状按客户端经 XFIXES 起的名字推出(libXcursor 从主题加载光标后会这样命名)。宿主优先显示图像,没有就按形状选系统光标。
 
 using VelaShell.XServer.Drawing;
+using VelaShell.XServer.Fonts;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Resources;
 using VelaShell.XServer.Server;
@@ -54,16 +56,38 @@ public sealed partial class X11Server
         });
     }
 
+    /// <summary>
+    /// 协议「CreateGlyphCursor」:cursor 字体的字形按字形号交给宿主映射成系统光标(系统光标自带配色,掩码用不上);
+    /// 别的字体的字形烙成图像 —— 两个字形的原点重合、就是热点,有掩码字形时只显示掩码为 1 的像素,源为 1 用前景色、0 用背景色,
+    /// 没有掩码时整个源字形的方框都显示。什么也不显示的(xterm 拿 nil2 字体做的隐形指针)给 Hidden;原先非 cursor 字体一律按默认箭头。
+    /// 字形在字体里没定义回 BadValue。
+    /// </summary>
     private void CreateGlyphCursor(XClient c, XRequestReader r)
     {
         uint id = r.U32();
         uint sourceFont = r.U32();
-        _ = r.U32();                        // mask-font:形状由宿主的系统光标给出,掩码用不上
+        uint maskFont = r.U32();
         ushort sourceChar = r.U16();
-        _ = r.U16();
-        r.Skip(12);                         // 前景、背景色:系统光标自带配色
+        ushort maskChar = r.U16();
+        ushort fr = r.U16(), fg = r.U16(), fb = r.U16(), br = r.U16(), bg = r.U16(), bb = r.U16();
         XFontResource font = Lookup<XFontResource>(sourceFont) ?? throw new XProtocolError(XErrorCode.Font, sourceFont);
-        AddResource(c, new XCursorResource(id, c) { Glyph = font.Font.Name == "cursor" ? sourceChar : -1 });
+        XFontResource? maskResource = maskFont == 0 ? null : Lookup<XFontResource>(maskFont) ?? throw new XProtocolError(XErrorCode.Font, maskFont);
+        if (!font.Font.Glyphs.TryGetValue(sourceChar, out XGlyph? source))
+        {
+            throw new XProtocolError(XErrorCode.Value, sourceChar);
+        }
+        XGlyph? mask = null;
+        if (maskResource is not null && !maskResource.Font.Glyphs.TryGetValue(maskChar, out mask))
+        {
+            throw new XProtocolError(XErrorCode.Value, maskChar);
+        }
+        if (font.Font.Name == "cursor")
+        {
+            AddResource(c, new XCursorResource(id, c) { Glyph = sourceChar });
+            return;
+        }
+        (XCursorImage? image, bool blank) = GlyphCursorImage(source, mask, PixelOf(fr, fg, fb), PixelOf(br, bg, bb));
+        AddResource(c, new XCursorResource(id, c) { Image = image, Blank = blank });
     }
 
     private void FreeCursor(XRequestReader r)
@@ -110,7 +134,7 @@ public sealed partial class X11Server
             _ = r.U32();   // 帧间隔
             first ??= Lookup<XCursorResource>(cursor) ?? throw new XProtocolError(XErrorCode.Cursor, cursor);
         }
-        AddResource(c, new XCursorResource(id, c) { Glyph = first?.Glyph ?? -1, Image = first?.Image, Name = first?.Name });
+        AddResource(c, new XCursorResource(id, c) { Glyph = first?.Glyph ?? -1, Image = first?.Image, Blank = first?.Blank ?? false, Name = first?.Name });
     }
 
     /// <summary>XFIXES SetCursorName:记下名字(宿主据此推出光标形状);正显示着这个光标时通知宿主。</summary>
@@ -139,6 +163,49 @@ public sealed partial class X11Server
             }
         }
         return new XCursorImage(source.Width, source.Height, hotX, hotY, pixels);
+    }
+
+    /// <summary>
+    /// 字形光标的图像:源与掩码字形的原点重合(热点),图像是两个字形方框的并集。返回的 blank 表示一个像素也不显示(隐形指针)。
+    /// 太大时不烙图像(按形状显示)。
+    /// </summary>
+    private static (XCursorImage? Image, bool Blank) GlyphCursorImage(XGlyph source, XGlyph? mask, uint foreground, uint background)
+    {
+        XCharInfo s = source.Info, m = mask?.Info ?? s;
+        int left = Math.Min(s.LeftBearing, m.LeftBearing), right = Math.Max(s.RightBearing, m.RightBearing);
+        int ascent = Math.Max(s.Ascent, m.Ascent), descent = Math.Max(s.Descent, m.Descent);
+        int width = right - left, height = ascent + descent;
+        if (width <= 0 || height <= 0)
+        {
+            return (null, true);
+        }
+        if (width > MaxCursorImageSize || height > MaxCursorImageSize)
+        {
+            return (null, false);
+        }
+        uint[] pixels = new uint[width * height];
+        bool any = false;
+        for (int y = 0; y < height; y++)
+        {
+            for (int x = 0; x < width; x++)
+            {
+                int gx = x + left, gy = y - ascent;   // 相对原点
+                bool shown = mask is null ? InBox(source, gx, gy) : IsSet(mask, gx, gy);
+                if (shown)
+                {
+                    pixels[(y * width) + x] = 0xFF000000 | (IsSet(source, gx, gy) ? foreground : background);
+                    any = true;
+                }
+            }
+        }
+        return any
+            ? (new XCursorImage(width, height, Math.Clamp(-left, 0, width - 1), Math.Clamp(ascent, 0, height - 1), pixels), false)
+            : (null, true);
+
+        static bool InBox(XGlyph g, int gx, int gy) =>
+            gx >= g.Info.LeftBearing && gx < g.Info.RightBearing && gy >= -g.Info.Ascent && gy < g.Info.Descent;
+
+        static bool IsSet(XGlyph g, int gx, int gy) => InBox(g, gx, gy) && g.IsSet(gx - g.Info.LeftBearing, gy + g.Info.Ascent);
     }
 
     /// <summary>RENDER 的 ARGB 光标:picture 所在像素图的像素按它的格式换成预乘的 0xAARRGGBB。窗口上的 picture 不烙图像。</summary>
@@ -191,7 +258,7 @@ public sealed partial class X11Server
 
     private static XCursor AppearanceOf(XCursorResource cursor) =>
         cursor.Appearance ??= new XCursor(
-            (cursor.Name is { } name ? ShapeOfName(name) : null) ?? ShapeOfGlyph(cursor.Glyph),
+            (cursor.Name is { } name ? ShapeOfName(name) : null) ?? (cursor.Blank ? XCursorShape.Hidden : ShapeOfGlyph(cursor.Glyph)),
             cursor.Image);
 
     /// <summary>cursor 字体的字形号 → 形状(Xlib 附录 B;没有对应的给箭头)。</summary>

@@ -1,0 +1,71 @@
+using System.Text;
+using VelaShell.XServer.Tests.TestKit;
+
+namespace VelaShell.XServer.Tests.Server;
+
+/// <summary>光标:字形光标烙成图像、隐形指针,以及交给宿主的样子。</summary>
+[TestClass]
+[TestCategory("X11Server")]
+public sealed class CursorTests
+{
+    private static async Task<uint> OpenFontAsync(XTestClient c, string name)
+    {
+        uint font = c.NewId();
+        byte[] bytes = Encoding.Latin1.GetBytes(name);
+        await c.SendAsync(45, 0, b => b.U32(font).U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad());
+        return font;
+    }
+
+    /// <summary>CreateGlyphCursor:前景白、背景黑。</summary>
+    private static Task<ushort> CreateGlyphCursorAsync(XTestClient c, uint cursor, uint sourceFont, uint maskFont, ushort sourceChar, ushort maskChar) =>
+        c.SendAsync(94, 0, b => b.U32(cursor).U32(sourceFont).U32(maskFont).U16(sourceChar).U16(maskChar)
+            .U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0).U16(0).U16(0));
+
+    /// <summary>建一个映射着的顶层、设上光标,指针移进去。</summary>
+    private static async Task<XTopLevelWindow> PointAtCursorAsync(XTestClient c, RecordingHost host, X11Server server, uint cursor)
+    {
+        uint top = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(top).U32(c.RootWindow).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0)
+            .U32(0x4000).U32(cursor));   // cursor
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        server.InjectPointerMotion(host.Mapped[top], 5, 5);
+        return host.Mapped[top];
+    }
+
+    [TestMethod]
+    public async Task nil2字体的空白字形光标是隐形指针_别的字体的字形烙成图像_cursor字体照旧按形状()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint nil = await OpenFontAsync(c, "nil2");
+        uint hidden = c.NewId();
+        await CreateGlyphCursorAsync(c, hidden, nil, nil, 'X', ' ');   // xterm 的隐形指针
+        await PointAtCursorAsync(c, host, server, hidden);
+        await host.WaitForAsync(() => host.Cursor?.Shape == XCursorShape.Hidden);
+        Assert.IsNull(host.Cursor!.Image, "原先非 cursor 字体的字形一律按默认箭头");
+
+        uint fixedFont = await OpenFontAsync(c, "fixed");
+        uint glyph = c.NewId();
+        await CreateGlyphCursorAsync(c, glyph, fixedFont, 0, 'A', 0);   // 没有掩码:整个字形方框都显示
+        await c.SendAsync(2, 0, b => b.U32(host.Mapped.Keys.Single()).U32(0x4000).U32(glyph));
+        await host.WaitForAsync(() => host.Cursor?.Image is not null);
+        XCursorImage image = host.Cursor!.Image!;
+        Assert.AreEqual((6, 13), (image.Width, image.Height), "6x13 的 A 的方框");
+        Assert.IsTrue(image.Pixels.All(p => p is 0xFFFFFFFF or 0xFF000000), "前景白、背景黑,全都显示");
+        Assert.Contains(0xFFFFFFFFu, image.Pixels);
+        Assert.AreEqual(XCursorShape.Arrow, host.Cursor.Shape);
+
+        uint cursorFont = await OpenFontAsync(c, "cursor");
+        uint text = c.NewId();
+        await CreateGlyphCursorAsync(c, text, cursorFont, cursorFont, 152, 153);   // xterm(I 形)
+        await c.SendAsync(2, 0, b => b.U32(host.Mapped.Keys.Single()).U32(0x4000).U32(text));
+        await host.WaitForAsync(() => host.Cursor?.Shape == XCursorShape.Text);
+
+        XMessage error = await c.RequestAsync(94, 0, b => b.U32(c.NewId()).U32(fixedFont).U32(0).U16(0x1234).U16(0)
+            .U16(0).U16(0).U16(0).U16(0).U16(0).U16(0));
+        Assert.IsTrue(error.IsError);
+        Assert.AreEqual(2, error.Detail, "字体里没定义的字形:BadValue");
+    }
+}

@@ -72,6 +72,9 @@ internal sealed class XCursorResource(uint id, XClient? owner) : XResource(id, o
     /// <summary>位图 / ARGB 光标的图像(预乘的 ARGB 与热点);cursor 字体的光标为 null。</summary>
     public XCursorImage? Image { get; init; }
 
+    /// <summary>一个像素也不显示的光标(xterm 拿 nil2 字体的空白字形做的隐形指针):交给宿主时是 Hidden。</summary>
+    public bool Blank { get; init; }
+
     /// <summary>客户端经 XFIXES SetCursorName 起的名字(光标主题里的名字,如 <c>text</c>、<c>pointer</c>);没起为 null。</summary>
     public string? Name { get; set; }
 
