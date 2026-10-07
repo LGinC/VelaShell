@@ -336,4 +336,40 @@ public sealed class EwmhTests
         Assert.AreEqual(a, await FocusAsync());
         await host.WaitForAsync(() => host.Requests.OfType<XFocusRequest>().Any(r => r.Window.Id == a));
     }
+    [TestMethod]
+    public async Task 服务端自己的窗口不能被reparent_改几何_改属性_映射_也就不会被连带销毁()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint checkAtom = await InternAsync(c, "_NET_SUPPORTING_WM_CHECK");
+        uint check = (await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(checkAtom).U32(0).U32(0).U32(1))).U32(32);
+        uint mine = await CreateTopAsync(c);
+
+        async Task<byte?> ErrorOfAsync(byte opcode, byte data, Action<XTestClient.Body> body)
+        {
+            ushort seq = await c.SendAsync(opcode, data, body);
+            await c.SyncAsync();
+            try
+            {
+                return (await c.NextAsync(m => m.IsError && m.Sequence == seq, 100)).Detail;
+            }
+            catch (OperationCanceledException)
+            {
+                return null;
+            }
+        }
+
+        Assert.AreEqual((byte?)8, await ErrorOfAsync(7, 0, b => b.U32(check).U32(mine).I16(0).I16(0)), "ReparentWindow:BadMatch");
+        Assert.AreEqual((byte?)8, await ErrorOfAsync(12, 0, b => b.U32(check).U16(0x4).U16(0).U32(500)), "ConfigureWindow:BadMatch");
+        Assert.AreEqual((byte?)10, await ErrorOfAsync(2, 0, b => b.U32(check).U32(0x2).U32(0xFF0000)), "改背景:BadAccess");
+        Assert.IsNull(await ErrorOfAsync(2, 0, b => b.U32(check).U32(0x800).U32(0x20000)), "选 StructureNotify 照常可以");
+        Assert.AreEqual((byte?)8, await ErrorOfAsync(1, 0, b => b.U32(c.NewId()).U32(check).I16(0).I16(0).U16(1).U16(1).U16(0).U16(2).U32(0).U32(0)),
+            "在它下面建窗口:BadMatch");
+        await c.SendAsync(8, 0, b => b.U32(check));   // MapWindow:不理会
+        await c.SendAsync(4, 0, b => b.U32(mine));    // DestroyWindow 自己的窗口
+        await c.SyncAsync();
+        Assert.IsEmpty(host.Mapped, "宿主没有多出一个原生窗口");
+        Assert.IsTrue((await c.RequestAsync(3, 0, b => b.U32(check))).IsReply, "还在");
+    }
 }

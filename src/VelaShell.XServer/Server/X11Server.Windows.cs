@@ -34,6 +34,10 @@ public sealed partial class X11Server
         XWindow parent = Window(r.U32());
         short x = r.I16(), y = r.I16();
         ushort width = r.U16(), height = r.U16(), border = r.U16(), cls = r.U16();
+        if (IsServerWindow(parent))
+        {
+            throw new XProtocolError(XErrorCode.Match);   // 服务端自己的窗口不在窗口树里,下面建的窗口没有着落
+        }
         uint visual = r.U32();
         uint mask = r.U32();
 
@@ -106,6 +110,10 @@ public sealed partial class X11Server
     {
         XWindow window = Window(r.U32());
         uint mask = r.U32();
+        if (IsServerWindow(window) && (mask & ~(uint)XWindowAttrMask.EventMask) != 0)
+        {
+            throw new XProtocolError(XErrorCode.Access);   // 只许选事件(GTK 在 WM 检查窗口上选 StructureNotify)
+        }
         ApplyWindowAttributes(c, window, mask, r);
         if ((mask & (uint)XWindowAttrMask.Cursor) != 0)
         {
@@ -251,7 +259,7 @@ public sealed partial class X11Server
 
     internal void Destroy(XWindow window)
     {
-        if (window.IsRoot || window.Id == SelectionWindowId || !_resources.ContainsKey(window.Id))
+        if (window.Owner is null || !_resources.ContainsKey(window.Id))   // 根窗口与服务端自己的窗口不能销毁
         {
             return;
         }
@@ -408,7 +416,21 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 映射
 
-    private void MapWindow(XClient c, XRequestReader r) => Map(c, Window(r.U32()));
+    private void MapWindow(XClient c, XRequestReader r)
+    {
+        XWindow window = Window(r.U32());
+        if (!IsServerWindow(window))
+        {
+            Map(c, window);   // 服务端自己的窗口(剪贴板桥、WM 检查窗口)映射了,宿主就会多出一个原生窗口
+        }
+    }
+
+    /// <summary>
+    /// 服务端自己的窗口(<see cref="SelectionWindowId" /> 这类,根窗口之外 Owner 为 null 的):客户端不能映射、改几何、改属性(事件选择除外)、
+    /// reparent 或在它下面建窗口,销毁时跳过 —— 原先 ReparentWindow(0x43, 自己的窗口) 再销毁自己的窗口,剪贴板桥接、XSETTINGS、
+    /// _NET_SUPPORTING_WM_CHECK 就一起没了,整个显示(所有会话)直到重启。
+    /// </summary>
+    private static bool IsServerWindow(XWindow window) => window.Owner is null && !window.IsRoot;
 
     internal void Map(XClient? requester, XWindow window)
     {
@@ -471,7 +493,14 @@ public sealed partial class X11Server
         }
     }
 
-    private void UnmapWindow(XRequestReader r) => Unmap(Window(r.U32()));
+    private void UnmapWindow(XRequestReader r)
+    {
+        XWindow window = Window(r.U32());
+        if (!IsServerWindow(window))
+        {
+            Unmap(window);
+        }
+    }
 
     internal void Unmap(XWindow window, bool fromConfigure = false)
     {
@@ -520,6 +549,10 @@ public sealed partial class X11Server
     private void ConfigureWindow(XClient c, XRequestReader r)
     {
         XWindow window = Window(r.U32());
+        if (IsServerWindow(window))
+        {
+            throw new XProtocolError(XErrorCode.Match);
+        }
         ushort mask = r.U16();
         r.Skip(2);
         int x = window.X, y = window.Y, width = window.Width, height = window.Height, border = window.BorderWidth;
@@ -699,7 +732,7 @@ public sealed partial class X11Server
         XWindow window = Window(r.U32());
         XWindow parent = Window(r.U32());
         short x = r.I16(), y = r.I16();
-        if (window.IsRoot || ReferenceEquals(parent, window) || parent.IsDescendantOf(window))
+        if (window.Owner is null || IsServerWindow(parent) || ReferenceEquals(parent, window) || parent.IsDescendantOf(window))
         {
             throw new XProtocolError(XErrorCode.Match);
         }
