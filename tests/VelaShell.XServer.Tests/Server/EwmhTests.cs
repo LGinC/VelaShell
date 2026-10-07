@@ -489,6 +489,35 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task 弹出菜单抓着指针时用户点别的X窗口_按下送到抓取方_菜单关得掉()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient menuApp = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        uint main = await CreateTopAsync(menuApp);
+        await menuApp.SendAsync(8, 0, b => b.U32(main));
+        uint popup = menuApp.NewId();   // override-redirect 的菜单,选了按钮事件
+        await menuApp.SendAsync(1, 0, b => b.U32(popup).U32(menuApp.RootWindow).I16(10).I16(10).U16(30).U16(30).U16(0).U16(1).U32(0)
+            .U32(0x200 | 0x800).U32(1).U32(0x4 | 0x8));
+        await menuApp.SendAsync(8, 0, b => b.U32(popup));
+        uint elsewhere = await CreateTopAsync(other);
+        await other.SendAsync(2, 0, b => b.U32(elsewhere).U32(0x800).U32(0x4));
+        await other.SendAsync(8, 0, b => b.U32(elsewhere));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(popup) && host.Mapped.ContainsKey(elsewhere));
+        // 菜单弹出时 GrabPointer(owner-events False,按钮按下 / 松开)。
+        XMessage grab = await menuApp.RequestAsync(26, 0, b => b.U32(popup).U16(0x4 | 0x8).U8(1).U8(1).U32(0).U32(0).U32(0));
+        Assert.AreEqual(0, grab.Detail, "GrabSuccess");
+
+        // 用户点了另一个程序的 X 窗口:按下照协议送到抓取窗口(坐标在菜单外面),菜单据此收起;那个窗口收不到。
+        server.InjectPointerButton(host.Mapped[elsewhere], 50, 50, 1, pressed: true);
+        XMessage press = await menuApp.NextEventAsync(4);
+        Assert.AreEqual(popup, press.U32(12), "抓取窗口");
+        await other.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => other.NextEventAsync(4, timeoutMs: 100));
+    }
+
+    [TestMethod]
     public async Task 焦点给了顶层就更新活动窗口与FOCUSED状态()
     {
         using RecordingHost host = new();
