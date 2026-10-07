@@ -652,7 +652,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                 int[] row = new int[best.Width];
                 for (int y = 0; y < best.Height; y++)
                 {
-                    Buffer.BlockCopy(best.Pixels, y * best.Width * 4, row, 0, best.Width * 4);
+                    System.Runtime.InteropServices.MemoryMarshal.Cast<uint, int>(best.Pixels.Span.Slice(y * best.Width, best.Width)).CopyTo(row);
                     System.Runtime.InteropServices.Marshal.Copy(row, 0, frame.Address + (y * frame.RowBytes), best.Width);
                 }
             }

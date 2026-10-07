@@ -194,9 +194,9 @@ public sealed class EwmhTests
         XTopLevelSnapshot s = host.Mapped[top].Snapshot;
         XWindowIcon only = s.Icons.Single();
         Assert.AreEqual((4, 2), (only.Width, only.Height));
-        Assert.AreEqual(0xFF000000u, only.Pixels[0], "1 → 黑");
-        Assert.AreEqual(0xFFFFFFFFu, only.Pixels[3], "0 → 白");
-        Assert.AreEqual(0u, only.Pixels[4], "掩码为 0 处透明");
+        Assert.AreEqual(0xFF000000u, only.Pixels.Span[0], "1 → 黑");
+        Assert.AreEqual(0xFFFFFFFFu, only.Pixels.Span[3], "0 → 白");
+        Assert.AreEqual(0u, only.Pixels.Span[4], "掩码为 0 处透明");
         Assert.AreEqual(leader, s.WindowGroup?.Id);
         Assert.AreEqual(XWindowFunctions.Move | XWindowFunctions.Minimize | XWindowFunctions.Close, s.Functions);
 

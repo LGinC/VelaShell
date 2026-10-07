@@ -484,7 +484,7 @@ public sealed partial class X11Server
     private XCursorResource CursorRes(uint id) => Lookup<XCursorResource>(id) ?? throw new XProtocolError(XErrorCode.Cursor, id);
 
     /// <summary>没有图像可给时(cursor 字体的字形光标 —— 字体只有度量 —— 与隐形指针):1×1 的透明像素。</summary>
-    private static readonly XCursorImage NoCursorImage = new(1, 1, 0, 0, [0]);
+    private static readonly XCursorImage NoCursorImage = new(1, 1, 0, 0, new uint[1]);
 
     /// <summary>
     /// XFIXES §7「GetCursorImage」:指针的位置(根坐标)与指针处那个光标的图像。位图光标、ARGB 光标、别的字体的字形光标都烙过图像,
@@ -495,7 +495,7 @@ public sealed partial class X11Server
 
     private static void WritePixels(XWriter w, XCursorImage image)
     {
-        foreach (uint pixel in image.Pixels)
+        foreach (uint pixel in image.Pixels.Span)
         {
             w.U32(pixel);
         }

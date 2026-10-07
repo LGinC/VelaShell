@@ -26,8 +26,8 @@ public sealed record XCursor(XCursorShape Shape, XCursorImage? Image = null)
 /// <param name="Height">高,像素。</param>
 /// <param name="HotspotX">热点(指针实际指着的那个像素)相对左上角的位置。</param>
 /// <param name="HotspotY">热点相对左上角的位置。</param>
-/// <param name="Pixels">像素。</param>
-public sealed record XCursorImage(int Width, int Height, int HotspotX, int HotspotY, uint[] Pixels);
+/// <param name="Pixels">像素(只读:同一份图像会出现在多次回调里,服务端还拿它回 XFIXES 的 GetCursorImage)。</param>
+public sealed record XCursorImage(int Width, int Height, int HotspotX, int HotspotY, ReadOnlyMemory<uint> Pixels);
 
 /// <summary>光标的语义形状(与 CSS 的 cursor 关键字大致一一对应)。</summary>
 public enum XCursorShape

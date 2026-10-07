@@ -190,7 +190,7 @@ public sealed class XNativeWindow : Window
         {
             for (int y = 0; y < image.Height; y++)
             {
-                MemoryMarshal.AsBytes(image.Pixels.AsSpan(y * image.Width, image.Width))
+                MemoryMarshal.AsBytes(image.Pixels.Span.Slice(y * image.Width, image.Width))
                     .CopyTo(new Span<byte>((void*)(frame.Address + (y * frame.RowBytes)), image.Width * 4));
             }
         }

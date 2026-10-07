@@ -101,8 +101,8 @@ public enum XMoveResizeDirection
     Cancel = 11,
 }
 
-/// <summary>一个窗口图标(<c>_NET_WM_ICON</c>):非预乘的 <c>0xAARRGGBB</c>,行优先。</summary>
-public sealed record XWindowIcon(int Width, int Height, uint[] Pixels);
+/// <summary>一个窗口图标(<c>_NET_WM_ICON</c>):非预乘的 <c>0xAARRGGBB</c>,行优先。像素只读:各份快照共用同一份图标。</summary>
+public sealed record XWindowIcon(int Width, int Height, ReadOnlyMemory<uint> Pixels);
 
 /// <summary>客户端向窗口管理器(即宿主)提出的请求。宿主按自己的规则决定是否照办。</summary>
 /// <param name="Window">提出请求的顶层窗口。</param>

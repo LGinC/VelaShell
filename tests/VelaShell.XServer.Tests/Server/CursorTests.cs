@@ -94,8 +94,8 @@ public sealed class CursorTests
         await host.WaitForAsync(() => host.Cursor?.Image is not null);
         XCursorImage image = host.Cursor!.Image!;
         Assert.AreEqual((6, 13), (image.Width, image.Height), "6x13 的 A 的方框");
-        Assert.IsTrue(image.Pixels.All(p => p is 0xFFFFFFFF or 0xFF000000), "前景白、背景黑,全都显示");
-        Assert.Contains(0xFFFFFFFFu, image.Pixels);
+        Assert.IsTrue(image.Pixels.ToArray().All(p => p is 0xFFFFFFFF or 0xFF000000), "前景白、背景黑,全都显示");
+        Assert.Contains(0xFFFFFFFFu, image.Pixels.ToArray());
         Assert.AreEqual(XCursorShape.Arrow, host.Cursor.Shape);
 
         uint cursorFont = await OpenFontAsync(c, "cursor");

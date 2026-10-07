@@ -204,7 +204,7 @@ public sealed class HostApiTests
         await host.WaitForAsync(() => host.Cursor?.Image is not null);
         XCursorImage image = host.Cursor!.Image!;
         Assert.AreEqual((16, 16, 3, 4), (image.Width, image.Height, image.HotspotX, image.HotspotY));
-        Assert.AreEqual(0xFF0000FFu, image.Pixels[0], "source 为 0 的像素用背景色(蓝),不透明");
+        Assert.AreEqual(0xFF0000FFu, image.Pixels.Span[0], "source 为 0 的像素用背景色(蓝),不透明");
         Assert.AreEqual(XCursorShape.Arrow, host.Cursor.Shape, "没起名字:形状推不出来");
 
         byte xfixes = await MajorAsync(c, "XFIXES");
