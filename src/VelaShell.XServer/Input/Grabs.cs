@@ -75,6 +75,82 @@ internal sealed record PassiveGrab(
         (detail == AnyDetail || detail == Detail) && (modifiers == AnyModifier || modifiers == Modifiers);
 }
 
+/// <summary>
+/// 一个窗口上的被动抓取(按钮或按键),按 detail 分桶:按下时只看这个 detail 的与 AnyButton / AnyKey 的两桶,不扫整张表。
+/// 原先是一张表,每次按键、按钮都从根到源窗口逐个窗口线性扫。
+/// </summary>
+internal sealed class PassiveGrabTable : IEnumerable<PassiveGrab>
+{
+    private readonly Dictionary<int, List<PassiveGrab>> _byDetail = [];
+
+    public int Count { get; private set; }
+
+    public void Add(PassiveGrab grab)
+    {
+        if (!_byDetail.TryGetValue(grab.Detail, out List<PassiveGrab>? bucket))
+        {
+            _byDetail[grab.Detail] = bucket = [];
+        }
+        bucket.Add(grab);
+        Count++;
+    }
+
+    public int RemoveAll(Predicate<PassiveGrab> match)
+    {
+        int removed = 0;
+        foreach ((int detail, List<PassiveGrab> bucket) in _byDetail)
+        {
+            removed += bucket.RemoveAll(match);
+            if (bucket.Count == 0)
+            {
+                _byDetail.Remove(detail);   // 枚举中删除当前键:Dictionary 允许
+            }
+        }
+        Count -= removed;
+        return removed;
+    }
+
+    /// <summary>与 <paramref name="detail" /> 有关的抓取:这个 detail 的与 Any 的;<paramref name="detail" /> 本身是 Any 时全部。</summary>
+    public IEnumerable<PassiveGrab> Overlapping(int detail)
+    {
+        if (detail == PassiveGrab.AnyDetail)
+        {
+            return this;
+        }
+        IEnumerable<PassiveGrab> specific = _byDetail.TryGetValue(detail, out List<PassiveGrab>? bucket) ? bucket : [];
+        return _byDetail.TryGetValue(PassiveGrab.AnyDetail, out List<PassiveGrab>? any) ? specific.Concat(any) : specific;
+    }
+
+    /// <summary>匹配这次按下(<paramref name="detail" />、修饰状态)的抓取:先看这个 detail 的,再看 Any 的;属主已断开的不算。</summary>
+    public PassiveGrab? Find(int detail, ushort modifiers)
+    {
+        if (Count == 0)
+        {
+            return null;
+        }
+        return Match(detail) ?? Match(PassiveGrab.AnyDetail);
+
+        PassiveGrab? Match(int key)
+        {
+            if (_byDetail.TryGetValue(key, out List<PassiveGrab>? bucket))
+            {
+                foreach (PassiveGrab grab in bucket)
+                {
+                    if (grab.Matches(detail, modifiers) && !grab.Client.Closed)
+                    {
+                        return grab;
+                    }
+                }
+            }
+            return null;
+        }
+    }
+
+    public IEnumerator<PassiveGrab> GetEnumerator() => _byDetail.Values.SelectMany(bucket => bucket).GetEnumerator();
+
+    System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+}
+
 /// <summary>一个生效中的抓取(指针或键盘)。</summary>
 internal sealed class ActiveGrab
 {

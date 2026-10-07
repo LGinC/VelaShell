@@ -765,21 +765,34 @@ public sealed partial class X11Server
         return path;
     }
 
+    /// <summary>最近的公共祖先:先把深的那个提到同一层,再一起往上走(指针每跨一次窗口都要算,原先每次建一个 HashSet)。</summary>
     private static XWindow CommonAncestor(XWindow a, XWindow b)
     {
-        HashSet<XWindow> chain = [];
-        for (XWindow? w = a; w is not null; w = w.Parent)
+        int da = Depth(a), db = Depth(b);
+        XWindow? x = a, y = b;
+        for (; da > db; da--)
         {
-            chain.Add(w);
+            x = x!.Parent;
         }
-        for (XWindow? w = b; w is not null; w = w.Parent)
+        for (; db > da; db--)
         {
-            if (chain.Contains(w))
+            y = y!.Parent;
+        }
+        while (x is not null && !ReferenceEquals(x, y))
+        {
+            (x, y) = (x.Parent, y!.Parent);
+        }
+        return x ?? a;
+
+        static int Depth(XWindow w)
+        {
+            int depth = 0;
+            for (XWindow? p = w.Parent; p is not null; p = p.Parent)
             {
-                return w;
+                depth++;
             }
+            return depth;
         }
-        return a;
     }
 
     /// <summary>
@@ -963,12 +976,16 @@ public sealed partial class X11Server
     {
         byte oldBase = _baseMods, oldLatched = _latchedMods, oldLocked = _lockedMods;
         ushort oldEffective = _modifiers;
+        // 只看修饰键表里的那十几个键码(原先每次按键扫全部 248 个,每个再查一遍修饰键表)。
         byte held = 0;
-        for (int code = Keymap.MinKeycode; code <= Keymap.MaxKeycode; code++)
+        byte[] map = _keymap.ModifierMap;
+        int per = _keymap.KeycodesPerModifier;
+        for (int i = 0; i < map.Length; i++)
         {
-            if ((_keysDown[code >> 3] & (1 << (code & 7))) != 0 && !_keymap.IsLockingKey((byte)code))
+            byte code = map[i];
+            if (code != 0 && (held & (1 << (i / per))) == 0 && IsKeyDown(code) && !_keymap.IsLockingKey(code))
             {
-                held |= (byte)_keymap.ModifierBitOf((byte)code);
+                held |= (byte)(1 << (i / per));
             }
         }
         _baseMods = held;
@@ -1018,14 +1035,7 @@ public sealed partial class X11Server
             {
                 return null;
             }
-            foreach (PassiveGrab grab in isButton ? w.ButtonGrabs : w.KeyGrabs)
-            {
-                if (grab.Matches(detail, mods) && !grab.Client.Closed)
-                {
-                    return (w, grab);
-                }
-            }
-            return null;
+            return (isButton ? w.ButtonGrabs : w.KeyGrabs).Find(detail, mods) is { } grab ? (w, grab) : null;
         }
     }
 
@@ -1430,9 +1440,9 @@ public sealed partial class X11Server
     /// AnyButton 时「对任何一个组合有冲突」都算,原先只比完全相同的组合);同一客户端自己在这些组合上的旧抓取被取代 ——
     /// 整个被盖住的删掉,只盖住一部分的减掉那一部分。
     /// </summary>
-    private static void AddCorePassiveGrab(List<PassiveGrab> list, PassiveGrab grab)
+    private static void AddCorePassiveGrab(PassiveGrabTable list, PassiveGrab grab)
     {
-        foreach (PassiveGrab g in list)
+        foreach (PassiveGrab g in list.Overlapping(grab.Detail))
         {
             if (!ReferenceEquals(g.Client, grab.Client) && !g.Client.Closed && g.Overlaps(grab.Detail, grab.Modifiers))
             {
@@ -1452,10 +1462,10 @@ public sealed partial class X11Server
     /// 这些组合:Ungrab*,以及新登记的抓取取代旧的。整个被盖住的删掉;只有一部分重合的(旧的是 AnyModifier / AnyKey)记下减掉的组合。
     /// 核心的 Ungrab 只动核心的抓取(原先连这个客户端的 XI2 被动抓取一起删)。
     /// </summary>
-    private static void SubtractPassiveGrabs(List<PassiveGrab> list, XClient client, bool xi2, int detail, ushort modifiers)
+    private static void SubtractPassiveGrabs(PassiveGrabTable list, XClient client, bool xi2, int detail, ushort modifiers)
     {
         list.RemoveAll(g => ReferenceEquals(g.Client, client) && g.Xi2 == xi2 && g.CoveredBy(detail, modifiers));
-        foreach (PassiveGrab g in list)
+        foreach (PassiveGrab g in list.Overlapping(detail))
         {
             if (ReferenceEquals(g.Client, client) && g.Xi2 == xi2 && g.Overlaps(detail, modifiers))
             {

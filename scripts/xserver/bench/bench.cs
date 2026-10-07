@@ -143,6 +143,25 @@ await RunAsync("RenderFillRectangles ×50", 5_000, _ => c.Request(render, 26, fi
 XTopLevelWindow mapped = host.Mapped ?? throw new InvalidOperationException("窗口没映射");
 await RunAsync("指针移动注入(选了 PointerMotion)", 50_000, i => server.InjectPointerMotion(mapped, i % 800, (i / 800) % 600));
 
+// 指针在两个并排的子窗口之间来回:每次都是 Nonlinear 的 crossing(公共祖先、XI2 的 Enter / Leave);
+// 按键注入:根窗口上登记着 200 个别的键的被动抓取(窗口管理器、快捷键程序都会这样登记),每次按下都要查一遍。
+byte xi = await c.QueryExtensionAsync("XInputExtension");
+await c.RequestAsync(xi, 47, b => b.U16(2).U16(2));   // XIQueryVersion
+uint left = c.NewId(), right = c.NewId();
+foreach ((uint child, short x) in new[] { (left, (short)0), (right, (short)400) })
+{
+    c.Request(1, 24, b => b.U32(child).U32(window).I16(x).I16(0).U16(400).U16(600).U16(0).U16(1).U32(0).U32(0x800).U32(0x10 | 0x20));
+    c.Request(xi, 46, b => b.U32(child).U16(1).U16(0).U16(1).U16(1).U8(0x80).U8(0x01).U8(0).U8(0));   // XI2 Enter | Leave
+    c.Request(8, 0, b => b.U32(child));
+}
+for (int k = 0; k < 200; k++)
+{
+    c.Request(33, 0, b => b.U32(c.Root).U16((ushort)(k % 8 == 0 ? 0x8000 : k % 8)).U8((byte)(100 + (k / 8))).U8(1).U8(1).U8(0).U16(0));   // GrabKey
+}
+await c.SyncAsync();
+await RunAsync("指针在两个子窗口之间来回(crossing)", 20_000, i => server.InjectPointerMotion(mapped, i % 2 == 0 ? 100 : 500, 300));
+await RunAsync("按键注入(根上 200 个被动抓取)", 50_000, i => server.InjectKey(38, pressed: i % 2 == 0));
+
 long roundTripStart = GC.GetTotalAllocatedBytes(precise: true);
 Stopwatch rt = Stopwatch.StartNew();
 const int roundTrips = 5_000;

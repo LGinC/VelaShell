@@ -864,11 +864,10 @@ public sealed partial class X11Server
             if (grabType is 0 or 1)
             {
                 CheckXiGrabDetail(grabType, detail);
-                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+                PassiveGrabTable list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
                 // 与别的客户端的被动抓取有共同组合的不登记,回报给客户端(XI 2.2「XIPassiveGrabDevice」:AlreadyGrabbed);
                 // Any 也算(AnyModifier 等于对所有组合各登记一次)。
-                List<PassiveGrab> others = [.. list.Where(g => !ReferenceEquals(g.Client, c) && !g.Client.Closed
-                                                               && (g.Detail == 0 || detail == 0 || g.Detail == (int)detail))];
+                List<PassiveGrab> others = [.. list.Overlapping((int)detail).Where(g => !ReferenceEquals(g.Client, c) && !g.Client.Closed)];
                 int mine = list.Count(g => ReferenceEquals(g.Client, c));
                 bool deviceSync = grabMode == 0, pairedSync = pairedMode == 0;
                 XCursorResource? cursor = cursorId == 0 ? null : Lookup<XCursorResource>(cursorId);
@@ -913,7 +912,7 @@ public sealed partial class X11Server
             if (grabType is 0 or 1)
             {
                 // AnyModifier / AnyButton 的抓取只减掉这几个组合,其余照样有效(原先不拆分)。
-                List<PassiveGrab> list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
+                PassiveGrabTable list = grabType == 0 ? window.ButtonGrabs : window.KeyGrabs;
                 foreach ((_, ushort core) in modifiers)
                 {
                     SubtractPassiveGrabs(list, c, xi2: true, (int)detail, core);
@@ -1034,15 +1033,26 @@ public sealed partial class X11Server
         int px = _pointerX, py = _pointerY;
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
         uint time = Now;
-        IEnumerable<XClient> targets = force && only is not null
-            ? [only]
-            : window.Xi2Selections.Where(s => ((s.Value.Master | s.Value.Slave) & (1UL << evtype)) != 0 && (only is null || ReferenceEquals(s.Key, only)))
-                .Select(s => s.Key);
-        foreach (XClient client in targets.ToArray())
+        // 指针每跨一个窗口都走这里:直接遍历选择表,不为每个窗口建 LINQ 管道再拷成数组(发事件不改这张表)。
+        if (force && only is not null)
+        {
+            Send(only);
+            return;
+        }
+        ulong bit = 1UL << evtype;
+        foreach ((XClient client, XiSelection selection) in window.Xi2Selections)
+        {
+            if (((selection.Master | selection.Slave) & bit) != 0 && (only is null || ReferenceEquals(client, only)))
+            {
+                Send(client);
+            }
+        }
+
+        void Send(XClient client)
         {
             if (client.Closed)
             {
-                continue;
+                return;
             }
             client.GenericEvent(XInputMajor, (ushort)evtype, w =>
             {
