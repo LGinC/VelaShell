@@ -47,6 +47,8 @@ public sealed class SshChannel : IAsyncDisposable
     private readonly Pipe _stdoutPipe;
     private readonly Pipe? _stderrPipe;
     private readonly Pipe _stdinPipe;
+    private readonly WindowedPipeReader _stdoutReader;
+    private readonly WindowedPipeReader? _stderrReader;
 
     private readonly SshWindow _receiveWindow;
     private readonly SshWindow _sendWindow;
@@ -201,10 +203,10 @@ public sealed class SshChannel : IAsyncDisposable
         _stderrTailLimit = _stderrPipe is null ? options.DiscardedStderrTailBytes : 0;
         _stdinPipe = new Pipe(new PipeOptions(useSynchronizationContext: false));
 
-        StandardOutput = new WindowedPipeReader(_stdoutPipe.Reader, NoteReaderConsumed);
-        StandardError = _stderrPipe is null
-            ? new EmptyPipeReader()
-            : new WindowedPipeReader(_stderrPipe.Reader, NoteReaderConsumed);
+        // 收尾的读端在 _stateLock 里标记，TryDeliver 在同一把锁里看（见 WindowedPipeReader.ReleaseUnread）。
+        StandardOutput = _stdoutReader = new WindowedPipeReader(_stdoutPipe.Reader, NoteReaderConsumed, _stateLock);
+        _stderrReader = _stderrPipe is null ? null : new WindowedPipeReader(_stderrPipe.Reader, NoteReaderConsumed, _stateLock);
+        StandardError = _stderrReader ?? (PipeReader)new EmptyPipeReader();
         StandardInput = _stdinPipe.Writer;
     }
 
@@ -797,7 +799,7 @@ public sealed class SshChannel : IAsyncDisposable
 
         NoteWindowPressure();
 
-        if (!TryDeliver(_stdoutPipe.Writer, data))
+        if (!TryDeliver(_stdoutPipe.Writer, _stdoutReader, data))
         {
             // 没交出去（通道在关、对端已 EOF、消费者不读了）—— 丢弃，
             // 且**立刻回补窗口**：不然「丢弃」就变成了让对端停住的死锁。
@@ -827,7 +829,8 @@ public sealed class SshChannel : IAsyncDisposable
 
         // 〔决策 velashell-docs/zh/ssh/spec/05 §4.2〕非 stderr 的类型码：丢弃、计入窗口、不报错。
         // 保留值的语义未来可能被定义，为它断开会让我们无法与新实现共处。
-        if (dataTypeCode != ExtendedDataStderr || _stderrPipe is null || !TryDeliver(_stderrPipe.Writer, data))
+        if (dataTypeCode != ExtendedDataStderr || _stderrPipe is null || _stderrReader is null
+            || !TryDeliver(_stderrPipe.Writer, _stderrReader, data))
         {
             if (dataTypeCode == ExtendedDataStderr && _stderrTailLimit > 0)
             {
@@ -1104,7 +1107,7 @@ public sealed class SshChannel : IAsyncDisposable
     /// 收尾一侧（<see cref="FinishClose"/>、<see cref="OnEof"/>）总是先在锁里改状态、
     /// 再完成管道，所以锁里看到「还开着」时，管道一定还没被完成。
     /// </remarks>
-    private bool TryDeliver(PipeWriter writer, ReadOnlySequence<byte> data)
+    private bool TryDeliver(PipeWriter writer, WindowedPipeReader reader, ReadOnlySequence<byte> data)
     {
         lock (_stateLock)
         {
@@ -1112,6 +1115,12 @@ public sealed class SshChannel : IAsyncDisposable
             // EOF 之后再来数据是对端的错，但为它断开整条会话不值得 —— 丢弃即可。
             if (_state is SshChannelState.Closing or SshChannelState.Closed
                 or SshChannelState.RemoteEof or SshChannelState.BothEof)
+            {
+                return false;
+            }
+
+            // 读的一方在收尾：它清点完就完成读端，这时再写进去的会随读端一起丢掉、没人回补。
+            if (reader.IsAbandoned)
             {
                 return false;
             }
