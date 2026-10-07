@@ -461,6 +461,34 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task 宿主移动窗口发真实的ConfigureNotify_根窗口上的监听者也收到_再补一条合成的_不回报宿主()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient watcher = await XTestClient.ConnectAsync(server);   // 任务栏、xdotool behave 之类
+        await watcher.SendAsync(2, 0, b => b.U32(watcher.RootWindow).U32(0x800).U32(0x80000));   // SubstructureNotify
+        await watcher.SyncAsync();
+        uint top = await CreateTopAsync(c);
+        await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x20000));   // StructureNotify
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        int logBefore = host.Log.Count;
+
+        server.MoveTopLevel(host.Mapped[top], 300, 200);
+        XMessage seen = await watcher.NextAsync(m => m.EventCode == 22 && m.U32(8) == top);
+        Assert.AreEqual(watcher.RootWindow, seen.U32(4), "根窗口上选了 SubstructureNotify 的收到(原先只有合成的那条发给窗口自己)");
+        Assert.AreEqual((300, 200), (seen.I16(16), seen.I16(18)));
+        Assert.AreEqual(0, seen.Bytes[0] & 0x80, "真实事件");
+        XMessage real = await c.NextEventAsync(22);
+        XMessage synthetic = await c.NextEventAsync(22);
+        Assert.AreEqual(0, real.Bytes[0] & 0x80);
+        Assert.AreEqual(0x80, synthetic.Bytes[0] & 0x80, "ICCCM §4.1.5 的合成事件跟在后面");
+        await c.SyncAsync();
+        Assert.IsFalse(host.Log.Skip(logBefore).Any(e => e.StartsWith($"changed {top:x}", StringComparison.Ordinal)), "宿主自己挪的,不回报");
+    }
+
+    [TestMethod]
     public async Task 焦点给了顶层就更新活动窗口与FOCUSED状态()
     {
         using RecordingHost host = new();

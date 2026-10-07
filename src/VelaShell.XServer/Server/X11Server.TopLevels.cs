@@ -248,19 +248,22 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>原生窗口被用户挪了:改位置,并按 ICCCM §4.1.5 发一条合成的 ConfigureNotify(根坐标)。</summary>
+    /// <summary>
+    /// 原生窗口被用户挪了:像真的移动窗口一样走 <see cref="Configure" /> —— 真实的 ConfigureNotify(窗口上选了 StructureNotify、
+    /// 根窗口上选了 SubstructureNotify 的都收到)、Present 的 ConfigureNotify、重算指针所在的窗口;再按 ICCCM §4.1.5 补一条合成的
+    /// ConfigureNotify(根坐标)。原先只发合成的那条,根窗口上的监听者收不到,指针所在的窗口也不重算。
+    /// </summary>
     private void ApplyMove(XWindow top, int x, int y)
     {
         if (top.X == x && top.Y == y)
         {
             return;
         }
-        top.X = x;
-        top.Y = y;
         if (_topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
         {
-            handle.Snapshot = handle.Snapshot with { X = x, Y = y };   // 宿主自己挪的,不再回报
+            handle.Snapshot = handle.Snapshot with { X = x, Y = y };   // 宿主自己挪的,不再回报(快照先改好,Configure 比不出变化)
         }
+        Configure(top, x, y, top.Width, top.Height, top.BorderWidth, null, -1);
         DeliverToSelectors(top, XEventMask.StructureNotify, c => c.Event(XEventCode.ConfigureNotify, 0, w => w
             .U32(top.Id).U32(top.Id).U32(0).I16(x).I16(y).U16((ushort)top.Width).U16((ushort)top.Height)
             .U16((ushort)top.BorderWidth).Bool(top.OverrideRedirect), sent: true));
