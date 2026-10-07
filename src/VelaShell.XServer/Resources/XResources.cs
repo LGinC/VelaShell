@@ -67,18 +67,18 @@ internal sealed class XColormap(uint id, XClient? owner, uint visual) : XResourc
 internal sealed class XCursorResource(uint id, XClient? owner) : XResource(id, owner)
 {
     /// <summary>cursor 字体的字形号(如 68 = left_ptr、152 = xterm);位图 / ARGB 光标为 -1。</summary>
-    public int Glyph { get; init; } = -1;
+    public int Glyph { get; set; } = -1;
 
     /// <summary>位图 / ARGB 光标的图像(预乘的 ARGB 与热点);cursor 字体的光标为 null。</summary>
-    public XCursorImage? Image { get; init; }
+    public XCursorImage? Image { get; set; }
 
     /// <summary>一个像素也不显示的光标(xterm 拿 nil2 字体的空白字形做的隐形指针):交给宿主时是 Hidden。</summary>
-    public bool Blank { get; init; }
+    public bool Blank { get; set; }
 
     /// <summary>客户端经 XFIXES SetCursorName 起的名字(光标主题里的名字,如 <c>text</c>、<c>pointer</c>);没起为 null。</summary>
     public string? Name { get; set; }
 
-    /// <summary>交给宿主的样子(第一次用到时推出,改名后作废)。</summary>
+    /// <summary>交给宿主的样子(第一次用到时推出,改名、被 XFIXES ChangeCursor 换掉样子后作废)。</summary>
     public XCursor? Appearance { get; set; }
 }
 

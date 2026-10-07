@@ -34,6 +34,47 @@ public sealed class CursorTests
     }
 
     [TestMethod]
+    public async Task XFIXES的GetCursorImage给出指针处光标的图像_ChangeCursor换掉光标的样子()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XMessage query = await c.RequestAsync(98, 0, b => b.U16(6).U16(0).Bytes(Encoding.Latin1.GetBytes("XFIXES")).Pad());
+        byte xfixes = query.Bytes[9];
+        await c.RequestAsync(xfixes, 0, b => b.U32(5).U32(0));
+
+        // 2×2 的位图光标:对角线是前景红,其余背景蓝,热点 (1, 1)。
+        uint bitmap = c.NewId(), gc = c.NewId(), arrow = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(bitmap).U32(c.RootWindow).U16(2).U16(2));
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(bitmap).U32(0));
+        await c.SendAsync(72, 2, b => b.U32(bitmap).U32(gc).U16(2).U16(2).I16(0).I16(0).U8(0).U8(1).U16(0).U32(0b01).U32(0b10));
+        await c.SendAsync(93, 0, b => b.U32(arrow).U32(bitmap).U32(0).U16(0xFFFF).U16(0).U16(0).U16(0).U16(0).U16(0xFFFF).U16(1).U16(1));
+        byte[] name = Encoding.Latin1.GetBytes("pointer");
+        await c.SendAsync(xfixes, 23, b => b.U32(arrow).U16((ushort)name.Length).U16(0).Bytes(name).Pad());   // SetCursorName
+        await PointAtCursorAsync(c, host, server, arrow);
+        await host.WaitForAsync(() => host.Cursor?.Image is { Width: 2 });
+
+        XMessage image = await c.RequestAsync(xfixes, 4);   // GetCursorImage
+        Assert.AreEqual((2, 2), (image.U16(12), image.U16(14)), "原先一律 1×1 的透明像素");
+        Assert.AreEqual((1, 1), (image.U16(16), image.U16(18)), "热点");
+        uint[] pixels = [.. Enumerable.Range(0, 4).Select(i => image.U32(32 + (i * 4)))];
+        CollectionAssert.AreEqual(new[] { 0xFFFF0000u, 0xFF0000FFu, 0xFF0000FFu, 0xFFFF0000u }, pixels);
+
+        XMessage named = await c.RequestAsync(xfixes, 25);   // GetCursorImageAndName
+        Assert.AreEqual(2, named.U16(12));
+        int nameLength = named.U16(28);   // 24 是 cursor-atom,28 是 nbytes
+        Assert.AreEqual("pointer", Encoding.Latin1.GetString(named.Bytes, 32 + (4 * 4), nameLength));
+
+        // ChangeCursor:正在用的光标换成隐形指针的样子,宿主跟着变。
+        uint nil = await OpenFontAsync(c, "nil2");
+        uint hidden = c.NewId();
+        await CreateGlyphCursorAsync(c, hidden, nil, nil, 'X', ' ');
+        await c.SendAsync(xfixes, 26, b => b.U32(hidden).U32(arrow));
+        await host.WaitForAsync(() => host.Cursor?.Shape == XCursorShape.Hidden);
+        Assert.AreEqual(1, (await c.RequestAsync(xfixes, 4)).U16(12), "隐形指针没有图像:1×1 透明");
+    }
+
+    [TestMethod]
     public async Task nil2字体的空白字形光标是隐形指针_别的字体的字形烙成图像_cursor字体照旧按形状()
     {
         using RecordingHost host = new();

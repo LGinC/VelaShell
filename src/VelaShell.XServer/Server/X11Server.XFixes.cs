@@ -103,11 +103,16 @@ public sealed partial class X11Server
                     }
                     break;
                 }
-            case 4:   // GetCursorImage:光标由宿主的系统光标画,这里给一个 1×1 透明像素与热点
+            case 4:   // GetCursorImage:指针处那个光标的图像(预乘的 ARGB)与热点
                 {
-                    int px = _pointerX, py = _pointerY;
+                    (int px, int py, XCursorImage image) = CursorImageAtPointer();
                     uint serial = _cursorSerial;
-                    c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).Zero(8).U32(0));
+                    c.Reply(0, w =>
+                    {
+                        w.I16((short)px).I16((short)py).U16((ushort)image.Width).U16((ushort)image.Height)
+                            .U16((ushort)image.HotspotX).U16((ushort)image.HotspotY).U32(serial).Zero(8);
+                        WritePixels(w, image);
+                    });
                     break;
                 }
             case 5:   // CreateRegion
@@ -261,9 +266,21 @@ public sealed partial class X11Server
                     SetCursorName(cursor, name);
                     break;
                 }
-            case 26:  // ChangeCursor
-            case 27:  // ChangeCursorByName
-                break;
+            case 26:  // ChangeCursor:destination 从此显示成 source 的样子
+                {
+                    XCursorResource source = CursorRes(r.U32());
+                    ChangeCursorAppearance(source, [CursorRes(r.U32())]);
+                    break;
+                }
+            case 27:  // ChangeCursorByName:叫这个名字的光标都显示成 source 的样子
+                {
+                    XCursorResource source = CursorRes(r.U32());
+                    int length = r.U16();
+                    r.Skip(2);
+                    string name = r.String8(length);
+                    ChangeCursorAppearance(source, [.. AllResources.OfType<XCursorResource>().Where(cursor => cursor.Name == name)]);
+                    break;
+                }
             case 24:  // GetCursorName
                 {
                     string name = CursorRes(r.U32()).Name ?? "";
@@ -274,9 +291,18 @@ public sealed partial class X11Server
                 }
             case 25:  // GetCursorImageAndName
                 {
-                    int px = _pointerX, py = _pointerY;
+                    (int px, int py, XCursorImage image) = CursorImageAtPointer();
+                    string name = CurrentCursor()?.Name ?? "";
+                    uint atom = name.Length == 0 ? 0 : _atomsByName.GetValueOrDefault(name);
+                    byte[] bytes = XWire.Latin1.GetBytes(name);
                     uint serial = _cursorSerial;
-                    c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).U32(0).U16(0).Zero(2).U32(0));
+                    c.Reply(0, w =>
+                    {
+                        w.I16((short)px).I16((short)py).U16((ushort)image.Width).U16((ushort)image.Height)
+                            .U16((ushort)image.HotspotX).U16((ushort)image.HotspotY).U32(serial).U32(atom).U16((ushort)bytes.Length).Zero(2);
+                        WritePixels(w, image);
+                        w.Bytes(bytes).Pad4();
+                    });
                     break;
                 }
             case 28:  // ExpandRegion
@@ -456,6 +482,45 @@ public sealed partial class X11Server
     }
 
     private XCursorResource CursorRes(uint id) => Lookup<XCursorResource>(id) ?? throw new XProtocolError(XErrorCode.Cursor, id);
+
+    /// <summary>没有图像可给时(cursor 字体的字形光标 —— 字体只有度量 —— 与隐形指针):1×1 的透明像素。</summary>
+    private static readonly XCursorImage NoCursorImage = new(1, 1, 0, 0, [0]);
+
+    /// <summary>
+    /// XFIXES §7「GetCursorImage」:指针的位置(根坐标)与指针处那个光标的图像。位图光标、ARGB 光标、别的字体的字形光标都烙过图像,
+    /// 原样给出(预乘的 ARGB);原先一律给 1×1 的透明像素,x11vnc、ffmpeg x11grab 录不到光标。
+    /// </summary>
+    private (int X, int Y, XCursorImage Image) CursorImageAtPointer() =>
+        (_pointerX, _pointerY, CurrentCursor()?.Image ?? NoCursorImage);
+
+    private static void WritePixels(XWriter w, XCursorImage image)
+    {
+        foreach (uint pixel in image.Pixels)
+        {
+            w.U32(pixel);
+        }
+    }
+
+    /// <summary>
+    /// XFIXES §9「ChangeCursor」「ChangeCursorByName」:这些光标从此显示成 <paramref name="source" /> 的样子(正在用它们的窗口跟着变)。
+    /// 原先是空操作。
+    /// </summary>
+    private void ChangeCursorAppearance(XCursorResource source, IReadOnlyList<XCursorResource> destinations)
+    {
+        XCursor appearance = AppearanceOf(source);
+        foreach (XCursorResource destination in destinations)
+        {
+            if (ReferenceEquals(destination, source))
+            {
+                continue;
+            }
+            destination.Glyph = source.Glyph;
+            destination.Image = source.Image;
+            destination.Blank = source.Blank;
+            destination.Appearance = appearance;   // 名字留着(ChangeCursorByName 按它找),样子跟 source
+        }
+        UpdateCursor();
+    }
 
     /// <summary>客户端断开:清掉它的 XFIXES 登记。</summary>
     private void CleanupXFixes(XClient client) =>
