@@ -80,11 +80,21 @@ internal sealed class GlSurface
     /// <summary>前缓冲拷出去了。</summary>
     public void ClearFrontDirty() => (_dirtyX0, _dirtyY0, _dirtyX1, _dirtyY1) = (0, 0, 0, 0);
 
+    /// <summary>边长的上下限(<see cref="Resize" /> 按它夹)。</summary>
+    private const int MaxSide = 16384;
+
+    /// <summary>
+    /// 一块 <paramref name="width" /> × <paramref name="height" /> 的表面占的字节(记账用,与 <see cref="Resize" /> 一样先夹尺寸):
+    /// 每像素前缓冲 4、后缓冲 4(双缓冲时)、深度 4、模板 1。
+    /// </summary>
+    public static long BytesFor(int width, int height, bool doubleBuffered) =>
+        (long)Math.Clamp(width, 1, MaxSide) * Math.Clamp(height, 1, MaxSide) * (doubleBuffered ? 13 : 9);
+
     /// <summary>尺寸跟随 X 可绘对象;变了就重新分配(内容未定义,这里清零)。</summary>
     public void Resize(int width, int height)
     {
-        width = Math.Clamp(width, 1, 16384);
-        height = Math.Clamp(height, 1, 16384);
+        width = Math.Clamp(width, 1, MaxSide);
+        height = Math.Clamp(height, 1, MaxSide);
         if (width == Width && height == Height)
         {
             return;

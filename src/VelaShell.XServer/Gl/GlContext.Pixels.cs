@@ -58,30 +58,41 @@ internal sealed partial class GlContext
         return bound;
     }
 
-    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记账的对象;名字 0 的默认纹理与代理纹理每个上下文就几个,不记)。</summary>
+    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记在共享组的账上;名字 0 的默认纹理记在本上下文的账上)。</summary>
     private bool IsNamed(GlTexture texture) =>
         texture.Name != 0 && Shared.Textures.TryGetValue(texture.Name, out GlTexture? named) && ReferenceEquals(named, texture);
 
-    /// <summary>给这个纹理的某一级换一张 <paramref name="bytes" /> 字节的图像放得下吗;放不下记 OUT_OF_MEMORY(先问再分配)。</summary>
-    private bool FitsTexture(GlTexture texture, int level, long bytes)
+    /// <summary>
+    /// 给纹理的第 <paramref name="level" /> 级换一张 <paramref name="bytes" /> 字节的图像:分配之前先记账。有名字的记在共享组上
+    /// (组的上限,加上建组客户端的账),名字 0 的默认纹理记在本上下文的账上 —— 原先不记,默认 2D 纹理 12 级、每级 2048² 就是 192 MB;
+    /// 代理纹理不存纹素,不占账。记不下时记 OUT_OF_MEMORY、返回 false,账不变;变小的当场退账。之后调用方必须换上这一级。
+    /// </summary>
+    private bool TryAccountLevel(GlTexture texture, int level, long bytes)
     {
         long delta = bytes - (texture.Levels[level]?.Texels.Length ?? 0);
-        if (!IsNamed(texture) || delta <= 0 || Shared.TextureBytes + delta <= GlShared.MaxTextureBytes)
+        if (delta == 0)
+        {
+            return true;
+        }
+        bool named = IsNamed(texture);
+        if (delta < 0)
+        {
+            if (named)
+            {
+                Shared.RefundTexture(-delta);
+            }
+            else
+            {
+                Account?.Refund(-delta);
+            }
+            return true;
+        }
+        if (named ? Shared.TryChargeTexture(delta) : Account?.TryCharge(delta) ?? true)
         {
             return true;
         }
         SetError(GlEnum.OUT_OF_MEMORY);
         return false;
-    }
-
-    /// <summary>换掉纹理的一级图像并记账。</summary>
-    private void StoreLevel(GlTexture texture, int level, GlTexImage? image)
-    {
-        if (IsNamed(texture))
-        {
-            Shared.TextureBytes += (image?.Texels.Length ?? 0) - (texture.Levels[level]?.Texels.Length ?? 0);
-        }
-        texture.Levels[level] = image;
     }
 
     private void BindTexture(uint target, uint name)
@@ -300,33 +311,6 @@ internal sealed partial class GlContext
         return ToRgba(layout.Format, comp);
     }
 
-    /// <summary>
-    /// 按附录 A.2.1 解出 width × height 的像素矩形,每个像素给出 RGBA 浮点(第 0 行是图像的第一行,即 GL 里最下面一行)。
-    /// 格式或类型不认识时记 INVALID_ENUM 并返回 null。纹理图像用;画像素矩形的命令逐行解、不整张解(见 <see cref="DrawPixels" />)。
-    /// </summary>
-    private Vector4[]? UnpackImage(ReadOnlySpan<byte> data, PixelStore store, int width, int height, uint format, uint type, bool bigEndian)
-    {
-        if (Layout(store, width, format, type, bigEndian) is not { } layout)
-        {
-            return null;
-        }
-        if (width <= 0 || height <= 0)
-        {
-            return [];
-        }
-        WorkBudget.Charge(2L * width * height);   // 逐个解码(先扣再分配)
-        var result = new Vector4[width * height];
-        Span<float> comp = stackalloc float[4];
-        for (int j = 0; j < height; j++)
-        {
-            for (int i = 0; i < width; i++)
-            {
-                result[(j * width) + i] = ReadGroup(data, layout, i, j, comp);
-            }
-        }
-        return result;
-    }
-
     /// <summary>一个元素换成浮点(Table 2.6:无符号除以最大值,有符号 (2c + 1)/(2^b − 1))。</summary>
     private static float ReadElement(ReadOnlySpan<byte> e, uint type, bool bigEndian) => type switch
     {
@@ -410,32 +394,36 @@ internal sealed partial class GlContext
             texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, []);
             return;
         }
-        if (!FitsTexture(texture, level, (long)w * h * 4))
+        // 格式、类型与像素存储参数先核(客户端传 NULL 时也核),再扣工作量、记账,最后才分配。
+        if (Layout(store, width, format, type, r.BigEndian) is not { } layout)
+        {
+            return;
+        }
+        ReadOnlySpan<byte> data = r.Rest();
+        bool hasData = data.Length > 0 && w > 0 && h > 0;
+        if (hasData)
+        {
+            WorkBudget.Charge(2L * w * h);   // 逐个解码
+        }
+        if (!TryAccountLevel(texture, level, (long)w * h * 4))
         {
             return;
         }
         // 数据为空(客户端传 NULL)时纹理内容未定义:这里填 0。边框像素只存内圈。
         byte[] texels = new byte[w * h * 4];
-        if (r.Remaining > 0 && w > 0 && h > 0)
+        if (hasData)
         {
-            Vector4[]? pixels = UnpackImage(r.Rest(), store, width, oneD ? 1 : height, format, type, r.BigEndian);
-            if (pixels is null)
-            {
-                return;
-            }
+            Span<float> comp = stackalloc float[4];
+            int rowOffset = oneD ? 0 : border;
             for (int y = 0; y < h; y++)
             {
                 for (int x = 0; x < w; x++)
                 {
-                    int src = ((y + (oneD ? 0 : border)) * width) + x + border;
-                    if (src < pixels.Length)
-                    {
-                        StoreTexel(texels, (y * w) + x, pixels[src], baseFormat);
-                    }
+                    StoreTexel(texels, (y * w) + x, ReadGroup(data, layout, x + border, y + rowOffset, comp), baseFormat);
                 }
             }
         }
-        StoreLevel(texture, level, new GlTexImage(w, h, internalFormat, baseFormat, texels));
+        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
     }
 
     private void TexSubImage(ref GlReader r, bool oneD)
@@ -465,16 +453,18 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
-        Vector4[]? pixels = UnpackImage(r.Rest(), store, width, height, format, type, r.BigEndian);
-        if (pixels is null)
+        if (Layout(store, width, format, type, r.BigEndian) is not { } layout)
         {
             return;
         }
+        ReadOnlySpan<byte> data = r.Rest();
+        WorkBudget.Charge(2L * width * height);   // 逐个解码,直接写进纹素(不先整张解成浮点)
+        Span<float> comp = stackalloc float[4];
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
             {
-                StoreTexel(image.Texels, ((y + yoffset) * image.Width) + x + xoffset, pixels[(y * width) + x], image.BaseFormat);
+                StoreTexel(image.Texels, ((y + yoffset) * image.Width) + x + xoffset, ReadGroup(data, layout, x, y, comp), image.BaseFormat);
             }
         }
     }
@@ -499,11 +489,13 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        if (!FitsTexture(texture, level, Math.Max(0, (long)w * h * 4)))
+        (w, h) = (Math.Max(0, w), Math.Max(0, h));
+        WorkBudget.Charge(2L * w * h);
+        if (!TryAccountLevel(texture, level, (long)w * h * 4))
         {
             return;
         }
-        byte[] texels = new byte[Math.Max(0, w * h * 4)];
+        byte[] texels = new byte[w * h * 4];
         for (int j = 0; j < h; j++)
         {
             for (int i = 0; i < w; i++)
@@ -511,7 +503,7 @@ internal sealed partial class GlContext
                 StoreTexel(texels, (j * w) + i, ReadColorPixel(x + i + border, y + j + (oneD ? 0 : border)), baseFormat);
             }
         }
-        StoreLevel(texture, level, new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels));
+        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
     }
 
     private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height)

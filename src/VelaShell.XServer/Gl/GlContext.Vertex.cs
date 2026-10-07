@@ -14,6 +14,7 @@
 //   Rasterization」(PolygonMode 与边界边)、§3.5.5「Depth Offset」、§3.10「Fog」(雾坐标取眼坐标到原点的距离的近似 |z_e|)。
 
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
@@ -55,6 +56,16 @@ internal sealed partial class GlContext
     public const int MaxPrimitiveVertices = 1 << 19;
 
     private bool _primitiveOverflow;
+
+    /// <summary>图元缓冲(<see cref="_primitive" /> 的容量)记在账上的字节数。</summary>
+    private long _primitiveCharged;
+
+    /// <summary>一个缓冲着的顶点占多少字节。</summary>
+    private static readonly int VertexBytes = Unsafe.SizeOf<GlVertex>();
+
+    /// <summary>End 之后图元缓冲的容量超过这么多个顶点就整个还掉(退账),免得画过一次大图元的上下文一直占着几十 MB。</summary>
+    private const int RetainedPrimitiveVertices = 16384;
+
     private Matrix4x4 _normalMatrix = Matrix4x4.Identity;
 
     public bool InBeginEnd => _primitiveMode != uint.MaxValue;
@@ -359,11 +370,37 @@ internal sealed partial class GlContext
         }
         uint mode = _primitiveMode;
         _primitiveMode = uint.MaxValue;
-        if (RenderModeValue == GlEnum.RENDER && Draw is not null)
+        try
         {
-            Assemble(mode, _primitive);
+            if (RenderModeValue == GlEnum.RENDER && Draw is not null)
+            {
+                Assemble(mode, _primitive);
+            }
         }
-        _primitive.Clear();
+        finally
+        {
+            _primitive.Clear();
+            if (_primitive.Capacity > RetainedPrimitiveVertices)
+            {
+                _primitive.Capacity = 0;
+                Account?.Refund(_primitiveCharged);
+                _primitiveCharged = 0;
+            }
+        }
+    }
+
+    /// <summary>图元缓冲满了:容量翻倍(到 <see cref="MaxPrimitiveVertices" /> 为止),先记账。记不下返回 false。</summary>
+    private bool GrowPrimitive()
+    {
+        int capacity = Math.Min(MaxPrimitiveVertices, Math.Max(64, _primitive.Capacity * 2));
+        long bytes = ((long)capacity * VertexBytes) - _primitiveCharged;
+        if (bytes > 0 && Account is not null && !Account.TryCharge(bytes))
+        {
+            return false;
+        }
+        _primitiveCharged += Math.Max(0, bytes);
+        _primitive.Capacity = capacity;
+        return true;
     }
 
     /// <summary>一个顶点:变换、光照、纹理坐标;在 Begin/End 之外的顶点被忽略(§2.6,行为未定义)。</summary>
@@ -373,8 +410,9 @@ internal sealed partial class GlContext
         {
             return;
         }
-        if (_primitive.Count >= MaxPrimitiveVertices)
+        if (_primitive.Count >= MaxPrimitiveVertices || (_primitive.Count == _primitive.Capacity && !GrowPrimitive()))
         {
+            // 缓冲到了上限,或客户端的内存账上记不下了(图元缓冲记在本上下文的账上,xs_plan GL-S3)。
             if (!_primitiveOverflow)
             {
                 _primitiveOverflow = true;

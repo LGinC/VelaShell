@@ -151,6 +151,7 @@ public sealed partial class X11Server
             ClientClosed = _glx.CleanupClient,
             WindowDestroyed = _glx.CleanupWindow,
             PixmapFreed = _glx.CleanupPixmap,
+            ResourceFreed = _glx.ResourceFreed,
         });
         if (ShmSupported)
         {

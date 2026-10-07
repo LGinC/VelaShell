@@ -106,7 +106,38 @@ internal sealed class GlxExtension(X11Server server)
     /// 可绘对象的帧缓冲,按 X 窗口 / 像素图 / Pbuffer 的 ID 存(同一个窗口的各种用法共用一份),连同建表面时那个 ID 上的资源:
     /// ID 会被重用(客户端走了、编号给了下一个客户端),拿同一个 ID 的新资源不能接着用旧表面、读到上一个的内容(见 <see cref="TryGetSurface" />)。
     /// </summary>
-    private readonly Dictionary<uint, (XResource Source, GlSurface Surface)> _glxSurfaces = [];
+    private readonly Dictionary<uint, SurfaceEntry> _glxSurfaces = [];
+
+    /// <summary>
+    /// 一块表面:建它时那个 ID 上的资源,以及它记在谁的账上、记了多少(xs_plan GL-S3:表面的颜色、深度、模板按像素记在
+    /// 第一个要它的客户端名下,与 DBE 的后缓冲一样;丢掉表面时如数退还)。
+    /// </summary>
+    private sealed class SurfaceEntry(XResource source, GlSurface surface, XClient chargedTo)
+    {
+        public XResource Source { get; } = source;
+
+        public GlSurface Surface { get; } = surface;
+
+        public XClient ChargedTo { get; } = chargedTo;
+
+        public long Charged { get; set; }
+    }
+
+    /// <summary>把 GL 对象的内存记到一个客户端的账上(xs_plan X-2 的每客户端 / 全局两道上限)。</summary>
+    private sealed class ClientGlAccount(X11Server server, XClient client) : IGlMemoryAccount
+    {
+        public bool TryCharge(long bytes)
+        {
+            if (!server.CanCharge(client, bytes))
+            {
+                return false;
+            }
+            server.ChargeMemory(client, bytes);
+            return true;
+        }
+
+        public void Refund(long bytes) => server.RefundMemory(client, bytes);
+    }
 
     /// <summary>现存的 GLX 表面数(测试用)。</summary>
     internal int SurfaceCount => _glxSurfaces.Count;
@@ -331,8 +362,7 @@ internal sealed class GlxExtension(X11Server server)
                     {
                         throw GlxError(GlxBadPbuffer, id);
                     }
-                    server.RemoveResource(id);
-                    _glxSurfaces.Remove(id);
+                    server.RemoveResource(id);   // 表面随之丢掉(ResourceFreed)
                     break;
                 }
             case 29:   // GetDrawableAttributes
@@ -416,8 +446,27 @@ internal sealed class GlxExtension(X11Server server)
                 throw new XProtocolError(XErrorCode.Match);   // 直接与间接上下文不在同一个地址空间
             }
         }
-        GlContext? gl = direct ? null : new GlContext(config.DoubleBuffer, config.Alpha, share?.Gl?.Shared);
-        server.AddResource(c, new XGlxContext(id, c, config, direct, gl));
+        if (direct)
+        {
+            server.AddResource(c, new XGlxContext(id, c, config, direct, null));
+            return;
+        }
+        // 间接上下文:对象本身按 GlContext.ObjectBytes 记账(先核再建,出错的请求不留下任何效果);
+        // 它此后的分配(默认纹理、图元缓冲、新建的共享组里的列表与纹理)都记在这个客户端名下。
+        server.RequireMemory(c, X11Server.ResourceOverheadBytes + GlContext.ObjectBytes);
+        GlContext gl = new(config.DoubleBuffer, config.Alpha, share?.Gl?.Shared, new ClientGlAccount(server, c));
+        XGlxContext context = new(id, c, config, direct, gl);
+        try
+        {
+            server.AddResource(c, context);
+        }
+        catch
+        {
+            gl.Release();   // ID 不对:共享组的引用数还回去
+            throw;
+        }
+        server.ChargeMemory(c, GlContext.ObjectBytes);
+        context.Charged += GlContext.ObjectBytes;   // 随资源离开资源表一并退还
     }
 
     /// <summary>
@@ -603,24 +652,37 @@ internal sealed class GlxExtension(X11Server server)
         }
     }
 
-    /// <summary>表面(没有就按配置新建),尺寸跟上 X 可绘对象。</summary>
-    private GlSurface SurfaceFor(uint key, (int Width, int Height) size, GlxConfig config)
+    /// <summary>
+    /// 表面(没有就按配置新建),尺寸跟上 X 可绘对象。新建与变大都先记账(新建记在 <paramref name="requester" /> 名下,
+    /// 变大记在原来那个客户端名下),记不下回 BadAlloc、表面不变。
+    /// </summary>
+    private GlSurface SurfaceFor(XClient requester, uint key, (int Width, int Height) size, GlxConfig config)
     {
         if ((long)size.Width * size.Height > MaxGlxSurfacePixels)
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 颜色(前后)、深度、模板一共 13 字节 / 像素
         }
-        if (!TryGetSurface(key, out GlSurface? surface))
+        if (!TryGetEntry(key, out SurfaceEntry? entry))
         {
             XResource source = server.Lookup<XResource>(key) ?? throw GlxError(GlxBadDrawable, key);
-            surface = new GlSurface(key, size.Width, size.Height, config.DoubleBuffer, config.Alpha);
-            _glxSurfaces[key] = (source, surface);
+            long bytes = GlSurface.BytesFor(size.Width, size.Height, config.DoubleBuffer);
+            server.ChargeMemory(requester, bytes);
+            GlSurface surface = new(key, size.Width, size.Height, config.DoubleBuffer, config.Alpha);
+            _glxSurfaces[key] = new SurfaceEntry(source, surface, requester) { Charged = bytes };
+            return surface;
         }
-        else
+        long resized = GlSurface.BytesFor(size.Width, size.Height, entry.Surface.DoubleBuffered);
+        if (resized > entry.Charged)
         {
-            surface.Resize(size.Width, size.Height);
+            server.ChargeMemory(entry.ChargedTo, resized - entry.Charged);
         }
-        return surface;
+        else if (resized < entry.Charged)
+        {
+            server.RefundMemory(entry.ChargedTo, entry.Charged - resized);
+        }
+        entry.Charged = resized;
+        entry.Surface.Resize(size.Width, size.Height);
+        return entry.Surface;
     }
 
     /// <summary>
@@ -629,32 +691,46 @@ internal sealed class GlxExtension(X11Server server)
     /// </summary>
     private bool TryGetSurface(uint key, [NotNullWhen(true)] out GlSurface? surface)
     {
-        surface = null;
-        if (!_glxSurfaces.TryGetValue(key, out (XResource Source, GlSurface Surface) entry))
+        surface = TryGetEntry(key, out SurfaceEntry? entry) ? entry.Surface : null;
+        return surface is not null;
+    }
+
+    private bool TryGetEntry(uint key, [NotNullWhen(true)] out SurfaceEntry? entry)
+    {
+        if (!_glxSurfaces.TryGetValue(key, out entry))
         {
             return false;
         }
         if (!ReferenceEquals(server.Lookup<XResource>(key), entry.Source))
         {
-            _glxSurfaces.Remove(key);
+            DropSurface(key);
+            entry = null;
             return false;
         }
-        surface = entry.Surface;
         return true;
     }
 
-    /// <summary>绑定的表面跟上 X 可绘对象的尺寸(窗口可能被改过大小),并交给 GL 上下文。</summary>
-    private void SyncGlxBinding(GlxBinding binding)
+    /// <summary>丢掉一块表面,退还它的账。</summary>
+    private void DropSurface(uint key)
     {
-        (GlSurface? draw, GlSurface? read) = BindingSurfaces(binding);
+        if (_glxSurfaces.Remove(key, out SurfaceEntry? entry))
+        {
+            server.RefundMemory(entry.ChargedTo, entry.Charged);
+        }
+    }
+
+    /// <summary>绑定的表面跟上 X 可绘对象的尺寸(窗口可能被改过大小),并交给 GL 上下文。</summary>
+    private void SyncGlxBinding(XClient c, GlxBinding binding)
+    {
+        (GlSurface? draw, GlSurface? read) = BindingSurfaces(c, binding);
         binding.Context.Gl?.Bind(draw, read);
     }
 
     /// <summary>
-    /// 绑定用到的绘制 / 读取表面(没有就新建,尺寸跟上 X 可绘对象)。表面太大时抛 BadAlloc —— MakeCurrent 在改任何状态之前先调它。
-    /// 直接上下文没有服务端的 GL,不要表面。
+    /// 绑定用到的绘制 / 读取表面(没有就新建,尺寸跟上 X 可绘对象)。表面太大、或客户端的内存账上记不下时抛 BadAlloc ——
+    /// MakeCurrent 在改任何状态之前先调它。直接上下文没有服务端的 GL,不要表面。
     /// </summary>
-    private (GlSurface? Draw, GlSurface? Read) BindingSurfaces(GlxBinding binding)
+    private (GlSurface? Draw, GlSurface? Read) BindingSurfaces(XClient c, GlxBinding binding)
     {
         if (binding.Context.Gl is null)
         {
@@ -664,12 +740,12 @@ internal sealed class GlxExtension(X11Server server)
         if (binding.Draw != 0)
         {
             (uint key, (int Width, int Height) size, GlxConfig? config) = ResolveGlxDrawable(binding.Draw, binding.Context.Config);
-            draw = SurfaceFor(key, size, config ?? binding.Context.Config);
+            draw = SurfaceFor(c, key, size, config ?? binding.Context.Config);
         }
         if (binding.Read != 0)
         {
             (uint key, (int Width, int Height) size, GlxConfig? config) = ResolveGlxDrawable(binding.Read, binding.Context.Config);
-            read = SurfaceFor(key, size, config ?? binding.Context.Config);
+            read = SurfaceFor(c, key, size, config ?? binding.Context.Config);
         }
         return (draw, read);
     }
@@ -795,7 +871,7 @@ internal sealed class GlxExtension(X11Server server)
         // 表面先备好(太大时 BadAlloc):出错时请求不能留下任何效果(协议第 4 节)—— 原先先登记了新标签、把上下文挂上去才分配,
         // 抛出去之后上下文卡在一个客户端不知道的标签上,之后谁也 MakeCurrent 不了它。
         GlxBinding binding = new(context, drawable, read);
-        (GlSurface? drawSurface, GlSurface? readSurface) = BindingSurfaces(binding);
+        (GlSurface? drawSurface, GlSurface? readSurface) = BindingSurfaces(c, binding);
         if (old is not null)
         {
             ReleaseGlxBinding(c, oldTag, old);
@@ -819,37 +895,74 @@ internal sealed class GlxExtension(X11Server server)
     private void ReleaseGlxBinding(XClient c, uint tag, GlxBinding binding)
     {
         PresentGlx(binding);
-        binding.Context.Gl?.Bind(null, null);
-        binding.Context.Current = null;
+        Unbind(binding.Context);
         if (_glxTags.TryGetValue(c, out Dictionary<uint, GlxBinding>? tags))
         {
             tags.Remove(tag);
         }
     }
 
-    /// <summary>客户端断开:它的标签作废,上下文不再是当前;拼到一半的 RenderLarge 丢掉;它的 Pbuffer、像素图、窗口上的表面释放。</summary>
+    /// <summary>上下文不再是当前;它的资源已经释放了(DestroyContext 时还是当前的)的话,这时才真正释放它的 GL 对象并销账。</summary>
+    private void Unbind(XGlxContext context)
+    {
+        context.Gl?.Bind(null, null);
+        context.Current = null;
+        if (!ReferenceEquals(server.Lookup<XGlxContext>(context.Id), context))
+        {
+            context.Gl?.Release();
+        }
+    }
+
+    /// <summary>
+    /// 资源离开了资源表(DestroyContext、DestroyPbuffer、客户端断开):不是当前的间接上下文当场释放 GL 对象、销账,
+    /// 还是当前的等它不再是当前(见 <see cref="Unbind" />)—— 原先上下文连同共享组的列表与纹理靠垃圾回收,账上永远记着(xs_plan GL-S3);
+    /// Pbuffer 的表面一并丢掉。
+    /// </summary>
+    public void ResourceFreed(XResource resource)
+    {
+        switch (resource)
+        {
+            case XGlxContext { Gl: { } gl, Current: null }:
+                gl.Release();
+                break;
+            case XGlxDrawable { Kind: GlxDrawableKind.Pbuffer } pbuffer when _glxSurfaces.TryGetValue(pbuffer.Id, out SurfaceEntry? entry)
+                                                                            && ReferenceEquals(entry.Source, pbuffer):
+                DropSurface(pbuffer.Id);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// 客户端断开:它的标签作废,上下文不再是当前;拼到一半的 RenderLarge 丢掉;它的 Pbuffer、像素图、窗口上的表面,
+    /// 以及记在它名下的表面释放。
+    /// </summary>
     public void CleanupClient(XClient client)
     {
         _glxLarge.Remove(client);
-        foreach ((uint key, (XResource Source, GlSurface Surface) entry) in _glxSurfaces.ToArray())
+        foreach ((uint key, SurfaceEntry entry) in _glxSurfaces.ToArray())
         {
-            if (ReferenceEquals(entry.Source.Owner, client))
+            if (ReferenceEquals(entry.Source.Owner, client) || ReferenceEquals(entry.ChargedTo, client))
             {
-                _glxSurfaces.Remove(key);   // 一块 4096² 的表面连深度、模板是两百多 MB,不能等 ID 被重用才回收
+                DropSurface(key);   // 一块 4096² 的表面连深度、模板是两百多 MB,不能等 ID 被重用才回收
             }
         }
         if (_glxTags.Remove(client, out Dictionary<uint, GlxBinding>? tags))
         {
             foreach (GlxBinding binding in tags.Values)
             {
-                binding.Context.Gl?.Bind(null, null);
-                binding.Context.Current = null;
+                Unbind(binding.Context);
             }
         }
     }
 
     /// <summary>窗口销毁:它的表面随之丢掉。</summary>
-    public void CleanupWindow(XWindow window) => _glxSurfaces.Remove(window.Id);
+    public void CleanupWindow(XWindow window)
+    {
+        if (_glxSurfaces.TryGetValue(window.Id, out SurfaceEntry? entry) && ReferenceEquals(entry.Source, window))
+        {
+            DropSurface(window.Id);
+        }
+    }
 
     /// <summary>
     /// 像素图的 ID 释放了:建在它上面的表面(GLX 像素图画进的那份帧缓冲,连同表面项抓着的像素图本身)随之丢掉。
@@ -858,9 +971,9 @@ internal sealed class GlxExtension(X11Server server)
     /// </summary>
     public void CleanupPixmap(XPixmap pixmap)
     {
-        if (_glxSurfaces.TryGetValue(pixmap.Id, out (XResource Source, GlSurface Surface) entry) && ReferenceEquals(entry.Source, pixmap))
+        if (_glxSurfaces.TryGetValue(pixmap.Id, out SurfaceEntry? entry) && ReferenceEquals(entry.Source, pixmap))
         {
-            _glxSurfaces.Remove(pixmap.Id);
+            DropSurface(pixmap.Id);
         }
     }
 
@@ -871,7 +984,7 @@ internal sealed class GlxExtension(X11Server server)
         GlxBinding binding = GlxBindingOf(c, tag);
         GlContext gl = binding.Context.Gl ?? throw GlxError(GlxBadContextState, tag);
         gl.ResetBudget();
-        SyncGlxBinding(binding);
+        SyncGlxBinding(c, binding);
         return (binding, gl);
     }
 
@@ -1434,11 +1547,10 @@ internal sealed class GlxExtension(X11Server server)
                 body.Bytes(bits);
                 list.Add(new GlCommand(5, body.ToArray(), BigEndian: false));
             }
-            if (gl.Shared.ListBytes + GlShared.SizeOf(list) > GlShared.MaxListBytes)
+            if (!gl.Shared.TrySetList(listBase + i, list))
             {
-                throw new XProtocolError(XErrorCode.Alloc);   // 显示列表的账不能被这条请求绕过
+                throw new XProtocolError(XErrorCode.Alloc);   // 显示列表的账(组的上限与客户端的内存账)不能被这条请求绕过
             }
-            gl.Shared.SetList(listBase + i, list);
         }
         PresentGlx(binding);
     }

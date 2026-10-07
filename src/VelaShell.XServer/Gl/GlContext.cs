@@ -90,14 +90,28 @@ internal sealed class GlTexture(uint name)
     public float Priority { get; set; } = 1;
 }
 
+/// <summary>
+/// GL 对象占的内存记在谁的账上(xs_plan GL-S3)。GLX 层把它接到服务端的每客户端 / 全局内存账上(X-2);
+/// 为 null 时(直接驱动 <see cref="GlContext" /> 的单元测试)不记账。
+/// </summary>
+internal interface IGlMemoryAccount
+{
+    /// <summary>记 <paramref name="bytes" />(&gt; 0);超了上限返回 false、账不变。</summary>
+    bool TryCharge(long bytes);
+
+    /// <summary>退还 <paramref name="bytes" />(&gt; 0)。</summary>
+    void Refund(long bytes);
+}
+
 /// <summary>显示列表与纹理对象的名字空间;用 share list 建的上下文共用同一个。</summary>
 /// <remarks>
 /// 两样都记账、都有上限 —— 客户端可以一直编译列表、一直建纹理,不设上限就能把服务端的内存吃光。
-/// 超了按 GL 的规矩记 OUT_OF_MEMORY(§2.5),命令不生效。
+/// 超了按 GL 的规矩记 OUT_OF_MEMORY(§2.5),命令不生效。每个共享组各有 <see cref="MaxListBytes" /> 与 <see cref="MaxTextureBytes" /> 两道上限,
+/// 此外全部记在建这个组的客户端的内存账上(<see cref="Account" />):多建几个不共享的上下文也绕不过每客户端的总量。
 /// </remarks>
-internal sealed class GlShared
+internal sealed class GlShared(IGlMemoryAccount? account = null)
 {
-    /// <summary>显示列表里记下的命令合计的字节上限。</summary>
+    /// <summary>显示列表合计的字节上限(含每个列表的对象开销)。</summary>
     public const long MaxListBytes = 64L * 1024 * 1024;
 
     /// <summary>纹理对象(有名字的)各级图像合计的字节上限:最大的 2048² 纹理连同各级 mipmap 约 22 MB。</summary>
@@ -109,6 +123,15 @@ internal sealed class GlShared
     /// <summary>每条记下的命令在正文之外按这么多字节记(对象头、数组头)。</summary>
     public const int CommandOverhead = 32;
 
+    /// <summary>每个显示列表本身(对象、名字表的一项)按这么多字节记:空列表也占账,NewList + EndList 建不出无限多个。</summary>
+    public const int ListOverhead = 64;
+
+    /// <summary>这个组的列表与纹理记在谁的账上:建组的那个上下文的客户端。</summary>
+    public IGlMemoryAccount? Account { get; } = account;
+
+    /// <summary>用着这个名字空间的上下文数;降到 0(最后一个上下文释放)时列表与纹理一并释放、销账(<see cref="Release" />)。</summary>
+    public int References { get; set; }
+
     public Dictionary<uint, List<GlCommand>> Lists { get; } = [];
 
     public Dictionary<uint, GlTexture> Textures { get; } = [];
@@ -117,11 +140,12 @@ internal sealed class GlShared
     public long ListBytes { get; private set; }
 
     /// <summary>有名字的纹理各级图像合计的字节数。</summary>
-    public long TextureBytes { get; set; }
+    public long TextureBytes { get; private set; }
 
+    /// <summary>一个列表记多少字节:对象开销,加上每条命令的正文与开销。</summary>
     public static long SizeOf(List<GlCommand> list)
     {
-        long bytes = 0;
+        long bytes = ListOverhead;
         foreach (GlCommand command in list)
         {
             bytes += command.Body.Length + CommandOverhead;
@@ -129,12 +153,31 @@ internal sealed class GlShared
         return bytes;
     }
 
-    /// <summary>定义(或替换)一个显示列表,记账。</summary>
-    public void SetList(uint name, List<GlCommand> list)
+    /// <summary>
+    /// 定义(或替换)一个显示列表并记账。<paramref name="precharged" /> 字节已经记在 <see cref="Account" /> 上了(编译时逐条记的命令)。
+    /// 超了组的上限或账上记不下时返回 false,什么都不变 —— 已记的 <paramref name="precharged" /> 由调用方退还。
+    /// </summary>
+    public bool TrySetList(uint name, List<GlCommand> list, long precharged = 0)
     {
+        long size = SizeOf(list);
+        long old = Lists.TryGetValue(name, out List<GlCommand>? existing) ? SizeOf(existing) : 0;
+        if (ListBytes - old + size > MaxListBytes)
+        {
+            return false;
+        }
+        long extra = size - precharged;
+        if (extra > 0 && Account is not null && !Account.TryCharge(extra))
+        {
+            return false;
+        }
+        if (extra < 0)
+        {
+            Account?.Refund(-extra);
+        }
         RemoveList(name);
         Lists[name] = list;
-        ListBytes += SizeOf(list);
+        ListBytes += size;
+        return true;
     }
 
     /// <summary>删掉一个显示列表,销账。</summary>
@@ -144,8 +187,42 @@ internal sealed class GlShared
         {
             return false;
         }
-        ListBytes -= SizeOf(old);
+        long size = SizeOf(old);
+        ListBytes -= size;
+        Account?.Refund(size);
         return true;
+    }
+
+    /// <summary>有名字的纹理多占 <paramref name="bytes" />(&gt; 0):组的上限与账都记得下才记,否则返回 false、账不变。</summary>
+    public bool TryChargeTexture(long bytes)
+    {
+        if (TextureBytes + bytes > MaxTextureBytes || (Account is not null && !Account.TryCharge(bytes)))
+        {
+            return false;
+        }
+        TextureBytes += bytes;
+        return true;
+    }
+
+    /// <summary>有名字的纹理少占 <paramref name="bytes" />(&gt; 0):销账。</summary>
+    public void RefundTexture(long bytes)
+    {
+        TextureBytes -= bytes;
+        Account?.Refund(bytes);
+    }
+
+    /// <summary>最后一个用它的上下文释放了:列表与纹理全部丢掉,账一次退清。</summary>
+    public void Release()
+    {
+        long bytes = ListBytes + TextureBytes;
+        if (bytes > 0)
+        {
+            Account?.Refund(bytes);
+        }
+        Lists.Clear();
+        Textures.Clear();
+        ListBytes = 0;
+        TextureBytes = 0;
     }
 
     /// <summary>纹理对象各级图像合计的字节数。</summary>
@@ -196,10 +273,10 @@ internal sealed partial class GlContext
     public const long ListCommandBudget = 4_000_000;
 
     /// <summary>
-    /// 一组共享上下文里显示列表名的上限。GenLists 的 range 可以到 2^31,照单全收就是几十亿个空列表;
-    /// 名字分完了按 §5.4 返回 0(不生成任何名字)。
+    /// 一个上下文对象本身(状态、属性栈、矩阵栈、默认纹理对象……)记多少字节:GLX 建间接上下文时记在客户端名下,
+    /// 一个 24 字节的 CreateContext 换不来不记账的几十 KB。
     /// </summary>
-    public const int MaxLists = 1 << 16;
+    public const long ObjectBytes = 64 * 1024;
 
     private long _budget = ListCommandBudget;
 
@@ -210,11 +287,17 @@ internal sealed partial class GlContext
         _workExhausted = false;
     }
 
-    public GlContext(bool doubleBuffered, bool hasAlpha, GlShared? share)
+    /// <param name="doubleBuffered">配置是不是双缓冲(决定 DRAW_BUFFER / READ_BUFFER 的初值)。</param>
+    /// <param name="hasAlpha">配置有没有 alpha 位。</param>
+    /// <param name="share">共用名字空间的那个组;null 时新建一个,记在 <paramref name="account" /> 上。</param>
+    /// <param name="account">本上下文自己的分配(默认纹理、图元缓冲)记在谁的账上;null 不记账。</param>
+    public GlContext(bool doubleBuffered, bool hasAlpha, GlShared? share, IGlMemoryAccount? account = null)
     {
         DoubleBuffered = doubleBuffered;
         HasAlpha = hasAlpha;
-        Shared = share ?? new GlShared();
+        Account = account;
+        Shared = share ?? new GlShared(account);
+        Shared.References++;
         State.DrawBuffer = doubleBuffered ? GlEnum.BACK : GlEnum.FRONT;
         State.ReadBuffer = State.DrawBuffer;
     }
@@ -222,6 +305,44 @@ internal sealed partial class GlContext
     public GlState State { get; private set; } = new();
 
     public GlShared Shared { get; }
+
+    /// <summary>本上下文自己的分配记在谁的账上(共享组的列表与纹理记在 <see cref="GlShared.Account" /> 上)。</summary>
+    public IGlMemoryAccount? Account { get; }
+
+    private bool _released;
+
+    /// <summary>
+    /// 上下文没了(资源已释放、也不再是当前):默认纹理、图元缓冲、编译到一半的列表退账;共享组没有别的上下文在用时
+    /// 连同它的列表与纹理一并释放。只有第一次调用起作用。
+    /// </summary>
+    public void Release()
+    {
+        if (_released)
+        {
+            return;
+        }
+        _released = true;
+        long own = GlShared.SizeOf(_default1D) + GlShared.SizeOf(_default2D) + _primitiveCharged;
+        if (own > 0)
+        {
+            Account?.Refund(own);
+        }
+        Array.Clear(_default1D.Levels);
+        Array.Clear(_default2D.Levels);
+        _primitive.Clear();
+        _primitive.Capacity = 0;
+        _primitiveCharged = 0;
+        if (_compiling is not null && _compilingBytes > 0)
+        {
+            Shared.Account?.Refund(_compilingBytes);
+        }
+        _compiling = null;
+        _compilingBytes = 0;
+        if (--Shared.References == 0)
+        {
+            Shared.Release();
+        }
+    }
 
     public bool DoubleBuffered { get; }
 
@@ -304,9 +425,10 @@ internal sealed partial class GlContext
     {
         if (_compiling is not null)
         {
-            // 记进列表之前先看账:全部列表加上正在编译的这一个超了上限,这条命令不记(OUT_OF_MEMORY)。
+            // 记进列表之前先看账:全部列表加上正在编译的这一个超了组的上限、或客户端的账上记不下,这条命令不记(OUT_OF_MEMORY)。
+            // 编译中的命令就记在共享组的账上(EndList 时原样转成列表的账)。
             long size = body.Length + GlShared.CommandOverhead;
-            if (Shared.ListBytes + _compilingBytes + size > GlShared.MaxListBytes)
+            if (Shared.ListBytes + _compilingBytes + size > GlShared.MaxListBytes || (Shared.Account is { } account && !account.TryCharge(size)))
             {
                 SetError(GlEnum.OUT_OF_MEMORY);
             }
@@ -369,7 +491,15 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
-        Shared.SetList(ListIndex, _compiling);
+        if (!Shared.TrySetList(ListIndex, _compiling, _compilingBytes))
+        {
+            // 列表本身的开销记不下:这个列表不定义(原来同名的那个保持不变),编译时记的账退回去。
+            SetError(GlEnum.OUT_OF_MEMORY);
+            if (_compilingBytes > 0)
+            {
+                Shared.Account?.Refund(_compilingBytes);
+            }
+        }
         _compiling = null;
         _compilingBytes = 0;
         ListIndex = 0;
@@ -383,7 +513,8 @@ internal sealed partial class GlContext
 
     /// <summary>
     /// GenLists(§5.4):找一段 <paramref name="range" /> 个连续的、没用过的名字并登记成空列表。range 为 0、
-    /// 名字不够(见 <see cref="MaxLists" />)时不生成任何名字,返回 0。
+    /// 这么多个空列表记不下(每个列表按 <see cref="GlShared.ListOverhead" /> 记账,见 <see cref="GlShared.MaxListBytes" />)时
+    /// 不生成任何名字,返回 0 —— range 可以到 2^31,照单全收就是几十亿个空列表。
     /// </summary>
     public uint GenLists(int range)
     {
@@ -392,8 +523,14 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return 0;
         }
-        if (range == 0 || range > MaxLists - Shared.Lists.Count)
+        long bytes = (long)range * GlShared.ListOverhead;
+        if (range == 0 || Shared.ListBytes + bytes > GlShared.MaxListBytes)
         {
+            return 0;
+        }
+        if (Shared.Account is { } account && !account.TryCharge(bytes))
+        {
+            SetError(GlEnum.OUT_OF_MEMORY);
             return 0;
         }
         // 已占的名字排个序,找第一个够大的空档。用 long 算:名字是 32 位,在 uint 上加会回绕成死循环。
@@ -412,11 +549,12 @@ internal sealed partial class GlContext
         }
         if (start + range - 1 > uint.MaxValue)
         {
+            Shared.Account?.Refund(bytes);
             return 0;
         }
         for (long i = 0; i < range; i++)
         {
-            Shared.SetList((uint)(start + i), []);
+            _ = Shared.TrySetList((uint)(start + i), [], precharged: GlShared.ListOverhead);   // 上面已经整段记过账、核过组的上限
         }
         return (uint)start;
     }
@@ -529,9 +667,9 @@ internal sealed partial class GlContext
             {
                 continue;
             }
-            if (Shared.Textures.Remove(name, out GlTexture? gone))
+            if (Shared.Textures.Remove(name, out GlTexture? gone) && GlShared.SizeOf(gone) is > 0 and var bytes)
             {
-                Shared.TextureBytes -= GlShared.SizeOf(gone);
+                Shared.RefundTexture(bytes);
             }
             if (State.Texture1D == name)
             {
@@ -636,6 +774,27 @@ internal sealed partial class GlContext
     }
 
     // ------------------------------------------------------------------ 属性栈
+
+    /// <summary>
+    /// Enable / Disable / IsEnabled 认识的开关:1.1 的全部(求值器的 MAP1_* / MAP2_* 也算 —— 求值器不实现,开关照样可以拨),
+    /// 加上声明了的扩展带来的(POLYGON_OFFSET_FILL 即 EXT 的 POLYGON_OFFSET、RESCALE_NORMAL)与 MULTISAMPLE。
+    /// 别的值按 §2.5 记 INVALID_ENUM、不进状态 —— 原先照单全收,16 MB 的 Enable 流把开关集合撑大,再经 PushAttrib 复制 16 份。
+    /// </summary>
+    private static bool IsKnownCap(uint cap) => cap switch
+    {
+        GlEnum.POINT_SMOOTH or GlEnum.LINE_SMOOTH or GlEnum.LINE_STIPPLE or GlEnum.POLYGON_SMOOTH or GlEnum.POLYGON_STIPPLE
+            or GlEnum.CULL_FACE or GlEnum.LIGHTING or GlEnum.COLOR_MATERIAL or GlEnum.FOG or GlEnum.DEPTH_TEST
+            or GlEnum.STENCIL_TEST or GlEnum.NORMALIZE or GlEnum.ALPHA_TEST or GlEnum.DITHER or GlEnum.BLEND
+            or GlEnum.INDEX_LOGIC_OP or GlEnum.COLOR_LOGIC_OP or GlEnum.SCISSOR_TEST or GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D
+            or GlEnum.TEXTURE_GEN_S or GlEnum.TEXTURE_GEN_T or GlEnum.TEXTURE_GEN_R or GlEnum.TEXTURE_GEN_Q
+            or GlEnum.AUTO_NORMAL or GlEnum.POLYGON_OFFSET_FILL or GlEnum.POLYGON_OFFSET_LINE or GlEnum.POLYGON_OFFSET_POINT
+            or GlEnum.RESCALE_NORMAL or GlEnum.MULTISAMPLE => true,
+        >= GlEnum.CLIP_PLANE0 and < GlEnum.CLIP_PLANE0 + MaxClipPlanes => true,
+        >= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights => true,
+        >= GlEnum.MAP1_COLOR_4 and <= GlEnum.MAP1_VERTEX_4 => true,
+        >= GlEnum.MAP2_COLOR_4 and <= GlEnum.MAP2_VERTEX_4 => true,
+        _ => false,
+    };
 
     private void PushAttrib(uint mask)
     {

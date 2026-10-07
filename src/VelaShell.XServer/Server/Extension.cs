@@ -38,6 +38,9 @@ internal sealed class Extension(string name, byte majorOpcode, Action<XClient, X
     /// <summary>像素图的 ID 释放了(FreePixmap、客户端断开):清这个扩展里挂在它上面的状态。</summary>
     public Action<XPixmap>? PixmapFreed { get; init; }
 
+    /// <summary>任何一个资源离开了资源表(释放请求、客户端断开):释放这个扩展挂在它上面、记在账上的东西(比如 GLX 上下文的 GL 对象)。</summary>
+    public Action<XResource>? ResourceFreed { get; init; }
+
     public bool IsVisibleTo(XClient client) => VisibleTo?.Invoke(client) ?? true;
 
     public void Handle(XClient client, XRequestReader request) => handle(client, request);

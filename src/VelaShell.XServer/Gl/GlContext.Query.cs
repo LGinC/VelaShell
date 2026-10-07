@@ -35,7 +35,16 @@ internal sealed partial class GlContext
         _ => null,
     };
 
-    public bool IsEnabled(uint cap) => State.Enabled.Contains(cap);
+    /// <summary>IsEnabled(§6.1.1):不认识的开关记 INVALID_ENUM、回 False。</summary>
+    public bool IsEnabled(uint cap)
+    {
+        if (!IsKnownCap(cap))
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return false;
+        }
+        return State.Enabled.Contains(cap);
+    }
 
     /// <summary>Get{Boolean,Integer,Float,Double}v 的值;不认识的 pname 记 INVALID_ENUM 并返回 null。</summary>
     public GlValue? Query(uint pname)

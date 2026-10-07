@@ -62,6 +62,10 @@ public sealed partial class X11Server
                 extension.PixmapFreed?.Invoke(pixmap);
             }
         }
+        foreach (Extension extension in _extensionList)
+        {
+            extension.ResourceFreed?.Invoke(resource);
+        }
     }
 
     // ------------------------------------------------------------------ 内存账(xs_plan X-2)

@@ -346,7 +346,7 @@ internal sealed partial class GlContext
                 SetError(GlEnum.INVALID_OPERATION);
                 break;
             case 138:   // Disable
-                State.Enabled.Remove(r.U32());
+                Disable(r.U32());
                 break;
             case 139:   // Enable
                 Enable(r.U32());
@@ -552,11 +552,26 @@ internal sealed partial class GlContext
 
     private void Enable(uint cap)
     {
+        if (!IsKnownCap(cap))
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
         State.Enabled.Add(cap);
         if (cap == GlEnum.COLOR_MATERIAL)
         {
             ApplyColorMaterial();   // 打开的那一刻起材质就跟随当前颜色(§2.14.3)
         }
+    }
+
+    private void Disable(uint cap)
+    {
+        if (!IsKnownCap(cap))
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        State.Enabled.Remove(cap);
     }
 
     private void CallLists(ref GlReader r)

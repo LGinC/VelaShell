@@ -780,6 +780,162 @@ public sealed class GlxTests
         Assert.AreEqual(0u, binding.U32(16), "悬空的名字按删掉处理:绑定是 0");
     }
 
+    /// <summary>有上限的内存账(直接驱动 GlContext 时代替服务端的每客户端账)。</summary>
+    private sealed class LimitedAccount(long limit) : Gl.IGlMemoryAccount
+    {
+        public long InUse { get; private set; }
+
+        public bool TryCharge(long bytes)
+        {
+            if (InUse + bytes > limit)
+            {
+                return false;
+            }
+            InUse += bytes;
+            return true;
+        }
+
+        public void Refund(long bytes) => InUse -= bytes;
+    }
+
+    /// <summary>TexImage2D 渲染命令的正文:像素存储头(对齐 1)、target、level、内部格式、宽高、边框、格式、类型,再是数据(可以没有)。</summary>
+    private static byte[] TexImage2DBody(int level, int width, int height, byte[]? data = null, uint target = Texture2D)
+    {
+        XTestClient.Body b = new(bigEndian: false);
+        b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1)
+            .U32(target).I32(level).U32(Rgba).I32(width).I32(height).I32(0).U32(Rgba).U32(UnsignedByte);
+        if (data is not null)
+        {
+            b.Bytes(data);
+        }
+        return b.ToArray();
+    }
+
+    private const uint InvalidEnum = 0x0500;
+
+    [TestMethod]
+    public void Enable与Disable只认识的开关_别的值记INVALID_ENUM不进状态()
+    {
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null);
+        int before = gl.State.Enabled.Count;
+        for (uint cap = 0x10000; cap < 0x10100; cap++)
+        {
+            gl.ExecuteOrCompile(139, BitConverter.GetBytes(cap), bigEndian: false);   // Enable(垃圾值)
+        }
+        Assert.AreEqual(InvalidEnum, gl.GetError());
+        Assert.AreEqual(before, gl.State.Enabled.Count, "原先每个垃圾值都进了开关集合,PushAttrib 再复制 16 份");
+        Assert.IsFalse(gl.IsEnabled(0x10000));
+        Assert.AreEqual(InvalidEnum, gl.GetError(), "IsEnabled 也认开关");
+        gl.ExecuteOrCompile(138, BitConverter.GetBytes(0x10000u), bigEndian: false);   // Disable(垃圾值)
+        Assert.AreEqual(InvalidEnum, gl.GetError());
+
+        gl.ExecuteOrCompile(139, BitConverter.GetBytes(0x0DB7u), bigEndian: false);    // Enable(MAP2_VERTEX_3):求值器不实现,开关照样能拨
+        gl.ExecuteOrCompile(139, BitConverter.GetBytes(0x3005u), bigEndian: false);    // CLIP_PLANE5
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.IsTrue(gl.IsEnabled(0x0DB7));
+        Assert.IsTrue(gl.IsEnabled(0x3005));
+    }
+
+    [TestMethod]
+    public void 默认纹理_图元缓冲_空列表都记账_上下文释放后如数退还()
+    {
+        LimitedAccount account = new(8L << 20);
+        Gl.GlContext gl = new(doubleBuffered: false, hasAlpha: false, share: null, account);
+
+        gl.ExecuteOrCompile(110, TexImage2DBody(0, 1024, 1024), bigEndian: false);   // 名字 0 的默认 2D 纹理:4 MB
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(4L << 20, account.InUse, "默认纹理记在上下文的账上(原先不记)");
+        gl.ExecuteOrCompile(110, TexImage2DBody(1, 2048, 2048), bigEndian: false);   // 再要 16 MB:超了
+        Assert.AreEqual(OutOfMemory, gl.GetError());
+        Assert.AreEqual(4L << 20, account.InUse, "记不下的不分配、账不变");
+
+        long beforeList = account.InUse;
+        gl.NewList(9, Compile);
+        gl.EndList();
+        Assert.AreEqual(Gl.GlShared.ListOverhead, account.InUse - beforeList, "空列表也记一份对象开销");
+
+        long beforeVertices = account.InUse;
+        gl.ExecuteOrCompile(4, BitConverter.GetBytes(0u), bigEndian: false);           // Begin(POINTS)
+        for (int i = 0; i < 1000; i++)
+        {
+            gl.ExecuteOrCompile(66, new byte[8], bigEndian: false);                    // Vertex2fv
+        }
+        Assert.IsGreaterThan(beforeVertices, account.InUse, "Begin / End 之间攒的顶点记账");
+        gl.ExecuteOrCompile(23, [], bigEndian: false);                                 // End
+
+        gl.Release();
+        Assert.AreEqual(0L, account.InUse, "上下文释放:默认纹理、图元缓冲、共享组的列表都退还");
+    }
+
+    [TestMethod]
+    public async Task 间接上下文的纹理与表面记在客户端的内存账上_超了记OUT_OF_MEMORY_销毁后如数退还()
+    {
+        const long mib = 1024 * 1024;
+        await using X11Server server = new(new X11ServerOptions { MaxClientMemory = 16 * mib });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        long baseline = await server.InvokeAsync(() => server.MemoryInUse);
+
+        uint pbuffer = c.NewId(), context = c.NewId();
+        await c.SendAsync(glx, 27, b => b.U32(0).U32(SingleBufferedRgb).U32(pbuffer).U32(2).U32(0x8041).U32(64).U32(0x8040).U32(64));
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(pbuffer).U32(pbuffer).U32(context))).U32(8);
+        long current = await server.InvokeAsync(() => server.MemoryInUse);
+        Assert.IsGreaterThanOrEqualTo(baseline + Gl.GlContext.ObjectBytes + (64 * 64 * 9), current, "上下文对象与 64² 的表面记账");
+
+        await RenderAsync(c, glx, tag, new Commands().Add(110, b => b.Bytes(TexImage2DBody(0, 1024, 1024))));   // 默认纹理 4 MB
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        await RenderAsync(c, glx, tag, new Commands().Add(110, b => b.Bytes(TexImage2DBody(0, 2048, 2048))));   // 换成 16 MB:超了 16 MiB
+        Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag), "原先默认纹理不记账,192 MB 也照建");
+
+        await c.RequestAsync(glx, 26, b => b.U32(tag).U32(0).U32(0).U32(0));   // 放下当前上下文
+        await c.SendAsync(glx, 4, b => b.U32(context));                        // DestroyContext
+        await c.SendAsync(glx, 28, b => b.U32(pbuffer));                       // DestroyPbuffer
+        await c.SyncAsync();
+        Assert.AreEqual(baseline, await server.InvokeAsync(() => server.MemoryInUse), "销毁之后上下文、纹理、表面的账全部退还");
+    }
+
+    [TestMethod]
+    public async Task 不共享的上下文每个都记账_建再多也超不过每客户端的上限()
+    {
+        await using X11Server server = new(new X11ServerOptions { MaxClientMemory = 1024 * 1024 });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        for (int i = 0; i < 32; i++)
+        {
+            uint context = c.NewId();
+            await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        }
+        await c.SyncAsync();
+        XMessage refused = await c.NextAsync(m => m.IsError, 500);   // 原先每个上下文(各带一个共享组)都不记账:一个错误都没有
+        Assert.AreEqual(11, refused.Bytes[1], "BadAlloc");
+    }
+
+    [TestMethod]
+    public async Task 客户端断开时它的上下文_共享组_表面的账全部退还()
+    {
+        await using X11Server server = new();
+        long baseline = await server.InvokeAsync(() => server.MemoryInUse);
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pbuffer = c.NewId(), context = c.NewId(), shared = c.NewId();
+        await c.SendAsync(glx, 27, b => b.U32(0).U32(SingleBufferedRgb).U32(pbuffer).U32(2).U32(0x8041).U32(32).U32(0x8040).U32(32));
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        await c.SendAsync(glx, 24, b => b.U32(shared).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(context).U8(0).U8(0).U16(0));   // 共享 context 的名字空间
+        uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(pbuffer).U32(pbuffer).U32(shared))).U32(8);
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4117, b => b.U32(Texture2D).U32(3))                                  // 有名字的纹理:记在共享组上
+            .Add(110, b => b.Bytes(TexImage2DBody(0, 64, 64)))
+            .Add(4, b => b.U32(0)).Add(66, b => F(b, 0, 0)));                         // Begin 了还没 End:图元缓冲
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsGreaterThan(baseline + (64 * 64 * 4), await server.InvokeAsync(() => server.MemoryInUse));
+
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.AreEqual(baseline, await server.InvokeAsync(() => server.MemoryInUse), "还是当前的上下文、共享组、表面在断开时一并销账");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {
