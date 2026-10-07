@@ -32,14 +32,15 @@ public sealed partial class X11Server
     /// <summary>宿主最近一次给的文本;服务端占有选区时拿它回应(见 <see cref="SetHostClipboard" />)。</summary>
     private string _hostClipboard = "";
 
-    /// <summary>宿主文本的 UTF-8 / Latin-1 编码:第一次有人要时编一次,之后各次 ConvertSelection 共用(原先每次都重编码)。</summary>
-    private byte[]? _hostClipboardUtf8, _hostClipboardLatin1;
+    /// <summary>宿主文本的 UTF-8 / Latin-1 / COMPOUND_TEXT 编码:第一次有人要时编一次,之后各次 ConvertSelection 共用(原先每次都重编码)。</summary>
+    private byte[]? _hostClipboardUtf8, _hostClipboardLatin1, _hostClipboardCompound;
 
     private void SetHostClipboard(string text)
     {
         _hostClipboard = text;
         _hostClipboardUtf8 = null;
         _hostClipboardLatin1 = null;
+        _hostClipboardCompound = null;
     }
 
     private byte[] HostClipboardUtf8 => _hostClipboardUtf8 ??= Encoding.UTF8.GetBytes(_hostClipboard);
@@ -49,10 +50,16 @@ public sealed partial class X11Server
     /// <summary>最近一次交给宿主的文本 —— 宿主把它写回来时不再抢选区(防回声)。</summary>
     private string? _lastDeliveredText;
 
-    private SelectionFetch? _fetch;
+    /// <summary>
+    /// 进行中的「从 X 客户端取选区」,每个选区一份(CLIPBOARD 与 PRIMARY 同时变化时各取各的,原先只有一个槽,后来的把先来的冲掉)。
+    /// </summary>
+    private readonly Dictionary<uint, SelectionFetch> _fetches = [];
+
+    /// <summary>取选区时每一步(等 SelectionNotify、等下一块 INCR)等属主的时限,过了就放弃(测试可以调短)。</summary>
+    internal TimeSpan FetchStepTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>一次进行中的「从 X 客户端取选区」。</summary>
-    private sealed class SelectionFetch(uint selection, uint target, uint time)
+    private sealed class SelectionFetch(uint selection, uint target, uint time, uint property)
     {
         public uint Selection { get; } = selection;
 
@@ -60,10 +67,16 @@ public sealed partial class X11Server
 
         public uint Time { get; } = time;
 
+        /// <summary>属主把内容写到服务端请求窗口上的这个属性(每个选区一个,互不干扰)。</summary>
+        public uint Property { get; } = property;
+
         /// <summary>INCR 传输中累积的字节;不在 INCR 里为 null。</summary>
         public List<byte>? Incr { get; set; }
 
         public uint IncrType { get; set; }
+
+        /// <summary>第几步:限时检查只认安排它时的那一步。</summary>
+        public int Step { get; set; }
     }
 
     private XWindow SelectionWindow
@@ -156,70 +169,132 @@ public sealed partial class X11Server
     /// <summary>服务端占有的选区被 ConvertSelection 了:按目标写属性,再发 SelectionNotify(ICCCM §2.2)。</summary>
     private void ServeSelection(XClient c, XWindow requestor, uint selection, uint target, uint property, uint time, uint ownerTime)
     {
-        if (property == 0)
+        bool oldStyle = property == 0;
+        if (oldStyle)
         {
             property = target;   // 旧式请求方(ICCCM §2.2)
         }
+        if (selection != Intern("CLIPBOARD") && selection != XAtom.Primary)
+        {
+            property = 0;   // 服务端占有的其它选区(_XSETTINGS_S0 这类管理器选区)没有可转换的内容
+        }
+        else if (!InFocusedSession(c))
+        {
+            property = 0;   // 宿主的文本只给键盘焦点所在的会话:原先本机复制的密码在用户点一下任意 X 窗口后,所有会话的所有客户端都读得到
+        }
+        else if (target == Intern("MULTIPLE"))
+        {
+            if (oldStyle || !ServeMultiple(requestor, property, ownerTime))
+            {
+                property = 0;   // MULTIPLE 必须给属性(放目标与属性对的那个)
+            }
+        }
+        else if (ConvertHostSelection(target, ownerTime) is { } value)
+        {
+            WriteConverted(requestor, property, value);
+        }
+        else
+        {
+            property = 0;   // 不支持的目标:拒绝
+        }
+        XClient to = requestor.Owner is { Closed: false } creator ? creator : c;
+        to.Event(XEventCode.SelectionNotify, 0, w => w.U32(time).U32(requestor.Id).U32(selection).U32(target).U32(property));
+    }
+
+    /// <summary>宿主的文本按目标转换;不支持的目标为 null。</summary>
+    private (uint Type, byte Format, byte[] Data)? ConvertHostSelection(uint target, uint ownerTime)
+    {
         uint utf8 = Intern("UTF8_STRING");
         uint targets = Intern("TARGETS");
         uint timestamp = Intern("TIMESTAMP");
         uint text = Intern("TEXT");
         uint plainUtf8 = Intern("text/plain;charset=utf-8");
-
-        (uint Type, byte Format, byte[] Data)? value = null;
-        if (selection != Intern("CLIPBOARD") && selection != XAtom.Primary)
+        uint compound = Intern("COMPOUND_TEXT");
+        if (target == targets)
         {
-            // 服务端占有的其它选区(_XSETTINGS_S0 这类管理器选区)没有可转换的内容。
-        }
-        else if (!InFocusedSession(c))
-        {
-            // 宿主的文本只给键盘焦点所在的会话:原先本机复制的密码在用户点一下任意 X 窗口后,所有会话的所有客户端都读得到。
-        }
-        else if (target == targets)
-        {
-            uint[] atoms = [targets, timestamp, utf8, plainUtf8, XAtom.String, text];
+            // ICCCM §2.6.2:属主必须支持 TARGETS、MULTIPLE、TIMESTAMP。原先不列 MULTIPLE 与 COMPOUND_TEXT。
+            uint[] atoms = [targets, Intern("MULTIPLE"), timestamp, utf8, plainUtf8, compound, XAtom.String, text];
             byte[] data = new byte[atoms.Length * 4];
             for (int i = 0; i < atoms.Length; i++)
             {
                 BinaryPrimitives.WriteUInt32LittleEndian(data.AsSpan(i * 4), atoms[i]);
             }
-            value = (XAtom.Atom, 32, data);
+            return (XAtom.Atom, 32, data);
         }
-        else if (target == timestamp)
+        if (target == timestamp)
         {
             byte[] data = new byte[4];
             BinaryPrimitives.WriteUInt32LittleEndian(data, ownerTime);
-            value = (XAtom.Integer, 32, data);
+            return (XAtom.Integer, 32, data);
         }
-        else if (target == utf8 || target == plainUtf8)
+        if (target == utf8 || target == plainUtf8)
         {
-            value = (target, 8, HostClipboardUtf8);
+            return (target, 8, HostClipboardUtf8);
         }
-        else if (target == text && !IsLatin1(_hostClipboard))
+        if (target == compound)
+        {
+            return (compound, 8, _hostClipboardCompound ??= XText.EncodeCompoundText(_hostClipboard));   // Motif / Xaw 要的
+        }
+        if (target == text && !IsLatin1(_hostClipboard))
         {
             // TEXT 由属主挑编码(ICCCM §2.6.2):Latin-1 装不下(中日韩)就回 UTF8_STRING —— 原先按 Latin-1 有损转换,汉字变成「?」。
-            value = (utf8, 8, HostClipboardUtf8);
+            return (utf8, 8, HostClipboardUtf8);
         }
-        else if (target == XAtom.String || target == text)
+        if (target == XAtom.String || target == text)
         {
-            value = (XAtom.String, 8, HostClipboardLatin1);
+            return (XAtom.String, 8, HostClipboardLatin1);
         }
+        return null;
+    }
 
-        if (value is not { } v)
+    /// <summary>转换结果写到请求方的属性上:大的分块交(ICCCM §2.5)。</summary>
+    private void WriteConverted(XWindow requestor, uint property, (uint Type, byte Format, byte[] Data) value)
+    {
+        if (value.Format == 8 && value.Data.Length > IncrChunkBytes)
         {
-            property = 0;   // 不支持的目标:拒绝
+            StartIncrTransfer(requestor, property, value.Type, value.Data);
+            return;
         }
-        else if (v.Format == 8 && v.Data.Length > IncrChunkBytes)
+        StoreServerProperty(requestor, property, new XProperty(value.Type, value.Format, value.Data));
+        SendPropertyNotify(requestor, property, deleted: false);
+    }
+
+    /// <summary>MULTIPLE 里最多看这么多对(真实的请求方一次要几个目标)。</summary>
+    private const int MaxMultiplePairs = 64;
+
+    /// <summary>
+    /// ICCCM §2.6.2「MULTIPLE」:请求方在 <paramref name="property" /> 里放一串(目标, 属性)对(ATOM_PAIR);逐个转换写到各自的属性上,
+    /// 转换不了的把那一对的属性换成 None 再写回去。属性不在或格式不对时整个拒绝。
+    /// </summary>
+    private bool ServeMultiple(XWindow requestor, uint property, uint ownerTime)
+    {
+        if (!requestor.Properties.TryGetValue(property, out XProperty? list) || list.Format != 32)
         {
-            StartIncrTransfer(requestor, property, v.Type, v.Data);   // 大的分块交(ICCCM §2.5)
+            return false;
         }
-        else
+        uint[] pairs = ReadCard32s(list, MaxMultiplePairs * 2);
+        bool refused = false;
+        for (int i = 0; i + 1 < pairs.Length; i += 2)
         {
-            StoreServerProperty(requestor, property, new XProperty(v.Type, v.Format, v.Data));
-            SendPropertyNotify(requestor, property, deleted: false);
+            uint target = pairs[i], destination = pairs[i + 1];
+            if (destination == 0)
+            {
+                continue;
+            }
+            // 属性名必须是存在的原子(同 ConvertSelection);MULTIPLE 不能套 MULTIPLE。
+            if (target == Intern("MULTIPLE") || AtomName(destination) is null || ConvertHostSelection(target, ownerTime) is not { } value)
+            {
+                pairs[i + 1] = 0;
+                refused = true;
+                continue;
+            }
+            WriteConverted(requestor, destination, value);
         }
-        XClient to = requestor.Owner is { Closed: false } creator ? creator : c;
-        to.Event(XEventCode.SelectionNotify, 0, w => w.U32(time).U32(requestor.Id).U32(selection).U32(target).U32(property));
+        if (refused)
+        {
+            SetProperty(requestor, property, list.Type, pairs);
+        }
+        return true;
     }
 
     /// <summary>
@@ -313,32 +388,63 @@ public sealed partial class X11Server
         {
             return;   // 后台会话的复制不进系统剪贴板:否则远端程序可以反复改写本机剪贴板,用户往别处粘贴时中招
         }
-        _fetch = new SelectionFetch(selection, Intern("UTF8_STRING"), time);
-        RequestFetch(owner, ownerWindow);
+        SelectionFetch fetch = new(selection, Intern("UTF8_STRING"), time, Intern("_VELASHELL_" + (AtomName(selection) ?? "SELECTION")));
+        _fetches[selection] = fetch;   // 同一个选区又换了属主:旧的那次作废
+        RequestFetch(fetch, owner, ownerWindow);
     }
 
-    private void RequestFetch(XClient owner, XWindow ownerWindow)
+    private void RequestFetch(SelectionFetch fetch, XClient owner, XWindow ownerWindow)
     {
-        if (_fetch is not { } fetch)
-        {
-            return;
-        }
-        uint property = Intern("_VELASHELL_SELECTION");
         uint requestor = SelectionWindow.Id;
         owner.Event(XEventCode.SelectionRequest, 0, w => w
-            .U32(fetch.Time).U32(ownerWindow.Id).U32(requestor).U32(fetch.Selection).U32(fetch.Target).U32(property));
+            .U32(fetch.Time).U32(ownerWindow.Id).U32(requestor).U32(fetch.Selection).U32(fetch.Target).U32(fetch.Property));
+        ExpireFetchLater(fetch);
+    }
+
+    /// <summary>属主迟迟不回(卡死、不理 SelectionRequest、INCR 写到一半不写了):过了时限放弃这次,不一直占着。原先没有时限。</summary>
+    private void ExpireFetchLater(SelectionFetch fetch)
+    {
+        int step = ++fetch.Step;
+        _ = DelayThenPostAsync((uint)FetchStepTimeout.TotalMilliseconds, () =>
+        {
+            if (_fetches.TryGetValue(fetch.Selection, out SelectionFetch? current) && ReferenceEquals(current, fetch) && current.Step == step)
+            {
+                EndFetch(fetch);
+            }
+        }, _lifetime.Token);
+    }
+
+    private void EndFetch(SelectionFetch fetch)
+    {
+        if (_fetches.TryGetValue(fetch.Selection, out SelectionFetch? current) && ReferenceEquals(current, fetch))
+        {
+            _fetches.Remove(fetch.Selection);
+        }
+        DeleteSelectionProperty(fetch.Property);
+    }
+
+    /// <summary>某个客户端断开了:正在取的选区若已没了属主,这次取不回来了。</summary>
+    private void DropOrphanedFetches()
+    {
+        foreach (SelectionFetch fetch in _fetches.Values.ToArray())
+        {
+            if (!_selections.ContainsKey(fetch.Selection))
+            {
+                EndFetch(fetch);
+            }
+        }
     }
 
     /// <summary>属主用 SendEvent 把 SelectionNotify 发到了我们的请求窗口。</summary>
     private void OnSelectionWindowEvent(byte[] raw, bool bigEndian)
     {
-        if ((raw[0] & 0x7F) != XEventCode.SelectionNotify || _fetch is not { } fetch)
+        if ((raw[0] & 0x7F) != XEventCode.SelectionNotify)
         {
             return;
         }
         uint selection = bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(12)) : BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(12));
         uint property = bigEndian ? BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(20)) : BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(20));
-        if (selection != fetch.Selection)
+        if (!_fetches.TryGetValue(selection, out SelectionFetch? fetch) || fetch.Incr is not null)
         {
             return;
         }
@@ -348,19 +454,18 @@ public sealed partial class X11Server
             if (fetch.Target != XAtom.String && _selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) owner) && owner.Client is { } client)
             {
                 fetch.Target = XAtom.String;
-                RequestFetch(client, owner.Window);
+                RequestFetch(fetch, client, owner.Window);
             }
             else
             {
-                _fetch = null;
+                EndFetch(fetch);
             }
             return;
         }
 
-        XWindow window = SelectionWindow;
-        if (!window.Properties.TryGetValue(property, out XProperty? value))
+        if (property != fetch.Property || !SelectionWindow.Properties.TryGetValue(property, out XProperty? value))
         {
-            _fetch = null;
+            EndFetch(fetch);
             return;
         }
         if (value.Type == Intern("INCR"))
@@ -368,17 +473,29 @@ public sealed partial class X11Server
             // 大数据:删掉属性表示「准备好了」,属主随后一块块往里写(ICCCM §2.5)。
             fetch.Incr = [];
             DeleteSelectionProperty(property);
+            ExpireFetchLater(fetch);
             return;
         }
-        DeleteSelectionProperty(property);
-        _fetch = null;
+        EndFetch(fetch);
         Deliver(value.Type, value.Data.ToArray());
     }
 
     /// <summary>INCR 传输中:属主往请求窗口写了一块。空块表示结束。</summary>
     private void OnSelectionWindowProperty(uint property, bool deleted)
     {
-        if (deleted || _fetch is not { Incr: { } buffer } fetch || property != Intern("_VELASHELL_SELECTION"))
+        if (deleted || _fetches.Count == 0)
+        {
+            return;
+        }
+        SelectionFetch? fetch = null;
+        foreach (SelectionFetch candidate in _fetches.Values)
+        {
+            if (candidate.Property == property && candidate.Incr is not null)
+            {
+                fetch = candidate;
+            }
+        }
+        if (fetch is not { Incr: { } buffer })
         {
             return;
         }
@@ -386,7 +503,7 @@ public sealed partial class X11Server
         DeleteSelectionProperty(property);
         if (chunk.Data.Length == 0)
         {
-            _fetch = null;
+            EndFetch(fetch);
             Deliver(fetch.IncrType, [.. buffer]);
             return;
         }
@@ -394,8 +511,10 @@ public sealed partial class X11Server
         buffer.AddRange(chunk.Data);
         if (buffer.Count > MaxClipboardBytes)
         {
-            _fetch = null;   // 太大:放弃。属主写下一块时没人删属性,它自己会超时
+            EndFetch(fetch);   // 太大:放弃。属主写下一块时没人删属性,它自己会超时
+            return;
         }
+        ExpireFetchLater(fetch);
     }
 
     private static bool IsLatin1(string text) => !text.AsSpan().ContainsAnyExceptInRange('\0', '\u00FF');

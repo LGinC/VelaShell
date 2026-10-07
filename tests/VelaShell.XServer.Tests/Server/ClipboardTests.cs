@@ -178,6 +178,83 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task 服务端当属主支持MULTIPLE与COMPOUND_TEXT_转换不了的那一对写回None()
+    {
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(c, "CLIPBOARD");
+        uint utf8 = await InternAsync(c, "UTF8_STRING"), compound = await InternAsync(c, "COMPOUND_TEXT");
+        uint targets = await InternAsync(c, "TARGETS"), multiple = await InternAsync(c, "MULTIPLE"), pair = await InternAsync(c, "ATOM_PAIR");
+        uint list = await InternAsync(c, "MY_LIST"), first = await InternAsync(c, "MY_FIRST"), second = await InternAsync(c, "MY_SECOND"),
+            third = await InternAsync(c, "MY_THIRD"), bogus = await InternAsync(c, "image/png");
+        uint window = await CreateWindowAsync(c);
+        server.SetClipboardText("a 中文");
+        while ((await c.RequestAsync(23, 0, b => b.U32(clipboard))).U32(8) == 0)
+        {
+        }
+        async Task<XMessage> GetAsync(uint property) => await c.RequestAsync(20, 0, b => b.U32(window).U32(property).U32(0).U32(0).U32(1000));
+
+        await c.SendAsync(24, 0, b => b.U32(window).U32(clipboard).U32(targets).U32(list).U32(0));
+        await c.NextEventAsync(SelectionNotify);
+        XMessage offered = await GetAsync(list);
+        uint[] atoms = [.. Enumerable.Range(0, (int)offered.U32(16)).Select(i => offered.U32(32 + (i * 4)))];
+        CollectionAssert.Contains(atoms, multiple, "ICCCM §2.6.2 要求属主支持 MULTIPLE");
+        CollectionAssert.Contains(atoms, compound);
+
+        // MULTIPLE:三对 —— UTF8_STRING、不支持的 image/png、COMPOUND_TEXT。
+        await c.SendAsync(18, 0, b => b.U32(window).U32(list).U32(pair).U8(32).U8(0).U8(0).U8(0).U32(6)
+            .U32(utf8).U32(first).U32(bogus).U32(second).U32(compound).U32(third));
+        await c.SendAsync(24, 0, b => b.U32(window).U32(clipboard).U32(multiple).U32(list).U32(0));
+        XMessage notify = await c.NextEventAsync(SelectionNotify);
+        Assert.AreEqual(list, notify.U32(20), "回的就是放对的那个属性");
+        XMessage one = await GetAsync(first);
+        Assert.AreEqual("a 中文", Encoding.UTF8.GetString(one.Bytes, 32, (int)one.U32(16)));
+        XMessage three = await GetAsync(third);
+        Assert.AreEqual(compound, three.U32(8));
+        Assert.AreEqual("a 中文", Protocol.XText.DecodeCompoundText(three.Bytes.AsSpan(32, (int)three.U32(16))));
+        XMessage pairs = await GetAsync(list);
+        Assert.AreEqual(0u, pairs.U32(32 + 12), "转换不了的那一对,属性换成 None");
+        Assert.AreEqual(first, pairs.U32(32 + 4));
+        Assert.AreEqual(0u, (await GetAsync(second)).U32(8), "没写");
+    }
+
+    [TestMethod]
+    public async Task 从X端取选区每个选区各取各的_属主不回时过了时限放弃()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false, SyncPrimary = true }, host);
+        server.FetchStepTimeout = TimeSpan.FromMilliseconds(200);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(c, "CLIPBOARD");
+        uint utf8 = await InternAsync(c, "UTF8_STRING");
+        uint window = await CreateWindowAsync(c);
+
+        // 同时占 PRIMARY 与 CLIPBOARD:两次取各用各的属性,先回的那个不被后来的冲掉(原先只有一个槽)。
+        await c.SendAsync(22, 0, b => b.U32(window).U32(1).U32(0));
+        await c.SendAsync(22, 0, b => b.U32(window).U32(clipboard).U32(0));
+        XMessage primaryRequest = await c.NextAsync(m => m.EventCode == SelectionRequest && m.U32(16) == 1);
+        XMessage clipboardRequest = await c.NextAsync(m => m.EventCode == SelectionRequest && m.U32(16) == clipboard);
+        Assert.AreNotEqual(primaryRequest.U32(24), clipboardRequest.U32(24), "两个选区取到不同的属性上");
+        await ChangePropertyAsync(c, primaryRequest.U32(12), primaryRequest.U32(24), utf8, Encoding.UTF8.GetBytes("选中的"));
+        await SendSelectionNotifyAsync(c, primaryRequest, primaryRequest.U32(24));
+        await host.WaitForAsync(() => host.Clipboard == "选中的");   // 原先 CLIPBOARD 那次把 PRIMARY 的冲掉了,这条回应被丢掉
+        await ChangePropertyAsync(c, clipboardRequest.U32(12), clipboardRequest.U32(24), utf8, Encoding.UTF8.GetBytes("复制的文本"));
+        await SendSelectionNotifyAsync(c, clipboardRequest, clipboardRequest.U32(24));
+        await host.WaitForAsync(() => host.Clipboard == "复制的文本");
+
+        // 属主收到 SelectionRequest 却迟迟不回:过了时限这次作废,之后迟到的回应不再交给宿主。
+        uint late = await CreateWindowAsync(c);
+        await c.SendAsync(22, 0, b => b.U32(late).U32(clipboard).U32(0));
+        XMessage stalled = await c.NextAsync(m => m.EventCode == SelectionRequest && m.U32(8) == late);
+        await Task.Delay(600);
+        await ChangePropertyAsync(c, stalled.U32(12), stalled.U32(24), utf8, Encoding.UTF8.GetBytes("迟到的"));
+        await SendSelectionNotifyAsync(c, stalled, stalled.U32(24));
+        await c.SyncAsync();
+        await Task.Delay(100);
+        Assert.AreEqual("复制的文本", host.Clipboard, "原先没有时限,一直等着");
+    }
+
+    [TestMethod]
     public async Task X客户端复制的文本交给宿主_写回来不抢选区()
     {
         using RecordingHost host = new();

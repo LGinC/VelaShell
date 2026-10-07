@@ -801,10 +801,7 @@ public sealed partial class X11Server
                 OnSelectionOwnerLost(atom);
             }
         }
-        if (_fetch is { } fetch && !_selections.ContainsKey(fetch.Selection))
-        {
-            _fetch = null;   // 正在取的选区,属主走了
-        }
+        DropOrphanedFetches();   // 正在取的选区,属主走了
         if (ReferenceEquals(PointerGrab?.Client, client))
         {
             PointerGrab = null;
