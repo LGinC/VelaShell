@@ -35,13 +35,29 @@ internal static class RenderCompositor
 
         // 源 / 遮罩与目标是同一块缓冲(同一张像素图、同一个顶层里的窗口):先把要读的那一块拷出来。逐行从上往下合成时,
         // 目标在源下面(或同一行靠右)的话,后面要读的源行已经被前面写过了 —— 结果得像「先读完源再写」。
-        if (src is ImageSource sharedSource && ReferenceEquals(sharedSource.Buffer, dst.Buffer))
+        // 要读的只是目标上真正写得到的那几行几列对应的部分(可写区域之外的不合成)。
+        bool srcShared = src is ImageSource { } s0 && ReferenceEquals(s0.Buffer, dst.Buffer);
+        bool maskShared = mask is ImageSource { } m0 && ReferenceEquals(m0.Buffer, dst.Buffer);
+        if (srcShared || maskShared)
         {
-            src = sharedSource.Detach(new XRect(srcX, srcY, width, height));
-        }
-        if (mask is ImageSource sharedMask && ReferenceEquals(sharedMask.Buffer, dst.Buffer))
-        {
-            mask = sharedMask.Detach(new XRect(maskX, maskY, width, height));
+            int wx1 = int.MaxValue, wy1 = int.MaxValue, wx2 = int.MinValue, wy2 = int.MinValue;
+            foreach (XRect clip in dst.Clip)
+            {
+                XRect r = clip.Intersect(requested);
+                if (!r.IsEmpty)
+                {
+                    (wx1, wy1, wx2, wy2) = (Math.Min(wx1, r.X), Math.Min(wy1, r.Y), Math.Max(wx2, r.Right), Math.Max(wy2, r.Bottom));
+                }
+            }
+            XRect local = wx2 <= wx1 ? default : new XRect(wx1 - dst.OriginX - dstX, wy1 - dst.OriginY - dstY, wx2 - wx1, wy2 - wy1);
+            if (srcShared)
+            {
+                src = ((ImageSource)src).Detach(local.Offset(srcX, srcY));
+            }
+            if (maskShared)
+            {
+                mask = ((ImageSource)mask!).Detach(local.Offset(maskX, maskY));
+            }
         }
         if (TryFastPath(op, src, mask, componentAlpha, dst, srcX, srcY, maskX, maskY, dstX, dstY, width, height, out XRect fastDirty))
         {

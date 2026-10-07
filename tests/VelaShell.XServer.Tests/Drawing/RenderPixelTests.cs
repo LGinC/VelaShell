@@ -288,4 +288,49 @@ public sealed class RenderPixelTests
         }
         Console.WriteLine($"{cases} 种组合,最大通道差 {worst}");
     }
+
+    [TestMethod]
+    public void 源与目标同缓冲时只拷变换后读得到的那一块_取样结果不变()
+    {
+        // 窗口的 picture 至多 256 MB:原先源带变换或重复时每条请求整张拷一遍。现在按四个角变换后的外接矩形估算,
+        // 拷出来的源在要读的范围里逐像素与原来相同。
+        Random random = new(9);
+        PixelBuffer image = RandomBuffer(random, 300, 200, 32);
+        double c = Math.Cos(0.3) * 1.3, sn = Math.Sin(0.3) * 1.3;
+        double[][] transforms =
+        [
+            [2, 0, 7.5, 0, 2, -3.25, 0, 0, 1],                 // 缩小一半(矩阵把目标坐标映回源坐标)
+            [0.5, 0, 0, 0, 0.5, 0, 0, 0, 1],                   // 放大两倍
+            [c, -sn, 40, sn, c, 10, 0, 0, 1],                  // 旋转
+            [1, 0.1, 0, 0, 1, 0, 0.002, 0.001, 1],             // 投影
+            [1, 0, 0, 0, 1, 0, 0.01, 0, -1],                   // 齐次坐标在矩形里变号
+        ];
+        for (int round = 0; round < 400; round++)
+        {
+            ImageSource source = new(image, 0, 0, 300, 200, PictFormat.A8R8G8B8)
+            {
+                Repeat = (byte)random.Next(4),
+                Bilinear = random.Next(2) == 0,
+                Transform = random.Next(5) == 0 ? null : transforms[random.Next(transforms.Length)],
+            };
+            XRect needed = new(random.Next(-50, 320), random.Next(-50, 220), random.Next(1, 40), random.Next(1, 40));
+            ImageSource detached = source.Detach(needed);
+            uint[] expected = new uint[needed.Width], actual = new uint[needed.Width];
+            Argb[] expectedF = new Argb[needed.Width], actualF = new Argb[needed.Width];
+            for (int y = needed.Y; y < needed.Bottom; y++)
+            {
+                source.FetchRow8888(needed.X, y, expected);
+                detached.FetchRow8888(needed.X, y, actual);
+                CollectionAssert.AreEqual(expected, actual, $"第 {round} 组 {needed} 第 {y} 行(repeat {source.Repeat}、双线性 {source.Bilinear})");
+                source.FetchRow(needed.X, y, expectedF);
+                detached.FetchRow(needed.X, y, actualF);
+                CollectionAssert.AreEqual(expectedF, actualF, $"第 {round} 组 {needed} 第 {y} 行(浮点)");
+            }
+        }
+
+        // 放大两倍、重复平铺,读 20×20:要拷的只有 10×10 左右,而不是整张 300×200。
+        ImageSource tiled = new(image, 0, 0, 300, 200, PictFormat.A8R8G8B8) { Repeat = RenderSource.RepeatNormal, Bilinear = true, Transform = transforms[1] };
+        PixelBuffer copy = tiled.Detach(new XRect(40, 40, 20, 20)).Buffer;
+        Assert.IsLessThanOrEqualTo(14 * 14, copy.Width * copy.Height, $"拷了 {copy.Width}×{copy.Height}");
+    }
 }
