@@ -96,6 +96,31 @@ public sealed class SyncGrabTests
         Assert.IsEmpty(await DrainAsync(a, ButtonPress, ButtonRelease), "A 的抓取已经解除");
     }
 
+    /// <summary>
+    /// 指针同时被指针抓取与键盘抓取冻着:键盘抓取解除时指针照样冻着(原先每个设备只记一个冻结者,后冻的键盘抓取把指针抓取换掉,
+    /// 它一解除指针就提前解冻了);同一个客户端冻了两次,一个 AsyncPointer 全放开。
+    /// </summary>
+    [TestMethod]
+    public async Task 设备被两个抓取冻着_解除一个仍冻着_同一客户端的一个AllowEvents全放开()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        server.InjectPointerMotion(host.Mapped[top], 1, 1);
+        await c.RequestAsync(26, 0, b => b.U32(top).U16(0x40).U8(Synchronous).U8(Asynchronous).U32(0).U32(0).U32(0));   // 指针抓取冻指针
+        await c.RequestAsync(31, 0, b => b.U32(top).U32(0).U8(Synchronous).U8(Asynchronous).U16(0));                     // 键盘抓取也冻指针
+        await DrainAsync(c, MotionNotify);
+
+        server.InjectPointerMotion(host.Mapped[top], 10, 10);
+        await c.SendAsync(32, 0, b => b.U32(0));   // UngrabKeyboard
+        Assert.IsEmpty(await DrainAsync(c, MotionNotify), "指针抓取还冻着指针");
+
+        await c.RequestAsync(31, 0, b => b.U32(top).U32(0).U8(Synchronous).U8(Asynchronous).U16(0));   // 再冻一次
+        await c.SendAsync(35, 0, b => b.U32(0));   // AsyncPointer:两次都是这个客户端冻的,一起放开
+        Assert.HasCount(1, await DrainAsync(c, MotionNotify));
+    }
+
     /// <summary>重放的按下按事件之前的状态报:按钮 1 的位、Shift 自己的位都不在 state 里(原先重放时已经带上了)。</summary>
     [TestMethod]
     public async Task 重放的按下按事件之前的状态报_不带这次按下的按钮与修饰位()

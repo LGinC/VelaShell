@@ -25,11 +25,14 @@ public sealed partial class X11Server
     private ActiveGrab? _pointerGrab;
     private ActiveGrab? _keyboardGrab;
 
-    /// <summary>冻住指针的那个抓取;null = 没冻。</summary>
-    private ActiveGrab? _pointerFrozenBy;
+    /// <summary>
+    /// 冻着指针的那些抓取(空 = 没冻)。一个设备可以同时被指针抓取与键盘抓取冻着(协议「AllowEvents」:两个都放开才继续处理);
+    /// 原先每个设备只记一个冻结者,后冻的把先冻的换掉,一个抓取解除就提前解冻了另一个本该冻着的设备。
+    /// </summary>
+    private readonly List<ActiveGrab> _pointerFreezers = [];
 
-    /// <summary>冻住键盘的那个抓取;null = 没冻。</summary>
-    private ActiveGrab? _keyboardFrozenBy;
+    /// <summary>冻着键盘的那些抓取。</summary>
+    private readonly List<ActiveGrab> _keyboardFreezers = [];
 
     /// <summary>SyncPointer / SyncBoth 放行中:下一个按钮事件报给抓取方之后重新冻结(Both 时两个设备一起)。</summary>
     private ActiveGrab? _pointerSyncOnce;
@@ -156,7 +159,7 @@ public sealed partial class X11Server
 
     /// <summary>设备被别的客户端的抓取冻着(GrabPointer / GrabKeyboard / XIGrabDevice 回 Frozen)。</summary>
     private bool FrozenByOther(bool pointer, XClient client) =>
-        (pointer ? _pointerFrozenBy : _keyboardFrozenBy) is { } freezer && !ReferenceEquals(freezer.Client, client);
+        (pointer ? _pointerFreezers : _keyboardFreezers).Exists(g => !ReferenceEquals(g.Client, client));
 
     /// <summary>
     /// 当前的键盘抓取。换掉时它冻结的设备随之解冻。抓取激活 / 解除时按协议「Input Focus events」发 mode 为 Grab / Ungrab 的
@@ -202,7 +205,7 @@ public sealed partial class X11Server
     private void ProcessKeyboardInput(byte keycode, bool pressed, Action input) =>
         ProcessInput(pointer: false, pressed ? InputKind.Press : InputKind.Release, keycode, input);
 
-    private bool IsFrozen(bool pointer) => pointer ? _pointerFrozenBy is not null : _keyboardFrozenBy is not null;
+    private bool IsFrozen(bool pointer) => (pointer ? _pointerFreezers : _keyboardFreezers).Count != 0;
 
     /// <summary>
     /// 设备冻着、或者前面还排着这个设备的事件、或者排着已经可以走的事件(回放还没做完)时排队,否则立即处理 —— 保证先来的先处理。
@@ -279,35 +282,58 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 冻结与解冻
 
-    private void FreezePointer(ActiveGrab grab) => _pointerFrozenBy = grab;
-
-    private void FreezeKeyboard(ActiveGrab grab) => _keyboardFrozenBy = grab;
-
-    private void ThawPointer()
+    private void FreezePointer(ActiveGrab grab)
     {
-        _pointerFrozenBy = null;
-        _pointerReplay = null;
+        if (!_pointerFreezers.Contains(grab))
+        {
+            _pointerFreezers.Add(grab);
+        }
+    }
+
+    private void FreezeKeyboard(ActiveGrab grab)
+    {
+        if (!_keyboardFreezers.Contains(grab))
+        {
+            _keyboardFreezers.Add(grab);
+        }
+    }
+
+    /// <summary>设备被这个客户端(的某个抓取)冻着。</summary>
+    private bool FrozenBy(bool pointer, XClient client) =>
+        (pointer ? _pointerFreezers : _keyboardFreezers).Exists(g => ReferenceEquals(g.Client, client));
+
+    /// <summary>
+    /// 去掉冻着这个设备的那些抓取(<paramref name="client" /> 为 null 时全部,否则只去掉这个客户端的 —— 协议:同一个客户端冻了两次,
+    /// 一个 AllowEvents 全放开);一个都不剩了才真的解冻。
+    /// </summary>
+    private void ThawPointer(XClient? client = null) =>
+        Thaw(_pointerFreezers, g => client is null || ReferenceEquals(g.Client, client), pointer: true);
+
+    private void ThawKeyboard(XClient? client = null) =>
+        Thaw(_keyboardFreezers, g => client is null || ReferenceEquals(g.Client, client), pointer: false);
+
+    private void Thaw(List<ActiveGrab> freezers, Predicate<ActiveGrab> which, bool pointer)
+    {
+        if (freezers.RemoveAll(which) == 0 || freezers.Count != 0)
+        {
+            return;
+        }
+        if (pointer)
+        {
+            _pointerReplay = null;
+        }
+        else
+        {
+            _keyboardReplay = null;
+        }
         ScheduleDrain();
     }
 
-    private void ThawKeyboard()
-    {
-        _keyboardFrozenBy = null;
-        _keyboardReplay = null;
-        ScheduleDrain();
-    }
-
-    /// <summary>抓取解除:它冻住的设备解冻,Sync 放行的等待作废。</summary>
+    /// <summary>抓取解除:它对两个设备的冻结都解除(别的抓取的冻结还在),Sync 放行的等待作废。</summary>
     private void ThawGrab(ActiveGrab grab)
     {
-        if (ReferenceEquals(_pointerFrozenBy, grab))
-        {
-            ThawPointer();
-        }
-        if (ReferenceEquals(_keyboardFrozenBy, grab))
-        {
-            ThawKeyboard();
-        }
+        Thaw(_pointerFreezers, g => ReferenceEquals(g, grab), pointer: true);
+        Thaw(_keyboardFreezers, g => ReferenceEquals(g, grab), pointer: false);
         if (ReferenceEquals(_pointerSyncOnce, grab))
         {
             _pointerSyncOnce = null;
@@ -388,21 +414,21 @@ public sealed partial class X11Server
         {
             return;
         }
-        bool pointerMine = _pointerFrozenBy is { } pf && ReferenceEquals(pf.Client, c);
-        bool keyboardMine = _keyboardFrozenBy is { } kf && ReferenceEquals(kf.Client, c);
+        bool pointerMine = FrozenBy(pointer: true, c);
+        bool keyboardMine = FrozenBy(pointer: false, c);
         switch (mode)
         {
             case 0:   // AsyncPointer
                 if (pointerMine)
                 {
-                    ThawPointer();
+                    ThawPointer(c);
                 }
                 break;
             case 1:   // SyncPointer
                 if (pointerMine && PointerGrab is { } pg && ReferenceEquals(pg.Client, c))
                 {
                     _pointerSyncOnce = pg;
-                    ThawPointer();
+                    ThawPointer(c);
                 }
                 break;
             case 2:   // ReplayPointer
@@ -414,14 +440,14 @@ public sealed partial class X11Server
             case 3:   // AsyncKeyboard
                 if (keyboardMine)
                 {
-                    ThawKeyboard();
+                    ThawKeyboard(c);
                 }
                 break;
             case 4:   // SyncKeyboard
                 if (keyboardMine && KeyboardGrab is { } kg && ReferenceEquals(kg.Client, c))
                 {
                     _keyboardSyncOnce = kg;
-                    ThawKeyboard();
+                    ThawKeyboard(c);
                 }
                 break;
             case 5:   // ReplayKeyboard
@@ -433,18 +459,18 @@ public sealed partial class X11Server
             case 6:   // AsyncBoth:两个设备都被这个客户端冻着时才生效
                 if (pointerMine && keyboardMine)
                 {
-                    ThawPointer();
-                    ThawKeyboard();
+                    ThawPointer(c);
+                    ThawKeyboard(c);
                 }
                 break;
-            case 7:   // SyncBoth
+            case 7:   // SyncBoth:放行到这个客户端的抓取收到下一个按钮 / 按键事件为止,那时两个设备一起再冻上(各冻一次)
                 if (pointerMine && keyboardMine)
                 {
-                    _pointerSyncOnce = _pointerFrozenBy;
-                    _keyboardSyncOnce = _keyboardFrozenBy;
+                    _pointerSyncOnce = PointerGrab is { } sp && ReferenceEquals(sp.Client, c) ? sp : null;
+                    _keyboardSyncOnce = KeyboardGrab is { } sk && ReferenceEquals(sk.Client, c) ? sk : null;
                     _syncBoth = true;
-                    ThawPointer();
-                    ThawKeyboard();
+                    ThawPointer(c);
+                    ThawKeyboard(c);
                 }
                 break;
             default:
@@ -492,7 +518,8 @@ public sealed partial class X11Server
     private void ReplayPointer(int button, XWindow grabWindow, InputState before)
     {
         _pointerReplay = null;
-        _pointerFrozenBy = null;
+        XClient? owner = PointerGrab?.Client;
+        _pointerFreezers.RemoveAll(g => ReferenceEquals(g.Client, owner));
         PointerGrab = null;
         UpdateCursor();
         WithInputState(before, button, () => PressButton(button, ignoreGrabsThrough: grabWindow, replay: true));
@@ -503,7 +530,8 @@ public sealed partial class X11Server
     private void ReplayKeyboard(byte keycode, XWindow grabWindow, InputState before)
     {
         _keyboardReplay = null;
-        _keyboardFrozenBy = null;
+        XClient? owner = KeyboardGrab?.Client;
+        _keyboardFreezers.RemoveAll(g => ReferenceEquals(g.Client, owner));
         KeyboardGrab = null;
         WithInputState(before, 0, () => PressKey(keycode, ignoreGrabsThrough: grabWindow, replay: true));
         ScheduleDrain();
