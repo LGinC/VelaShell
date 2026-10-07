@@ -402,7 +402,7 @@ public sealed partial class X11Server
                 (int ax, int ay) = window.Parent.AbsoluteInner();
                 (int tx, int ty) = target.AbsoluteInner();
                 Reparent(window, target, (short)Math.Clamp(ax + window.X - tx, short.MinValue, short.MaxValue),
-                    (short)Math.Clamp(ay + window.Y - ty, short.MinValue, short.MaxValue));
+                    (short)Math.Clamp(ay + window.Y - ty, short.MinValue, short.MaxValue), requester: null);
             }
             if (map && !window.Mapped)
             {
@@ -799,7 +799,7 @@ public sealed partial class X11Server
         static XRect OuterInParent(XWindow w) => new(w.X, w.Y, w.Width + (2 * w.BorderWidth), w.Height + (2 * w.BorderWidth));
     }
 
-    private void ReparentWindow(XRequestReader r)
+    private void ReparentWindow(XClient c, XRequestReader r)
     {
         XWindow window = Window(r.U32());
         XWindow parent = Window(r.U32());
@@ -816,11 +816,19 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 挪过去整棵子树就超过嵌套上限了
         }
-        Reparent(window, parent, x, y);
+        if (window.Mapped && parent.IsRoot)
+        {
+            RequireBufferMemory(window, window.Width, window.Height);   // 重新映射成顶层要建缓冲:先核账,免得挪到一半才回 Alloc
+        }
+        Reparent(window, parent, x, y, c);
     }
 
-    /// <summary>ReparentWindow 的执行部分(参数已核对);save-set 收尾也用它。</summary>
-    private void Reparent(XWindow window, XWindow parent, short x, short y)
+    /// <summary>
+    /// ReparentWindow 的执行部分(参数已核对);save-set 收尾也用它(<paramref name="requester" /> 为 null)。
+    /// 原先映射着的窗口挪完自动 MapWindow,就像 <paramref name="requester" /> 自己发的一样(协议「ReparentWindow」):
+    /// 发起 reparent 的正是在新父窗口上选了 SubstructureRedirect 的窗口管理器时直接映射,不给它自己发 MapRequest。
+    /// </summary>
+    private void Reparent(XWindow window, XWindow parent, short x, short y, XClient? requester)
     {
         bool wasMapped = window.Mapped;
         if (wasMapped)
@@ -853,7 +861,7 @@ public sealed partial class X11Server
 
         if (wasMapped)
         {
-            Map(null, window);
+            Map(requester, window);
         }
     }
 

@@ -75,7 +75,7 @@ public sealed partial class X11Server
             case XOpcode.DestroyWindow: DestroyWindow(c, r); break;
             case XOpcode.DestroySubwindows: DestroySubwindows(r); break;
             case XOpcode.ChangeSaveSet: ChangeSaveSet(c, r); break;
-            case XOpcode.ReparentWindow: ReparentWindow(r); break;
+            case XOpcode.ReparentWindow: ReparentWindow(c, r); break;
             case XOpcode.MapWindow: MapWindow(c, r); break;
             case XOpcode.MapSubwindows: MapSubwindows(c, r); break;
             case XOpcode.UnmapWindow: UnmapWindow(r); break;

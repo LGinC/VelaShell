@@ -8,7 +8,7 @@ namespace VelaShell.XServer.Tests.Server;
 public sealed class WindowStructureTests
 {
     private const uint SubstructureNotifyMask = 0x80000, SubstructureRedirectMask = 0x100000;
-    private const byte DestroyNotify = 17, CirculateNotify = 26, CirculateRequest = 27;
+    private const byte DestroyNotify = 17, MapRequest = 20, CirculateNotify = 26, CirculateRequest = 27;
 
     /// <summary>在 <paramref name="parent" /> 下建一个子窗口(InputOutput,背景色 <paramref name="background" />)。</summary>
     private static async Task<uint> CreateChildAsync(XTestClient c, uint parent, short x, short y, ushort width, ushort height,
@@ -80,6 +80,36 @@ public sealed class WindowStructureTests
         await c.SendAsync(13, 0, b => b.U32(alone));
         await c.SyncAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(CirculateNotify, timeoutMs: 100));
+    }
+
+    [TestMethod]
+    public async Task ReparentWindow自动重映射算请求方发的_窗口管理器自己reparent进外框时不给自己发MapRequest()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient wm = await XTestClient.ConnectAsync(server);
+        await using XTestClient app = await XTestClient.ConnectAsync(server);
+        uint frame = await CreateChildAsync(wm, wm.RootWindow, 0, 0, 200, 200);
+        await wm.SendAsync(8, 0, b => b.U32(frame));
+        await SelectInputAsync(wm, frame, SubstructureRedirectMask);
+        uint first = await CreateChildAsync(app, app.RootWindow, 10, 10, 50, 50);
+        uint second = await CreateChildAsync(app, app.RootWindow, 10, 10, 50, 50);
+        await app.SendAsync(8, 0, b => b.U32(first));
+        await app.SendAsync(8, 0, b => b.U32(second));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(first) && host.Mapped.ContainsKey(second));
+        async Task<byte> MapStateAsync(uint window) => (await app.RequestAsync(3, 0, b => b.U32(window))).Bytes[26];
+
+        // 窗口管理器把映射着的窗口 reparent 进自己的外框:自动重映射就像它自己发的 MapWindow,直接映射。
+        await wm.SendAsync(7, 0, b => b.U32(first).U32(frame).I16(5).I16(20));
+        await wm.SyncAsync();
+        Assert.AreNotEqual(0, await MapStateAsync(first), "映射着(原先成了发给窗口管理器自己的 MapRequest,窗口一直没映射)");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => wm.NextEventAsync(MapRequest, timeoutMs: 100));
+
+        // 别的客户端把窗口 reparent 进外框:照常改道成发给窗口管理器的 MapRequest。
+        await app.SendAsync(7, 0, b => b.U32(second).U32(frame).I16(5).I16(80));
+        XMessage request = await wm.NextEventAsync(MapRequest);
+        Assert.AreEqual(second, request.U32(8));
+        Assert.AreEqual(0, await MapStateAsync(second));
     }
 
     [TestMethod]
