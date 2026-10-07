@@ -102,6 +102,26 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 超过输出队列上限的单条GetImage回复照样发出_超过回复上限的先回BadAlloc()
+    {
+        // 三块 4K 横排时 xwd -root 的回复约 100 MB:原先超过 64 MB 的输出队列上限,整条连接被断。这里用 8192 × 2160(约 71 MB)。
+        await using X11Server server = new(new X11ServerOptions { ScreenWidth = 8192, ScreenHeight = 2160 });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        XMessage image = await c.RequestAsync(73, 2, b => b.U32(c.RootWindow).I16(0).I16(0).U16(8192).U16(2160).U32(0xFFFFFFFF));
+        Assert.IsTrue(image.IsReply, "GetImage(ZPixmap)的回复发出来了");
+        Assert.AreEqual(8192u * 2160, image.U32(4), "长度(4 字节为单位)");
+        await c.SyncAsync();   // 连接还在
+
+        // 估出来超过 MaxImageReplyBytes 的:先回 BadAlloc,不去取像素、编码。
+        await using X11Server huge = new(new X11ServerOptions { ScreenWidth = 20000, ScreenHeight = 20000 });
+        await using XTestClient h = await XTestClient.ConnectAsync(huge);
+        XMessage refused = await h.RequestAsync(73, 2, b => b.U32(h.RootWindow).I16(0).I16(0).U16(20000).U16(20000).U32(0xFFFFFFFF));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(11, refused.Detail, "BadAlloc");
+        await h.SyncAsync();
+    }
+
+    [TestMethod]
     public async Task 超大尺寸的PutImage与CopyArea回错误而不是耗尽内存()
     {
         await using X11Server server = new();

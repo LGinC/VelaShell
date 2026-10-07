@@ -889,6 +889,12 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>
+    /// GetImage 回复里的像素数据最多这么大,再大回 BadAlloc —— 先按尺寸估、再取像素,超了不白算。与最大的像素图(2^26 像素 × 4 字节)一样;
+    /// 三块 4K 横排时 <c>xwd -root</c> 的回复约 100 MB,在上限之内(超过输出队列上限的单条回复照样发得出去,见 <see cref="XClient.Send" />)。
+    /// </summary>
+    internal const long MaxImageReplyBytes = 256L * 1024 * 1024;
+
     private void GetImage(XClient c, XRequestReader r)
     {
         byte format = r.Data;
@@ -896,12 +902,13 @@ public sealed partial class X11Server
         short x = r.I16(), y = r.I16();
         ushort width = r.U16(), height = r.U16();
         uint planeMask = r.U32();
-        (byte depth, uint visual, byte[] data) = CaptureImage(format, drawable, x, y, width, height, planeMask);
+        (byte depth, uint visual, byte[] data) = CaptureImage(format, drawable, x, y, width, height, planeMask, MaxImageReplyBytes);
         c.Reply(depth, w => w.U32(visual).Zero(20).Bytes(data).Pad4());
     }
 
-    /// <summary>GetImage 与 MIT-SHM 的 GetImage 共用:核对矩形,按格式编好像素。</summary>
-    private (byte Depth, uint Visual, byte[] Data) CaptureImage(byte format, uint drawable, short x, short y, ushort width, ushort height, uint planeMask)
+    /// <summary>GetImage 与 MIT-SHM 的 GetImage 共用:核对矩形,按格式编好像素;编出来会超过 <paramref name="maxBytes" /> 时先回 BadAlloc。</summary>
+    private (byte Depth, uint Visual, byte[] Data) CaptureImage(byte format, uint drawable, short x, short y, ushort width, ushort height, uint planeMask,
+        long maxBytes = long.MaxValue)
     {
         if (format is not (1 or 2))
         {
@@ -928,6 +935,11 @@ public sealed partial class X11Server
         if (x < 0 || y < 0 || x + width > boundsW || y + height > boundsH)
         {
             throw new XProtocolError(XErrorCode.Match);
+        }
+        byte drawableDepth = resource is XPixmap pixmap ? pixmap.Depth : ((XWindow)resource).Depth;
+        if (ImageDataLength(format, drawableDepth, width, height, 0) > maxBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
         }
 
         // 矩形已核对在可绘对象之内,按请求宽度排列(池化,编完码就还)。窗口伸出顶层之外的部分拿不到(核心协议:

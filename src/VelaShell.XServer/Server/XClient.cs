@@ -175,13 +175,19 @@ internal sealed class XClient : IDisposable
 
     public XWriter Writer(int capacity = 32) => new(BigEndian, capacity);
 
+    /// <summary>
+    /// 排一条消息等写出。之前排着的已经到了 <see cref="MaxQueuedOutputBytes" />(客户端不读了)就断开它。
+    /// 只看「之前排着的」:单条消息本身可以比上限大(三块 4K 横排时 <c>xwd -root</c> 的 GetImage 回复约 100 MB)——
+    /// 原先按「加上这条之后」判,这样的回复整条连接被断,断开之前还白算了一遍。超出的部分最多一条消息,
+    /// 而大回复本身另有上限(<c>X11Server.MaxImageReplyBytes</c>)。
+    /// </summary>
     public void Send(byte[] bytes)
     {
         if (Closed)
         {
             return;
         }
-        if (Interlocked.Add(ref _queuedBytes, bytes.Length) > MaxQueuedOutputBytes)
+        if (Interlocked.Add(ref _queuedBytes, bytes.Length) - bytes.Length >= MaxQueuedOutputBytes)
         {
             Abort();   // 客户端不读了:与其让内存涨到进程崩溃,不如断开它(X.Org 同样会断开写不出去的客户端)
             return;
