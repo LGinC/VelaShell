@@ -1,5 +1,6 @@
 using System.Text;
 using VelaShell.Infrastructure.XServer;
+using VelaShell.Ssh.Forwarding;
 
 namespace VelaShell.Infrastructure.Tests.XServer;
 
@@ -22,22 +23,22 @@ public class XAuthorityFileTests
         }
     }
 
-    private static XAuthorityFile.Entry Other(string host, string number, byte[] data) =>
-        new(XAuthorityFile.FamilyLocal, Encoding.ASCII.GetBytes(host), number, XAuthorityFile.MitMagicCookie1, data);
+    private static XAuthorityEntry Other(string host, string number, byte[] data) =>
+        new(XAuthority.FamilyLocal, Encoding.ASCII.GetBytes(host), number, XAuthority.MitMagicCookie1, data);
 
-    private List<XAuthorityFile.Entry> Read() => XAuthorityFile.Parse(File.ReadAllBytes(_path))!;
+    private List<XAuthorityEntry> Read() => XAuthority.TryDecode(File.ReadAllBytes(_path), out IReadOnlyList<XAuthorityEntry>? entries) ? [.. entries] : throw new AssertFailedException("解不全");
 
     [TestMethod]
     public void Add_CreatesTheFile_KeepsOtherEntries_ReplacesTheSameDisplay_AndRemoveTakesOnlyOurs()
     {
         byte[] desktop = [7, 7, 7], stale = [1], ours = [.. Enumerable.Range(0, 16).Select(i => (byte)i)];
-        File.WriteAllBytes(_path, XAuthorityFile.Serialize([Other("box", "0", desktop), Other("box", "10", stale)]));
+        File.WriteAllBytes(_path, XAuthority.Encode([Other("box", "0", desktop), Other("box", "10", stale)]));
 
         Assert.IsTrue(XAuthorityFile.Add(_path, "box", 10, ours));
-        List<XAuthorityFile.Entry> entries = Read();
+        List<XAuthorityEntry> entries = Read();
         Assert.HasCount(2, entries, "显示 0 的留着,显示 10 的旧记录被替换");
-        Assert.AreSequenceEqual(desktop, entries.Single(e => e.Number == "0").Data);
-        Assert.AreSequenceEqual(ours, entries.Single(e => e.Number == "10").Data);
+        Assert.AreSequenceEqual(desktop, entries.Single(e => e.DisplayNumber == "0").Data.ToArray());
+        Assert.AreSequenceEqual(ours, entries.Single(e => e.DisplayNumber == "10").Data.ToArray());
         if (!OperatingSystem.IsWindows())
         {
             Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_path), "0600");
@@ -46,7 +47,7 @@ public class XAuthorityFileTests
         Assert.IsTrue(XAuthorityFile.Remove(_path, "box", 10, [9, 9]), "cookie 对不上:什么也不撤");
         Assert.HasCount(2, Read());
         Assert.IsTrue(XAuthorityFile.Remove(_path, "box", 10, ours));
-        Assert.AreEqual("0", Read().Single().Number, "只撤自己那一条");
+        Assert.AreEqual("0", Read().Single().DisplayNumber, "只撤自己那一条");
         Assert.IsFalse(File.Exists(_path + "-c"), "锁放掉了");
     }
 

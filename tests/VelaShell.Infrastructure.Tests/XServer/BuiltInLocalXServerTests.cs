@@ -6,6 +6,7 @@ using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.XServer;
 using VelaShell.Infrastructure.XServer;
+using VelaShell.Ssh.Forwarding;
 using VelaShell.XServer;
 
 namespace VelaShell.Infrastructure.Tests.XServer;
@@ -24,6 +25,10 @@ public class BuiltInLocalXServerTests
         settings.GetSettingsAsync().Returns(new AppSettings { XServer = options });
         return settings;
     }
+
+    /// <summary>读一份 .Xauthority(必须每一条都认得全)。</summary>
+    private static IReadOnlyList<XAuthorityEntry> Decode(string path) =>
+        XAuthority.TryDecode(File.ReadAllBytes(path), out IReadOnlyList<XAuthorityEntry>? entries) ? entries : throw new AssertFailedException("解不全");
 
     /// <summary>0–9 当作被占用,自动模式挑到 :10。</summary>
     private static Task<bool> LowDisplaysBusy(int display, CancellationToken _) => Task.FromResult(display < 10);
@@ -164,11 +169,11 @@ public class BuiltInLocalXServerTests
                 _ => Task.FromResult(false), xauthority);
             Assert.IsTrue((await server.StartAsync()).Success);
 
-            XAuthorityFile.Entry entry = XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single();
-            Assert.AreEqual(XAuthorityFile.FamilyLocal, entry.Family);
-            Assert.AreEqual(Dns.GetHostName(), Encoding.ASCII.GetString(entry.Address));
-            Assert.AreEqual("10", entry.Number);
-            Assert.HasCount(16, entry.Data);
+            XAuthorityEntry entry = Decode(xauthority).Single();
+            Assert.AreEqual(XAuthority.FamilyLocal, entry.Family);
+            Assert.AreEqual(Dns.GetHostName(), Encoding.ASCII.GetString(entry.Address.Span));
+            Assert.AreEqual("10", entry.DisplayNumber);
+            Assert.AreEqual(16, entry.Data.Length);
 
             using (TcpClient anonymous = new())
             {
@@ -178,7 +183,7 @@ public class BuiltInLocalXServerTests
             using (TcpClient authorized = new())
             {
                 await authorized.ConnectAsync(IPAddress.Loopback, 6010);
-                Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data), "带上 .Xauthority 里的 cookie:Success");
+                Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data.ToArray()), "带上 .Xauthority 里的 cookie:Success");
             }
             XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
             await using (Stream channel = await resolution.Connector!("user@host:22", CancellationToken.None))
@@ -187,7 +192,7 @@ public class BuiltInLocalXServerTests
             }
 
             await server.StopAsync();
-            Assert.IsEmpty(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!, "停下时撤出");
+            Assert.IsEmpty(Decode(xauthority), "停下时撤出");
         }
         finally
         {
@@ -254,17 +259,17 @@ public class BuiltInLocalXServerTests
             await using BuiltInLocalXServer server = new(Settings(new XServerOptions()), () => new RecordingHost(), LowDisplaysBusy,
                 _ => Task.FromResult(false), xauthority, () => hostName);
             Assert.IsTrue((await server.StartAsync()).Success);
-            Assert.AreEqual("box-a", Encoding.ASCII.GetString(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single().Address));
+            Assert.AreEqual("box-a", Encoding.ASCII.GetString(Decode(xauthority).Single().Address.Span));
 
             await server.RepublishCookieAsync();   // 主机名没变:什么也不做
             hostName = "box-b";
             await server.RepublishCookieAsync();
-            XAuthorityFile.Entry entry = XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single();
-            Assert.AreEqual("box-b", Encoding.ASCII.GetString(entry.Address), "按新名字登记,旧的那条撤掉");
-            Assert.AreEqual("10", entry.Number);
+            XAuthorityEntry entry = Decode(xauthority).Single();
+            Assert.AreEqual("box-b", Encoding.ASCII.GetString(entry.Address.Span), "按新名字登记,旧的那条撤掉");
+            Assert.AreEqual("10", entry.DisplayNumber);
 
             await server.StopAsync();
-            Assert.IsEmpty(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!, "停下时撤出的是新名字的那一条");
+            Assert.IsEmpty(Decode(xauthority), "停下时撤出的是新名字的那一条");
         }
         finally
         {

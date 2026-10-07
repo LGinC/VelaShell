@@ -55,7 +55,7 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// <param name="settings">设置服务(显示号、剪贴板、自动启动)。</param>
     /// <param name="host">取宿主;<see langword="null" /> 表示界面层没有提供,启动会失败。</param>
     public BuiltInLocalXServer(ISettingsService settings, Func<IEmbeddedXServerHost?> host)
-        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync, XAuthorityFile.DefaultPath)
+        : this(settings, host, XDisplayProbe.IsInUseAsync, HasOtherDisplayAsync, VelaShell.Ssh.Forwarding.XAuthority.DefaultPath)
     {
     }
 

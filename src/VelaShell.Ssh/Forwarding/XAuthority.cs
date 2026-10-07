@@ -6,6 +6,7 @@
 //   行为规格:   velashell-docs/zh/ssh/spec/07-forwarding.md §7.5.7
 
 using System.Buffers.Binary;
+using System.Diagnostics.CodeAnalysis;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -13,19 +14,68 @@ using System.Text;
 namespace VelaShell.Ssh.Forwarding;
 
 /// <summary><c>.Xauthority</c> 里的一条记录。</summary>
-/// <param name="Family">地址族（见 <see cref="XAuthority"/> 上的常量）。</param>
-/// <param name="Address">地址：本机族里是主机名，网络族里是原始地址字节。</param>
-/// <param name="DisplayNumber">显示号，ASCII 文本（<c>"0"</c>）。</param>
-/// <param name="Name">授权协议名，通常是 <c>MIT-MAGIC-COOKIE-1</c>。</param>
-/// <param name="Data">授权数据（cookie 本身）。</param>
-internal sealed record XAuthorityEntry(
-    int Family,
-    byte[] Address,
-    string DisplayNumber,
-    string Name,
-    byte[] Data);
+/// <remarks>
+/// 各字段在文件里都是「2 字节长度 + 内容」:超过 65535 字节、或者显示号 / 协议名不是 ASCII 时构造就抛
+/// <see cref="ArgumentException"/>(编码不出来的记录不该存在)。
+/// </remarks>
+public sealed record XAuthorityEntry
+{
+    /// <summary>构造一条记录。</summary>
+    /// <param name="family">地址族(见 <see cref="XAuthority"/> 上的常量)。</param>
+    /// <param name="address">地址:本机族里是主机名,网络族里是原始地址字节。</param>
+    /// <param name="displayNumber">显示号,ASCII 文本(<c>"0"</c>)。</param>
+    /// <param name="name">授权协议名,通常是 <c>MIT-MAGIC-COOKIE-1</c>。</param>
+    /// <param name="data">授权数据(cookie 本身)。</param>
+    /// <exception cref="ArgumentException">某个字段编码不进文件。</exception>
+    public XAuthorityEntry(ushort family, ReadOnlyMemory<byte> address, string displayNumber, string name, ReadOnlyMemory<byte> data)
+    {
+        ArgumentNullException.ThrowIfNull(displayNumber);
+        ArgumentNullException.ThrowIfNull(name);
+        CheckField(address.Length, nameof(address));
+        CheckField(data.Length, nameof(data));
+        CheckText(displayNumber, nameof(displayNumber));
+        CheckText(name, nameof(name));
+        Family = family;
+        Address = address;
+        DisplayNumber = displayNumber;
+        Name = name;
+        Data = data;
 
-/// <summary>读 <c>.Xauthority</c>。</summary>
+        static void CheckText(string text, string parameter)
+        {
+            CheckField(text.Length, parameter);
+            if (!Ascii.IsValid(text))
+            {
+                throw new ArgumentException("只能是 ASCII。", parameter);
+            }
+        }
+
+        static void CheckField(int length, string parameter)
+        {
+            if (length > ushort.MaxValue)
+            {
+                throw new ArgumentException($"超过 {ushort.MaxValue} 字节,写不进 .Xauthority。", parameter);
+            }
+        }
+    }
+
+    /// <summary>地址族(见 <see cref="XAuthority"/> 上的常量)。</summary>
+    public ushort Family { get; }
+
+    /// <summary>地址:本机族里是主机名,网络族里是原始地址字节。</summary>
+    public ReadOnlyMemory<byte> Address { get; }
+
+    /// <summary>显示号,ASCII 文本(<c>"0"</c>)。</summary>
+    public string DisplayNumber { get; }
+
+    /// <summary>授权协议名,通常是 <c>MIT-MAGIC-COOKIE-1</c>。</summary>
+    public string Name { get; }
+
+    /// <summary>授权数据(cookie 本身)。</summary>
+    public ReadOnlyMemory<byte> Data { get; }
+}
+
+/// <summary>读写 <c>.Xauthority</c> 的格式,并按显示找 cookie。</summary>
 /// <remarks>
 /// <para>
 /// 文件是一串定长前缀的二进制记录，<b>全部是大端</b>：
@@ -38,24 +88,27 @@ internal sealed record XAuthorityEntry(
 /// uint16 data_length      ‖ data
 /// </code>
 /// <para>
-/// <b>这个文件里装的是能打开你本机显示的钥匙</b>，所以这里只读不写，
+/// <b>这个文件里装的是能打开你本机显示的钥匙</b>。转发找 cookie 时只读不写,
 /// 解析失败一律当作「没有匹配项」而不是抛异常 —— 一个半截的
-/// <c>.Xauthority</c>（写到一半、被别的程序锁着）不该让整条连接失败。
+/// <c>.Xauthority</c>(写到一半、被别的程序锁着)不该让整条连接失败。
+/// 要改写这个文件的调用方(宿主把内置 X 服务端的 cookie 登记进去)用 <see cref="TryDecode"/> 与 <see cref="Encode"/>:
+/// 认不全的文件不改写,否则会把用户别的钥匙弄丢;上锁与原子替换由调用方负责。
+/// 宿主与本库原先各有一份解析,规则不同(一份截断就整个不认,一份截断前的照常用),合成了这一份。
 /// </para>
 /// </remarks>
-internal static class XAuthority
+public static class XAuthority
 {
     /// <summary>本机族：地址字段里是主机名。</summary>
-    public const int FamilyLocal = 256;
+    public const ushort FamilyLocal = 256;
 
     /// <summary>通配族：匹配任何显示。</summary>
-    public const int FamilyWild = 65535;
+    public const ushort FamilyWild = 65535;
 
     /// <summary>IPv4。</summary>
-    public const int FamilyInternet = 0;
+    public const ushort FamilyInternet = 0;
 
     /// <summary>IPv6。</summary>
-    public const int FamilyInternet6 = 6;
+    public const ushort FamilyInternet6 = 6;
 
     /// <summary>我们唯一支持的授权协议。</summary>
     public const string MitMagicCookie1 = "MIT-MAGIC-COOKIE-1";
@@ -80,17 +133,78 @@ internal static class XAuthority
         }
     }
 
-    /// <summary>解析一份 <c>.Xauthority</c> 的内容。</summary>
+    /// <summary>解析一份 <c>.Xauthority</c> 的内容(找 cookie 用的宽容解法)。</summary>
     /// <param name="content">文件字节。</param>
-    /// <returns>解出来的记录；遇到截断就到此为止，已解出的照常返回。</returns>
-    public static IReadOnlyList<XAuthorityEntry> Parse(ReadOnlySpan<byte> content)
+    /// <returns>解出来的记录；遇到截断就到此为止，已解出的照常返回 —— 文件可能正被写入。</returns>
+    internal static IReadOnlyList<XAuthorityEntry> Decode(ReadOnlySpan<byte> content)
     {
         List<XAuthorityEntry> entries = [];
-        int offset = 0;
+        _ = DecodeInto(content, entries, strict: false);
+        return entries;
+    }
 
-        while (offset + 2 <= content.Length)
+    /// <summary>
+    /// 严格地解析一份 <c>.Xauthority</c> 的内容:每一条都完整才算成功(空内容是零条记录)。要改写这个文件时用它 ——
+    /// 有任何一条认不全(截断的、别的格式的)就返回 false,调用方不该改写一个自己读不全的文件。
+    /// </summary>
+    /// <param name="content">文件字节。</param>
+    /// <param name="entries">成功时是全部记录。</param>
+    /// <returns>每一条都解出来了。</returns>
+    public static bool TryDecode(ReadOnlySpan<byte> content, [NotNullWhen(true)] out IReadOnlyList<XAuthorityEntry>? entries)
+    {
+        List<XAuthorityEntry> decoded = [];
+        if (DecodeInto(content, decoded, strict: true))
         {
-            int family = BinaryPrimitives.ReadUInt16BigEndian(content[offset..]);
+            entries = decoded;
+            return true;
+        }
+        entries = null;
+        return false;
+    }
+
+    /// <summary>按文件格式编码一串记录(<see cref="TryDecode"/> 的反过程)。</summary>
+    /// <param name="entries">记录。</param>
+    /// <returns>文件字节。</returns>
+    public static byte[] Encode(IEnumerable<XAuthorityEntry> entries)
+    {
+        ArgumentNullException.ThrowIfNull(entries);
+        using MemoryStream output = new();
+        Span<byte> u16 = stackalloc byte[2];
+        foreach (XAuthorityEntry entry in entries)
+        {
+            BinaryPrimitives.WriteUInt16BigEndian(u16, entry.Family);
+            output.Write(u16);
+            WriteBlock(output, entry.Address.Span);
+            WriteBlock(output, Encoding.ASCII.GetBytes(entry.DisplayNumber));
+            WriteBlock(output, Encoding.ASCII.GetBytes(entry.Name));
+            WriteBlock(output, entry.Data.Span);
+        }
+        return output.ToArray();
+
+        static void WriteBlock(MemoryStream output, ReadOnlySpan<byte> block)
+        {
+            Span<byte> length = stackalloc byte[2];
+            BinaryPrimitives.WriteUInt16BigEndian(length, (ushort)block.Length);   // 构造记录时已经查过放得下
+            output.Write(length);
+            output.Write(block);
+        }
+    }
+
+    /// <summary>
+    /// 逐条解进 <paramref name="entries"/>;全部解完返回 true,遇到截断就停在那里返回 false。
+    /// 显示号或协议名不是 ASCII 的记录:<paramref name="strict"/> 时当作认不全(返回 false —— 改写回去会把那几个字节换成 <c>?</c>),
+    /// 否则跳过它接着解(反正匹配不上任何显示)。
+    /// </summary>
+    private static bool DecodeInto(ReadOnlySpan<byte> content, List<XAuthorityEntry> entries, bool strict)
+    {
+        int offset = 0;
+        while (offset < content.Length)
+        {
+            if (offset + 2 > content.Length)
+            {
+                return false;
+            }
+            ushort family = BinaryPrimitives.ReadUInt16BigEndian(content[offset..]);
             offset += 2;
 
             if (!TryReadBlock(content, ref offset, out byte[]? address)
@@ -98,8 +212,16 @@ internal static class XAuthority
                 || !TryReadBlock(content, ref offset, out byte[]? name)
                 || !TryReadBlock(content, ref offset, out byte[]? data))
             {
-                // 截断了。**已经解出来的仍然有效** —— 文件可能正被写入。
-                break;
+                return false;   // 截断了:已经解出来的仍然有效
+            }
+
+            if (!Ascii.IsValid(number) || !Ascii.IsValid(name))
+            {
+                if (strict)
+                {
+                    return false;
+                }
+                continue;
             }
 
             entries.Add(new XAuthorityEntry(
@@ -109,12 +231,11 @@ internal static class XAuthority
                 Encoding.ASCII.GetString(name),
                 data));
         }
-
-        return entries;
+        return true;
     }
 
     /// <summary>读文件并解析；读不到就返回空。</summary>
-    public static async ValueTask<IReadOnlyList<XAuthorityEntry>> LoadAsync(
+    internal static async ValueTask<IReadOnlyList<XAuthorityEntry>> LoadAsync(
         string? path = null, CancellationToken cancellationToken = default)
     {
         string? actual = path ?? DefaultPath;
@@ -126,7 +247,7 @@ internal static class XAuthority
         try
         {
             byte[] content = await File.ReadAllBytesAsync(actual, cancellationToken).ConfigureAwait(false);
-            return Parse(content);
+            return Decode(content);
         }
         catch (IOException)
         {
@@ -165,7 +286,7 @@ internal static class XAuthority
     /// 本机 <c>:0</c> 的那条，等于把本机显示的钥匙送给了 otherhost。
     /// </para>
     /// </remarks>
-    public static byte[]? FindCookie(
+    internal static byte[]? FindCookie(
         IReadOnlyList<XAuthorityEntry> entries,
         X11Display display,
         string? hostName = null,
@@ -204,15 +325,15 @@ internal static class XAuthority
             {
                 FamilyWild => true,
                 FamilyLocal => refersToLocalHost && string.Equals(
-                    Encoding.ASCII.GetString(entry.Address), host, StringComparison.OrdinalIgnoreCase),
-                FamilyInternet => AddressMatches(entry.Address, addresses, AddressFamily.InterNetwork),
-                FamilyInternet6 => AddressMatches(entry.Address, addresses, AddressFamily.InterNetworkV6),
+                    Encoding.ASCII.GetString(entry.Address.Span), host, StringComparison.OrdinalIgnoreCase),
+                FamilyInternet => AddressMatches(entry.Address.Span, addresses, AddressFamily.InterNetwork),
+                FamilyInternet6 => AddressMatches(entry.Address.Span, addresses, AddressFamily.InterNetworkV6),
                 _ => false,
             };
 
             if (addressMatches)
             {
-                return entry.Data;
+                return entry.Data.ToArray();
             }
         }
 
@@ -243,7 +364,7 @@ internal static class XAuthority
 
     /// <summary>解析显示主机的地址，给 <see cref="FindCookie"/> 比网络族用。</summary>
     /// <remarks>本机显示与 IP 字面量不查 DNS；解析失败返回空 —— 于是只剩通配条目能匹配。</remarks>
-    public static async ValueTask<IReadOnlyList<IPAddress>> ResolveHostAddressesAsync(
+    internal static async ValueTask<IReadOnlyList<IPAddress>> ResolveHostAddressesAsync(
         X11Display display, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(display);
@@ -268,7 +389,7 @@ internal static class XAuthority
         }
     }
 
-    private static bool AddressMatches(byte[] entryAddress, IReadOnlyList<IPAddress> addresses, AddressFamily family)
+    private static bool AddressMatches(ReadOnlySpan<byte> entryAddress, IReadOnlyList<IPAddress> addresses, AddressFamily family)
     {
         foreach (IPAddress candidate in addresses)
         {
