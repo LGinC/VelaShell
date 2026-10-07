@@ -7,7 +7,7 @@
 //   「UnmapWindow」「UnmapSubwindows」「ConfigureWindow」(含 stack-mode、SubstructureRedirect 与 ResizeRedirect 的改道)
 //   「CirculateWindow」「GetGeometry」「QueryTree」「TranslateCoordinates」;
 //   「CreateWindow」的 win-gravity(父窗口改尺寸时子窗口怎么挪);第 10 节「Events」里 CreateNotify / DestroyNotify / MapNotify /
-//   MapRequest / UnmapNotify / ReparentNotify / GravityNotify / ResizeRequest / CirculateRequest /
+//   MapRequest / UnmapNotify / ReparentNotify / GravityNotify / ResizeRequest / CirculateRequest / VisibilityNotify /
 //   ConfigureNotify / ConfigureRequest / CirculateNotify 的字段
 
 using VelaShell.XServer.Protocol;
@@ -195,7 +195,16 @@ public sealed partial class X11Server
     }
 
     /// <summary>设置某客户端在窗口上选的事件。三种「独占」事件同一时间只能有一个客户端选(否则 BadAccess)。</summary>
-    private static void SelectEvents(XClient c, XWindow window, uint mask)
+    private void SelectEvents(XClient c, XWindow window, uint mask)
+    {
+        SelectEventsCore(c, window, mask);
+        if ((mask & (uint)XEventMask.VisibilityChange) != 0 && _visibilityWatchers.Add(window))
+        {
+            window.VisibilityState = VisibilityOf(window);   // 起点:之后状态变了才报
+        }
+    }
+
+    private static void SelectEventsCore(XClient c, XWindow window, uint mask)
     {
         if ((mask & ~(uint)XEventMask.AllValid) != 0)
         {
@@ -229,6 +238,68 @@ public sealed partial class X11Server
         {
             window.EventSelections[c] = mask;
         }
+    }
+
+    // ------------------------------------------------------------------ 可见性(VisibilityNotify)
+
+    private const byte Unobscured = 0, PartiallyObscured = 1, FullyObscured = 2, NotViewable = 255;
+
+    /// <summary>有客户端选了 VisibilityChange 的窗口(选择撤掉、窗口销毁后在下一次检查时去掉)。</summary>
+    private readonly HashSet<XWindow> _visibilityWatchers = [];
+
+    /// <summary>上一次检查可见性时的可见性代号:树没变就不必再算。</summary>
+    private int _visibilityCheckedGeneration = -1;
+
+    /// <summary>
+    /// 协议「VisibilityNotify」:窗口(不算它的子窗口)在不可见、完全露出、部分被挡、完全被挡之间变了,就报给选了 VisibilityChange 的客户端;
+    /// InputOnly 窗口不报。在引起它的结构事件之后、这个窗口的 Expose 之前发 —— 所以重画(<see cref="ExposeWindowTree" />)之前先查一次,
+    /// 结构变化收尾时再查一次(只挡住、不露出的变化没有 Expose)。原先从不发:xterm、mpv 选了它也收不到。
+    /// 顶层各有自己的缓冲与原生窗口,宿主里谁挡着谁这边不知道,顶层映射着就算完全露出。
+    /// </summary>
+    private void UpdateVisibility()
+    {
+        if (_visibilityWatchers.Count == 0 || _visibilityCheckedGeneration == _visibilityGeneration)
+        {
+            return;
+        }
+        _visibilityCheckedGeneration = _visibilityGeneration;
+        foreach (XWindow window in _visibilityWatchers.ToArray())
+        {
+            if (!_resources.ContainsKey(window.Id) || !window.EventSelections.Values.Any(m => (m & (uint)XEventMask.VisibilityChange) != 0))
+            {
+                _visibilityWatchers.Remove(window);
+                continue;
+            }
+            byte state = VisibilityOf(window);
+            if (state == window.VisibilityState)
+            {
+                continue;
+            }
+            window.VisibilityState = state;
+            if (state != NotViewable)
+            {
+                DeliverToSelectors(window, XEventMask.VisibilityChange, c => c.Event(XEventCode.VisibilityNotify, 0, w => w.U32(window.Id).U8(state)));
+            }
+        }
+    }
+
+    /// <summary>窗口自己(不算子窗口)现在的可见状态:外框(连同边界形状)里露在外面的部分与整个外框比。</summary>
+    private static byte VisibilityOf(XWindow window)
+    {
+        if (!window.IsViewable || window.IsInputOnly)
+        {
+            return NotViewable;
+        }
+        if (window.IsTopLevel)
+        {
+            return Unobscured;
+        }
+        Drawing.Region visible = VisibleOuter(window);
+        if (visible.IsEmpty)
+        {
+            return FullyObscured;
+        }
+        return ShapedOuter(window).Subtract(visible).IsEmpty ? Unobscured : PartiallyObscured;
     }
 
     private void GetWindowAttributes(XClient c, XRequestReader r)
@@ -269,6 +340,7 @@ public sealed partial class X11Server
         DestroyTree(window);
         window.Parent?.Children.Remove(window);
         InvalidateVisibility();
+        UpdateVisibility();
         UpdatePointerWindow();
     }
 
@@ -492,6 +564,7 @@ public sealed partial class X11Server
         {
             ExposeWindowTree(window, VisibleOuter(window));   // 映射只露出它自己与它的下级
         }
+        UpdateVisibility();
         UpdatePointerWindow();
     }
 
@@ -543,6 +616,7 @@ public sealed partial class X11Server
             RevertFocus(focus);
         }
         ReleaseUnviewableGrabs();
+        UpdateVisibility();
         UpdatePointerWindow();
     }
 
@@ -705,6 +779,7 @@ public sealed partial class X11Server
         {
             ExposeWindowTree(top, old.Union(VisibleOuter(window)));
         }
+        UpdateVisibility();
         UpdatePointerWindow();
     }
 
@@ -841,6 +916,7 @@ public sealed partial class X11Server
         {
             ExposeWindowTree(top, old.Union(VisibleOuter(moving)));   // 抬上来的露出被挡的部分;压下去的让出来的兄弟重画
         }
+        UpdateVisibility();
         UpdatePointerWindow();
     }
 

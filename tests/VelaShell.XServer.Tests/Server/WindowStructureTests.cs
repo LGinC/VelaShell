@@ -7,8 +7,9 @@ namespace VelaShell.XServer.Tests.Server;
 [TestCategory("X11Server")]
 public sealed class WindowStructureTests
 {
-    private const uint StructureNotifyMask = 0x20000, ResizeRedirectMask = 0x40000, SubstructureNotifyMask = 0x80000, SubstructureRedirectMask = 0x100000;
-    private const byte DestroyNotify = 17, UnmapNotify = 18, MapRequest = 20, ConfigureNotify = 22, GravityNotify = 24, ResizeRequest = 25,
+    private const uint ExposureMask = 0x8000, VisibilityChangeMask = 0x10000, StructureNotifyMask = 0x20000, ResizeRedirectMask = 0x40000,
+        SubstructureNotifyMask = 0x80000, SubstructureRedirectMask = 0x100000;
+    private const byte Expose = 12, VisibilityNotify = 15, DestroyNotify = 17, UnmapNotify = 18, MapRequest = 20, ConfigureNotify = 22, GravityNotify = 24, ResizeRequest = 25,
         CirculateNotify = 26, CirculateRequest = 27;
 
     /// <summary>在 <paramref name="parent" /> 下建一个子窗口(InputOutput,背景色 <paramref name="background" />)。</summary>
@@ -200,6 +201,50 @@ public sealed class WindowStructureTests
         Assert.AreEqual(121, request.U16(10), "高没改:现值");
         XMessage after = await c.RequestAsync(14, 0, b => b.U32(parent));
         Assert.AreEqual((20, 150), (after.I16(12), after.U16(16)), "位置照改,尺寸保持");
+    }
+
+    [TestMethod]
+    public async Task 子窗口被兄弟挡住或露出时发VisibilityNotify_在它的Expose之前()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint frame = await CreateChildAsync(c, c.RootWindow, 0, 0, 100, 100);
+        await c.SendAsync(8, 0, b => b.U32(frame));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(frame));
+        uint watched = await CreateChildAsync(c, frame, 10, 10, 40, 40, eventMask: VisibilityChangeMask | ExposureMask);
+        uint cover = await CreateChildAsync(c, frame, 30, 10, 40, 40);
+        async Task<byte> NextStateAsync() => (await c.NextEventAsync(VisibilityNotify)).Bytes[8];
+
+        await c.SendAsync(8, 0, b => b.U32(watched));
+        Assert.AreEqual(0, await NextStateAsync(), "映射:Unobscured(原先从不发)");
+        await c.SendAsync(8, 0, b => b.U32(cover));
+        Assert.AreEqual(1, await NextStateAsync(), "右半边被挡:PartiallyObscured");
+        await c.SendAsync(12, 0, b => b.U32(cover).U16(0x1).U16(0).U32(10));   // 挪到正好盖住
+        Assert.AreEqual(2, await NextStateAsync(), "FullyObscured");
+
+        await c.SyncAsync();
+        try
+        {
+            while (true)
+            {
+                await c.NextAsync(m => !m.IsReply && !m.IsError, timeoutMs: 50);   // 之前映射时的 Expose 之类读掉
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        // 挡着的兄弟取消映射:先 Unobscured,再是它的 Expose。
+        await c.SendAsync(10, 0, b => b.U32(cover));
+        await c.SyncAsync();
+        XMessage first = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode is VisibilityNotify or Expose);
+        Assert.AreEqual(VisibilityNotify, first.EventCode, "VisibilityNotify 在这个窗口的 Expose 之前");
+        Assert.AreEqual(0, first.Bytes[8]);
+        Assert.AreEqual(watched, (await c.NextEventAsync(Expose)).U32(4));
+
+        await c.SendAsync(10, 0, b => b.U32(watched));   // 自己取消映射:不报
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(VisibilityNotify, timeoutMs: 100));
     }
 
     [TestMethod]

@@ -197,6 +197,7 @@ public sealed partial class X11Server
     /// <param name="region">要重画的范围。</param>
     private void ExposeWindowTree(XWindow root, Region region)
     {
+        UpdateVisibility();   // VisibilityNotify 在这个窗口的 Expose 之前(协议「VisibilityNotify」)
         if (root.TopLevel is not { Buffer: not null } top || region.IsEmpty)
         {
             return;

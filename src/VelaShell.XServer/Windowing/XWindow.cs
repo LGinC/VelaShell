@@ -176,6 +176,9 @@ internal sealed class XWindow : XResource
     /// <summary>各客户端在这个窗口上选择的事件。</summary>
     public Dictionary<XClient, uint> EventSelections { get; } = [];
 
+    /// <summary>最近一次报出去(或登记时算出)的 VisibilityNotify 状态:0 Unobscured、1 PartiallyObscured、2 FullyObscured、255 不可见。</summary>
+    public byte VisibilityState { get; set; } = 255;
+
     /// <summary>可见区域缓存(ClipByChildren / VisibleInner),按服务端的可见性代号与顶层缓冲尺寸失效。只读共享,用的人自己 Clone。</summary>
     internal (int Generation, int BufferWidth, int BufferHeight, Region? ClipByChildren, Region? VisibleInner) VisibilityCache { get; set; }
 
