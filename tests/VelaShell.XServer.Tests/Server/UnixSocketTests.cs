@@ -179,7 +179,17 @@ public sealed partial class UnixSocketTests
             string path = Path.Combine(link, "X0");
             await using (X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path }))
             {
-                await server.StartAsync();
+                // Linux 上抽象名照样开着;macOS 没有抽象名、TCP 又没开 —— 一种传输也没开起来,StartAsync 抛 IOException
+                IOException? none = null;
+                try
+                {
+                    await server.StartAsync();
+                }
+                catch (IOException ex)
+                {
+                    none = ex;
+                }
+                Assert.AreEqual(!OperatingSystem.IsLinux(), none is not null, "只有没有抽象名的平台一种传输也开不起来");
                 Assert.IsFalse(File.Exists(path), "不在不可信的目录里开套接字文件");
             }
 
