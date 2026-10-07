@@ -31,6 +31,8 @@
 
 using System.Buffers.Binary;
 using System.Diagnostics.CodeAnalysis;
+using System.Numerics;
+using System.Runtime.CompilerServices;
 using VelaShell.XServer.Drawing;
 using VelaShell.XServer.Gl;
 using VelaShell.XServer.Protocol;
@@ -859,7 +861,9 @@ internal sealed class GlxExtension(X11Server server)
 
     /// <summary>
     /// 前缓冲上次拷出后画过的那一块 → X 窗口可见部分(并记损伤)或像素图;Pbuffer 不拷。
-    /// 单缓冲的程序每个 Render 请求都走这里:只拷画过的外接矩形,不拷整窗。
+    /// 单缓冲的程序每个 Render 请求都走这里:只拷画过的外接矩形,不拷整窗。双缓冲交换时整块都算画过,但逐行先与窗口里现有的
+    /// 像素比一比(向量化),只写、只记损伤真正不一样的那一段 —— 原先每次交换整窗拷贝、整窗记损伤,宿主跟着整窗重画
+    /// (xs_plan GL-P5)。比的是目标缓冲里实际的像素,窗口被别的绘图或曝光改过的地方照样补回来。
     /// 表面的 ID 上现在已是别的资源(原来的可绘对象没了、ID 被重用)时不拷。表面被夹小了时它对着可绘对象左下的那一块。
     /// </summary>
     private void PresentSurface(GlSurface surface)
@@ -889,21 +893,24 @@ internal sealed class GlxExtension(X11Server server)
                     // 可见区域是缓存里共享的,先拷一份再裁到画过的范围(缓冲坐标)。
                     Region visible = target.Clip.Clone().Intersect(area.Offset(target.OriginX, target.OriginY));
                     uint mask = target.Buffer.DepthMask;
+                    Region changed = new();
                     foreach (XRect rect in visible.Rects)
                     {
+                        XRect rectChanged = default;
                         for (int y = rect.Y; y < rect.Bottom; y++)
                         {
                             ReadOnlySpan<uint> from = surface.Front.AsSpan(((y - target.OriginY - dy) * surface.Width) + rect.X - target.OriginX, rect.Width);
                             Span<uint> to = target.Buffer.Pixels.AsSpan((y * target.Buffer.Width) + rect.X, rect.Width);
-                            for (int x = 0; x < to.Length; x++)
-                            {
-                                to[x] = from[x] & mask;
-                            }
+                            rectChanged = Union(rectChanged, CopyChanged(from, to, mask, rect.X, y));
+                        }
+                        if (!rectChanged.IsEmpty)
+                        {
+                            changed = changed.Union(rectChanged);
                         }
                     }
-                    if (target.TopLevel is { } top && !visible.IsEmpty)
+                    if (target.TopLevel is { } top && !changed.IsEmpty)
                     {
-                        server.MarkDamage(top, visible);
+                        server.MarkDamage(top, changed);
                     }
                     break;
                 }
@@ -911,23 +918,80 @@ internal sealed class GlxExtension(X11Server server)
                 {
                     XRect area = dirty.Intersect(new XRect(0, dy, Math.Min(surface.Width, pixmap.Width), Math.Min(surface.Height, pixmap.Height - dy)));
                     uint mask = pixmap.Buffer.DepthMask;
+                    XRect changed = default;
                     for (int y = area.Y; y < area.Bottom; y++)
                     {
                         ReadOnlySpan<uint> from = surface.Front.AsSpan(((y - dy) * surface.Width) + area.X, area.Width);
                         Span<uint> to = pixmap.Buffer.Pixels.AsSpan((y * pixmap.Width) + area.X, area.Width);
-                        for (int x = 0; x < to.Length; x++)
-                        {
-                            to[x] = from[x] & mask;
-                        }
+                        changed = Union(changed, CopyChanged(from, to, mask, area.X, y));
                     }
-                    if (!area.IsEmpty)
+                    if (!changed.IsEmpty)
                     {
-                        server.NotePixmapDrawn(pixmap, area);
+                        server.NotePixmapDrawn(pixmap, changed);
                     }
                     break;
                 }
         }
     }
+    /// <summary>
+    /// 一行:<paramref name="from" /> 按 <paramref name="mask" /> 截掉多余的位之后与 <paramref name="to" /> 比,只把头一个与最后一个不同的
+    /// 像素之间那一段写过去;返回这一段在目标里的矩形(<paramref name="x" />、<paramref name="y" /> 是这一行在目标里的起点),一样时为空。
+    /// </summary>
+    [MethodImpl(MethodImplOptions.AggressiveOptimization)]   // 每次交换每行都走:不经过未优化的第 0 层(那里 Vector 的调用不内联,慢几十倍)
+    private static XRect CopyChanged(ReadOnlySpan<uint> from, Span<uint> to, uint mask, int x, int y)
+    {
+        int n = to.Length, start = 0, end = n;
+        if (Vector.IsHardwareAccelerated)
+        {
+            Vector<uint> vmask = new(mask);
+            int lanes = Vector<uint>.Count;
+            while (start + lanes <= n && Vector.EqualsAll(new Vector<uint>(from[start..]) & vmask, new Vector<uint>(to[start..])))
+            {
+                start += lanes;
+            }
+        }
+        while (start < n && (from[start] & mask) == to[start])
+        {
+            start++;
+        }
+        if (start == n)
+        {
+            return default;
+        }
+        if (Vector.IsHardwareAccelerated)
+        {
+            Vector<uint> vmask = new(mask);
+            int lanes = Vector<uint>.Count;
+            while (end - lanes >= start && Vector.EqualsAll(new Vector<uint>(from[(end - lanes)..]) & vmask, new Vector<uint>(to[(end - lanes)..])))
+            {
+                end -= lanes;
+            }
+        }
+        while ((from[end - 1] & mask) == to[end - 1])
+        {
+            end--;
+        }
+        for (int i = start; i < end; i++)
+        {
+            to[i] = from[i] & mask;
+        }
+        return new XRect(x + start, y, end - start, 1);
+    }
+
+    private static XRect Union(XRect a, XRect b)
+    {
+        if (a.IsEmpty)
+        {
+            return b;
+        }
+        if (b.IsEmpty)
+        {
+            return a;
+        }
+        int x0 = Math.Min(a.X, b.X), y0 = Math.Min(a.Y, b.Y);
+        return new XRect(x0, y0, Math.Max(a.Right, b.Right) - x0, Math.Max(a.Bottom, b.Bottom) - y0);
+    }
+
     // ------------------------------------------------------------------ 当前上下文
 
     private GlxBinding GlxBindingOf(XClient c, uint tag) =>

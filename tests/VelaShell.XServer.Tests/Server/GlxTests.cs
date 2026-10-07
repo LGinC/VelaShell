@@ -1492,6 +1492,46 @@ public sealed class GlxTests
         Assert.AreEqual(0u, gl.GetError());
     }
 
+    [TestMethod]
+    public async Task 双缓冲交换只拷与窗口里不一样的那一块_只记那一块的损伤_被X画过的地方照样补回来()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        Commands Frame(float x) => new Commands()
+            .Add(130, b => F(b, 0, 0, 1, 1)).Add(127, b => b.U32(ColorBit))                                     // 整个后缓冲清成蓝
+            .Add(8, b => F(b, 1, 0, 0)).Add(4, b => b.U32(Triangles))
+            .Add(66, b => F(b, x, 0)).Add(66, b => F(b, x + 0.2f, 0)).Add(66, b => F(b, x, 0.2f)).Add(23);      // 一个小红三角形
+
+        await RenderAsync(c, glx, tag, Frame(0));
+        await c.SendAsync(glx, 11, b => b.U32(tag).U32(window));
+        await c.SyncAsync();
+        await host.WaitForAsync(() => !host.DamageRects.IsEmpty);
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 32, 18));
+        host.DamageRects.Clear();
+
+        await RenderAsync(c, glx, tag, Frame(0.1f));                                                            // 下一帧:三角形挪一点
+        await c.SendAsync(glx, 11, b => b.U32(tag).U32(window));
+        await c.SyncAsync();
+        await host.WaitForAsync(() => !host.DamageRects.IsEmpty);
+        long damaged = host.DamageRects.Sum(r => (long)r.Width * r.Height);
+        Assert.IsLessThan(Width * Height / 4, damaged, $"原先每次交换整窗({Width}×{Height})拷贝、整窗记损伤;这次 {damaged} 像素");
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 35, 18), "挪过去的三角形上了屏");
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 31, 18), "原来的位置还原成蓝");
+
+        // 窗口左上角被 X 画成绿色:下一次交换比的是窗口里实际的像素,照样补回 GL 的内容。
+        uint gc = c.NewId();
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(window).U32(0x4).U32(0x00FF00));
+        await c.SendAsync(70, 0, b => b.U32(window).U32(gc).I16(0).I16(0).U16(4).U16(4));
+        Assert.AreEqual(0x00FF00u, await PixelAsync(c, window, 1, 1));
+        await RenderAsync(c, glx, tag, Frame(0.1f));
+        await c.SendAsync(glx, 11, b => b.U32(tag).U32(window));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 1, 1), "交换把被 X 画过的地方补回来");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {
