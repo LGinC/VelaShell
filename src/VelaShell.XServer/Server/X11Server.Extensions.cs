@@ -235,7 +235,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Request);
         }
-        c.GenericEventsEnabled = true;
+        // 只回版本,不记「这个客户端声明过」:GenericEvent 只发给显式选了 XI2 / Present 事件的客户端,不必再按它把关。
         c.Reply(0, w => w.U16(1).U16(0).Zero(20));
     }
 }
