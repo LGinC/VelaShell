@@ -96,6 +96,36 @@ public sealed class SyncGrabTests
         Assert.IsEmpty(await DrainAsync(a, ButtonPress, ButtonRelease), "A 的抓取已经解除");
     }
 
+    /// <summary>重放的按下按事件之前的状态报:按钮 1 的位、Shift 自己的位都不在 state 里(原先重放时已经带上了)。</summary>
+    [TestMethod]
+    public async Task 重放的按下按事件之前的状态报_不带这次按下的按钮与修饰位()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(a, host);
+        await b.SendAsync(2, 0, w => w.U32(top).U32(0x800).U32(0x1 | 0x4));   // B:KeyPress | ButtonPress
+        await b.SyncAsync();
+        await a.SendAsync(28, 0, w => w.U32(top).U16(0x4).U8(Synchronous).U8(Asynchronous).U32(0).U32(0).U8(1).U8(0).U16(0x8000));
+        await a.SendAsync(33, 0, w => w.U32(top).U16(0x8000).U8(XKeycodes.ShiftLeft).U8(Asynchronous).U8(Synchronous).Pad());   // GrabKey(Shift_L)
+        await a.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+
+        server.InjectPointerButton(host.Mapped[top], 5, 5, 1, pressed: true);
+        Assert.HasCount(1, await DrainAsync(a, ButtonPress));
+        await a.SendAsync(35, 2, w => w.U32(0));   // ReplayPointer
+        XMessage button = (await DrainAsync(b, ButtonPress)).Single();
+        Assert.AreEqual(0, button.U16(28), "重放的 ButtonPress:state 里没有 Button1");
+        server.InjectPointerButton(host.Mapped[top], 5, 5, 1, pressed: false);
+
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: true);
+        Assert.HasCount(1, await DrainAsync(a, KeyPress));
+        await a.SendAsync(35, 5, w => w.U32(0));   // ReplayKeyboard
+        XMessage key = (await DrainAsync(b, KeyPress)).Single();
+        Assert.AreEqual(0, key.U16(28), "重放的 Shift 按下:state 里没有 Shift");
+    }
+
     [TestMethod]
     public async Task 同步GrabKeyboard_SyncKeyboard每次放行一个按键事件()
     {

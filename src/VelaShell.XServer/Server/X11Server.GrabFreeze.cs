@@ -40,10 +40,10 @@ public sealed partial class X11Server
     private bool _syncBoth;
 
     /// <summary>引起指针冻结、可被 ReplayPointer 重放的按钮按下:按钮号与当时的抓取窗口。</summary>
-    private (int Button, XWindow GrabWindow)? _pointerReplay;
+    private (int Button, XWindow GrabWindow, InputState Before)? _pointerReplay;
 
     /// <summary>引起键盘冻结、可被 ReplayKeyboard 重放的按键按下。</summary>
-    private (byte Keycode, XWindow GrabWindow)? _keyboardReplay;
+    private (byte Keycode, XWindow GrabWindow, InputState Before)? _keyboardReplay;
 
     /// <summary>排着的设备事件是哪一类:决定队列满了时能不能丢(见 <see cref="ProcessInput" />)。</summary>
     private enum InputKind : byte
@@ -342,7 +342,7 @@ public sealed partial class X11Server
             FreezePointer(grab);
             if (pressed)
             {
-                _pointerReplay = (button, grab.Window);
+                _pointerReplay = (button, grab.Window, CurrentInputState());
             }
             if (_syncBoth)
             {
@@ -362,7 +362,7 @@ public sealed partial class X11Server
             FreezeKeyboard(grab);
             if (pressed)
             {
-                _keyboardReplay = (keycode, grab.Window);
+                _keyboardReplay = (keycode, grab.Window, CurrentInputState());
             }
             if (_syncBoth)
             {
@@ -408,7 +408,7 @@ public sealed partial class X11Server
             case 2:   // ReplayPointer
                 if (pointerMine && PointerGrab is { } rg && ReferenceEquals(rg.Client, c) && _pointerReplay is { } replay)
                 {
-                    ReplayPointer(replay.Button, replay.GrabWindow);
+                    ReplayPointer(replay.Button, replay.GrabWindow, replay.Before);
                 }
                 break;
             case 3:   // AsyncKeyboard
@@ -427,7 +427,7 @@ public sealed partial class X11Server
             case 5:   // ReplayKeyboard
                 if (keyboardMine && KeyboardGrab is { } rk && ReferenceEquals(rk.Client, c) && _keyboardReplay is { } kr)
                 {
-                    ReplayKeyboard(kr.Keycode, kr.GrabWindow);
+                    ReplayKeyboard(kr.Keycode, kr.GrabWindow, kr.Before);
                 }
                 break;
             case 6:   // AsyncBoth:两个设备都被这个客户端冻着时才生效
@@ -452,24 +452,60 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>ReplayPointer:解除指针抓取,把那次按钮按下重新处理 —— 这次不看抓取窗口及其以上的被动抓取。</summary>
-    private void ReplayPointer(int button, XWindow grabWindow)
+    /// <summary>
+    /// 一个设备事件之前的状态:修饰(base / latched / locked / 生效)与核心的按钮位。重放的事件按它报 ——
+    /// 协议:事件里的 state 是事件之前的;原先重放时这次按下的按钮位(以及按下的修饰键自己的位)已经在 state 里了。
+    /// </summary>
+    private readonly record struct InputState(byte Base, byte Latched, byte Locked, ushort Modifiers, ushort Buttons);
+
+    /// <summary>此刻的状态。在记下可重放的按下时调:那时按钮位与修饰状态都还没随这次按下更新。</summary>
+    private InputState CurrentInputState() => new(_baseMods, _latchedMods, _lockedMods, _modifiers, _buttons);
+
+    /// <summary>
+    /// 换上 <paramref name="state" /> 跑 <paramref name="replay" />(<paramref name="button" /> 不为 0 时这个按钮在 XI2 的按钮掩码里也先去掉),
+    /// 跑完换回现在的状态。重放不改这些状态(PressButton / PressKey 在 replay 时只投递)。
+    /// </summary>
+    private void WithInputState(InputState state, int button, Action replay)
+    {
+        InputState now = CurrentInputState();
+        bool buttonDown = button != 0 && (_buttonsDown[button >> 3] & (1 << (button & 7))) != 0;
+        (_baseMods, _latchedMods, _lockedMods, _modifiers, _buttons) = state;
+        if (buttonDown)
+        {
+            _buttonsDown[button >> 3] &= (byte)~(1 << (button & 7));
+        }
+        try
+        {
+            replay();
+        }
+        finally
+        {
+            (_baseMods, _latchedMods, _lockedMods, _modifiers, _buttons) = now;
+            if (buttonDown)
+            {
+                _buttonsDown[button >> 3] |= (byte)(1 << (button & 7));
+            }
+        }
+    }
+
+    /// <summary>ReplayPointer:解除指针抓取,把那次按钮按下按当时的状态重新处理 —— 这次不看抓取窗口及其以上的被动抓取。</summary>
+    private void ReplayPointer(int button, XWindow grabWindow, InputState before)
     {
         _pointerReplay = null;
         _pointerFrozenBy = null;
         PointerGrab = null;
         UpdateCursor();
-        PressButton(button, ignoreGrabsThrough: grabWindow, replay: true);
+        WithInputState(before, button, () => PressButton(button, ignoreGrabsThrough: grabWindow, replay: true));
         ScheduleDrain();
     }
 
-    /// <summary>ReplayKeyboard:解除键盘抓取,把那次按键按下重新处理 —— 这次不看抓取窗口及其以上的被动抓取。</summary>
-    private void ReplayKeyboard(byte keycode, XWindow grabWindow)
+    /// <summary>ReplayKeyboard:解除键盘抓取,把那次按键按下按当时的状态重新处理 —— 这次不看抓取窗口及其以上的被动抓取。</summary>
+    private void ReplayKeyboard(byte keycode, XWindow grabWindow, InputState before)
     {
         _keyboardReplay = null;
         _keyboardFrozenBy = null;
         KeyboardGrab = null;
-        PressKey(keycode, ignoreGrabsThrough: grabWindow, replay: true);
+        WithInputState(before, 0, () => PressKey(keycode, ignoreGrabsThrough: grabWindow, replay: true));
         ScheduleDrain();
     }
 

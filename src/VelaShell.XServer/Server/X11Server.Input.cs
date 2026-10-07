@@ -339,7 +339,7 @@ public sealed partial class X11Server
             ApplyGrabModes(grab, activated.PointerSync, activated.KeyboardSync);
             if (activated.PointerSync)
             {
-                _pointerReplay = (button, grab.Window);
+                _pointerReplay = (button, grab.Window, CurrentInputState());
             }
         }
         else if (delivered is not null && PointerGrab is not null)
@@ -845,7 +845,7 @@ public sealed partial class X11Server
             ApplyGrabModes(grab, activated.PointerSync, activated.KeyboardSync);
             if (activated.KeyboardSync)
             {
-                _keyboardReplay = (keycode, grab.Window);
+                _keyboardReplay = (keycode, grab.Window, CurrentInputState());
             }
         }
         else if (!replay && delivered is not null && KeyboardGrab is not null)
