@@ -52,6 +52,39 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task Windows上TCP监听独占端口_别的进程用SO_REUSEADDR抢不走()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("SO_EXCLUSIVEADDRUSE 是 Windows 的语义;别的系统上 SO_REUSEADDR 本来就绑不上正在听的端口");
+            return;
+        }
+        int display = 0;
+        for (int n = Random.Shared.Next(1000, 9000); display == 0; n++)
+        {
+            try
+            {
+                using System.Net.Sockets.TcpListener probe = new(System.Net.IPAddress.Loopback, 6000 + n);
+                probe.Start();
+                display = n;
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+            }
+        }
+        await using X11Server server = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "" });
+        await server.StartAsync();
+
+        // 没设独占时,同一个用户的别的进程(比如低完整性的)用 SO_REUSEADDR 绑更具体的地址照样绑得上:听 0.0.0.0 的话,
+        // 它绑 127.0.0.1 就截走了本机的连接(实测)。这里只听环回(不在测试里开对外的端口),所以核对的是监听套接字的选项。
+        Assert.IsTrue(server.TcpListenerIsExclusive, "SO_EXCLUSIVEADDRUSE");
+        using System.Net.Sockets.Socket thief = new(System.Net.Sockets.AddressFamily.InterNetwork, System.Net.Sockets.SocketType.Stream,
+            System.Net.Sockets.ProtocolType.Tcp);
+        thief.SetSocketOption(System.Net.Sockets.SocketOptionLevel.Socket, System.Net.Sockets.SocketOptionName.ReuseAddress, true);
+        Assert.ThrowsExactly<System.Net.Sockets.SocketException>(() => thief.Bind(new System.Net.IPEndPoint(System.Net.IPAddress.Loopback, server.Port)));
+    }
+
+    [TestMethod]
     public async Task KillClient之后被杀的客户端连接立即结束()
     {
         await using X11Server server = new();

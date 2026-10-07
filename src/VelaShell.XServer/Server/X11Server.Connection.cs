@@ -61,11 +61,20 @@ public sealed partial class X11Server
     private void StartTcpListener()
     {
         TcpListener listener = new(_options.ListenAddress, 6000 + _options.DisplayNumber);
+        if (OperatingSystem.IsWindows())
+        {
+            // SO_EXCLUSIVEADDRUSE:没设的话,同一个用户的别的进程(包括低完整性的)用 SO_REUSEADDR 绑更具体的地址照样绑得上 ——
+            // 听 0.0.0.0 时它绑 127.0.0.1:6000+N,本机的连接就都落到它那里(实测 Windows 11)。别的系统上 SO_REUSEADDR 本来就绑不上正在听的端口。
+            listener.ExclusiveAddressUse = true;
+        }
         listener.Start();
         _listener = listener;
         Port = ((IPEndPoint)listener.LocalEndpoint).Port;
         _acceptTask = AcceptLoopAsync(listener, _lifetime.Token);
     }
+
+    /// <summary>TCP 监听独占着地址(Windows 的 SO_EXCLUSIVEADDRUSE,见 <see cref="StartTcpListener" />);测试用。</summary>
+    internal bool TcpListenerIsExclusive => _listener?.ExclusiveAddressUse == true;
 
     /// <summary>关掉全部监听(收工,或 <see cref="StartAsync" /> 半途失败时撤回已经开起来的)。接受循环随之结束。</summary>
     private void StopListeners()
