@@ -361,7 +361,7 @@ public sealed partial class X11Server
         {
             foreach ((int x1, int y1, int x2, int y2) in segments)
             {
-                raster.PolyLine([(x1, y1), (x2, y2)]);
+                raster.Segment(x1, y1, x2, y2);
             }
         });
     }
@@ -374,8 +374,7 @@ public sealed partial class X11Server
         {
             foreach (XRect rect in rects)
             {
-                int x2 = rect.X + rect.Width, y2 = rect.Y + rect.Height;
-                raster.PolyLine([(rect.X, rect.Y), (x2, rect.Y), (x2, y2), (rect.X, y2), (rect.X, rect.Y)], closed: true);
+                raster.Rectangle(rect.X, rect.Y, rect.Width, rect.Height);
             }
         });
     }

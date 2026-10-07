@@ -500,8 +500,8 @@ internal sealed class Rasterizer
             (long mLow, long mHigh) = sb > 0 ? (bLow - b0, bHigh - b0) : (b0 - bHigh, b0 - bLow);
             if (k0 <= k1)
             {
-                k0 = FirstStepWith(k0, k1, k => MinorSteps(k, major, minor) >= mLow);
-                k1 = FirstStepWith(k0, k1 + 1, k => MinorSteps(k, major, minor) > mHigh) - 1;
+                k0 = FirstStepReaching(k0, k1, major, minor, mLow);
+                k1 = FirstStepReaching(k0, k1 + 1, major, minor, mHigh + 1) - 1;   // 第一个 m(k) > mHigh 的前一步
             }
         }
         if (k0 > k1)
@@ -556,13 +556,16 @@ internal sealed class Rasterizer
 
     private static long FloorDiv(long a, long b) => (a / b) - (((a % b) != 0 && ((a < 0) != (b < 0))) ? 1 : 0);
 
-    /// <summary>[<paramref name="low" />, <paramref name="high" />) 里第一个满足单调条件的 k;都不满足时返回 <paramref name="high" />。</summary>
-    private static long FirstStepWith(long low, long high, Func<long, bool> predicate)
+    /// <summary>
+    /// [<paramref name="low" />, <paramref name="high" />) 里第一个副轴步数 m(k) ≥ <paramref name="target" /> 的 k(m 随 k 单调);
+    /// 都不满足时返回 <paramref name="high" />。不经委托:每条细线调两次,原先每次分配一个闭包。
+    /// </summary>
+    private static long FirstStepReaching(long low, long high, long major, long minor, long target)
     {
         while (low < high)
         {
             long mid = low + ((high - low) / 2);
-            if (predicate(mid))
+            if (MinorSteps(mid, major, minor) >= target)
             {
                 high = mid;
             }
@@ -730,7 +733,16 @@ internal sealed class Rasterizer
                 {
                     live.Add(edges[_next[pi]++]);
                 }
-                live.RemoveAll(e => e.Bottom <= sampleY);
+                // 下端已过这一行的边出表:就地压紧(原先 RemoveAll 每行分配一个闭包)。
+                int kept = 0;
+                for (int i = 0; i < live.Count; i++)
+                {
+                    if (live[i].Bottom > sampleY)
+                    {
+                        live[kept++] = live[i];
+                    }
+                }
+                live.RemoveRange(kept, live.Count - kept);
                 _crossings.Clear();
                 foreach (Edge e in live)
                 {
@@ -778,14 +790,15 @@ internal sealed class Rasterizer
     /// <summary>多边形的一条边,从上端(Top,X)到下端(Bottom);Dir = 1 表示原本朝下走。</summary>
     private readonly record struct Edge(double Top, double Bottom, double X, double Slope, int Dir);
 
+    /// <summary>排序并合并相交或相接的区间,就地写回 <paramref name="spans" />(原先每行新建一个 List)。</summary>
     private static List<(int Start, int End)> MergeSpans(List<(int Start, int End)> spans)
     {
         if (spans.Count <= 1)
         {
             return spans;
         }
-        spans.Sort((a, b) => a.Start.CompareTo(b.Start));
-        List<(int, int)> merged = [];
+        spans.Sort(static (a, b) => a.Start.CompareTo(b.Start));
+        int count = 0;
         (int cs, int ce) = spans[0];
         for (int i = 1; i < spans.Count; i++)
         {
@@ -795,12 +808,13 @@ internal sealed class Rasterizer
             }
             else
             {
-                merged.Add((cs, ce));
+                spans[count++] = (cs, ce);
                 (cs, ce) = spans[i];
             }
         }
-        merged.Add((cs, ce));
-        return merged;
+        spans[count++] = (cs, ce);
+        spans.RemoveRange(count, spans.Count - count);
+        return spans;
     }
 
     // ------------------------------------------------------------------ 宽线与宽弧的笔画
@@ -944,14 +958,50 @@ internal sealed class Rasterizer
     /// 一条宽折线:每段一块矩形,段与段之间按 join-style 加接头,两端按 cap-style 加端帽;虚线时按段长沿线量出各个偶数段,
     /// 内部的端点按 line-style 加端帽(协议「CreateGC」的 line-style / cap-style / join-style)。整条折线的各块一起填,像素只画一次。
     /// </summary>
+    /// <summary><see cref="WidePolyLine" /> 在一个请求里重复用的顶点、段列表与 PolySegment / PolyRectangle 的点数组。</summary>
+    private List<(double X, double Y)>? _vertices;
+
+    private List<PathSegment>? _segments;
+
+    private (int X, int Y)[]? _points2, _points5;
+
+    /// <summary>PolySegment 的一段:段与段之间不相连(不加接头,虚线每段从 dash-offset 重新开始)。不为每段分配点列表。</summary>
+    public void Segment(int x1, int y1, int x2, int y2)
+    {
+        if (_gc.LineWidth == 0)
+        {
+            ThinLine(x1, y1, x2, y2, drawLast: _gc.CapStyle != 0, _gc.LineStyle != 0 ? NewDashState() : null);
+            return;
+        }
+        (int X, int Y)[] points = _points2 ??= new (int X, int Y)[2];
+        points[0] = (x1, y1);
+        points[1] = (x2, y2);
+        WidePolyLine(points, closed: false);
+    }
+
+    /// <summary>PolyRectangle 的一个矩形:五个点的闭合折线(协议)。不为每个矩形分配点列表。</summary>
+    public void Rectangle(int x, int y, int width, int height)
+    {
+        (int X, int Y)[] points = _points5 ??= new (int X, int Y)[5];
+        int x2 = x + width, y2 = y + height;
+        points[0] = (x, y);
+        points[1] = (x2, y);
+        points[2] = (x2, y2);
+        points[3] = (x, y2);
+        points[4] = (x, y);
+        PolyLine(points, closed: true);
+    }
+
     private void WidePolyLine(IReadOnlyList<(int X, int Y)> points, bool closed)
     {
         double half = _gc.LineWidth / 2.0;
         WorkBudget.Charge(points.Count);
-        // 端点重合的段:协议说「效果如同这条线从路径里拿掉了」。
-        List<(double X, double Y)> vertices = [];
-        foreach ((int x, int y) in points)
+        // 端点重合的段:协议说「效果如同这条线从路径里拿掉了」。顶点与段的列表在一个请求里重复用(PolySegment / PolyRectangle 一条请求几千段)。
+        List<(double X, double Y)> vertices = _vertices ??= [];
+        vertices.Clear();
+        for (int i = 0; i < points.Count; i++)
         {
+            (int x, int y) = points[i];
             if (vertices.Count == 0 || vertices[^1] != (x, y))
             {
                 vertices.Add((x, y));
@@ -969,7 +1019,8 @@ internal sealed class Rasterizer
             FillStroke(dot, null);
             return;
         }
-        List<PathSegment> segments = [];
+        List<PathSegment> segments = _segments ??= [];
+        segments.Clear();
         int count = closed ? vertices.Count : vertices.Count - 1;
         for (int i = 0; i < count; i++)
         {

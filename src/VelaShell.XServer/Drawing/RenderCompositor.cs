@@ -465,23 +465,34 @@ internal sealed class CoverageMask
 
     /// <summary>梯形:top ≤ y &lt; bottom 之间、左边线与右边线之间的部分(左在右的右边时那一段不画)。</summary>
     public void AddTrapezoid(double top, double bottom, Line left, Line right) =>
-        AddBand(top, bottom, y => (left.XAt(y), right.XAt(y)));
+        AddBand(top, bottom, left, right, ordered: true);
 
     /// <summary>三角形:按中间顶点拆成上下两段,每条子扫描线取与各边交点的最小 / 最大值。</summary>
     public void AddTriangle((double X, double Y) a, (double X, double Y) b, (double X, double Y) c)
     {
-        (double X, double Y)[] v = [a, b, c];
-        Array.Sort(v, (p, q) => p.Y.CompareTo(q.Y));
-        Line longEdge = new(v[0].X, v[0].Y, v[2].X, v[2].Y);
-        Line upper = new(v[0].X, v[0].Y, v[1].X, v[1].Y);
-        Line lower = new(v[1].X, v[1].Y, v[2].X, v[2].Y);
-        AddBand(v[0].Y, v[1].Y, y => MinMax(longEdge.XAt(y), upper.XAt(y)));
-        AddBand(v[1].Y, v[2].Y, y => MinMax(longEdge.XAt(y), lower.XAt(y)));
-
-        static (double, double) MinMax(double p, double q) => p <= q ? (p, q) : (q, p);
+        // 三个顶点按 y 排好(不经数组与比较委托)。
+        if (b.Y < a.Y)
+        {
+            (a, b) = (b, a);
+        }
+        if (c.Y < b.Y)
+        {
+            (b, c) = (c, b);
+            if (b.Y < a.Y)
+            {
+                (a, b) = (b, a);
+            }
+        }
+        Line longEdge = new(a.X, a.Y, c.X, c.Y);
+        AddBand(a.Y, b.Y, longEdge, new Line(a.X, a.Y, b.X, b.Y), ordered: false);
+        AddBand(b.Y, c.Y, longEdge, new Line(b.X, b.Y, c.X, c.Y), ordered: false);
     }
 
-    private void AddBand(double top, double bottom, Func<double, (double Left, double Right)> span)
+    /// <summary>
+    /// top ≤ y &lt; bottom 之间两条线所夹的部分:<paramref name="ordered" /> 时 <paramref name="first" /> 是左边线(左在右的右边时那一段不画),
+    /// 否则每条子扫描线取两个交点的较小 / 较大值。原先每条子扫描线调一次委托,每个梯形、三角形分配闭包。
+    /// </summary>
+    private void AddBand(double top, double bottom, Line first, Line second, bool ordered)
     {
         double yStart = Math.Max(top, Bounds.Y), yEnd = Math.Min(bottom, Bounds.Bottom);
         if (yEnd <= yStart)
@@ -499,7 +510,11 @@ internal sealed class CoverageMask
                 {
                     continue;
                 }
-                (double left, double right) = span(y);
+                double left = first.XAt(y), right = second.XAt(y);
+                if (!ordered && right < left)
+                {
+                    (left, right) = (right, left);
+                }
                 AddSpan(row, left, right, weight);
             }
         }
