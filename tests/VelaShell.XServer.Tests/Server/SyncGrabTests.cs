@@ -303,6 +303,55 @@ public sealed class SyncGrabTests
     }
 
     [TestMethod]
+    public async Task 自动抓取也发Grab与Ungrab模式的crossing_在A里按下拖到B松开_B收到Ungrab的Enter()
+    {
+        const byte EnterNotify = 7, LeaveNotify = 8;
+        const uint enterLeave = 0x10 | 0x20, buttons = 0x4 | 0x8;
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+
+        async Task<uint> MapAtAsync(XTestClient c, short x, uint mask)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, w => w.U32(id).U32(c.RootWindow).I16(x).I16(0).U16(100).U16(80).U16(0).U16(1).U32(0).U32(0x800).U32(mask));
+            await c.SendAsync(8, 0, w => w.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        uint t = await MapAtAsync(a, 0, enterLeave | buttons);
+        uint u = await MapAtAsync(b, 300, enterLeave);
+        uint child = a.NewId();   // T 里的子窗口:只选 Enter / Leave,按下的事件传到 T,自动抓取的窗口是 T
+        await a.SendAsync(1, 0, w => w.U32(child).U32(t).I16(10).I16(10).U16(30).U16(30).U16(0).U16(1).U32(0).U32(0x800).U32(enterLeave));
+        await a.SendAsync(8, 0, w => w.U32(child));
+        server.InjectPointerMotion(host.Mapped[t], 20, 20);
+        await DrainAsync(a, EnterNotify, LeaveNotify);
+        await DrainAsync(b, EnterNotify, LeaveNotify);
+
+        // 激活:就像指针从子窗口瞬移到 T,mode = Grab,在 ButtonPress 之前;只报抓取窗口 T 上的。
+        server.InjectPointerButton(host.Mapped[t], 20, 20, 1, pressed: true);
+        List<XMessage> pressed = await DrainAsync(a, EnterNotify, LeaveNotify, ButtonPress);
+        CollectionAssert.AreEqual(new[] { EnterNotify, ButtonPress }, pressed.Select(m => m.EventCode).ToArray());
+        Assert.AreEqual(t, pressed[0].U32(12));
+        Assert.AreEqual(1, pressed[0].Bytes[30], "mode = Grab");
+
+        server.InjectPointerMotion(host.Mapped[u], 5, 5);   // 按着拖进 B 的窗口:抓取期间 B 收不到 Enter
+        await DrainAsync(a, EnterNotify, LeaveNotify);     // 抓取方照常收到离开 T 的 Normal crossing
+        Assert.IsEmpty(await DrainAsync(b, EnterNotify, LeaveNotify));
+
+        // 解除:ButtonRelease 之后,就像指针从 T 瞬移到它实际所在的 U,mode = Ungrab,照常报给所有人。
+        server.InjectPointerButton(host.Mapped[u], 5, 5, 1, pressed: false);
+        List<XMessage> released = await DrainAsync(b, EnterNotify, LeaveNotify);
+        Assert.HasCount(1, released, "原先自动抓取解除时不发,B 一直不知道指针在它里面");
+        Assert.AreEqual(EnterNotify, released[0].EventCode);
+        Assert.AreEqual(u, released[0].U32(12));
+        Assert.AreEqual(2, released[0].Bytes[30], "mode = Ungrab");
+        List<XMessage> owner = await DrainAsync(a, ButtonRelease, LeaveNotify);
+        CollectionAssert.AreEqual(new[] { ButtonRelease, LeaveNotify }, owner.Select(m => m.EventCode).ToArray(), "Ungrab 的 crossing 在 ButtonRelease 之后");
+    }
+
+    [TestMethod]
     public async Task 键盘被抓着且owner_events为True时按键照常按焦点报告_不是按指针所在的窗口()
     {
         using RecordingHost host = new();

@@ -286,6 +286,16 @@ public sealed partial class X11Server
         {
             SendRawEvent(XiRawButtonPress, (uint)button, 0, 0);
         }
+        if (PointerGrab is null && !IsFloating(pointer: true)
+            && Propagate(_pointerWindow, XEventMask.ButtonPress, XEventCode.ButtonPress, null, null) is { } target)
+        {
+            // 这次按下会建立自动抓取,抓取窗口就是收到它的那个窗口(与下面投递的落点一样)。协议「Pointer Window events」:抓取激活时、
+            // 在激活它的 ButtonPress 之前,按「指针从 P 瞬移到 G」发 Grab 模式的 crossing(只报给抓取方)—— 自动抓取也一样。
+            // 投递仍按没有抓取时的规则走(同一窗口上选了的客户端都收到),所以只在发 crossing 的这一会儿把抓取挂上。
+            _pointerGrab = AutomaticGrab(target);
+            GenerateCrossing(_pointerWindow, target.Window, CrossingModeGrab);
+            _pointerGrab = null;
+        }
         // XI2 事件里的 buttons 是事件之前的按钮状态(XI2 协议「DeviceEvent」):这个按钮的位在投递之后才置上,与核心的 state 一致。
         Delivery? delivered = DeliverDeviceEvent(XEventCode.ButtonPress, (byte)button, XEventMask.ButtonPress, _pointerWindow);
         if (!replay)
@@ -295,17 +305,7 @@ public sealed partial class X11Server
         if (PointerGrab is null && delivered is { } d)
         {
             // 自动抓取:按下的那个窗口在所有按钮松开之前独占指针事件(协议「ButtonPress」;XI2 同理,格式跟着收到的那种走)。
-            PointerGrab = new ActiveGrab
-            {
-                Client = d.Client,
-                Window = d.Window,
-                OwnerEvents = (d.Mask & (uint)XEventMask.OwnerGrabButton) != 0,
-                EventMask = d.Mask,
-                ReleaseWhenButtonsUp = true,
-                Automatic = true,
-                Xi2 = d.Xi2,
-                Xi2Mask = d.Xi2Mask,
-            };
+            PointerGrab = AutomaticGrab(d);
         }
         if (activated is not null && PointerGrab is { } grab)
         {
@@ -321,6 +321,19 @@ public sealed partial class X11Server
             NotePointerEventReported(button, pressed: true);
         }
     }
+
+    /// <summary>按钮按下投递到 <paramref name="d" /> 时建立的自动抓取。</summary>
+    private static ActiveGrab AutomaticGrab(Delivery d) => new()
+    {
+        Client = d.Client,
+        Window = d.Window,
+        OwnerEvents = (d.Mask & (uint)XEventMask.OwnerGrabButton) != 0,
+        EventMask = d.Mask,
+        ReleaseWhenButtonsUp = true,
+        Automatic = true,
+        Xi2 = d.Xi2,
+        Xi2Mask = d.Xi2Mask,
+    };
 
     /// <summary>重新算指针所在窗口;变了就发 Enter / Leave、更新光标。窗口树变化后也调它。</summary>
     internal void UpdatePointerWindow()

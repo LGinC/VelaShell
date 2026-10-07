@@ -68,7 +68,9 @@ public sealed partial class X11Server
     /// <summary>
     /// 当前的指针抓取。换掉(解除或被别的抓取取代)时,它冻结的设备随之解冻。抓取激活 / 解除时按协议「Pointer Window events」
     /// 发 mode 为 Grab / Ungrab 的 Enter / Leave:「就像指针从所在的窗口 P 瞬移到抓取窗口 G」,解除时反过来(指针并没有动)。
-    /// 按钮按下时的自动抓取不发;抓取窗口已经销毁了也不发。
+    /// 自动抓取同样适用:激活时的那一组由 PressButton 在投递 ButtonPress 之前发(这里不重复发);解除时在 ButtonRelease 之后照常发 ——
+    /// 在 A 里按下、拖到另一个客户端的窗口 B 松开,B 这才知道指针在它里面(原先自动抓取一律不发,B 的悬停高亮要移出再移入才恢复)。
+    /// 抓取窗口已经销毁了不发。
     /// </summary>
     private ActiveGrab? PointerGrab
     {
@@ -84,7 +86,7 @@ public sealed partial class X11Server
             if (old is not null)
             {
                 ThawGrab(old);
-                if (!old.Automatic && ReferenceEquals(Lookup<XWindow>(old.Window.Id), old.Window))
+                if (ReferenceEquals(Lookup<XWindow>(old.Window.Id), old.Window))
                 {
                     GenerateCrossing(old.Window, _pointerWindow, CrossingModeUngrab);
                 }
