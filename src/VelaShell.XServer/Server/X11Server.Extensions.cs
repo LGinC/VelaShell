@@ -78,7 +78,11 @@ public sealed partial class X11Server
         });
         Register(new Extension("RENDER", RenderMajor, Render) { FirstError = RenderErrorBase, ErrorCount = 5 });
         Register(new Extension("Generic Event Extension", GenericEventMajor, GenericEventExtension));
-        Register(new Extension("XTEST", XTestMajor, XTest) { ClientClosed = CleanupXTest });
+        Register(new Extension("XTEST", XTestMajor, XTest)
+        {
+            ClientClosed = CleanupXTest,
+            VisibleTo = client => !IsRestricted(client),   // 伪造的输入与真实键盘无从区分(见 RestrictForwardedClients)
+        });
         Register(new Extension("XINERAMA", XineramaMajor, Xinerama));
         Register(new Extension("MIT-SCREEN-SAVER", ScreenSaverMajor, ScreenSaverExtension)
         {

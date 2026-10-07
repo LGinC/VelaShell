@@ -5667,6 +5667,12 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>X プログラムが使うキーボードレイアウト。自動はシステムの現在のレイアウトに従い、レイアウトを選ぶとそれを使います(VcXsrv には -xkblayout で渡します)。</value>
   </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>SSH 経由のプログラムを制限</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>SSH で転送されたプログラムは、入力の模擬(XTEST)、X ウィンドウで入力したすべてのキーの監視(生のキーイベント)、入力デバイスの変更ができなくなります。完全には信頼できないサーバーに接続するときはオンにしてください。オンにすると、それらのサーバー上の xdotool などのツールは動かなくなります。</value>
+  </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>自動 - システムの現在のレイアウト</value>
   </data>

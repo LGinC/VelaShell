@@ -443,4 +443,30 @@ public sealed class XInputTests
         XMessage press = await b.NextEventAsync(4);
         Assert.AreEqual(u, press.U32(12), "抓取与冻结都解除了,按下照常报给 B 的窗口");
     }
+    [TestMethod]
+    public async Task RestrictForwardedClients_SSH转发来的连接看不到XTEST_收不到原始按键_不能改设备层级()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(new X11ServerOptions { RestrictForwardedClients = true }, host);
+        await using XTestClient local = await XTestClient.ConnectAsync(server);
+        await using XTestClient forwarded = await XTestClient.ConnectAsync(server, label: "joe@remote:22");   // 经 ServeAuthenticatedAsync
+
+        static async Task<bool> HasXTestAsync(XTestClient c) =>
+            (await c.RequestAsync(98, 0, b => b.U16(5).U16(0).Bytes(Encoding.Latin1.GetBytes("XTEST")).Pad())).Bytes[8] == 1;
+        Assert.IsTrue(await HasXTestAsync(local));
+        Assert.IsFalse(await HasXTestAsync(forwarded), "伪造的输入与真实键盘无从区分");
+
+        byte xi = await XiAsync(forwarded);
+        byte xiLocal = await XiAsync(local);
+        await SelectAsync(forwarded, xi, forwarded.RootWindow, 0, 1u << 13);   // RawKeyPress
+        await SelectAsync(local, xiLocal, local.RootWindow, 0, 1u << 13);
+        await forwarded.SyncAsync();
+        await local.SyncAsync();
+        server.InjectKey(38, pressed: true);
+        await NextXiAsync(local, xiLocal, 13);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => NextXiAsync(forwarded, xi, 13, timeoutMs: 200), "不抢焦点就能记下所有按键");
+
+        await forwarded.SendAsync(xi, 43, b => b.U8(1).U8(0).U8(0).U8(0).U16(4).U16(2).U16(4).U16(0));   // DetachSlave 4
+        Assert.AreEqual(10, (await forwarded.NextAsync(m => m.IsError)).Detail, "BadAccess");
+    }
 }

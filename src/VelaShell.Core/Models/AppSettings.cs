@@ -1495,6 +1495,15 @@ public class XServerOptions : ObservableOptions
         set => Set(ref field, value);
     }
 
+    /// <summary>
+    /// 内置 X Server:限制经 SSH 转发来的程序 —— 不能模拟输入(XTEST)、收不到原始按键事件、不能改输入设备。默认关(远端的 xdotool 靠 XTEST)。
+    /// </summary>
+    public bool RestrictForwardedClients
+    {
+        get;
+        set => Set(ref field, value);
+    }
+
     /// <summary>XKB 键盘布局(<c>-xkblayout</c>);留空 = 跟随 Windows 当前布局。</summary>
     public string KeyboardLayout
     {

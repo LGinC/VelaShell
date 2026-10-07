@@ -6126,6 +6126,12 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>X 程式使用的鍵盤配置。自動 = 跟隨系統目前的配置;選了具體配置就照它來(VcXsrv 以 -xkblayout 傳入)。</value>
   </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>限制經 SSH 轉送來的程式</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>經 SSH 轉送來的程式不能模擬輸入(XTEST)、不能監聽在 X 視窗裡敲的所有按鍵(原始按鍵事件)、不能變更輸入裝置。連線到不完全信任的伺服器時建議開啟;開啟後那些伺服器上的 xdotool 之類的工具會失效。</value>
+  </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>自動 - 跟隨系統目前配置</value>
   </data>

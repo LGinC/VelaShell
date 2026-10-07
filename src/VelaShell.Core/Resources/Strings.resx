@@ -5672,6 +5672,12 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>Keyboard layout used by X programs. Auto follows the system's current layout; a chosen layout is used as is (VcXsrv receives it as -xkblayout).</value>
   </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>Restrict programs from SSH sessions</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>Programs forwarded over SSH can&apos;t simulate input (XTEST), listen to every key typed in X windows (raw key events) or change input devices. Turn this on when you connect to servers you don&apos;t fully trust; tools like xdotool on those servers stop working.</value>
+  </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>auto - Follow the system layout</value>
   </data>

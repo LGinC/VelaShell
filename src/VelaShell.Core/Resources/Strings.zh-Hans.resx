@@ -6126,6 +6126,12 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="SetXServer_KeyboardLayoutDesc" xml:space="preserve">
     <value>X 程序使用的键盘布局。自动 = 跟随系统当前的布局;选了具体布局就按它来(VcXsrv 以 -xkblayout 传入)。</value>
   </data>
+  <data name="SetXServer_RestrictForwarded" xml:space="preserve">
+    <value>限制经 SSH 转发来的程序</value>
+  </data>
+  <data name="SetXServer_RestrictForwardedDesc" xml:space="preserve">
+    <value>经 SSH 转发来的程序不能模拟输入(XTEST)、不能监听在 X 窗口里敲的所有按键(原始按键事件)、不能改动输入设备。连接不完全信任的服务器时建议打开;打开后那些服务器上的 xdotool 之类的工具会失效。</value>
+  </data>
   <data name="SetXServer_LayoutAuto" xml:space="preserve">
     <value>自动 - 跟随系统当前布局</value>
   </data>

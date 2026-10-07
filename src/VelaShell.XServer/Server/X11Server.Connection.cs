@@ -193,6 +193,7 @@ public sealed partial class X11Server
                 return;
             }
             client.SameHost = peer.SameHost;
+            client.Forwarded = peer.Authenticated;
             client.PeerUid = peer.Uid;
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
             connection = CancellationTokenSource.CreateLinkedTokenSource(ct, client.Aborted);

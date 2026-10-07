@@ -162,6 +162,7 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
             AuthorizationCookie = cookie,
             SyncClipboard = options.Clipboard,
             SyncPrimary = options.Clipboard && options.CopyOnSelection,
+            RestrictForwardedClients = options.RestrictForwardedClients,
             Log = static line => Trace.WriteLine($"[XServer] {line}"),
         }, host);
         try

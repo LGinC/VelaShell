@@ -80,6 +80,14 @@ public sealed class X11ServerOptions
     public bool ClipboardFollowsFocus { get; init; } = true;
 
     /// <summary>
+    /// 限制经 <see cref="X11Server.ServeAuthenticatedAsync(Stream, string?, CancellationToken)" /> 进来的连接(SSH 转发来的远端程序):
+    /// 看不到 XTEST(伪造的输入与真实键盘无从区分,被攻破的远端机能往别的会话的 xterm 注入命令)、收不到 XI2 的原始按键事件
+    /// (不抢焦点就能记下所有 X 窗口里敲的键)、不能 XIChangeHierarchy(能让物理输入设备失效)。
+    /// 默认关:远端的 xdotool 之类的工具靠 XTEST 工作。
+    /// </summary>
+    public bool RestrictForwardedClients { get; init; }
+
+    /// <summary>
     /// 告诉客户端「窗口管理器支持客户端自绘阴影」(在 <c>_NET_SUPPORTED</c> 里列出 <c>_GTK_FRAME_EXTENTS</c>)。
     /// 打开后 GTK 的自绘标题栏窗口会在四周画半透明阴影,宿主必须能显示带 alpha 的窗口并按
     /// <see cref="XTopLevelSnapshot.ClientFrameExtents" /> 处理;默认关,GTK 于是画无阴影的窗口。

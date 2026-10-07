@@ -241,6 +241,10 @@ public sealed partial class X11Server
                     break;
                 }
             case 43:  // XIChangeHierarchy
+                if (IsRestricted(c))
+                {
+                    throw new XProtocolError(XErrorCode.Access);   // 能让物理输入设备失效(见 RestrictForwardedClients)
+                }
                 XiChangeHierarchy(r);
                 break;
             case 44:  // XISetClientPointer:指针位置只有一份,接受即可(设备须是主设备)
@@ -548,6 +552,9 @@ public sealed partial class X11Server
             : new XProperty(type, format, [.. data, .. existing.Data]) { ChargedTo = c };
         SendXiPropertyEvent(id, property, what: replaced is null ? (byte)1 : (byte)2);
     }
+
+    /// <summary>这个客户端受 <see cref="X11ServerOptions.RestrictForwardedClients" /> 限制(经 SSH 转发进来、且开了限制)。</summary>
+    private bool IsRestricted(XClient client) => _options.RestrictForwardedClients && client.Forwarded;
 
     /// <summary>XI_PropertyEvent(evtype 12):给在根窗口上选了它的客户端。what:0 删除、1 新建、2 修改。</summary>
     private void SendXiPropertyEvent(ushort id, uint property, byte what)
@@ -1003,7 +1010,7 @@ public sealed partial class X11Server
         uint time = Now;
         foreach ((XClient client, (ulong master, ulong slave)) in Root.Xi2Selections)
         {
-            if (client.Closed || ((master | slave) & (1UL << evtype)) == 0)
+            if (client.Closed || ((master | slave) & (1UL << evtype)) == 0 || (key && IsRestricted(client)))
             {
                 continue;
             }
