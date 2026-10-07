@@ -136,4 +136,144 @@ public sealed class RasterizerTests
         new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc).FillRect(3, -32768, 2, 65535);
         Assert.AreEqual(20, buffer.Pixels.Count(p => p == 5), "整列 2 × 10 个像素");
     }
+
+    // ------------------------------------------------------------------ 宽线与弧的 line-style / join-style / cap-style
+
+    private static PixelBuffer Stroke(XGc gc, Action<Rasterizer> draw, int size = Size)
+    {
+        PixelBuffer buffer = new(size, size, 24);
+        draw(new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc));
+        return buffer;
+    }
+
+    [TestMethod]
+    public void 宽线的OnOffDash只画偶数段_DoubleDash的奇数段用背景色()
+    {
+        // lw = 3 的水平线 y = 10:第 9..11 行;虚线 [4, 4] 从 x = 2 量起 —— 偶数段 [2, 6)、[10, 14),奇数段 [6, 10)。
+        XGc onOff = new(1, null, 24) { Foreground = 1, LineWidth = 3, LineStyle = 1, Dashes = [4, 4] };
+        PixelBuffer a = Stroke(onOff, r => r.PolyLine([(2, 10), (42, 10)]));
+        Assert.AreEqual((1u, 0u, 1u), (a.Get(3, 10), a.Get(7, 10), a.Get(11, 9)), "偶数段画、奇数段不画");
+
+        XGc doubleDash = new(1, null, 24) { Foreground = 1, Background = 2, LineWidth = 3, LineStyle = 2, Dashes = [4, 4] };
+        PixelBuffer b = Stroke(doubleDash, r => r.PolyLine([(2, 10), (42, 10)]));
+        Assert.AreEqual((1u, 2u, 1u), (b.Get(3, 10), b.Get(7, 11), b.Get(11, 10)), "奇数段按背景色画");
+    }
+
+    [TestMethod]
+    public void 宽线DoubleDash的像素与Solid完全相同且每个只画一次()
+    {
+        // 协议:DoubleDash 两种段合起来的像素集合与 Solid 相同。GXxor、前景背景都是全 1:画两次的像素会被抵消。
+        Random random = new(42);
+        for (int round = 0; round < 200; round++)
+        {
+            List<(int X, int Y)> points = [.. Enumerable.Range(0, random.Next(2, 6)).Select(_ => (random.Next(-10, Size + 10), random.Next(-10, Size + 10)))];
+            bool closed = random.Next(3) == 0;
+            if (closed)
+            {
+                points.Add(points[0]);
+            }
+            XGc gc = new(1, null, 24)
+            {
+                Foreground = 0xFFFFFF,
+                Background = 0xFFFFFF,
+                Function = 6,
+                LineWidth = (ushort)random.Next(1, 12),
+                JoinStyle = (byte)random.Next(3),
+                CapStyle = (byte)random.Next(4),
+                Dashes = [(byte)random.Next(1, 9), (byte)random.Next(1, 9), (byte)random.Next(1, 9)],
+                DashOffset = (ushort)random.Next(20),
+            };
+            PixelBuffer solid = Stroke(gc, r => r.PolyLine(points, closed));
+            gc.LineStyle = 2;
+            PixelBuffer dashed = Stroke(gc, r => r.PolyLine(points, closed));
+            CollectionAssert.AreEqual(solid.Pixels, dashed.Pixels, $"第 {round} 条:{string.Join(" ", points)} closed={closed} lw={gc.LineWidth}");
+        }
+    }
+
+    [TestMethod]
+    public void 宽线的接头按join_style_Miter是尖角_Bevel切掉_Round是圆()
+    {
+        // lw = 6 的矩形边框 (10,10)–(30,30):外沿在 7。角上的像素 (7,7) 只有 Miter 盖得住;
+        // Bevel 的斜边是 x + y = 17,(8,8) 在外、(9,9) 在内;Round 的圆心 (10,10)、半径 3,(8,8) 在内。
+        (int X, int Y)[] rect = [(10, 10), (30, 10), (30, 30), (10, 30), (10, 10)];
+        PixelBuffer miter = Stroke(new XGc(1, null, 24) { Foreground = 1, LineWidth = 6, JoinStyle = 0 }, r => r.PolyLine(rect, closed: true));
+        PixelBuffer round = Stroke(new XGc(1, null, 24) { Foreground = 1, LineWidth = 6, JoinStyle = 1 }, r => r.PolyLine(rect, closed: true));
+        PixelBuffer bevel = Stroke(new XGc(1, null, 24) { Foreground = 1, LineWidth = 6, JoinStyle = 2 }, r => r.PolyLine(rect, closed: true));
+        Assert.AreEqual((1u, 1u, 1u, 1u), (miter.Get(7, 7), miter.Get(32, 7), miter.Get(7, 32), miter.Get(32, 32)), "四个角都是方的");
+        Assert.AreEqual((0u, 1u), (round.Get(7, 7), round.Get(8, 8)));
+        Assert.AreEqual((0u, 0u, 1u), (bevel.Get(7, 7), bevel.Get(8, 8), bevel.Get(9, 9)));
+        Assert.AreEqual(26 * 26 - (14 * 14), miter.Pixels.Count(p => p == 1), "Miter 的边框正好是两个方块之差");
+    }
+
+    [TestMethod]
+    public void 端点重合的宽线按端帽画_Projecting是方块_Round是圆_Butt什么都不画()
+    {
+        XGc gc = new(1, null, 24) { Foreground = 1, LineWidth = 4, CapStyle = 3 };
+        PixelBuffer projecting = Stroke(gc, r => r.PolyLine([(20, 20), (20, 20)]));
+        Assert.AreEqual(16, projecting.Pixels.Count(p => p == 1), "与坐标轴对齐、边长为线宽的方块");
+        Assert.AreEqual((1u, 1u, 0u), (projecting.Get(18, 18), projecting.Get(21, 21), projecting.Get(22, 20)));
+        gc.CapStyle = 2;
+        Assert.IsGreaterThan(8, Stroke(gc, r => r.PolyLine([(20, 20), (20, 20)])).Pixels.Count(p => p == 1), "直径为线宽的圆");
+        gc.CapStyle = 1;
+        Assert.AreEqual(0, Stroke(gc, r => r.PolyLine([(20, 20), (20, 20)])).Pixels.Count(p => p == 1));
+    }
+
+    [TestMethod]
+    public void 宽弧两端按cap_style加端帽()
+    {
+        // 圆心 (30,30)、半径 20 的弧从 0° 逆时针到 90°:起点 (50,30) 处沿弧往上走,端帽朝下伸。
+        XGc gc = new(1, null, 24) { Foreground = 1, LineWidth = 6, CapStyle = 1 };
+        Assert.AreEqual(0u, Stroke(gc, r => r.Arc(10, 10, 40, 40, 0, 90 * 64)).Get(50, 32), "Butt:端面齐着起点");
+        gc.CapStyle = 3;
+        PixelBuffer projecting = Stroke(gc, r => r.Arc(10, 10, 40, 40, 0, 90 * 64));
+        Assert.AreEqual((1u, 0u), (projecting.Get(50, 32), projecting.Get(50, 33)), "Projecting:往外伸半个线宽");
+        Assert.AreEqual((1u, 0u), (projecting.Get(28, 10), projecting.Get(26, 10)), "终点 (30,10) 处朝左伸");
+        gc.CapStyle = 2;
+        Assert.AreEqual(1u, Stroke(gc, r => r.Arc(10, 10, 40, 40, 0, 90 * 64)).Get(50, 32), "Round:半圆");
+    }
+
+    [TestMethod]
+    public void 弧也按line_style画虚线()
+    {
+        XGc gc = new(1, null, 24) { Foreground = 1 };
+        int solidThin = Stroke(gc, r => r.Arc(5, 5, 50, 50, 0, 360 * 64)).Pixels.Count(p => p == 1);
+        gc.LineStyle = 1;
+        gc.Dashes = [3, 3];
+        int dashedThin = Stroke(gc, r => r.Arc(5, 5, 50, 50, 0, 360 * 64)).Pixels.Count(p => p == 1);
+        Assert.IsTrue(dashedThin > solidThin / 3 && dashedThin < solidThin * 2 / 3, $"细弧:实线 {solidThin}、虚线 {dashedThin}");
+
+        gc.LineStyle = 0;
+        gc.LineWidth = 4;
+        int solidWide = Stroke(gc, r => r.Arc(5, 5, 50, 50, 0, 360 * 64)).Pixels.Count(p => p == 1);
+        gc.LineStyle = 1;
+        gc.Dashes = [6, 6];
+        int dashedWide = Stroke(gc, r => r.Arc(5, 5, 50, 50, 0, 360 * 64)).Pixels.Count(p => p == 1);
+        Assert.IsTrue(dashedWide > solidWide / 3 && dashedWide < solidWide * 2 / 3, $"宽弧:实线 {solidWide}、虚线 {dashedWide}");
+
+        // DoubleDash 的宽弧:两种段合起来就是实线。
+        gc.LineStyle = 2;
+        gc.Background = 2;
+        PixelBuffer doubleDash = Stroke(gc, r => r.Arc(5, 5, 50, 50, 0, 360 * 64));
+        Assert.AreEqual(solidWide, doubleDash.Pixels.Count(p => p != 0));
+        Assert.IsGreaterThan(solidWide / 3, doubleDash.Pixels.Count(p => p == 2), "奇数段用背景色");
+    }
+
+    [TestMethod]
+    public void 宽弧的形状只取决于宽高与线宽_挪一个像素就整体挪一个像素()
+    {
+        // lw = 1 时外框原先按 Math.Round(x − 0.5) 取整(银行家舍入):x = 4 与 x = 5 都取到 4,两条弧画在同一处。
+        foreach (ushort lw in new ushort[] { 1, 3, 4 })
+        {
+            XGc gc = new(1, null, 24) { Foreground = 1, LineWidth = lw };
+            PixelBuffer at4 = Stroke(gc, r => r.Arc(4, 4, 21, 15, 0, 360 * 64));
+            PixelBuffer at5 = Stroke(gc, r => r.Arc(5, 4, 21, 15, 0, 360 * 64));
+            for (int y = 0; y < Size; y++)
+            {
+                for (int x = 0; x < Size - 1; x++)
+                {
+                    Assert.AreEqual(at4.Get(x, y), at5.Get(x + 1, y), $"lw = {lw}:({x},{y})");
+                }
+            }
+        }
+    }
 }
