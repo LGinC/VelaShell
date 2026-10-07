@@ -180,7 +180,7 @@ public sealed partial class X11Server
             case XOpcode.ChangeHosts: break;
             case XOpcode.ListHosts: c.Reply(0, w => w.U16(0).Zero(22)); break;
             case XOpcode.SetAccessControl: break;
-            case XOpcode.SetCloseDownMode: c.CloseDownMode = r.Data; break;
+            case XOpcode.SetCloseDownMode: SetCloseDownMode(c, r); break;
             case XOpcode.KillClient: KillClient(r); break;
             case XOpcode.RotateProperties: RotateProperties(r); break;
             case XOpcode.ForceScreenSaver: ForceScreenSaver(r); break;

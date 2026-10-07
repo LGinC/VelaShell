@@ -550,6 +550,18 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task SetCloseDownMode的取值超出0到2回BadValue()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await c.SendAsync(112, 3);   // SetCloseDownMode(3):没有这个模式
+        XMessage error = await c.NextAsync(m => m.IsError);
+        Assert.AreEqual(2, error.Detail, "BadValue");
+        Assert.AreEqual(3u, error.U32(4), "出错的值");
+        Assert.AreEqual(112, error.Bytes[10], "主操作码");
+    }
+
+    [TestMethod]
     public async Task 保留资源的客户端有上限_超了的照Destroy处理_XRes列得出保留的()
     {
         // 原先不设限:循环「连上 → RetainPermanent → 断开」254 次就占满了编号,之后谁都连不上,也就发不了 KillClient。

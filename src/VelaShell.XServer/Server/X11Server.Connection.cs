@@ -676,6 +676,16 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>SetCloseDownMode(协议「SetCloseDownMode」):0 Destroy、1 RetainPermanent、2 RetainTemporary,别的值是 BadValue。</summary>
+    private static void SetCloseDownMode(XClient c, XRequestReader r)
+    {
+        if (r.Data > 2)
+        {
+            throw new XProtocolError(XErrorCode.Value, r.Data);   // 原先照单全收,3–255 断开时也按 Destroy 处理
+        }
+        c.CloseDownMode = r.Data;
+    }
+
     /// <summary>以 RetainPermanent / RetainTemporary 收尾的客户端的资源:KillClient 指到它们时销毁,编号随之放回。</summary>
     private void DestroyRetainedClient(XClient client)
     {
