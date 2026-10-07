@@ -17,6 +17,10 @@
 //   OpenGL Graphics with the X Window System, Version 1.4 —— §3.3.3「Configuration Management」(FBConfig 属性,Table 3.1)、
 //   §3.3.5「On Screen Rendering」、§3.3.7「Rendering Contexts」(第一次成为当前时视口初始化为可绘对象的尺寸)、
 //   §3.3.10「Double Buffering」、§3.5「Backwards Compatibility」(GLX 1.2 的窗口可以直接当 GLX 可绘对象)。
+//   Khronos GLX_ARB_create_context / GLX_ARB_create_context_profile —— 「GLX Protocol」一节(SetClientInfoARB 33、
+//   CreateContextAttribsARB 34:context、fbconfig、screen、share_list、isdirect、两个保留字段、num_attribs,再跟属性对、
+//   SetClientInfo2ARB 35)与「Errors」一节(版本与特性组合没有定义 → BadMatch;配置给不了请求的版本 → GLXBadFBConfig;
+//   不认识的属性或标志位 → BadValue;profile 掩码不合法或不支持 → GLXBadProfileARB;版本低于 3.2 时 profile 掩码不看)。
 //   枚举值对照 Khronos GLX API Registry(glx.xml)。
 //
 //   间接上下文由 Gl/GlContext 执行;直接上下文(is direct = True,比如 Mesa 在客户端用软件渲染、再经 PutImage 送像素)
@@ -49,6 +53,7 @@ internal sealed class GlxExtension(X11Server server)
     private const byte GlxBadFBConfig = X11Server.GlxErrorBase + 9;
     private const byte GlxBadPbuffer = X11Server.GlxErrorBase + 10;
     private const byte GlxBadWindow = X11Server.GlxErrorBase + 12;
+    private const byte GlxBadProfileArb = X11Server.GlxErrorBase + 13;
 
     // GLX 枚举(glx.xml)
     private const uint GLX_VENDOR = 1, GLX_VERSION = 2, GLX_EXTENSIONS = 3;
@@ -63,7 +68,12 @@ internal sealed class GlxExtension(X11Server server)
         GLX_PRESERVED_CONTENTS = 0x801B, GLX_LARGEST_PBUFFER = 0x801C, GLX_WIDTH = 0x801D, GLX_HEIGHT = 0x801E,
         GLX_EVENT_MASK = 0x801F, GLX_PBUFFER_HEIGHT = 0x8040, GLX_PBUFFER_WIDTH = 0x8041, GLX_SAMPLE_BUFFERS = 100000,
         GLX_SAMPLES = 100001, GLX_WINDOW_BIT = 1, GLX_PIXMAP_BIT = 2, GLX_PBUFFER_BIT = 4, GLX_RGBA_BIT = 1,
-        GLX_PBUFFER_CLOBBER_MASK = 0x08000000;
+        GLX_PBUFFER_CLOBBER_MASK = 0x08000000, GLX_COLOR_INDEX_TYPE = 0x8015;
+
+    // GLX_ARB_create_context / _profile
+    private const uint GLX_CONTEXT_MAJOR_VERSION_ARB = 0x2091, GLX_CONTEXT_MINOR_VERSION_ARB = 0x2092, GLX_CONTEXT_FLAGS_ARB = 0x2094,
+        GLX_CONTEXT_PROFILE_MASK_ARB = 0x9126, GLX_CONTEXT_DEBUG_BIT_ARB = 1, GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB = 2,
+        GLX_CONTEXT_CORE_PROFILE_BIT_ARB = 1, GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB = 2;
 
     private const int MaxPbufferSize = 4096;
 
@@ -271,6 +281,8 @@ internal sealed class GlxExtension(X11Server server)
                     break;
                 }
             case 20:   // ClientInfo:客户端的 GL 版本与扩展,只影响 GetString 的协商 —— 这里的串是固定的
+            case 33:   // SetClientInfoARB:同上,另带客户端支持的 GL 版本表
+            case 35:   // SetClientInfo2ARB:同上,版本表里每项多一个 profile
                 break;
             case 21:   // GetFBConfigs
                 CheckGlxScreen(r.U32());
@@ -369,6 +381,9 @@ internal sealed class GlxExtension(X11Server server)
                     server.RemoveResource(id);
                     break;
                 }
+            case 34:   // CreateContextAttribsARB
+                GlxCreateContextAttribs(c, r);
+                break;
             case >= 101 and <= 159:
                 GlxSingle(c, minor, r);
                 break;
@@ -377,7 +392,8 @@ internal sealed class GlxExtension(X11Server server)
         }
     }
 
-    private const string GlxExtensionsString = "GLX_ARB_get_proc_address GLX_EXT_visual_info GLX_EXT_visual_rating";
+    private const string GlxExtensionsString =
+        "GLX_ARB_create_context GLX_ARB_create_context_profile GLX_ARB_get_proc_address GLX_EXT_visual_info GLX_EXT_visual_rating";
 
     private static void CheckGlxScreen(uint screen)
     {
@@ -403,6 +419,103 @@ internal sealed class GlxExtension(X11Server server)
         GlContext? gl = direct ? null : new GlContext(config.DoubleBuffer, config.Alpha, share?.Gl?.Shared);
         server.AddResource(c, new XGlxContext(id, c, config, direct, gl));
     }
+
+    /// <summary>
+    /// CreateContextAttribsARB(GLX_ARB_create_context / _profile)。直接上下文的 GL 在客户端(drisw 之类按请求的版本与 profile 建),
+    /// 服务端只登记,版本、标志与 profile 不核,别的扩展的属性(鲁棒性、释放行为……)也由客户端的驱动处理。
+    /// 间接上下文由这里的软件 GL 执行,它只有 1.1 的兼容 profile:要 3.2 起的核心 profile 回 GLXBadProfileARB,
+    /// 要比 1.1 高的版本回 GLXBadFBConfig(配置给不了这个版本),不认识的属性回 BadValue。
+    /// </summary>
+    private void GlxCreateContextAttribs(XClient c, XRequestReader r)
+    {
+        uint id = r.U32(), fbconfig = r.U32(), screen = r.U32(), share = r.U32();
+        bool direct = r.Bool();
+        r.Skip(3);   // reserved1、reserved2
+        uint count = r.U32();
+        if (count > (uint)(r.Remaining / 8))
+        {
+            throw new XProtocolError(XErrorCode.Length);
+        }
+        CheckGlxScreen(screen);
+        GlxConfig config = FbConfig(fbconfig);
+        // 缺省:1.0、无标志、核心 profile(版本低于 3.2 时不看)、RGBA。
+        uint major = 1, minor = 0, flags = 0, profile = GLX_CONTEXT_CORE_PROFILE_BIT_ARB, renderType = GLX_RGBA_TYPE;
+        for (uint i = 0; i < count; i++)
+        {
+            uint attribute = r.U32(), value = r.U32();
+            switch (attribute)
+            {
+                case GLX_CONTEXT_MAJOR_VERSION_ARB:
+                    major = value;
+                    break;
+                case GLX_CONTEXT_MINOR_VERSION_ARB:
+                    minor = value;
+                    break;
+                case GLX_CONTEXT_FLAGS_ARB:
+                    flags = value;
+                    break;
+                case GLX_CONTEXT_PROFILE_MASK_ARB:
+                    profile = value;
+                    break;
+                case GLX_RENDER_TYPE:
+                    renderType = value;
+                    break;
+                default:
+                    if (!direct)
+                    {
+                        throw new XProtocolError(XErrorCode.Value, attribute);
+                    }
+                    break;
+            }
+        }
+        if (renderType != GLX_RGBA_TYPE)
+        {
+            // 颜色索引是合法的类型,只是这几个配置都不支持;别的值不是渲染类型。
+            throw renderType == GLX_COLOR_INDEX_TYPE ? new XProtocolError(XErrorCode.Match) : new XProtocolError(XErrorCode.Value, renderType);
+        }
+        if (!direct)
+        {
+            CheckIndirectVersion(fbconfig, major, minor, flags, profile);
+        }
+        CreateGlxContext(c, id, config, share, direct);
+    }
+
+    /// <summary>间接上下文要的版本、标志与 profile 这里的软件 GL(1.1、兼容 profile)给不给得了;给不了按扩展规范的「Errors」抛对应的错误。</summary>
+    private static void CheckIndirectVersion(uint fbconfig, uint major, uint minor, uint flags, uint profile)
+    {
+        if ((flags & ~(GLX_CONTEXT_DEBUG_BIT_ARB | GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB)) != 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, flags);   // 不认识的标志位
+        }
+        bool forwardCompatible = (flags & GLX_CONTEXT_FORWARD_COMPATIBLE_BIT_ARB) != 0;
+        if (!IsDefinedGlVersion(major, minor) || (forwardCompatible && major < 3))
+        {
+            throw new XProtocolError(XErrorCode.Match);   // 版本与特性的组合没有定义(前向兼容只对 3.0 起有定义)
+        }
+        if (major > 3 || (major == 3 && minor >= 2))
+        {
+            // 3.2 起才看 profile 掩码:得正好是核心、兼容之一;核心 profile 这里没有。
+            if (profile is not (GLX_CONTEXT_CORE_PROFILE_BIT_ARB or GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB)
+                || profile == GLX_CONTEXT_CORE_PROFILE_BIT_ARB)
+            {
+                throw GlxError(GlxBadProfileArb, profile);
+            }
+        }
+        if (major > 1 || minor > 1)
+        {
+            throw GlxError(GlxBadFBConfig, fbconfig);   // 版本报的是 1.1(GL_VERSION):更高的版本这个配置给不了
+        }
+    }
+
+    /// <summary>OpenGL 定义过的版本:1.0–1.5、2.0–2.1、3.0–3.3、4.0–4.6。</summary>
+    private static bool IsDefinedGlVersion(uint major, uint minor) => major switch
+    {
+        1 => minor <= 5,
+        2 => minor <= 1,
+        3 => minor <= 3,
+        4 => minor <= 6,
+        _ => false,
+    };
 
     private void CreateGlxPixmap(XClient c, uint glxPixmap, uint pixmap, GlxConfig config)
     {

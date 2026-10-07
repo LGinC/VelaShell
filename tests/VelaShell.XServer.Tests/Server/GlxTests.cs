@@ -780,6 +780,65 @@ public sealed class GlxTests
         Assert.AreEqual(0u, binding.U32(16), "悬空的名字按删掉处理:绑定是 0");
     }
 
+    /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
+    private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
+    {
+        b.U32(context).U32(0x101).U32(0).U32(0).U8(direct ? (byte)1 : (byte)0).U8(0).U16(0).U32((uint)(attributes.Length / 2));
+        foreach (uint value in attributes)
+        {
+            b.U32(value);
+        }
+    };
+
+    [TestMethod]
+    public async Task CreateContextAttribsARB_直接上下文按核心profile登记_间接上下文只给1点1的兼容profile()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        const uint major = 0x2091, minor = 0x2092, profileMask = 0x9126, core = 1, compatibility = 2;
+        const byte badValue = 2, badMatch = 8, glxBadFbConfig = 151 + 9, glxBadProfile = 151 + 13;
+
+        XMessage extensions = await c.RequestAsync(glx, 18, b => b.U32(0));   // QueryExtensionsString
+        string names = Encoding.Latin1.GetString(extensions.Bytes, 32, (int)extensions.U32(12));
+        Assert.Contains("GLX_ARB_create_context ", names);
+        Assert.Contains("GLX_ARB_create_context_profile", names);
+
+        // SetClientInfoARB / SetClientInfo2ARB:收下、不回错(原先 BadRequest)。
+        await c.SendAsync(glx, 33, b => b.U32(1).U32(4).U32(1).U32(0).U32(0).U32(4).U32(5));
+        await c.SendAsync(glx, 35, b => b.U32(1).U32(4).U32(1).U32(0).U32(0).U32(4).U32(5).U32(core));
+
+        // 直接上下文要 3.3 核心 profile:服务端只登记(GL 在客户端)。
+        uint direct = c.NewId();
+        await c.SendAsync(glx, 34, ContextAttribs(direct, direct: true, major, 3, minor, 3, profileMask, core));
+        XMessage isDirect = await c.RequestAsync(glx, 6, b => b.U32(direct));
+        Assert.IsTrue(isDirect.IsReply, "直接上下文登记上了");
+        Assert.AreEqual(1, isDirect.Bytes[8]);
+
+        // 间接上下文:核心 profile 没有、比 1.1 高的版本给不了、不认识的属性不收、没定义的版本不收。
+        XMessage coreProfile = await c.RequestAsync(glx, 34, ContextAttribs(c.NewId(), direct: false, major, 3, minor, 3, profileMask, core));
+        Assert.AreEqual(glxBadProfile, coreProfile.Bytes[1], "GLXBadProfileARB");
+        XMessage compatibility33 = await c.RequestAsync(glx, 34, ContextAttribs(c.NewId(), direct: false, major, 3, minor, 3, profileMask, compatibility));
+        Assert.AreEqual(glxBadFbConfig, compatibility33.Bytes[1], "兼容 profile 也要 3.3:配置给不了");
+        XMessage version21 = await c.RequestAsync(glx, 34, ContextAttribs(c.NewId(), direct: false, major, 2, minor, 1));
+        Assert.AreEqual(glxBadFbConfig, version21.Bytes[1]);
+        XMessage undefined = await c.RequestAsync(glx, 34, ContextAttribs(c.NewId(), direct: false, major, 1, minor, 9));
+        Assert.AreEqual(badMatch, undefined.Bytes[1], "1.9 不是定义过的版本");
+        XMessage unknown = await c.RequestAsync(glx, 34, ContextAttribs(c.NewId(), direct: false, 0x31B3, 1));
+        Assert.AreEqual(badValue, unknown.Bytes[1]);
+
+        // 缺省属性(1.0)的间接上下文照常能用。
+        uint window = await MapWindowAsync(c, host);
+        uint indirect = c.NewId();
+        await c.SendAsync(glx, 34, ContextAttribs(indirect, direct: false, major, 1, minor, 1));
+        XMessage made = await c.RequestAsync(glx, 5, b => b.U32(window).U32(indirect).U32(0));
+        Assert.IsTrue(made.IsReply, "MakeCurrent");
+        uint tag = made.U32(8);
+        await RenderAsync(c, glx, tag, new Commands().Add(126, b => b.U32(0x0404)).Add(130, b => F(b, 1, 0, 0, 1)).Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 3, 3));
+    }
+
     [TestMethod]
     public async Task RenderMode只在之前是反馈或选择模式时回复()
     {
