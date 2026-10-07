@@ -127,6 +127,59 @@ public sealed class CoreDrawingTests
         Assert.AreEqual(8, await ErrorOfAsync(c, seq), "BadMatch");
     }
 
+    private static Task<ushort> CopyAreaAsync(XTestClient c, uint src, uint dst, uint gc, short sx, short sy, short dx, short dy, ushort width, ushort height) =>
+        c.SendAsync(62, 0, b => b.U32(src).U32(dst).U32(gc).I16(sx).I16(sy).I16(dx).I16(dy).U16(width).U16(height));
+
+    private static async Task<uint> PixmapPixelAsync(XTestClient c, uint pixmap, short x, short y) =>
+        (await c.RequestAsync(73, 2, b => b.U32(pixmap).I16(x).I16(y).U16(1).U16(1).U32(0xFFFFFFFF))).U32(32) & 0xFFFFFF;
+
+    [TestMethod]
+    public async Task CopyArea不拷被子窗口挡住与不可见的源_改发GraphicsExposure_IncludeInferiors时连子窗口一起拷()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint window, XTopLevelWindow handle) = await MapWindowAsync(c, host);
+        // 顶层左上 20×10 画红;(5, 0) 一个 5×10、背景蓝的子窗口。
+        await FillRectAsync(c, window, await CreateGcAsync(c, window, (GcForeground, 0xFF0000)), 0, 0, 20, 10);
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(window).I16(5).I16(0).U16(5).U16(10).U16(0).U16(1).U32(0).U32(0x2).U32(0x0000FF));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        uint pixmap = await PixmapAsync(c, window, 24, 20, 10);
+        uint green = await CreateGcAsync(c, pixmap, (GcForeground, 0x00FF00));
+
+        // ClipByChildren(默认):子窗口盖住的那一块拷不到 —— 像素图上保持原样,并报 GraphicsExposure。原先拷到的是子窗口的蓝。
+        await FillRectAsync(c, pixmap, green, 0, 0, 20, 10);
+        await CopyAreaAsync(c, window, pixmap, green, 0, 0, 0, 0, 20, 10);
+        XMessage exposure = await c.NextEventAsync(13);
+        Assert.AreEqual("5,0 5×10", $"{exposure.U16(8)},{exposure.U16(10)} {exposure.U16(12)}×{exposure.U16(14)}");
+        Assert.AreEqual(0xFF0000u, await PixmapPixelAsync(c, pixmap, 2, 2));
+        Assert.AreEqual(0x00FF00u, await PixmapPixelAsync(c, pixmap, 7, 2), "被子窗口挡住的不拷");
+
+        // IncludeInferiors:连子窗口的内容一起拷,都拿得到 —— NoExposure。
+        uint inferiors = await CreateGcAsync(c, window, (0x8000, 1));
+        await CopyAreaAsync(c, window, pixmap, inferiors, 0, 0, 0, 0, 20, 10);
+        Assert.AreEqual(XEventCodeNoExposure, (await c.NextAsync(m => !m.IsError && !m.IsReply && m.EventCode is 13 or 14)).EventCode);
+        Assert.AreEqual(0x0000FFu, await PixmapPixelAsync(c, pixmap, 7, 2));
+
+        // 源窗口没映射:整块都拿不到。
+        uint hidden = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(hidden).U32(window).I16(30).I16(30).U16(8).U16(8).U16(0).U16(1).U32(0).U32(0));
+        await CopyAreaAsync(c, hidden, pixmap, green, 0, 0, 0, 0, 8, 8);
+        XMessage unmapped = await c.NextAsync(m => !m.IsError && !m.IsReply && m.EventCode is 13 or 14);
+        Assert.AreEqual(13, unmapped.EventCode, "GraphicsExposure 而不是 NoExposure");
+
+        // 目标是窗口:源拿不到的那一块先用目标窗口的背景(黑)铺上。
+        await FillRectAsync(c, window, await CreateGcAsync(c, window, (GcForeground, 0xFFFFFF)), 0, 30, 20, 10);
+        uint small = await PixmapAsync(c, window, 24, 10, 10);
+        await CopyAreaAsync(c, small, window, green, 5, 0, 0, 30, 10, 10);   // 源只有第 5–9 列
+        await c.SyncAsync();
+        Assert.AreEqual(0x000000u, Pixel(handle, 7, 32), "拿不到的部分铺上背景");
+        Assert.AreEqual(0xFFFFFFu, Pixel(handle, 12, 32), "请求范围之外不动");
+    }
+
+    private const byte XEventCodeNoExposure = 14;
+
     private static async Task<uint> PixmapAsync(XTestClient c, uint drawable, byte depth, ushort width, ushort height)
     {
         uint pixmap = c.NewId();

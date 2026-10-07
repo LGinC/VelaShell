@@ -577,39 +577,77 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Match);
         }
-        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
-        {
-            SendNoExposure(c, gc, dst, XOpcode.CopyArea);
-            return;
-        }
-        XRect avail = source.Available;
+        (uint[]? pixels, XRect block, Region copyable) = ReadCopySource(src, gc, sx, sy, width, height);
         try
         {
-            // 只贴源里拿得到的那一块;拿不到的部分由 GraphicsExposure 请客户端自己补画。
-            if (!avail.IsEmpty)
+            // 只贴源里拿得到的那几块;拿不到的部分由 GraphicsExposure 请客户端自己补画。
+            if (pixels is not null && !copyable.IsEmpty)
             {
-                Draw(dst, gcId, raster => raster.Blit(source.Pixels, avail.Width, avail.Height,
-                    dx + (avail.X - sx), dy + (avail.Y - sy), preMasked: true));
+                Draw(dst, gcId, raster => BlitCopyable(raster, pixels, block, copyable, dx - sx, dy - sy, preMasked: true));
             }
         }
         finally
         {
-            ArrayPool<uint>.Shared.Return(source.Pixels);
+            if (pixels is not null)
+            {
+                ArrayPool<uint>.Shared.Return(pixels);
+            }
         }
-        SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), avail.Offset(dx - sx, dy - sy), XOpcode.CopyArea);
+        FinishCopy(c, gc, dst, new XRect(dx, dy, width, height), copyable.Translate(dx - sx, dy - sy), XOpcode.CopyArea);
     }
 
     /// <summary>
-    /// CopyArea / CopyPlane 之后:目标矩形里对应源拿不到的部分(<paramref name="copied" /> 之外,只算目标可绘对象范围内的)
-    /// 逐块发 GraphicsExposure 请客户端自己补画;都拿到了发一个 NoExposure(gc 的 graphics-exposures 关着时都不发)。
+    /// CopyArea / CopyPlane 的源:读出 (x, y, w, h) 里拿得到的像素(<c>Block</c> 这一块,行优先),以及其中真正可以拷的区域
+    /// (可绘对象坐标)。窗口只有看得见的部分可拷:被兄弟或祖先挡住的、伸出缓冲的、窗口不可见的都拷不到;gc 的 subwindow-mode 为
+    /// ClipByChildren 时映射着的子窗口也挡着,IncludeInferiors 时连子窗口的内容一起拷(核心协议「CopyArea」与 CreateGC 的 subwindow-mode)。
+    /// 原先直接拷缓冲里的像素 —— 被挡住的地方拷到的是别的窗口。像素数组是租来的,调用方用完要还。
     /// </summary>
-    private void SendCopyExposures(XClient c, XGc gc, uint dst, XRect destination, XRect copied, byte major)
+    private (uint[]? Pixels, XRect Block, Region Copyable) ReadCopySource(uint drawable, XGc gc, int x, int y, int width, int height)
     {
+        if (ReadSource(drawable, x, y, width, height, out _) is not { } source)
+        {
+            return (null, default, new Region());
+        }
+        Region copyable = new(source.Available);
+        if (Lookup<XResource>(drawable) is XWindow { IsRoot: false } window && window.TopLevel is { Buffer: not null })
+        {
+            (int ox, int oy) = window.OffsetInTopLevel();
+            copyable.Intersect(CachedClip(window, includeInferiors: gc.SubwindowMode == 1).Clone().Translate(-ox, -oy));
+        }
+        return (source.Pixels, source.Available, copyable);
+    }
+
+    /// <summary>把 <paramref name="block" /> 这块源像素里 <paramref name="copyable" /> 的部分平移 (<paramref name="dx" />, <paramref name="dy" />) 贴上去。</summary>
+    private static void BlitCopyable(Rasterizer raster, uint[] pixels, XRect block, Region copyable, int dx, int dy, bool preMasked)
+    {
+        foreach (XRect r in copyable.Rects)
+        {
+            int offset = ((r.Y - block.Y) * block.Width) + (r.X - block.X);
+            raster.Blit(pixels.AsSpan(offset), block.Width, r.Width, r.Height, r.X + dx, r.Y + dy, preMasked);
+        }
+    }
+
+    /// <summary>
+    /// CopyArea / CopyPlane 之后:目标矩形里对应源拿不到的部分(<paramref name="copied" /> 之外,只算目标可绘对象范围内的)——
+    /// 目标是背景不为 None 的窗口时先用背景铺上(按 GXcopy、全平面),再逐块发 GraphicsExposure 请客户端自己补画;
+    /// 都拿到了发一个 NoExposure(gc 的 graphics-exposures 关着时都不发)。核心协议「CopyArea」。
+    /// </summary>
+    private void FinishCopy(XClient c, XGc gc, uint dst, XRect destination, Region copied, byte major)
+    {
+        Region missing = new Region(destination).Subtract(copied).Intersect(DrawableRect(dst));
+        if (!missing.IsEmpty && Lookup<XResource>(dst) is XWindow { IsRoot: false } window && DrawTarget(dst, null) is { TopLevel: { } top } target)
+        {
+            Region area = missing.Clone().Translate(target.OriginX, target.OriginY).Intersect(target.Clip);
+            if (!area.IsEmpty)
+            {
+                PaintBackground(window, area);
+                MarkDamage(top, area);
+            }
+        }
         if (!gc.GraphicsExposures)
         {
             return;
         }
-        Region missing = new Region(destination).Subtract(copied).Intersect(DrawableRect(dst));
         if (missing.IsEmpty)
         {
             SendNoExposure(c, gc, dst, major);
@@ -663,34 +701,31 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, plane);
         }
-        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
-        {
-            SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), default, XOpcode.CopyPlane);
-            return;
-        }
-        XRect avail = source.Available;
+        (uint[]? pixels, XRect block, Region copyable) = ReadCopySource(src, gc, sx, sy, width, height);
         try
         {
             // 等于拿源的这一位平面当点画、按 OpaqueStippled 填:位为 1 处是前景、0 处是背景,再按 CopyArea 贴(走光栅操作与平面掩码,
             // GXcopy + 全平面时整行拷)。原先逐像素 PutPixel。
-            int count = avail.Width * avail.Height;
-            uint foreground = gc.Foreground, background = gc.Background;
-            Span<uint> pixels = source.Pixels.AsSpan(0, count);
-            for (int i = 0; i < pixels.Length; i++)
+            if (pixels is not null && !copyable.IsEmpty)
             {
-                pixels[i] = (pixels[i] & plane) != 0 ? foreground : background;
-            }
-            if (!avail.IsEmpty)
-            {
-                Draw(dst, gcId, raster => raster.Blit(source.Pixels, avail.Width, avail.Height, dx + (avail.X - sx), dy + (avail.Y - sy)));
+                uint foreground = gc.Foreground, background = gc.Background;
+                Span<uint> span = pixels.AsSpan(0, block.Width * block.Height);
+                for (int i = 0; i < span.Length; i++)
+                {
+                    span[i] = (span[i] & plane) != 0 ? foreground : background;
+                }
+                Draw(dst, gcId, raster => BlitCopyable(raster, pixels, block, copyable, dx - sx, dy - sy, preMasked: false));
             }
         }
         finally
         {
-            ArrayPool<uint>.Shared.Return(source.Pixels);
+            if (pixels is not null)
+            {
+                ArrayPool<uint>.Shared.Return(pixels);
+            }
         }
         // 与 CopyArea 同样的曝光语义:源拿不到的部分发 GraphicsExposure。
-        SendCopyExposures(c, gc, dst, new XRect(dx, dy, width, height), avail.Offset(dx - sx, dy - sy), XOpcode.CopyPlane);
+        FinishCopy(c, gc, dst, new XRect(dx, dy, width, height), copyable.Translate(dx - sx, dy - sy), XOpcode.CopyPlane);
     }
 
     // ------------------------------------------------------------------ PutImage / GetImage
