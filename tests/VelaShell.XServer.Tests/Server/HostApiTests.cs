@@ -215,6 +215,43 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task Serve一族与注入坐标的参数当场核对()
+    {
+        using RecordingHost host = new();
+        X11Server server = new(host: host);
+        await using (XTestClient c = await XTestClient.ConnectAsync(server))
+        {
+            XTopLevelWindow window = host.Mapped[await MapTopAsync(c, host)];
+            Assert.Throws<ArgumentOutOfRangeException>(() => server.InjectPointerMotion(window, 40_000, 0), "与 MoveTopLevel 一样按 16 位核对");
+            Assert.Throws<ArgumentOutOfRangeException>(() => server.InjectPointerButton(window, 0, -40_000, 1, pressed: true));
+            Assert.Throws<ArgumentNullException>(() => server.ServeAsync(null!, isLocal: true), "当场抛,不放进任务里");
+            Assert.Throws<ArgumentNullException>(() => server.ServeAuthenticatedAsync(null!, "label"));
+        }
+        await server.DisposeAsync();
+        using MemoryStream stream = new();
+        Assert.Throws<ObjectDisposedException>(() => server.ServeAsync(stream, isLocal: true));
+        Assert.Throws<ObjectDisposedException>(() => server.ServeAuthenticatedAsync(stream));
+    }
+
+    [TestMethod]
+    public async Task 窗口伸出根窗口左上时_注入的指针不被当成离开()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(top).U32(c.RootWindow).I16(-40).I16(-30).U16(100).U16(100).U16(0).U16(1).U32(0)
+            .U32(0x800).U32(0x40));   // PointerMotion
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+
+        // 内区 (10, 50) 的根坐标是 (−30, 20):原先负的根坐标当成「指针离开」,移动事件全落到根窗口上。
+        server.InjectPointerMotion(host.Mapped[top], 10, 50);
+        XMessage motion = await c.NextEventAsync(6);
+        Assert.AreEqual(top, motion.U32(12), "MotionNotify 的事件窗口是它");
+    }
+
+    [TestMethod]
     public async Task 快照整份替换_变化按组报告_没变不报()
     {
         using RecordingHost host = new();

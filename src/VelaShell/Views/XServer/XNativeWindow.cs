@@ -840,8 +840,11 @@ public sealed class XNativeWindow : Window
         }
     }
 
+    /// <summary>内区的物理像素坐标,夹到 X 的 16 位范围(服务端的注入方法超出就抛异常;拖动时指针可以远在窗口外)。</summary>
     private (int X, int Y) ToPixels(Point point) =>
-        ((int)Math.Floor(point.X * Scale), (int)Math.Floor(point.Y * Scale));
+        (ClampCoordinate(Math.Floor(point.X * Scale)), ClampCoordinate(Math.Floor(point.Y * Scale)));
+
+    private static int ClampCoordinate(double value) => (int)Math.Clamp(value, short.MinValue, short.MaxValue);
 
     /// <summary>
     /// 画顶层像素的控件:位图与窗口像素一一对应,按 1/缩放 的 DIP 尺寸画,不插值。

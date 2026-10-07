@@ -178,8 +178,13 @@ public sealed partial class X11Server : IAsyncDisposable
     /// 已经由别的环节验过身份的流(比如 SSH 转发已核对过假 cookie)用 <see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
-    public Task ServeAsync(Stream stream, bool isLocal, CancellationToken cancellationToken = default) =>
-        ServeCoreAsync(stream, new Peer(isLocal, SameHost: false, Uid: null, LocalUser: false, Authenticated: false), cancellationToken);
+    /// <exception cref="ArgumentNullException"><paramref name="stream" /> 为 null(当场抛,不是放进返回的任务里)。</exception>
+    /// <exception cref="ObjectDisposedException">服务端已经释放(当场抛)。</exception>
+    public Task ServeAsync(Stream stream, bool isLocal, CancellationToken cancellationToken = default)
+    {
+        CheckServable(stream);
+        return ServeCoreAsync(stream, new Peer(isLocal, SameHost: false, Uid: null, LocalUser: false, Authenticated: false), cancellationToken);
+    }
 
     /// <summary>
     /// 在一条<b>调用方已经验过身份</b>的双工流上服务一个 X 客户端:不再查授权(不看 cookie,也不看是不是本机)。
@@ -189,6 +194,8 @@ public sealed partial class X11Server : IAsyncDisposable
     /// 服务端<b>不释放</b>它:任务结束后由调用方释放。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
+    /// <exception cref="ArgumentNullException"><paramref name="stream" /> 为 null(当场抛)。</exception>
+    /// <exception cref="ObjectDisposedException">服务端已经释放(当场抛)。</exception>
     public Task ServeAuthenticatedAsync(Stream stream, CancellationToken cancellationToken = default) =>
         ServeAuthenticatedAsync(stream, label: null, cancellationToken);
 
@@ -198,8 +205,13 @@ public sealed partial class X11Server : IAsyncDisposable
     /// 连接的来历,进日志与 <see cref="GetClientsAsync" />、<see cref="XTopLevelSnapshot.ClientLabel" /> —— 宿主据此说得出「哪个会话的程序」。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
-    public Task ServeAuthenticatedAsync(Stream stream, string? label, CancellationToken cancellationToken = default) =>
-        ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: true, label), cancellationToken);
+    /// <exception cref="ArgumentNullException"><paramref name="stream" /> 为 null(当场抛)。</exception>
+    /// <exception cref="ObjectDisposedException">服务端已经释放(当场抛)。</exception>
+    public Task ServeAuthenticatedAsync(Stream stream, string? label, CancellationToken cancellationToken = default)
+    {
+        CheckServable(stream);
+        return ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: true, label), cancellationToken);
+    }
 
     /// <summary>
     /// 连着的 X 客户端,连同以 Retain 模式断开、资源还留着的:编号、宿主给的名字、资源数、记在账上的内存、映射着的顶层。
@@ -259,10 +271,16 @@ public sealed partial class X11Server : IAsyncDisposable
 
     // ================================================================== 宿主注入:输入
 
-    /// <summary>指针在顶层窗口里移动(内区坐标,物理像素)。</summary>
+    /// <summary>
+    /// 指针在顶层窗口里移动(内区坐标,物理像素;可以为负或超出窗口 —— 拖动时指针被捕获在窗口外)。
+    /// 坐标与 <see cref="MoveTopLevel" /> 一样按 X 的 16 位范围核对。
+    /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">坐标超出 −32768…32767。</exception>
     public void InjectPointerMotion(XTopLevelWindow window, int x, int y)
     {
         CheckHandle(window);
+        CheckCoordinate(x, nameof(x));
+        CheckCoordinate(y, nameof(y));
         Post(null, () =>
         {
             if (LiveTopLevel(window) is { } top)
@@ -275,11 +293,15 @@ public sealed partial class X11Server : IAsyncDisposable
     /// <summary>
     /// 按钮按下 / 松开(内区坐标)。1 左、2 中、3 右;滚轮向上 4、向下 5、向左 6、向右 7(宿主应当为每格滚动注入一次按下 + 松开);
     /// 8、9 是后退 / 前进侧键。窗口已经不在时,按下照例忽略,松开照样生效(不挪指针)—— 按下之后窗口没了(弹出菜单一点就关),
-    /// 松开要是也丢了,X 这边那个按钮就一直按着、自动抓取也不解除。
+    /// 松开要是也丢了,X 这边那个按钮就一直按着、自动抓取也不解除。X 这边并没按着这个按钮时松开不投递。
+    /// 坐标的范围同 <see cref="InjectPointerMotion" />。
     /// </summary>
+    /// <exception cref="ArgumentOutOfRangeException">坐标超出 −32768…32767,或按钮不在 1–255。</exception>
     public void InjectPointerButton(XTopLevelWindow window, int x, int y, int button, bool pressed)
     {
         CheckHandle(window);
+        CheckCoordinate(x, nameof(x));
+        CheckCoordinate(y, nameof(y));
         ArgumentOutOfRangeException.ThrowIfLessThan(button, 1);
         ArgumentOutOfRangeException.ThrowIfGreaterThan(button, 255);
         Post(null, () =>
@@ -550,6 +572,16 @@ public sealed partial class X11Server : IAsyncDisposable
     }
 
     // ================================================================== 参数校验
+
+    /// <summary>
+    /// ServeAsync 一族的参数在调用时就核对(与别的宿主方法一样当场抛):原先 null 与已释放都放进返回的任务里才报,
+    /// 调用方不 await 就看不到。
+    /// </summary>
+    private void CheckServable(Stream stream)
+    {
+        ArgumentNullException.ThrowIfNull(stream);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+    }
 
     private void CheckHandle(XTopLevelWindow window)
     {
