@@ -425,6 +425,50 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// macOS 上 Command 组合键收不到 KeyUp:Command 松开时把按着它时按下的键一并松开 —— 否则 X 那边以为 C 一直按着。
+    /// 在别的系统上打开这个处理来测(macOS 才默认打开)。
+    /// </summary>
+    [TestMethod]
+    public async Task Command组合键收不到KeyUp时_Command松开把它们一并松开() => await _session.RunOnUiAsync(async () =>
+    {
+        bool before = XNativeWindow.CommandKeyUpMayBeLost;
+        XNativeWindow.CommandKeyUpMayBeLost = true;
+        try
+        {
+            AvaloniaXServerHost host = new();
+            await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+            await host.AttachAsync(server, CancellationToken.None);
+            (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+            Task serve = server.ServeAsync(serverSide, isLocal: true);
+            System.Collections.Concurrent.ConcurrentQueue<byte> events = new();
+            (uint idBase, uint root) = await HandshakeAsync(client, events);
+            uint window = idBase | 1;
+            await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0)
+                .U32(0x800).U32(0x1 | 0x2));
+            await SendAsync(client, 8, 0, w => w.U32(window));
+            XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+            native.Activate();
+            server.FocusTopLevel(native.Handle);
+            byte[] Keys() => [.. events.Where(e => e is 2 or 3)];
+
+            native.KeyPressQwerty(PhysicalKey.MetaLeft, RawInputModifiers.Meta);
+            native.KeyPressQwerty(PhysicalKey.C, RawInputModifiers.Meta);       // Cmd+C:AppKit 不发它的 KeyUp
+            native.KeyReleaseQwerty(PhysicalKey.MetaLeft, RawInputModifiers.None);
+            await WaitForAsync(() => Keys().Length >= 4 ? native : null);
+            CollectionAssert.AreEqual(new byte[] { 2, 2, 3, 3 }, Keys(), "Command 与 C 都松开了");
+
+            native.CloseByHost();
+            host.Detach();
+            client.Dispose();
+            await serve.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            XNativeWindow.CommandKeyUpMayBeLost = before;
+        }
+    });
+
+    /// <summary>
     /// override-redirect 的弹出层只在用户正在用 X 窗口时才系统级置顶:用户在本机窗口里时映射上来的(远端程序画的假凭据框)不盖住本机程序,
     /// 用户回到某个 X 窗口时照常置顶(菜单要在最上面)。
     /// </summary>

@@ -29,6 +29,9 @@ public sealed class XNativeWindow : Window
     private readonly AvaloniaXServerHost _host;
     private readonly XSurface _surface;
     private readonly HashSet<byte> _heldKeys = [];
+
+    /// <summary>按着 Command 时按下的键(见 <see cref="CommandKeyUpMayBeLost" />)。</summary>
+    private readonly HashSet<byte> _pressedWithCommand = [];
     private PointerPressedEventArgs? _lastPress;
 
     /// <summary>
@@ -333,6 +336,7 @@ public sealed class XNativeWindow : Window
             }
         }
         _heldKeys.Clear();
+        _pressedWithCommand.Clear();
         ReleaseHeldButtons();
         _host.OnWindowDeactivated(this);
     }
@@ -570,9 +574,26 @@ public sealed class XNativeWindow : Window
         // 已经按着又来一次按下:系统的自动重复(Avalonia 的 X11 后端开了 XKB 的 detectable autorepeat,中间没有 KeyUp)。
         // 告诉服务端这是重复,由它按 X 的语义决定发不发、怎么发(xset r off、修饰键不重复、DetectableAutoRepeat)。
         bool repeat = !_heldKeys.Add(keycode);
+        if (CommandKeyUpMayBeLost && (e.KeyModifiers & KeyModifiers.Meta) != 0 && keycode is not (XKeycodes.SuperLeft or XKeycodes.SuperRight))
+        {
+            if (repeat && _pressedWithCommand.Contains(keycode))
+            {
+                Server?.InjectKey(keycode, pressed: false);   // 上一次的 KeyUp 没来:先松开,这次当新的按下
+                repeat = false;
+            }
+            _pressedWithCommand.Add(keycode);
+        }
         Server?.InjectKey(keycode, pressed: true, repeat);
         e.Handled = true;
     }
+
+    /// <summary>
+    /// macOS:AppKit 不给带 Command 的组合键发 KeyUp(❓ 未在真机上确认;Avalonia 若已补上,下面的处理只是多余,不出错)。
+    /// X 那边会以为那个键一直按着,由它激活的被动键抓取也不解除。为真时:Command 松开时把按着 Command 时按下、还没松开的键一并松开;
+    /// 按着 Command 再按一次同一个键当成新的按下(先补一个松开)而不是自动重复。内部可写,测试在别的系统上打开它。
+    /// </summary>
+    internal static bool CommandKeyUpMayBeLost { get; set; } = OperatingSystem.IsMacOS();
+
 
     /// <summary>
     /// Windows 上有 AltGr 的布局,按 AltGr 时系统先补一个假的左 Ctrl 按下(按住时连同自动重复一起补)。
@@ -605,12 +626,28 @@ public sealed class XNativeWindow : Window
     {
         base.OnKeyUp(e);
         byte keycode = XInputMap.Keycode(e.PhysicalKey);
-        if (keycode == 0 || !_heldKeys.Remove(keycode))
+        if (keycode == 0)
         {
             return;
         }
-        Server?.InjectKey(keycode, pressed: false);
-        e.Handled = true;
+        _pressedWithCommand.Remove(keycode);
+        if (_heldKeys.Remove(keycode))
+        {
+            Server?.InjectKey(keycode, pressed: false);
+            e.Handled = true;
+        }
+        if (keycode is XKeycodes.SuperLeft or XKeycodes.SuperRight && _pressedWithCommand.Count != 0)
+        {
+            // Command 松开了:按着它时按下的键的 KeyUp 不会再来,在 X 那边替它们松开。
+            foreach (byte key in _pressedWithCommand)
+            {
+                if (_heldKeys.Remove(key))
+                {
+                    Server?.InjectKey(key, pressed: false);
+                }
+            }
+            _pressedWithCommand.Clear();
+        }
     }
 
     private (int X, int Y) ToPixels(Point point) =>
