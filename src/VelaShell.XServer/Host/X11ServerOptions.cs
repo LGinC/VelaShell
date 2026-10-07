@@ -104,6 +104,9 @@ public sealed class X11ServerOptions
     /// 告诉客户端「窗口管理器支持客户端自绘阴影」(在 <c>_NET_SUPPORTED</c> 里列出 <c>_GTK_FRAME_EXTENTS</c>)。
     /// 打开后 GTK 的自绘标题栏窗口会在四周画半透明阴影,宿主必须能显示带 alpha 的窗口并按
     /// <see cref="XTopLevelSnapshot.ClientFrameExtents" /> 处理;默认关,GTK 于是画无阴影的窗口。
+    /// 关着时边缘缩放照样可用:GTK 在窗口自己的内沿留一圈约 4 像素(乘 GTK 的缩放倍数)的缩放区,按下就发
+    /// <c>_NET_WM_MOVERESIZE</c>(上、下、左、右与四个角),宿主经 <see cref="XMoveResizeRequest" /> 开始原生的缩放
+    /// (gtk3-widget-factory 实测)。
     /// </summary>
     public bool ClientSideShadows { get; init; }
 
