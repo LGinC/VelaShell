@@ -55,7 +55,7 @@ public sealed class ProtocolTests
     [TestMethod]
     public async Task 授权规则_按对端的来路逐条判断()
     {
-        byte[] cookie = [9, 9, 9, 9];
+        byte[] cookie = [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9];
         await using X11Server withCookie = new(new X11ServerOptions { AuthorizationCookie = cookie });
         await using X11Server without = new();
         const string mit = "MIT-MAGIC-COOKIE-1";
@@ -65,7 +65,7 @@ public sealed class ProtocolTests
         X11Server.Peer otherUser = new(IsLocal: true, SameHost: true, Uid: 4242, LocalUser: false, Authenticated: false);
 
         Assert.IsNull(withCookie.Authorize(mit, cookie, tcpRemote), "对的 cookie");
-        Assert.IsNotNull(withCookie.Authorize(mit, [9, 9, 9, 8], tcpLocal), "错的 cookie");
+        Assert.IsNotNull(withCookie.Authorize(mit, [9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 9, 8], tcpLocal), "错的 cookie");
         Assert.IsNotNull(withCookie.Authorize("", [], tcpLocal), "配了 cookie:环回 TCP 不带就拒");
         Assert.IsNull(withCookie.Authorize("", [], ownerSocket), "只有属主能连的套接字文件:同一个用户");
         Assert.IsNull(withCookie.Authorize(mit, cookie, otherUser), "别的用户带了对的 cookie 也行");
@@ -74,6 +74,23 @@ public sealed class ProtocolTests
         Assert.IsNull(without.Authorize("", [], tcpLocal), "没配 cookie:本机放行");
         Assert.IsNotNull(without.Authorize("", [], tcpRemote), "没配 cookie:外面的拒");
         Assert.IsNotNull(without.Authorize("", [], otherUser), "抽象命名空间里连进来的别的用户:没配 cookie 也拒");
+    }
+
+    [TestMethod]
+    public async Task cookie太短构造时就拒绝_构造之后改调用方的数组不影响授权()
+    {
+        // 空数组曾让任何带空数据的 MIT-MAGIC-COOKIE-1 都通过(FixedTimeEquals([], []) 为真),比不配还宽,远端也进得来。
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = [] }));
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = new byte[15] }));
+        Assert.ThrowsExactly<ArgumentException>(() => new X11Server(new X11ServerOptions { AuthorizationCookie = new byte[257] }));
+
+        byte[] cookie = [.. Enumerable.Range(1, 16).Select(i => (byte)i)];
+        byte[] original = [.. cookie];
+        await using X11Server server = new(new X11ServerOptions { AuthorizationCookie = cookie });
+        Array.Clear(cookie);   // 调用方事后改了自己的数组
+        X11Server.Peer remote = new(IsLocal: false, SameHost: false, Uid: null, LocalUser: false, Authenticated: false);
+        Assert.IsNotNull(server.Authorize("MIT-MAGIC-COOKIE-1", new byte[16], remote), "全零不是配置时的 cookie");
+        Assert.IsNull(server.Authorize("MIT-MAGIC-COOKIE-1", original, remote), "授权按构造时的那份");
     }
 
     [TestMethod]

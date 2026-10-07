@@ -86,7 +86,7 @@ public sealed partial class UnixSocketTests
             return;
         }
         string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
-        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path, AuthorizationCookie = [1, 2, 3, 4] });
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path, AuthorizationCookie = new byte[16] });
         await server.StartAsync();
         Assert.AreEqual(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path), "0600:别的用户连不进来");
 

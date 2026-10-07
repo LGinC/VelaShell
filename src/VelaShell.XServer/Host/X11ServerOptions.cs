@@ -58,8 +58,16 @@ public sealed class X11ServerOptions
     /// 与没法确认是同一个用户的 Unix 套接字连接带上它;null = 不要求 cookie、只接受来自本机的连接
     /// (与 X.Org 的主机访问控制行为一致)。不论配没配:Unix 套接字文件只有属主能连,Linux 抽象命名空间里的连接按 uid 只放行同一个用户;
     /// 宿主经 <see cref="X11Server.ServeAuthenticatedAsync(Stream, CancellationToken)" /> 喂进来的流不查授权。
+    /// 长度 <see cref="MinAuthorizationCookieLength" /> – <see cref="MaxAuthorizationCookieLength" /> 字节(空数组曾让任何带空数据的
+    /// MIT-MAGIC-COOKIE-1 都通过,比不配还宽);构造 <see cref="X11Server" /> 时拷一份,之后再改这个数组不影响授权。
     /// </summary>
     public byte[]? AuthorizationCookie { get; init; }
+
+    /// <summary><see cref="AuthorizationCookie" /> 的最短长度(xauth 生成的 MIT-MAGIC-COOKIE-1 就是 16 字节)。</summary>
+    public const int MinAuthorizationCookieLength = 16;
+
+    /// <summary><see cref="AuthorizationCookie" /> 的最长长度(连接建立报文里授权数据的上限,更长的客户端根本发不进来)。</summary>
+    public const int MaxAuthorizationCookieLength = 256;
 
     /// <summary>厂商字符串(连接建立回复里的 vendor)。</summary>
     public string Vendor { get; init; } = "VelaShell";
@@ -130,6 +138,8 @@ public sealed class X11ServerOptions
         Require(!string.IsNullOrEmpty(KeyboardLayout), $"{nameof(KeyboardLayout)} 不能为空。");
         Require(Vendor is not null && WindowManagerName is not null, $"{nameof(Vendor)} / {nameof(WindowManagerName)} 不能为 null。");
         Require(MaxClientMemory >= 1 && MaxTotalMemory >= 1, $"{nameof(MaxClientMemory)} / {nameof(MaxTotalMemory)} 必须 ≥ 1。");
+        Require(AuthorizationCookie is null or { Length: >= MinAuthorizationCookieLength and <= MaxAuthorizationCookieLength },
+            $"{nameof(AuthorizationCookie)} 的长度必须在 {MinAuthorizationCookieLength}–{MaxAuthorizationCookieLength} 字节之间。");
 
         static void Require(bool condition, string message)
         {

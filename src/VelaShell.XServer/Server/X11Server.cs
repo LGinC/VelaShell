@@ -54,6 +54,11 @@ public sealed partial class X11Server : IAsyncDisposable
 
     private readonly X11ServerOptions _options;
 
+    /// <summary>
+    /// 构造时拷下来的 <see cref="X11ServerOptions.AuthorizationCookie" />:选项只持有调用方数组的引用,原先构造之后调用方改了那个数组,授权跟着变。
+    /// </summary>
+    private readonly byte[]? _cookie;
+
     /// <summary>对宿主的回调都经它排队,执行线程放锁之后再调(见 RunLoopAsync)。</summary>
     private readonly DeferredHost _host;
 
@@ -83,6 +88,7 @@ public sealed partial class X11Server : IAsyncDisposable
     {
         _options = options ?? new X11ServerOptions();
         _options.Validate();
+        _cookie = _options.AuthorizationCookie?.ToArray();
         _host = new DeferredHost(host ?? NullHost.Instance, Log);
         Root = CreateRootWindow();
         _resources[Root.Id] = Root;

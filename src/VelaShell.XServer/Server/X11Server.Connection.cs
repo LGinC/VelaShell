@@ -312,7 +312,7 @@ public sealed partial class X11Server
             return null;
         }
         // ⚠️ 常数时间比较:逐字节短路会泄漏「前几个字节对了几个」。
-        if (_options.AuthorizationCookie is { } cookie && name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie))
+        if (_cookie is { } cookie && name == "MIT-MAGIC-COOKIE-1" && CryptographicOperations.FixedTimeEquals(data, cookie))
         {
             return null;
         }
@@ -324,7 +324,7 @@ public sealed partial class X11Server
         {
             return "Authorization required: the connecting user does not own this display";
         }
-        if (_options.AuthorizationCookie is not null)
+        if (_cookie is not null)
         {
             return "Authorization required, but no authorization protocol specified";
         }
