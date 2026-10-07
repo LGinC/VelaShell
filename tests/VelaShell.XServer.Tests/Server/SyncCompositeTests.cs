@@ -404,6 +404,56 @@ public sealed class SyncCompositeTests
         Assert.AreEqual(8, (await c.NextAsync(m => m.IsError && m.Sequence == bad)).Detail);
     }
 
+    /// <summary>Await 的一个 WAITCONDITION:counter、value-type Absolute、wait-value、test-type、event-threshold。</summary>
+    private static XTestClient.Body Condition(XTestClient.Body b, uint counter, int waitValue, uint testType, int threshold) =>
+        b.U32(counter).U32(0).I32(waitValue < 0 ? -1 : 0).I32(waitValue).U32(testType).I32(threshold < 0 ? -1 : 0).I32(threshold);
+
+    [TestMethod]
+    public async Task Await按event_threshold决定发不发CounterNotify_一开始就成立也查()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint a = c.NewId(), b2 = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(a).I32(0).U32(7));
+        await c.SendAsync(sync, 2, b => b.U32(b2).I32(0).U32(0));
+
+        // a ≥ 5 已经成立、差值 2:阈值 3 时不发,阈值 0 时发 —— 一开始就成立也要查(原先这时什么都不发)。
+        await c.SendAsync(sync, 7, b => Condition(b, a, 5, 2, 3));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(syncEvent, timeoutMs: 150), "差值 2 < 阈值 3");
+
+        // 两个条件:a ≥ 5(阈值 0)成立;b ≥ 100 不成立,但差值 −100 不小于阈值 −1000,照样发。两条连着发,count 1、0。
+        await c.SendAsync(sync, 7, b => Condition(Condition(b, a, 5, 2, 0), b2, 100, 2, -1000));
+        XMessage first = await c.NextEventAsync(syncEvent);
+        XMessage second = await c.NextEventAsync(syncEvent);
+        Assert.AreEqual(a, first.U32(4));
+        Assert.AreEqual(1, first.U16(28), "count:后面还有一条");
+        Assert.AreEqual(b2, second.U32(4));
+        Assert.AreEqual(0, second.U16(28));
+    }
+
+    [TestMethod]
+    public async Task AlarmNotify报的是更新之后的状态_计数器销毁时报Inactive()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint counter = c.NewId(), once = c.NewId(), alarm = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(0));
+        // delta = 0 的 PositiveComparison:触发之后就停用 —— 事件里应当已经是 Inactive(1)。
+        await c.SendAsync(sync, 9, b => b.U32(once).U32(1 | 4 | 8 | 16).U32(counter).I32(0).U32(5).U32(2).I32(0).U32(0));
+        await c.SendAsync(sync, 3, b => b.U32(counter).I32(0).U32(5));
+        XMessage fired = await c.NextAsync(m => !m.IsError && !m.IsReply && m.EventCode == syncEvent + 1 && m.U32(4) == once);
+        Assert.AreEqual(1, fired.Bytes[28], "state = Inactive");
+
+        // 计数器被销毁:挂着它的报警器进入 Inactive,并报一条 AlarmNotify。
+        await c.SendAsync(sync, 9, b => b.U32(alarm).U32(1 | 4).U32(counter).I32(0).U32(1000));
+        await c.SendAsync(sync, 6, b => b.U32(counter));
+        XMessage gone = await c.NextAsync(m => !m.IsError && !m.IsReply && m.EventCode == syncEvent + 1 && m.U32(4) == alarm);
+        Assert.AreEqual(1, gone.Bytes[28], "state = Inactive");
+    }
+
     [TestMethod]
     public async Task SYNC的IDLETIME报警器到点触发()
     {
