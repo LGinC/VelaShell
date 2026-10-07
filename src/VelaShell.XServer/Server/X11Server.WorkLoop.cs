@@ -370,6 +370,43 @@ public sealed partial class X11Server
     /// <summary>每项工作的工作量预算(<see cref="WorkBudget" />);测试可以调小。</summary>
     internal long RequestWorkBudget { get; set; } = WorkBudget.DefaultUnits;
 
+    /// <summary>
+    /// GrabServer(协议「GrabServer」):之后别的客户端的请求暂存,直到 UngrabServer、持有者断开,或者宿主
+    /// <see cref="BreakGrabs" /> / <see cref="DisconnectClient(int)" />。持有者自己再抓一次是空操作。
+    /// 抓着超过 <see cref="ServerGrabWarningDelay" /> 还有别人的请求在等,就记一行点名持有者:持有者挂住时(远端进程被
+    /// SIGSTOP、SSH 断网而连接没断)所有会话的 X 程序都冻着,原先日志里一点痕迹也没有,用户与宿主都不知道该断开谁。
+    /// </summary>
+    private void GrabServer(XClient c)
+    {
+        if (ReferenceEquals(_serverGrabber, c))
+        {
+            return;
+        }
+        _serverGrabber = c;
+        int epoch = ++_serverGrabEpoch;
+        _ = DelayThenPostAsync((uint)ServerGrabWarningDelay.TotalMilliseconds, () => WarnLongServerGrab(epoch, 1), _lifetime.Token);
+    }
+
+    /// <summary>GrabServer 抓着这么久、还有别人的请求在等时记一行(之后每隔 6 倍这么久再记);测试可以调小。</summary>
+    internal TimeSpan ServerGrabWarningDelay { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>每次 GrabServer 加一:到点的提醒据此认出是不是还是同一次抓取。</summary>
+    private int _serverGrabEpoch;
+
+    private void WarnLongServerGrab(int epoch, int round)
+    {
+        if (_serverGrabber is not { } holder || epoch != _serverGrabEpoch)
+        {
+            return;   // 早就放开了(或者已经是另一次抓取)
+        }
+        if (_deferred.Count != 0)
+        {
+            Log($"{holder} has held the server grab for {(int)(ServerGrabWarningDelay.TotalSeconds * ((6 * (round - 1)) + 1))} s; "
+                + $"{_deferred.Count} requests of other clients are waiting (BreakGrabs or disconnecting {holder} releases them)");
+        }
+        _ = DelayThenPostAsync((uint)(ServerGrabWarningDelay.TotalMilliseconds * 6), () => WarnLongServerGrab(epoch, round + 1), _lifetime.Token);
+    }
+
     /// <summary>GrabServer 结束(或持有者断开):把暂存的请求按原顺序重新排进去。</summary>
     private void ReleaseServerGrab()
     {

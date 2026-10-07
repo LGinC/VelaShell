@@ -692,6 +692,29 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task GrabServer的持有者挂住时日志点名它_宿主断开它之后别人的请求照常执行()
+    {
+        // 持有者挂住(远端进程被 SIGSTOP、SSH 断网而连接没断)时所有会话的 X 程序都冻着:原先日志里一点痕迹也没有。
+        System.Collections.Concurrent.ConcurrentQueue<string> lines = new();
+        await using X11Server server = new(new X11ServerOptions { Log = lines.Enqueue }) { ServerGrabWarningDelay = TimeSpan.FromMilliseconds(100) };
+        await using XTestClient grabber = await XTestClient.ConnectAsync(server, label: "user@stuck:22");
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        await grabber.SendAsync(36, 0);   // GrabServer,之后什么也不做
+        await grabber.SyncAsync();
+        ushort waiting = await other.SendAsync(43, 0);   // 被暂存
+        for (int i = 0; i < 50 && !lines.Any(l => l.Contains("server grab", StringComparison.Ordinal)); i++)
+        {
+            await Task.Delay(20);
+        }
+        Assert.Contains(l => l.Contains("server grab", StringComparison.Ordinal) && l.Contains("user@stuck:22", StringComparison.Ordinal), lines,
+            "点名抓着服务端的客户端");
+
+        // 逃生:宿主按编号断开它(经 SSH 来的连接也一样),别人暂存的请求放回来执行。
+        server.DisconnectClient((int)(grabber.ResourceBase >> 21));
+        Assert.IsTrue((await other.NextAsync(m => m.IsReply && m.Sequence == waiting)).IsReply);
+    }
+
+    [TestMethod]
     public async Task 抓着服务端的客户端断开_抓取随之解除()
     {
         await using X11Server server = new();
