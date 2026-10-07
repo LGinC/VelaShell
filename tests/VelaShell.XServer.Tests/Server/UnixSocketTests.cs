@@ -285,6 +285,44 @@ public sealed partial class UnixSocketTests
     [LibraryImport("libc", EntryPoint = "setrlimit")]
     private static partial int SetRLimit(int resource, in RLimit limit);
 
+    [TestMethod]
+    public async Task 持有显示号锁文件_别的服务端持着时这个号不能用_残留的锁清掉重建()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            Assert.Inconclusive("/tmp/.X{N}-lock 是类 Unix 上的约定");
+            return;
+        }
+        // Xvfb、xvfb-run -a 挑显示号时只看 /tmp/.X{N}-lock:原先不建,它们会挑中我们的号;我们也不看,会挑中它们的号。
+        int display = FreeDisplayNumber();
+        string lockPath = $"/tmp/.X{display}-lock";
+        try
+        {
+            await using (X11Server first = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = false }))
+            {
+                await first.StartAsync();
+                Assert.AreEqual($"{Environment.ProcessId,10}\n", File.ReadAllText(lockPath), "内容是 PID,十位右对齐、换行结尾");
+
+                await using X11Server second = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = false });
+                SocketException taken = await Assert.ThrowsExactlyAsync<SocketException>(() => second.StartAsync());
+                Assert.AreEqual(SocketError.AddressAlreadyInUse, taken.SocketErrorCode, "锁在活着的进程手里:这个号不能用");
+            }
+            Assert.IsFalse(File.Exists(lockPath), "收工时删掉");
+
+            // 持有者已经不在了:残留,删掉重建。
+            using System.Diagnostics.Process gone = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("true"))!;
+            await gone.WaitForExitAsync();
+            File.WriteAllText(lockPath, $"{gone.Id,10}\n");
+            await using X11Server third = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = false });
+            await third.StartAsync();
+            Assert.AreEqual($"{Environment.ProcessId,10}\n", File.ReadAllText(lockPath));
+        }
+        finally
+        {
+            File.Delete(lockPath);
+        }
+    }
+
     /// <summary>6000 + N 此刻没人占着的显示号(TCP 监听要用)。</summary>
     private static int FreeDisplayNumber()
     {

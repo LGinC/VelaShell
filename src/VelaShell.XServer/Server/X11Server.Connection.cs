@@ -83,6 +83,7 @@ public sealed partial class X11Server
         _listener = null;
         Port = 0;
         StopUnixListeners();
+        ReleaseDisplayLock();
     }
 
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)

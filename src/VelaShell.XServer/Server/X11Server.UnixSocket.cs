@@ -395,4 +395,110 @@ public sealed partial class X11Server
         }
         _unixListeners.Clear();
     }
+
+    // ------------------------------------------------------------------ 显示号锁(/tmp/.X{N}-lock)
+
+    /// <summary>持着的显示号锁文件;没持着为 null。</summary>
+    private string? _displayLock;
+
+    /// <summary>
+    /// Xserver(1) 的约定:显示号 N 的服务端持有 <c>/tmp/.X{N}-lock</c>,内容是自己的 PID(十位右对齐、换行结尾)。
+    /// Xvfb、<c>xvfb-run -a</c> 挑显示号时只看它 —— 原先不建,它们会挑中我们正在用的号;我们也不看它,会挑中 Xvfb 的号。
+    /// 只在类 Unix 上、监听着与显示号挂钩的传输(TCP 6000 + N,或默认的 <c>/tmp/.X11-unix/XN</c>)时持有。
+    /// 文件在、持有者还活着(或者内容认不出)时抛 <see cref="SocketException" />(<see cref="SocketError.AddressAlreadyInUse" />);
+    /// 持有者已经不在了是上次没收拾干净的残留,删掉重建;<c>/tmp</c> 写不了只记日志,照常开。
+    /// </summary>
+    private void ClaimDisplayLock()
+    {
+        if (OperatingSystem.IsWindows() || !(_options.ListenTcp || _options.UnixSocketPath is null))
+        {
+            return;
+        }
+        string path = $"/tmp/.X{_options.DisplayNumber}-lock";
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                FileStreamOptions create = new()
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.Write,
+                    UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead,   // 0444
+                };
+                using (FileStream stream = new(path, create))
+                {
+                    stream.Write(System.Text.Encoding.ASCII.GetBytes($"{Environment.ProcessId,10}\n"));
+                }
+                _displayLock = path;
+                return;
+            }
+            catch (IOException) when (File.Exists(path))
+            {
+                if (DisplayLockHolderAlive(path))
+                {
+                    throw DisplayTaken(path, "another X server holds it");
+                }
+                try
+                {
+                    File.Delete(path);   // 持有者已经不在了
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw DisplayTaken(path, $"a stale lock cannot be removed: {ex.Message}");
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log($"display lock {path} unavailable: {ex.Message}");
+                return;
+            }
+        }
+        throw DisplayTaken(path, "it keeps reappearing");
+    }
+
+    /// <summary>锁文件的持有者还在不在;内容认不出、读不了也算在(不是我们的东西不碰)。</summary>
+    private static bool DisplayLockHolderAlive(string path)
+    {
+        try
+        {
+            if (!int.TryParse(File.ReadAllText(path).Trim(), System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out int pid) || pid <= 0)
+            {
+                return true;
+            }
+            using System.Diagnostics.Process holder = System.Diagnostics.Process.GetProcessById(pid);
+            return !holder.HasExited;
+        }
+        catch (ArgumentException)
+        {
+            return false;   // 没有这个进程
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            return true;
+        }
+    }
+
+    private SocketException DisplayTaken(string lockPath, string why)
+    {
+        Log($"display :{_options.DisplayNumber} is unusable: {lockPath} {why}");
+        return new SocketException((int)SocketError.AddressAlreadyInUse);
+    }
+
+    /// <summary>放掉显示号锁(收工,或启动半途失败)。</summary>
+    private void ReleaseDisplayLock()
+    {
+        if (Interlocked.Exchange(ref _displayLock, null) is not { } path)
+        {
+            return;
+        }
+        try
+        {
+            File.Delete(path);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 删不掉就留着:内容是我们的 PID,进程退出之后别人会当残留清掉。
+        }
+    }
 }

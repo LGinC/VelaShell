@@ -135,6 +135,9 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
     }
 
+    /// <summary>自动选号时,启动失败(号被占)最多换这么多次号。</summary>
+    private const int MaxStartAttempts = 4;
+
     private async Task<XServerStartResult> StartCoreAsync(AppXServerOptions options, CancellationToken cancellationToken)
     {
         if (_host() is not { } host)
@@ -161,35 +164,51 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
 
         SetState(XServerState.Starting, display);
-        byte[] cookie = RandomNumberGenerator.GetBytes(16);
-        X11Server server = new(new X11ServerOptions
+        X11Server server;
+        byte[] cookie;
+        for (int attempt = 1; ; attempt++)
         {
-            DisplayNumber = display,
-            AuthorizationCookie = cookie,
-            SyncClipboard = options.Clipboard,
-            SyncPrimary = options.Clipboard && options.CopyOnSelection,
-            RestrictForwardedClients = options.RestrictForwardedClients,
-            Log = static line => Trace.WriteLine($"[XServer] {line}"),
-        }, host);
-        try
-        {
-            // 先让宿主把显示器布局、DPI、键盘布局告诉服务端,再开门 —— 第一个客户端拿到的就是对的屏幕与键位表。
-            host.UseKeyboardLayout(options.KeyboardLayout);
-            await host.AttachAsync(server, cancellationToken).ConfigureAwait(false);
-            await server.StartAsync(cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is SocketException or OperationCanceledException or InvalidOperationException)
-        {
-            host.Detach();
-            await server.DisposeAsync().ConfigureAwait(false);
-            SetStopped();
-            if (ex is OperationCanceledException)
+            cookie = RandomNumberGenerator.GetBytes(16);
+            server = new(new X11ServerOptions
             {
-                throw;
+                DisplayNumber = display,
+                AuthorizationCookie = cookie,
+                SyncClipboard = options.Clipboard,
+                SyncPrimary = options.Clipboard && options.CopyOnSelection,
+                RestrictForwardedClients = options.RestrictForwardedClients,
+                Log = static line => Trace.WriteLine($"[XServer] {line}"),
+            }, host);
+            try
+            {
+                // 先让宿主把显示器布局、DPI、键盘布局告诉服务端,再开门 —— 第一个客户端拿到的就是对的屏幕与键位表。
+                host.UseKeyboardLayout(options.KeyboardLayout);
+                await host.AttachAsync(server, cancellationToken).ConfigureAwait(false);
+                await server.StartAsync(cancellationToken).ConfigureAwait(false);
+                break;
             }
-            return XServerStartResult.Fail(ex is SocketException
-                ? Strings.Format("XServer_ErrDisplayInUse", display)
-                : Strings.Format("XServer_ErrLaunch", ex.Message));
+            catch (Exception ex) when (ex is SocketException or OperationCanceledException or InvalidOperationException)
+            {
+                host.Detach();
+                await server.DisposeAsync().ConfigureAwait(false);
+                // 自动选号时,探测说空着的号在绑定时被占了(探测与绑定之间别的程序抢先了;或者别的服务端持着 /tmp/.X{N}-lock、
+                // 抽象名被占 —— 探测看不出来,服务端开的时候才知道):换下一个空闲的号再试。原先直接报「显示号被占用」。
+                if (ex is SocketException && options.DisplayNumber < 0 && attempt < MaxStartAttempts
+                    && await VcXsrvLocalXServer.SelectFreeDisplayAsync(_isDisplayInUse, cancellationToken, display + 1).ConfigureAwait(false) is { } next)
+                {
+                    Trace.WriteLine($"[XServer] display :{display} was taken while starting; trying :{next}");
+                    display = next;
+                    SetState(XServerState.Starting, display);
+                    continue;
+                }
+                SetStopped();
+                if (ex is OperationCanceledException)
+                {
+                    throw;
+                }
+                return XServerStartResult.Fail(ex is SocketException
+                    ? Strings.Format("XServer_ErrDisplayInUse", display)
+                    : Strings.Format("XServer_ErrLaunch", ex.Message));
+            }
         }
 
         PublishCookie(display, cookie);

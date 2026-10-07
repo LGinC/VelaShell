@@ -196,6 +196,29 @@ public class BuiltInLocalXServerTests
     }
 
     /// <summary>
+    /// 自动选号时,探测说空着的号在开起来那一刻被占了(探测与绑定之间别的程序抢先了,或者别的服务端持着 /tmp/.X{N}-lock):
+    /// 换下一个空闲的号再试,原先直接报「显示号被占用」。
+    /// </summary>
+    [TestMethod]
+    public async Task Start_AutomaticDisplayTakenBetweenProbeAndBind_TriesTheNextOne()
+    {
+        using TcpListener squatter = new(IPAddress.Loopback, 6010);   // 探测(注入的)看不见它
+        squatter.Start();
+        RecordingHost host = new();
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), host);
+        List<XServerState> states = [];
+        server.StateChanged += (_, _) => states.Add(server.State);
+
+        XServerStartResult result = await server.StartAsync();
+
+        Assert.IsTrue(result.Success, result.Error);
+        Assert.AreEqual(11, server.DisplayNumber, ":10 开不起来,换到 :11");
+        Assert.AreEqual(XServerState.Running, states[^1]);
+        Assert.DoesNotContain(XServerState.Stopped, states, "换号期间一直是 Starting");
+        await server.StopAsync();
+    }
+
+    /// <summary>
     /// macOS 换了网络主机名常跟着变,Xlib 按连接那一刻的主机名在 .Xauthority 里找:主机名变了就按新名字重登、撤掉旧的那一条
     /// (原先一直是启动时的名字,之后本机 X 程序一律被拒)。
     /// </summary>
