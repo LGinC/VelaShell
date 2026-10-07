@@ -347,6 +347,31 @@ public sealed class AvaloniaXServerHostUiTests
         await serve.WaitAsync(TimeSpan.FromSeconds(5));
     });
 
+    /// <summary>InputOnly 的顶层(GTK 的 GtkInvisible):看不见,不开原生窗口 —— 原先宿主多出一个黑色的窗口。</summary>
+    [TestMethod]
+    public async Task InputOnlyTopLevel_GetsNoNativeWindow() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        uint invisible = idBase | 1, visible = idBase | 2;
+        await SendAsync(client, 1, 0, w => w.U32(invisible).U32(root).I16(-100).I16(-100).U16(10).U16(10).U16(0).U16(2).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(invisible));
+        await SendAsync(client, 1, 24, w => w.U32(visible).U32(root).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(visible));
+        await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == visible));   // 之前映射的 InputOnly 那个也处理过了
+        Assert.IsFalse(host.Windows.Any(w => w.Handle.Id == invisible));
+
+        XNativeWindow[] all = [.. host.Windows];
+        host.Detach();
+        await WaitForAsync(() => all.All(w => !w.IsVisible) ? all : null);
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+    });
+
     /// <summary>连接建立;之后收到的回复按到达顺序放进 <paramref name="replies" />(事件与错误读掉不留)。</summary>
     private static async Task<(uint IdBase, uint Root)> HandshakeAsync(Stream stream, System.Collections.Concurrent.ConcurrentQueue<byte[]> replies)
     {

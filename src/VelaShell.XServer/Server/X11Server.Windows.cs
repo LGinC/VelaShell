@@ -451,7 +451,7 @@ public sealed partial class X11Server
             wm.Event(XEventCode.MapRequest, 0, w => w.U32(parent.Id).U32(window.Id));
             return;
         }
-        if (requester is not null && window.IsTopLevel)
+        if (requester is not null && window.IsTopLevel && !window.IsInputOnly)
         {
             RequireBufferMemory(window, window.Width, window.Height);   // 映射时才建缓冲:先核账(xs_plan X-2)
         }
@@ -466,17 +466,25 @@ public sealed partial class X11Server
         }
         if (window.IsTopLevel)
         {
-            if (ReleaseNamedWindowPixmaps(window))
+            // InputOnly 的顶层(GTK 的 GtkInvisible 之类)看不见、不能画:不建像素缓冲。快照带着 InputOnly,宿主据此不开原生窗口 ——
+            // 原先给它建 24 位缓冲,宿主多出一个黑色的原生窗口。
+            if (!window.IsInputOnly)
             {
-                window.Buffer = null;   // 旧缓冲归 NameWindowPixmap 的像素图;映射时整窗重画,换一块新的
+                if (ReleaseNamedWindowPixmaps(window))
+                {
+                    window.Buffer = null;   // 旧缓冲归 NameWindowPixmap 的像素图;映射时整窗重画,换一块新的
+                }
+                window.Buffer ??= new Drawing.PixelBuffer(window.Width, window.Height, window.Depth == 32 ? (byte)32 : (byte)24);
+                window.Buffer.Resize(window.Width, window.Height);
+                SyncBufferCharge(window);
             }
-            window.Buffer ??= new Drawing.PixelBuffer(window.Width, window.Height, window.Depth == 32 ? (byte)32 : (byte)24);
-            window.Buffer.Resize(window.Width, window.Height);
-            SyncBufferCharge(window);
             XTopLevelWindow handle = HandleFor(window);
             RefreshSnapshot(window, handle);
             SetMapped(handle, true);
-            ExposeWindowTree(window, new Drawing.Region(window.Buffer.Bounds));
+            if (window.Buffer is { } buffer)
+            {
+                ExposeWindowTree(window, new Drawing.Region(buffer.Bounds));
+            }
             _host.TopLevelMapped(handle);
             OnTopLevelMappedEwmh(window);
         }
@@ -901,7 +909,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 挪过去整棵子树就超过嵌套上限了
         }
-        if (window.Mapped && parent.IsRoot)
+        if (window.Mapped && parent.IsRoot && !window.IsInputOnly)
         {
             RequireBufferMemory(window, window.Width, window.Height);   // 重新映射成顶层要建缓冲:先核账,免得挪到一半才回 Alloc
         }

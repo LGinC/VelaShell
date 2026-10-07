@@ -241,9 +241,9 @@ public sealed partial class X11Server
     /// <summary>顶层映射了:WM_STATE = Normal、_NET_WM_DESKTOP = 0、_NET_FRAME_EXTENTS,并更新客户端列表。</summary>
     private void OnTopLevelMappedEwmh(XWindow top)
     {
-        if (top.OverrideRedirect)
+        if (top.OverrideRedirect || top.IsInputOnly)
         {
-            return;   // 菜单、提示框之类不归窗口管理器管(ICCCM §4.1.10)
+            return;   // 菜单、提示框之类不归窗口管理器管(ICCCM §4.1.10);InputOnly 的顶层看不见,也不进客户端列表
         }
         XWindowStates states = ReadNetWmStates(top);
         if ((states & XWindowStates.Hidden) == 0 && StartsIconic(top))
@@ -262,7 +262,7 @@ public sealed partial class X11Server
 
     private void OnTopLevelUnmappedEwmh(XWindow top)
     {
-        if (top.OverrideRedirect)
+        if (top.OverrideRedirect || top.IsInputOnly)
         {
             return;
         }
@@ -273,7 +273,7 @@ public sealed partial class X11Server
     /// <summary>_NET_CLIENT_LIST(映射顺序)与 _NET_CLIENT_LIST_STACKING(从下到上)。</summary>
     private void UpdateClientLists()
     {
-        uint[] stacking = [.. Root.Children.Where(w => w is { Mapped: true, OverrideRedirect: false } && w.Owner is not null).Select(w => w.Id)];
+        uint[] stacking = [.. Root.Children.Where(w => w is { Mapped: true, OverrideRedirect: false, IsInputOnly: false } && w.Owner is not null).Select(w => w.Id)];
         SetProperty(Root, Intern("_NET_CLIENT_LIST_STACKING"), XAtom.Window, stacking);
         SetProperty(Root, Intern("_NET_CLIENT_LIST"), XAtom.Window, [.. stacking.Order()]);
     }

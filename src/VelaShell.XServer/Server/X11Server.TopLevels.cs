@@ -112,6 +112,7 @@ public sealed partial class X11Server
             ClientId = top.Owner?.Index ?? 0,
             ClientLabel = top.Owner?.Label,
             HasAlpha = top.Depth == 32,
+            InputOnly = top.IsInputOnly,
             Shape = shape,
         };
         return ReadWindowManagerHints(top, snapshot, hasTransientFor: transientId != 0);

@@ -207,6 +207,30 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task InputOnly的顶层不建像素缓冲_快照标着InputOnly_不进客户端列表()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint invisible = c.NewId();   // GtkInvisible:InputOnly、在屏幕外
+        await c.SendAsync(1, 0, b => b.U32(invisible).U32(c.RootWindow).I16(-100).I16(-100).U16(2000).U16(2000).U16(0).U16(2).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(invisible));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(invisible));
+        XTopLevelWindow handle = host.Mapped[invisible];
+        Assert.IsTrue(handle.Snapshot.InputOnly, "宿主据此不开原生窗口(原先多出一个黑窗口)");
+        Assert.IsFalse(handle.ReadPixels((_, _, _) => Assert.Fail("不该有像素")), "没有像素缓冲");
+        Assert.IsLessThan(1L << 20, (await server.GetClientsAsync()).Single().MemoryBytes, "2000×2000 的缓冲(16 MB)也不记账");
+
+        uint clients = await InternAsync(c, "_NET_CLIENT_LIST");
+        XMessage list = await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(clients).U32(0).U32(0).U32(10));
+        Assert.AreEqual(0u, list.U32(16), "看不见的窗口不进客户端列表");
+
+        await c.SendAsync(12, 0, b => b.U32(invisible).U16(0x4).U16(0).U32(500));   // 改尺寸照常
+        await c.SendAsync(10, 0, b => b.U32(invisible));                            // 取消映射
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(invisible));
+    }
+
+    [TestMethod]
     public async Task NET_WM_STATE请求交给宿主_宿主设状态后写回属性()
     {
         using RecordingHost host = new();

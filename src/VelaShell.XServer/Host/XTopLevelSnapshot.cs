@@ -50,6 +50,12 @@ public sealed record XTopLevelSnapshot
     public string? ClientLabel { get; init; }
 
     /// <summary>
+    /// InputOnly 窗口(GTK 的 GtkInvisible 之类,拿来占选区、接拖放):看不见、没有像素(<see cref="XTopLevelWindow.ReadPixels" /> 读不到),
+    /// 宿主不应当为它开原生窗口。
+    /// </summary>
+    public bool InputOnly { get; init; }
+
+    /// <summary>
     /// 窗口是 32 位 ARGB 视觉:<see cref="XTopLevelWindow.ReadPixels" /> 给出的像素高 8 位是(预乘的)alpha,宿主应当按透明窗口合成;
     /// 否则高 8 位无意义,窗口不透明。
     /// </summary>

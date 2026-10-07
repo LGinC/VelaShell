@@ -451,9 +451,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     private void Map(XTopLevelWindow handle)
     {
-        if (_server is null || _windows.ContainsKey(handle.Id))
+        if (_server is null || _windows.ContainsKey(handle.Id) || handle.Snapshot.InputOnly)
         {
-            return;
+            return;   // InputOnly 的顶层(GtkInvisible 之类)看不见:不开原生窗口(原先多出一个黑窗口)
         }
         XNativeWindow window = new(this, handle);
         _windows[handle.Id] = window;
