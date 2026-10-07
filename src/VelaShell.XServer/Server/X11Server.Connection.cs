@@ -498,6 +498,14 @@ public sealed partial class X11Server
         }
         try
         {
+            ProcessSaveSet(client);   // 先还回别人的窗口,再销毁资源(协议「Connection Close」)
+        }
+        catch (Exception ex)
+        {
+            Log($"save-set of {client} failed: {ex}");
+        }
+        try
+        {
             if (client.CloseDownMode is 1 or 2)
             {
                 ReleaseConnectionState(client);

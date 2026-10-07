@@ -62,8 +62,14 @@ public sealed partial class X11Server
                     c.Reply(0, w => w.U32(maj).U32(min).Zero(16));
                     break;
                 }
-            case 1:   // ChangeSaveSet:我们的窗口管理器是宿主本身,不会断开(同核心 ChangeSaveSet)。
-                break;
+            case 1:   // ChangeSaveSet:mode(0 插入、1 删除)、target(0 最近的祖先、1 根窗口)、map(0 补映射、1 不补)、窗口
+                {
+                    byte mode = r.U8(), target = r.U8(), map = r.U8();
+                    r.Skip(1);
+                    XWindow window = Window(r.U32());
+                    ChangeSaveSet(c, window, mode == 0, toRoot: target == 1, map: map == 0);
+                    break;
+                }
             case 2:   // SelectSelectionInput
                 {
                     XWindow window = Window(r.U32());

@@ -178,6 +178,52 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task 根窗口的SubstructureRedirect与WM_S0由服务端占着_远端误跑的窗口管理器知道已经有了()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await c.SendAsync(2, 0, b => b.U32(c.RootWindow).U32(0x800).U32(0x100000));   // ChangeWindowAttributes:SubstructureRedirect
+        Assert.AreEqual(10, (await c.NextAsync(m => m.IsError)).Detail, "BadAccess:与真实桌面上已有窗口管理器时一样");
+
+        uint wmS0 = await InternAsync(c, "WM_S0");
+        Assert.AreNotEqual(0u, (await c.RequestAsync(23, 0, b => b.U32(wmS0))).U32(8), "WM_S0 有属主");
+        uint check = await InternAsync(c, "_NET_SUPPORTING_WM_CHECK");
+        uint name = await InternAsync(c, "_NET_WM_NAME");
+        uint checkWindow = (await c.RequestAsync(20, 0, b => b.U32(c.RootWindow).U32(check).U32(0).U32(0).U32(1))).U32(32);
+        XMessage wmName = await c.RequestAsync(20, 0, b => b.U32(checkWindow).U32(name).U32(0).U32(0).U32(16));
+        Assert.AreEqual("LG3D", Encoding.UTF8.GetString(wmName.Bytes, 32, (int)wmName.U32(16)), "Java 认得的「不套外框」的名字");
+    }
+
+    [TestMethod]
+    public async Task 嵌入方断开时save_set里的窗口还回根窗口并补映射_不跟着被销毁()
+    {
+        await using X11Server server = new();
+        XTestClient embedder = await XTestClient.ConnectAsync(server);
+        await using XTestClient embedded = await XTestClient.ConnectAsync(server);
+        uint frame = await CreateTopAsync(embedder);
+        await embedder.SendAsync(8, 0, b => b.U32(frame));
+        uint plug = await CreateTopAsync(embedded);
+        await embedded.SyncAsync();
+
+        // XEmbed 的做法:嵌入方把别人的窗口 reparent 进自己的外框、放进 save-set。
+        await embedder.SendAsync(7, 0, b => b.U32(plug).U32(frame).I16(5).I16(5));   // ReparentWindow
+        await embedder.SendAsync(6, 0, b => b.U32(plug));                             // ChangeSaveSet(Insert)
+        await embedder.SyncAsync();
+        XMessage before = await embedded.RequestAsync(15, 0, b => b.U32(plug));      // QueryTree
+        Assert.AreEqual(frame, before.U32(12));
+
+        Task serving = embedder.ServerTask;
+        await embedder.DisposeAsync();   // 嵌入方崩溃
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+
+        XMessage after = await embedded.RequestAsync(15, 0, b => b.U32(plug));
+        Assert.IsTrue(after.IsReply, "原先 save-set 不生效:外框被销毁,别人的窗口跟着被销毁");
+        Assert.AreEqual(embedded.RootWindow, after.U32(12), "还回到最近的一个不是嵌入方建的祖先");
+        XMessage attributes = await embedded.RequestAsync(3, 0, b => b.U32(plug));   // GetWindowAttributes
+        Assert.AreNotEqual(0, attributes.Bytes[26], "补映射了(map-state 不是 Unmapped)");
+    }
+
+    [TestMethod]
     public async Task 焦点给了顶层就更新活动窗口与FOCUSED状态()
     {
         using RecordingHost host = new();

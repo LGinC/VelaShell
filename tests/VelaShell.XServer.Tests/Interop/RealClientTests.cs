@@ -161,4 +161,68 @@ public sealed class RealClientTests
             Assert.IsEmpty(errors, string.Join('\n', errors));
         }
     }
+
+    /// <summary>一个 Swing 程序:报能否最大化、边距,请求最大化之后报尺寸。源文件直接 <c>java P.java</c> 跑。</summary>
+    private const string SwingProbe = """
+        import javax.swing.*;
+        import java.awt.*;
+        public class P {
+            public static void main(String[] a) throws Exception {
+                System.out.println("max-supported=" + Toolkit.getDefaultToolkit().isFrameStateSupported(Frame.MAXIMIZED_BOTH));
+                JFrame[] f = new JFrame[1];
+                SwingUtilities.invokeAndWait(() -> { f[0] = new JFrame("probe"); f[0].setSize(300, 200); f[0].setVisible(true); });
+                Thread.sleep(3000);
+                SwingUtilities.invokeAndWait(() -> { System.out.println("insets-top=" + f[0].getInsets().top); f[0].setExtendedState(Frame.MAXIMIZED_BOTH); });
+                Thread.sleep(4000);
+                SwingUtilities.invokeAndWait(() -> System.out.println("size=" + f[0].getWidth() + "x" + f[0].getHeight()));
+                System.exit(0);
+            }
+        }
+        """;
+
+    /// <summary>
+    /// Java 的窗口管理器判定(xs_plan CP-9 / WN-S3):服务端占着 WM_S0 与根窗口的 SubstructureRedirect,名字是 Java 认得的「不套外框」的 LG3D ——
+    /// 能最大化、边距为 0(不假定有标题栏)、最大化之后按新尺寸重排。名字不认得时 Java 当成会套外框的窗口管理器,一直等 ReparentNotify、
+    /// 不理 ConfigureNotify;什么都不占时判成没有窗口管理器,最大化不可用。
+    /// </summary>
+    [TestMethod]
+    [Timeout(240_000, CooperativeCancellation = true)]
+    public async Task Swing认出不套外框的窗口管理器_最大化之后按新尺寸重排()
+    {
+        if (ShouldSkip())
+        {
+            return;
+        }
+        using RecordingHost host = new();
+        (X11Server server, ConcurrentQueue<string> errors, byte[] cookie) = StartServer(host);
+        await using (server)
+        {
+            await server.StartAsync();
+            Task<(int ExitCode, string Output)> client = RunClientAsync(cookie,
+                $"command -v java >/dev/null || {{ echo NO-JAVA; exit 0; }}; cat > /tmp/P.java <<'EOF'\n{SwingProbe}\nEOF\njava /tmp/P.java", 180);
+            // 宿主照办最大化(与 Avalonia 宿主一样:设状态、改尺寸)。
+            XStateChangeRequest? maximize = null;
+            while (maximize is null && !client.IsCompleted)
+            {
+                maximize = host.Requests.OfType<XStateChangeRequest>().FirstOrDefault(r => (r.Add & XWindowStates.Maximized) != 0);
+                await Task.Delay(100);
+            }
+            if (maximize is not null)
+            {
+                server.SetTopLevelStates(maximize.Window, XWindowStates.Maximized);
+                server.ResizeTopLevel(maximize.Window, 1920, 1080);
+            }
+            (_, string output) = await client;
+            TestContext.WriteLine(output);
+            if (output.Contains("NO-JAVA", StringComparison.Ordinal))
+            {
+                TestContext.WriteLine("[SKIP] 镜像里没有 Java:按 scripts/xserver/interop/Dockerfile 重建 velashell-xclients");
+                return;
+            }
+            Assert.Contains("max-supported=true", output, "认出有窗口管理器");
+            Assert.Contains("insets-top=0", output, "不假定有标题栏");
+            Assert.Contains("size=1920x1080", output, "最大化之后按新尺寸重排");
+            Assert.IsEmpty(errors, string.Join('\n', errors));
+        }
+    }
 }

@@ -67,7 +67,8 @@ internal sealed class XClient : IDisposable
     /// <summary>SetCloseDownMode:0 Destroy(默认),1 RetainPermanent,2 RetainTemporary。</summary>
     public byte CloseDownMode { get; set; }
 
-    public HashSet<uint> SaveSet { get; } = [];
+    /// <summary>save-set(ChangeSaveSet):窗口 ID → XFIXES 的 target(挂到根窗口)与 map(补映射)。断开时见 X11Server.ProcessSaveSet。</summary>
+    public Dictionary<uint, (bool ToRoot, bool Map)> SaveSet { get; } = [];
 
     /// <summary>这个客户端眼下拥有的窗口数(见 <c>X11Server.MaxWindowsPerClient</c>)。</summary>
     public int WindowCount { get; set; }

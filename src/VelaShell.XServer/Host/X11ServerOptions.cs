@@ -94,8 +94,13 @@ public sealed class X11ServerOptions
     /// </summary>
     public bool ClientSideShadows { get; init; }
 
-    /// <summary>窗口管理器的名字(<c>_NET_SUPPORTING_WM_CHECK</c> 窗口上的 <c>_NET_WM_NAME</c>)。</summary>
-    public string WindowManagerName { get; init; } = "VelaShell";
+    /// <summary>
+    /// 窗口管理器的名字(<c>_NET_SUPPORTING_WM_CHECK</c> 窗口上的 <c>_NET_WM_NAME</c>)。默认 <c>LG3D</c>:服务端占着 <c>WM_S0</c> 与根窗口的
+    /// SubstructureRedirect,Java(AWT / Swing)据此认定有窗口管理器,再按这个名字决定它套不套外框 —— 不认得的名字一律当成会套外框,
+    /// 于是一直等 ReparentNotify、不理 ConfigureNotify(最大化、改尺寸之后内容不重排,假定有 25 像素的标题栏)。<c>LG3D</c> 是 Java 认得的
+    /// 「不套外框」的名字(实测 OpenJDK 17:识别为 LookingGlass,边距 0,最大化与改尺寸都照常重排)。改名之前先用 Swing 程序验一遍。
+    /// </summary>
+    public string WindowManagerName { get; init; } = "LG3D";
 
     /// <summary>
     /// 一个客户端能占的内存上限(字节):像素图、顶层窗口的缓冲、DOUBLE-BUFFER 的后缓冲、属性值、RENDER 字形、XFIXES 区域,

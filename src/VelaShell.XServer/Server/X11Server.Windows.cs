@@ -192,6 +192,12 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, mask);
         }
+        if (window.IsRoot && (mask & (uint)XEventMask.SubstructureRedirect) != 0)
+        {
+            // 窗口管理器是服务端(宿主)自己:根窗口的 SubstructureRedirect 一直有人占着,与真实桌面上已有窗口管理器时一样回 BadAccess。
+            // 原先谁都选得上 —— 远端误跑 openbox / xfwm4,所有会话的新窗口都变成发给它的 MapRequest、被它套进自己的外框。
+            throw new XProtocolError(XErrorCode.Access);
+        }
         foreach (XEventMask exclusive in (XEventMask[])[XEventMask.SubstructureRedirect, XEventMask.ResizeRedirect, XEventMask.ButtonPress])
         {
             if ((mask & (uint)exclusive) == 0)
@@ -336,21 +342,68 @@ public sealed partial class X11Server
     }
 
     /// <summary>
-    /// 只记录不生效:save-set 的作用是「窗口管理器断开时把被它重新 reparent 过的窗口还回去」,
-    /// 而我们的窗口管理器是宿主本身,不会断开。
+    /// save-set:客户端断开时(见 <see cref="ProcessSaveSet" />)把挂在它的窗口下面的这些窗口还回去。用它的是 reparent 别人窗口的程序 ——
+    /// XEmbed 的嵌入方(托盘、插件宿主)、窗口管理器。窗口不能是这个客户端自己建的(BadMatch)。
     /// </summary>
     private void ChangeSaveSet(XClient c, XRequestReader r)
     {
         byte mode = r.Data;
         XWindow window = Window(r.U32());
-        if (mode == 0)
+        ChangeSaveSet(c, window, mode == 0, toRoot: false, map: true);
+    }
+
+    /// <summary>核心与 XFIXES 的 ChangeSaveSet 共用;<paramref name="toRoot" /> 与 <paramref name="map" /> 是 XFIXES 的 target / map。</summary>
+    internal static void ChangeSaveSet(XClient c, XWindow window, bool insert, bool toRoot, bool map)
+    {
+        if (ReferenceEquals(window.Owner, c) || window.IsRoot)
         {
-            c.SaveSet.Add(window.Id);
+            throw new XProtocolError(XErrorCode.Match);
+        }
+        if (insert)
+        {
+            c.SaveSet[window.Id] = (toRoot, map);
         }
         else
         {
             c.SaveSet.Remove(window.Id);
         }
+    }
+
+    /// <summary>
+    /// 协议第 10 节「Connection Close」:save-set 里的每个窗口,若在这个客户端建的某个窗口之下,就 reparent 到最近的一个祖先,
+    /// 使它不再在这个客户端建的任何窗口之下(根坐标不变;XFIXES 可以指定挂到根窗口);没映射的补映射(XFIXES 可以指定不补)。
+    /// 在销毁资源之前做,不论 close-down mode。原先只登记不生效:嵌入方(或远端窗口管理器)一退出,外框被销毁,别人的窗口跟着被销毁。
+    /// </summary>
+    private void ProcessSaveSet(XClient client)
+    {
+        foreach ((uint id, (bool toRoot, bool map)) in client.SaveSet.ToArray())
+        {
+            if (Lookup<XWindow>(id) is not { Parent: not null } window)
+            {
+                continue;
+            }
+            XWindow? outermost = null;   // 这个客户端建的、最靠近根的那个祖先
+            for (XWindow? w = window.Parent; w is { IsRoot: false }; w = w.Parent)
+            {
+                if (ReferenceEquals(w.Owner, client))
+                {
+                    outermost = w;
+                }
+            }
+            if (outermost?.Parent is { } keep)
+            {
+                XWindow target = toRoot ? Root : keep;
+                (int ax, int ay) = window.Parent.AbsoluteInner();
+                (int tx, int ty) = target.AbsoluteInner();
+                Reparent(window, target, (short)Math.Clamp(ax + window.X - tx, short.MinValue, short.MaxValue),
+                    (short)Math.Clamp(ay + window.Y - ty, short.MinValue, short.MaxValue));
+            }
+            if (map && !window.Mapped)
+            {
+                Map(null, window);
+            }
+        }
+        client.SaveSet.Clear();
     }
 
     // ------------------------------------------------------------------ 映射
@@ -658,6 +711,12 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 挪过去整棵子树就超过嵌套上限了
         }
+        Reparent(window, parent, x, y);
+    }
+
+    /// <summary>ReparentWindow 的执行部分(参数已核对);save-set 收尾也用它。</summary>
+    private void Reparent(XWindow window, XWindow parent, short x, short y)
+    {
         bool wasMapped = window.Mapped;
         if (wasMapped)
         {
