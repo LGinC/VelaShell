@@ -48,7 +48,7 @@ public sealed class VelaHostKeyPolicyTests
         Assert.IsTrue(policy.AllowHostKeyUpdates);
         Assert.AreSequenceEqual(["bareBase64Fingerprint"], (await policy.GetKnownHostKeyFingerprintsAsync("rot.example", 22)).ToArray());
 
-        using InMemorySshSigner fresh = InMemorySshSigner.GenerateEd25519();
+        using var fresh = InMemorySshSigner.GenerateEd25519();
         await policy.RecordHostKeysAsync("rot.example", 22, [fresh.PublicKey]);
 
         await store.Received(1).TrustHostKeyAsync("rot.example", 22, "ssh-ed25519", fresh.PublicKey.Sha256Fingerprint, Arg.Any<CancellationToken>());
@@ -114,7 +114,7 @@ public sealed class VelaHostKeyPolicyTests
             .ThrowsAsync(locked);
         ISecurityAlertService alerts = Substitute.For<ISecurityAlertService>();
 
-        using InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        using var signer = InMemorySshSigner.GenerateEd25519();
         string host = $"persist-{Guid.NewGuid():N}.example";
         SshHostKeyContext context = new()
         {
@@ -145,7 +145,7 @@ public sealed class VelaHostKeyPolicyTests
         prompt.DecideAsync(default!, default, default!, default!, default, default, default)
             .ReturnsForAnyArgs(HostKeyDecision.Reject);
 
-        using InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        using var signer = InMemorySshSigner.GenerateEd25519();
         SshHostKeyContext context = new()
         {
             Host = $"art-{Guid.NewGuid():N}.example",

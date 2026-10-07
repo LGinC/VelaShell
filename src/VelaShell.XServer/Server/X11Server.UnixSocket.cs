@@ -466,7 +466,7 @@ public sealed partial class X11Server
             {
                 return true;
             }
-            using System.Diagnostics.Process holder = System.Diagnostics.Process.GetProcessById(pid);
+            using var holder = System.Diagnostics.Process.GetProcessById(pid);
             return !holder.HasExited;
         }
         catch (ArgumentException)

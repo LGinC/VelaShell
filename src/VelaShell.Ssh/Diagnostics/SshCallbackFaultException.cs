@@ -22,10 +22,7 @@ internal sealed class SshCallbackFaultException : Exception
     private readonly ExceptionDispatchInfo _original;
 
     private SshCallbackFaultException(Exception original)
-        : base(original.Message, original)
-    {
-        _original = ExceptionDispatchInfo.Capture(original);
-    }
+        : base(original.Message, original) => _original = ExceptionDispatchInfo.Capture(original);
 
     /// <summary>调一个调用方的回调；它自己抛的异常（取消与本库的异常除外）裹一层再往外抛。</summary>
     public static async ValueTask<T> InvokeAsync<T>(Func<ValueTask<T>> callback)

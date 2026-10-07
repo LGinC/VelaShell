@@ -35,7 +35,7 @@ public sealed class AgentSessionDeclarationTests
         Task serving = agent.ServeAsync(theirs, cts.Token);
 
         SshSessionProof proof = await ProofAsync();
-        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        await using (var client = SshAgentClient.FromStream(ours))
         {
             Assert.IsTrue(await client.DeclareSessionAsync(proof, SshAgentConnectionPurpose.Forwarding, cts.Token));
 
@@ -63,7 +63,7 @@ public sealed class AgentSessionDeclarationTests
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         Task serving = agent.ServeAsync(theirs, cts.Token);
 
-        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        await using (var client = SshAgentClient.FromStream(ours))
         {
             Assert.IsFalse(await client.DeclareSessionAsync(
                 await ProofAsync(), SshAgentConnectionPurpose.Authentication, cts.Token));
@@ -96,7 +96,7 @@ public sealed class AgentSessionDeclarationTests
         listener.Listen();
 
         List<Task> sessions = [];
-        Task accepting = Task.Run(async () =>
+        var accepting = Task.Run(async () =>
         {
             while (!cts.IsCancellationRequested)
             {

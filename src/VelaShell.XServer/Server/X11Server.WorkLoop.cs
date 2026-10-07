@@ -195,7 +195,7 @@ public sealed partial class X11Server
         for (int i = 0; i < end; i++)
         {
             char ch = text[i];
-            bool control = ch < 0x20 || ch is >= '\u007F' and <= '\u009F' || ch is >= '‪' and <= '‮' || ch is >= '⁦' and <= '⁩';
+            bool control = ch is < (char)0x20 or >= '\u007F' and <= '\u009F' or >= '‪' and <= '‮' or >= '⁦' and <= '⁩';
             if (control)
             {
                 escaped ??= new StringBuilder(text, 0, i, end + 16);

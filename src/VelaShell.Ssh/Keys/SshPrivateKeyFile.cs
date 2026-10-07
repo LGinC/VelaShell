@@ -266,7 +266,7 @@ public static class SshPrivateKeyFile
     /// <summary>未加密的 PKCS#1 / SEC1 / PKCS#8：解出私钥、取它的公钥。传统加密 PEM 在这里被拒。</summary>
     private static byte[] DerivePublicBlob(string pem)
     {
-        using InMemorySshSigner signer = Parse(pem, ReadOnlySpan<char>.Empty);
+        using InMemorySshSigner signer = Parse(pem, []);
         return signer.PublicKey.Blob.ToArray();
     }
 
@@ -641,7 +641,7 @@ public static class SshPrivateKeyFile
             }
 
             // 签名器复制一份归自己所有；这一份由这里清。
-            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
+            var signer = InMemorySshSigner.FromEd25519(secret.AsSpan(0, 32));
             if (!signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
             {
                 signer.Dispose();
@@ -802,7 +802,8 @@ public static class SshPrivateKeyFile
             byte[] encrypted = DecodePemBody(pem, "ENCRYPTED PRIVATE KEY", where);
             if (ReadPkcs8Encryption(encrypted) is { } encryption)
             {
-                if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+                // if (encryption.Iterations < 1 || encryption.Iterations > MaxPkcs8Iterations)
+                if (encryption.Iterations is var iterations && (iterations < 1 || iterations > MaxPkcs8Iterations))
                 {
                     throw new SshPrivateKeyException(SshFailureReason.KeyFormatInvalid,
                         $"加密 PKCS#8 私钥的 KDF 迭代数不合理{where}（{encryption.Iterations} 次，上限 {MaxPkcs8Iterations} 次）。" +
@@ -1075,7 +1076,7 @@ public static class SshPrivateKeyFile
             }
 
             // 签名器复制一份归自己所有；这一份由这里清。
-            InMemorySshSigner signer = InMemorySshSigner.FromEd25519(seed);
+            var signer = InMemorySshSigner.FromEd25519(seed);
             if (publicKey is not null && !signer.PublicKey.Blob.Span[^32..].SequenceEqual(publicKey))
             {
                 signer.Dispose();

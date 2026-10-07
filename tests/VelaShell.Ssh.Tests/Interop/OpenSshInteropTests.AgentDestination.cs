@@ -91,10 +91,10 @@ public sealed partial class OpenSshInteropTests
         RequireServer();
         await using SshConnection admin = await SshConnection.ConnectAsync(Options());
         await using RemoteAgent remote = await RemoteAgent.StartAsync(admin);
-        using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+        using var key = InMemorySshSigner.GenerateEd25519();
         await remote.AuthorizeAsync(key.PublicKey);
         SshAgentHopHost server = await remote.ScanAsync("127.0.0.1", InnerPort);
-        using InMemorySshSigner stranger = InMemorySshSigner.GenerateEd25519();
+        using var stranger = InMemorySshSigner.GenerateEd25519();
         await using SshAgentClient adder = await remote.OpenClientAsync();
 
         async Task<string> AddAndLoginAsync(SshAgentKeyConstraints constraints)
@@ -136,13 +136,13 @@ public sealed partial class OpenSshInteropTests
 
         await using SshConnection admin = await SshConnection.ConnectAsync(Options());
         await using RemoteAgent remote = await RemoteAgent.StartAsync(admin);
-        using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+        using var key = InMemorySshSigner.GenerateEd25519();
         await remote.AuthorizeAsync(key.PublicKey);
         SshAgentHopHost server = await remote.ScanAsync("127.0.0.1", InnerPort);
 
         // 本机一个 Unix 套接字转到服务端的 agent：自己连上的客户端（能重开）连它。
         string localSocket = Path.Combine(Path.GetTempPath(), $"vrd-{Guid.NewGuid().ToString("N")[..8]}.sock");
-        await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(
+        await using var forwarder = LocalPortForwarder.StartToUnixSocket(
             admin, remote.Socket, new LocalPortForwardOptions { ListenSocketPath = localSocket });
 
         // 交回目标那一跳最终用的认证方法（口令兜底，理由见 LoginWithAgentAsync）。
@@ -197,7 +197,7 @@ public sealed partial class OpenSshInteropTests
         }
 
         const string ShellsHost = "velashell-test-shells", ShellsUser = "vela-bash";
-        using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+        using var key = InMemorySshSigner.GenerateEd25519();
         SshConnection shells;
         try
         {
@@ -232,7 +232,7 @@ public sealed partial class OpenSshInteropTests
                 }
 
                 string localSocket = Path.Combine(Path.GetTempPath(), $"vrd-{Guid.NewGuid().ToString("N")[..8]}.sock");
-                await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(
+                await using var forwarder = LocalPortForwarder.StartToUnixSocket(
                     admin, remote.Socket, new LocalPortForwardOptions { ListenSocketPath = localSocket });
                 await using SshAgentClient adder = await remote.OpenClientAsync();
 
@@ -291,7 +291,7 @@ public sealed partial class OpenSshInteropTests
 
             await using SshConnection admin = await SshConnection.ConnectAsync(Options());
             await using RemoteAgent remote = await RemoteAgent.StartAsync(admin);
-            using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+            using var key = InMemorySshSigner.GenerateEd25519();
             await remote.AuthorizeAsync(key.PublicKey);
             await using SshAgentClient adder = await remote.OpenClientAsync();
 

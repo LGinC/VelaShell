@@ -346,7 +346,7 @@ public sealed class GlxTests
         await c.SendAsync(glx, 102, b => b.U32(tag));
 
         // 调 6 万次:按条数远没到 400 万的上限,按工作量早就超了。
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         const int n = 60000;
         await RenderAsync(c, glx, tag, new Commands().Add(2, b => b.I32(n).U32(UnsignedByteType).Bytes([.. Enumerable.Repeat((byte)list, n)])));
         Assert.AreEqual(OutOfMemory, await GlErrorAsync(c, glx, tag), "工作量花光:OUT_OF_MEMORY");
@@ -418,7 +418,7 @@ public sealed class GlxTests
         const int size = 8000;
         byte[] data = new byte[size + size - 1];
         Array.Fill(data, (byte)0x80);
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await RenderAsync(c, glx, tag, new Commands()
             .Add(34, b => F(b, -1, -1))                                                // 窗口 (0, 0)
             .Add(165, b => F(b, 1e-6f, 1e-6f))                                         // PixelZoom:整张图缩成不到一个像素

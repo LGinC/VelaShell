@@ -44,9 +44,7 @@ public sealed class XNativeWindow : Window
 
     /// <summary>最后一次按服务端的几何设的内容区尺寸(物理像素):迟到的 Resized 与它相同就是我们自己设的(见 OnResized)。</summary>
     private (int Width, int Height) _appliedSize;
-    private bool _closingByHost;
     private Vector _wheelRemainder;
-    private XFrameExtents _frame;
     private XWindowStates _reportedStates;
     private WindowState _resizeState = WindowState.Normal;
 
@@ -85,7 +83,7 @@ public sealed class XNativeWindow : Window
         ApplyStyle(handle.Snapshot);
         // 系统边框的尺寸要等显示出来才量得到:先按宿主上一个有边框的窗口量到的预估,第一帧就摆在对的地方,
         // 不必等 Opened 之后再挪(原先按 0 摆,显示出来跳一下)。
-        _frame = WindowDecorations == WindowDecorations.None ? default : host.LastDecoratedFrame;
+        FrameExtents = WindowDecorations == WindowDecorations.None ? default : host.LastDecoratedFrame;
 
         PositionChanged += (_, _) => OnMovedByUser();
         Resized += OnResized;
@@ -154,7 +152,7 @@ public sealed class XNativeWindow : Window
     public void PlaceFrameAt(int x, int y) => _frameAt = (x, y);
 
     /// <summary>系统边框的四边宽(物理像素;显示出来之前是 0)。</summary>
-    public XFrameExtents FrameExtents => _frame;
+    public XFrameExtents FrameExtents { get; private set; }
 
     /// <summary>
     /// 按服务端的几何摆放原生窗口:内容区对准 X 窗口的内区(边框外沿 + 边框宽)。快照说位置是客户端请求的
@@ -190,8 +188,8 @@ public sealed class XNativeWindow : Window
                 else
                 {
                     (x, y) = _frameAt is { } at
-                        ? (at.X + _frame.Left - s.BorderWidth, at.Y + _frame.Top - s.BorderWidth)
-                        : s.PlaceInFrame(_frame);
+                        ? (at.X + FrameExtents.Left - s.BorderWidth, at.Y + FrameExtents.Top - s.BorderWidth)
+                        : s.PlaceInFrame(FrameExtents);
                     (x, y) = (Math.Clamp(x, short.MinValue, short.MaxValue), Math.Clamp(y, short.MinValue, short.MaxValue));
                 }
                 if (_opened && !ReferenceEquals(_placedFor, s) && Server is { } server)
@@ -202,7 +200,7 @@ public sealed class XNativeWindow : Window
                     server.MoveTopLevel(Handle, x, y);
                 }
             }
-            Position = new PixelPoint(x + s.BorderWidth + ox - _frame.Left, y + s.BorderWidth + oy - _frame.Top);
+            Position = new PixelPoint(x + s.BorderWidth + ox - FrameExtents.Left, y + s.BorderWidth + oy - FrameExtents.Top);
         }
         finally
         {
@@ -269,7 +267,7 @@ public sealed class XNativeWindow : Window
             _imageCursors.RemoveAt(index);
         }
         _imageCursors.Add(entry);
-        for (int i = 0; _imageCursors.Count > MaxImageCursors && i < _imageCursors.Count - 1; )
+        for (int i = 0; _imageCursors.Count > MaxImageCursors && i < _imageCursors.Count - 1;)
         {
             if (ReferenceEquals(_imageCursors[i].Cursor, Cursor))
             {
@@ -314,7 +312,7 @@ public sealed class XNativeWindow : Window
     /// <summary>宿主要关它(客户端取消映射 / 销毁、服务端停下)。</summary>
     public void CloseByHost()
     {
-        _closingByHost = true;
+        ClosingByHost = true;
         if (!_closed)
         {
             Close();
@@ -325,7 +323,7 @@ public sealed class XNativeWindow : Window
     private bool _closed;
 
     /// <summary>只做标记、先不关(宿主一次收掉一批窗口时,先给全部打上标记,owner 级联关子窗口时子窗口才不会拦)。</summary>
-    public void MarkClosingByHost() => _closingByHost = true;
+    public void MarkClosingByHost() => ClosingByHost = true;
 
     /// <summary>客户端经 <c>_NET_WM_MOVERESIZE</c> 要求拖动 / 缩放:用系统的拖动循环(要一次还按着的按下事件)。</summary>
     public void BeginInteractive(XMoveResizeDirection direction)
@@ -434,7 +432,7 @@ public sealed class XNativeWindow : Window
         (int ox, int oy) = _host.RootOrigin;
         XTopLevelSnapshot s = Handle.Snapshot;
         // 内容区对准 X 窗口的内区:X 窗口的位置(边框外沿)再往左上退一个边框宽。
-        int x = Position.X + _frame.Left - ox - s.BorderWidth, y = Position.Y + _frame.Top - oy - s.BorderWidth;
+        int x = Position.X + FrameExtents.Left - ox - s.BorderWidth, y = Position.Y + FrameExtents.Top - oy - s.BorderWidth;
         if (x is < short.MinValue or > short.MaxValue || y is < short.MinValue or > short.MaxValue)
         {
             return;   // X 的坐标是 16 位:离谱的位置不报(服务端会当场拒绝)
@@ -536,11 +534,11 @@ public sealed class XNativeWindow : Window
                 _host.LastDecoratedFrame = frame;   // 下一个有边框的窗口显示之前就按它摆
             }
         }
-        if (frame != _frame || !_frameReported)
+        if (frame != FrameExtents || !_frameReported)
         {
-            _frame = frame;
+            FrameExtents = frame;
             _frameReported = true;
-            Server?.SetTopLevelFrameExtents(Handle, _frame);
+            Server?.SetTopLevelFrameExtents(Handle, FrameExtents);
         }
     }
 
@@ -598,7 +596,7 @@ public sealed class XNativeWindow : Window
     protected override void OnClosing(WindowClosingEventArgs e)
     {
         base.OnClosing(e);
-        if (_closingByHost)
+        if (ClosingByHost)
         {
             return;
         }
@@ -616,7 +614,7 @@ public sealed class XNativeWindow : Window
                 break;
             case WindowCloseReason.OwnerWindowClosing when Owner is XNativeWindow { ClosingByHost: true }:
                 // owner 被宿主收掉(停服、它在 X 里取消映射了):跟着关。还映射着的,宿主随后会不带 owner 重新显示。
-                _closingByHost = true;
+                ClosingByHost = true;
                 break;
             case WindowCloseReason.OwnerWindowClosing:
                 // 用户点了 owner 的关闭键:Avalonia 先问各个子窗口,有一个不肯 owner 就关不了、它自己的 Closing 也不会来。
@@ -629,13 +627,13 @@ public sealed class XNativeWindow : Window
                 break;
             default:
                 // 应用退出、系统注销 / 关机:不拦(原先一律取消,表现为「VelaShell 阻止关机」)。
-                _closingByHost = true;
+                ClosingByHost = true;
                 break;
         }
     }
 
     /// <summary>宿主正在收掉这个窗口(<see cref="CloseByHost" />)。</summary>
-    public bool ClosingByHost => _closingByHost;
+    public bool ClosingByHost { get; private set; }
 
     /// <inheritdoc />
     protected override void OnClosed(EventArgs e)
@@ -783,7 +781,6 @@ public sealed class XNativeWindow : Window
     /// 按着 Command 再按一次同一个键当成新的按下(先补一个松开)而不是自动重复。内部可写,测试在别的系统上打开它。
     /// </summary>
     internal static bool CommandKeyUpMayBeLost { get; set; } = OperatingSystem.IsMacOS();
-
 
     /// <summary>
     /// Windows 上有 AltGr 的布局,按 AltGr 时系统先补一个假的左 Ctrl 按下(按住时连同自动重复一起补)。

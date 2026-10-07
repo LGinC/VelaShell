@@ -107,11 +107,9 @@ public sealed class CngSshSigner : ISshSigner, IDisposable
     public bool IsLocalAndCheap => false;
 
     /// <inheritdoc />
-    public async ValueTask<byte[]> SignAsync(ReadOnlyMemory<byte> data, string algorithm, CancellationToken cancellationToken = default)
-    {
+    public async ValueTask<byte[]> SignAsync(ReadOnlyMemory<byte> data, string algorithm, CancellationToken cancellationToken = default) =>
         // 密钥库签名是同步的、可能很慢（TPM、PIN 框）：放到线程池上，不堵调用方。
-        return await Task.Run(() => _inner.SignAsync(data, algorithm, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
-    }
+        await Task.Run(() => _inner.SignAsync(data, algorithm, cancellationToken).AsTask(), cancellationToken).ConfigureAwait(false);
 
     /// <inheritdoc />
     public void Dispose()

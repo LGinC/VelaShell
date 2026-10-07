@@ -73,7 +73,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 本机显示的候选端点包含套接字与回环TCP()
     {
-        X11Display display = X11Display.Parse(":0");
+        var display = X11Display.Parse(":0");
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();
 
         // 至少要有回环 TCP —— Windows 上的 VcXsrv 只听这个。
@@ -95,7 +95,7 @@ public sealed class X11PrimitiveTests
     {
         // 嵌套 ssh -X 时 sshd 给的是 DISPLAY=localhost:10 —— 按 X 的约定就是 TCP 6010。
         // 去试 Linux 抽象套接字的话，同机的别的用户抢先绑上 @/tmp/.X11-unix/X10 就能收到真 cookie。
-        X11Display display = X11Display.Parse("localhost:10");
+        var display = X11Display.Parse("localhost:10");
 
         var only = (IPEndPoint)display.GetCandidateEndPoints().Single();
         Assert.AreEqual(IPAddress.Loopback, only.Address);
@@ -109,7 +109,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 远程显示只走TCP且端口是6000加显示号()
     {
-        X11Display display = X11Display.Parse("box.example.com:7");
+        var display = X11Display.Parse("box.example.com:7");
 
         Assert.IsFalse(display.IsLocal);
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();

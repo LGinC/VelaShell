@@ -217,10 +217,10 @@ internal sealed class XWindow : XResource
     public long BufferCharged { get; set; }
 
     /// <summary>被动按钮抓取(GrabButton)。</summary>
-    public Input.PassiveGrabTable ButtonGrabs { get; } = new();
+    public Input.PassiveGrabTable ButtonGrabs { get; } = [];
 
     /// <summary>被动按键抓取(GrabKey)。</summary>
-    public Input.PassiveGrabTable KeyGrabs { get; } = new();
+    public Input.PassiveGrabTable KeyGrabs { get; } = [];
 
     /// <summary>SHAPE 扩展的边界形状(窗口坐标,原点是内区左上角,可以为负以覆盖边框);null = 默认矩形。</summary>
     public Region? BoundingShape { get; set; }

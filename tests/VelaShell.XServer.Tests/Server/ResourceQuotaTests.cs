@@ -79,7 +79,7 @@ public sealed class ResourceQuotaTests
         {
             await c.SendAsync(18, 2, b => b.U32(c.RootWindow).U32(property).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)chunk.Length).Bytes(chunk));
         }
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         const int appends = 3000;
         await c.SendManyAsync(Enumerable.Range(0, appends).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
             (18, 2, b => b.U32(c.RootWindow).U32(property).U32(31).U8(8).U8(0).U8(0).U8(0).U32(4).U8((byte)i).U8(1).U8(2).U8(3))));

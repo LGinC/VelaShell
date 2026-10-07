@@ -304,7 +304,7 @@ public sealed partial class X11Server
         int count = r.U16();
         int delta = r.I16();
         uint[] atoms = new uint[count];
-        HashSet<uint> seen = new(count);   // 查重复:原先每个都往前 Array.IndexOf 一遍,65535 个名字就是二十亿次比较
+        HashSet<uint> seen = [with(count)];   // 查重复:原先每个都往前 Array.IndexOf 一遍,65535 个名字就是二十亿次比较
         for (int i = 0; i < count; i++)
         {
             atoms[i] = r.U32();

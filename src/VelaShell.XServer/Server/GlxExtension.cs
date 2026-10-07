@@ -593,7 +593,7 @@ internal sealed class GlxExtension(X11Server server)
         {
             // 3.2 起才看 profile 掩码:得正好是核心、兼容之一;核心 profile 这里没有。
             if (profile is not (GLX_CONTEXT_CORE_PROFILE_BIT_ARB or GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB)
-                || profile == GLX_CONTEXT_CORE_PROFILE_BIT_ARB)
+                or GLX_CONTEXT_CORE_PROFILE_BIT_ARB)
             {
                 throw GlxError(GlxBadProfileArb, profile);
             }

@@ -193,7 +193,7 @@ internal static class SshForwardingOptions
         {
             string fingerprint = request.Key.Sha256Fingerprint;
             string? destination = request.DestinationHostKey?.Sha256Fingerprint;
-            SignScope scope = SignScope.Of(fingerprint, request, destination);
+            var scope = SignScope.Of(fingerprint, request, destination);
             lock (gate)
             {
                 if (allowedForSession.Contains(scope))

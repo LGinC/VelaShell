@@ -38,8 +38,6 @@ internal sealed class Region
         Subtract,
     }
 
-    private List<XRect> _rects = [];
-
     public Region()
     {
     }
@@ -48,7 +46,7 @@ internal sealed class Region
     {
         if (!rect.IsEmpty)
         {
-            _rects.Add(rect);
+            RectList.Add(rect);
         }
     }
 
@@ -59,12 +57,12 @@ internal sealed class Region
     public bool Saturated { get; private set; }
 
     /// <summary>组成区域的矩形(互不重叠,先 y 后 x)。</summary>
-    public IReadOnlyList<XRect> Rects => _rects;
+    public IReadOnlyList<XRect> Rects => RectList;
 
     /// <summary>同 <see cref="Rects" />,但给出底下的 List 本身(热循环里不走接口)。调用方只读,且只在区域不变期间用。</summary>
-    internal List<XRect> RectList => _rects;
+    internal List<XRect> RectList { get; private set; } = [];
 
-    public bool IsEmpty => _rects.Count == 0;
+    public bool IsEmpty => RectList.Count == 0;
 
     /// <summary>一个只知道「落在 <paramref name="bounds" /> 之内」的区域(已经 <see cref="Saturated" />)。</summary>
     public static Region OverLimit(XRect bounds)
@@ -79,12 +77,12 @@ internal sealed class Region
     public Region Clone()
     {
         Region copy = new() { Saturated = Saturated };
-        copy._rects.AddRange(_rects);
+        copy.RectList.AddRange(RectList);
         return copy;
     }
 
     /// <summary>外接矩形。</summary>
-    public XRect Bounds => BoundsOf(_rects);
+    public XRect Bounds => BoundsOf(RectList);
 
     private static XRect BoundsOf(List<XRect> rects)
     {
@@ -120,7 +118,7 @@ internal sealed class Region
 
     public bool Contains(int x, int y)
     {
-        foreach (XRect r in _rects)
+        foreach (XRect r in RectList)
         {
             if (r.Y > y)
             {
@@ -138,7 +136,7 @@ internal sealed class Region
     public Region Subtract(XRect cut)
     {
         // 快路径:与外接矩形不相交就原样不动(可见区域计算里绝大多数兄弟窗口与之不相交),不分配。
-        if (cut.IsEmpty || _rects.Count == 0 || Bounds.Intersect(cut).IsEmpty)
+        if (cut.IsEmpty || RectList.Count == 0 || Bounds.Intersect(cut).IsEmpty)
         {
             return this;
         }
@@ -150,13 +148,13 @@ internal sealed class Region
     public Region Subtract(Region other)
     {
         Saturated |= other.Saturated;
-        if (other._rects.Count <= 1)
+        if (other.RectList.Count <= 1)
         {
-            return other._rects.Count == 0 ? this : Subtract(other._rects[0]);
+            return other.RectList.Count == 0 ? this : Subtract(other.RectList[0]);
         }
-        if (_rects.Count != 0)
+        if (RectList.Count != 0)
         {
-            Apply(other._rects, Op.Subtract);
+            Apply(other.RectList, Op.Subtract);
         }
         return this;
     }
@@ -169,20 +167,20 @@ internal sealed class Region
     {
         int kept = 0;
         bool changed = false;
-        for (int i = 0; i < _rects.Count; i++)
+        for (int i = 0; i < RectList.Count; i++)
         {
-            XRect original = _rects[i];
+            XRect original = RectList[i];
             XRect r = original.Intersect(clip);
             changed |= r != original;
             if (!r.IsEmpty)
             {
-                _rects[kept++] = r;
+                RectList[kept++] = r;
             }
         }
-        _rects.RemoveRange(kept, _rects.Count - kept);
-        if (changed && _rects.Count > 1 && Combine(_rects, [], Op.Union) is { } coalesced)
+        RectList.RemoveRange(kept, RectList.Count - kept);
+        if (changed && RectList.Count > 1 && Combine(RectList, [], Op.Union) is { } coalesced)
         {
-            _rects = coalesced;
+            RectList = coalesced;
         }
         return this;
     }
@@ -191,18 +189,18 @@ internal sealed class Region
     public Region Intersect(Region other)
     {
         Saturated |= other.Saturated;
-        if (other._rects.Count <= 1)
+        if (other.RectList.Count <= 1)
         {
-            if (other._rects.Count == 0)
+            if (other.RectList.Count == 0)
             {
-                _rects.Clear();
+                RectList.Clear();
                 return this;
             }
-            return Intersect(other._rects[0]);
+            return Intersect(other.RectList[0]);
         }
-        if (_rects.Count != 0)
+        if (RectList.Count != 0)
         {
-            Apply(other._rects, Op.Intersect);
+            Apply(other.RectList, Op.Intersect);
         }
         return this;
     }
@@ -214,16 +212,16 @@ internal sealed class Region
         {
             return this;
         }
-        if (_rects.Count == 0)
+        if (RectList.Count == 0)
         {
-            _rects.Add(add);
+            RectList.Add(add);
             return this;
         }
         XRect bounds = Bounds;
         if (add.X <= bounds.X && add.Y <= bounds.Y && add.Right >= bounds.Right && add.Bottom >= bounds.Bottom)
         {
-            _rects.Clear();   // 把原来的整个盖住了
-            _rects.Add(add);
+            RectList.Clear();   // 把原来的整个盖住了
+            RectList.Add(add);
             return this;
         }
         Apply([add], Op.Union);
@@ -234,16 +232,16 @@ internal sealed class Region
     public Region Union(Region other)
     {
         Saturated |= other.Saturated;
-        if (other._rects.Count <= 1)
+        if (other.RectList.Count <= 1)
         {
-            return other._rects.Count == 0 ? this : Union(other._rects[0]);
+            return other.RectList.Count == 0 ? this : Union(other.RectList[0]);
         }
-        if (_rects.Count == 0)
+        if (RectList.Count == 0)
         {
-            _rects.AddRange(other._rects);
+            RectList.AddRange(other.RectList);
             return this;
         }
-        Apply(other._rects, Op.Union);
+        Apply(other.RectList, Op.Union);
         return this;
     }
 
@@ -307,16 +305,16 @@ internal sealed class Region
         Region region = new();
         if (parts.Count == 1)
         {
-            region._rects = parts[0];
+            region.RectList = parts[0];
         }
         return region;
     }
 
     public Region Translate(int dx, int dy)
     {
-        for (int i = 0; i < _rects.Count; i++)
+        for (int i = 0; i < RectList.Count; i++)
         {
-            _rects[i] = _rects[i].Offset(dx, dy);
+            RectList[i] = RectList[i].Offset(dx, dy);
         }
         return this;
     }
@@ -327,9 +325,9 @@ internal sealed class Region
     /// </summary>
     private void Apply(List<XRect> other, Op op)
     {
-        if (Combine(_rects, other, op) is { } result)
+        if (Combine(RectList, other, op) is { } result)
         {
-            _rects = result;
+            RectList = result;
             return;
         }
         XRect mine = Bounds, theirs = BoundsOf(other);
@@ -339,10 +337,10 @@ internal sealed class Region
             Op.Intersect => mine.Intersect(theirs),
             _ => mine,
         };
-        _rects.Clear();
+        RectList.Clear();
         if (!box.IsEmpty)
         {
-            _rects.Add(box);
+            RectList.Add(box);
         }
         Saturated = true;
     }

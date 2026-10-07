@@ -71,7 +71,7 @@ internal static class KeysymCase
 
     private static Dictionary<int, uint> BuildReverse()
     {
-        Dictionary<int, uint> map = new(Legacy.Length);
+        Dictionary<int, uint> map = [with(Legacy.Length)];
         foreach ((ushort keysym, ushort codePoint) in Legacy)
         {
             map[codePoint] = keysym;

@@ -163,14 +163,14 @@ internal static class XText
     /// </summary>
     public static byte[] EncodeCompoundText(string text)
     {
-        List<byte> bytes = new(text.Length + 8);
+        List<byte> bytes = [with(text.Length + 8)];
         int i = 0;
         while (i < text.Length)
         {
             char ch = text[i];
             if (ch <= 0xFF)
             {
-                if (ch is '\t' or '\n' || ch is >= ' ' and <= '~' || ch >= 0xA0)
+                if (ch is '\t' or '\n' or >= ' ' and <= '~' or >= (char)0xA0)
                 {
                     bytes.Add((byte)ch);
                 }

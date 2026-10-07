@@ -504,7 +504,7 @@ public sealed class XInputTests
         byte xi = await XiAsync(c);
         uint[] all = [.. Enumerable.Range(0, 256).Select(m => (uint)m)];
         XMessage? error = null;
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         for (uint button = 1; button <= 20 && error is null; button++)
         {
             XMessage m = await PassiveGrabAsync(c, xi, button, 0, all);

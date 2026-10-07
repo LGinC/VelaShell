@@ -96,7 +96,7 @@ internal abstract class TestHostKey : IDisposable
             ReadOnlySpan<byte> t = magnitude[start..];
             if (t.IsEmpty)
             {
-                String(ReadOnlySpan<byte>.Empty);
+                String([]);
                 return;
             }
             if ((t[0] & 0x80) != 0)

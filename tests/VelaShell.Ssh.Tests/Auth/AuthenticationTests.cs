@@ -484,7 +484,7 @@ public sealed class AuthenticationTests
         (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         Task serving = agent.ServeAsync(theirs, cts.Token);
-        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        await using (var client = SshAgentClient.FromStream(ours))
         {
             AuthRun run = await RunAsync(
                 await client.GetCredentialsAsync(cts.Token),
@@ -515,7 +515,7 @@ public sealed class AuthenticationTests
         (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(30));
         Task serving = agent.ServeAsync(theirs, cts.Token);
-        await using (SshAgentClient client = SshAgentClient.FromStream(ours))
+        await using (var client = SshAgentClient.FromStream(ours))
         {
             AuthRun run = await RunAsync(
                 await client.GetCredentialsAsync(cts.Token),
@@ -919,7 +919,7 @@ SshAlgorithmNames.SshRsa, run.Observation.PublicKeySignatureAlgorithms, "默认�
         // 而服务端正等他去按硬件令牌。
         Assert.IsTrue(seen[0].IsInformationalOnly);
         Assert.AreEqual("请按下硬件令牌上的按钮。", seen[0].Instruction);
-        Assert.AreSequenceEqual(Array.Empty<string>(), [.. run.Observation.KeyboardAnswers[0]]);
+        Assert.AreSequenceEqual([], [.. run.Observation.KeyboardAnswers[0]]);
     }
 
     [TestMethod]

@@ -144,7 +144,7 @@ public sealed partial class OpenSshInteropTests
     {
         await RequirePqServerAsync();
 
-        await using (KexRelay relay = KexRelay.Start(Host, PqPort, flipAt: null))
+        await using (var relay = KexRelay.Start(Host, PqPort, flipAt: null))
         {
             await using SshConnection connection = await SshConnection.ConnectAsync(PqOptions(relay.Port, Only(kex), "127.0.0.1"));
             Assert.AreEqual(0, (await connection.RunAsync("true")).ExitCode);
@@ -152,14 +152,14 @@ public sealed partial class OpenSshInteropTests
             Assert.AreEqual(serverReplyBytes, relay.ServerReplyBytes, "线上的 S_REPLY");
         }
 
-        await using (KexRelay relay = KexRelay.Start(Host, PqPort, flipAt: length => length - 1))
+        await using (var relay = KexRelay.Start(Host, PqPort, flipAt: length => length - 1))
         {
             SshException error = await Assert.ThrowsAsync<SshException>(async () =>
                 await SshConnection.ConnectAsync(PqOptions(relay.Port, Only(kex), "127.0.0.1")));
             Assert.AreEqual(SshFailureReason.ProtocolError, error.Reason, $"EC 点被改：{error.Message}");
         }
 
-        await using (KexRelay relay = KexRelay.Start(Host, PqPort, flipAt: _ => 10))
+        await using (var relay = KexRelay.Start(Host, PqPort, flipAt: _ => 10))
         {
             SshException error = await Assert.ThrowsAsync<SshException>(async () =>
                 await SshConnection.ConnectAsync(PqOptions(relay.Port, Only(kex), "127.0.0.1")));

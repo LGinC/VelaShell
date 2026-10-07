@@ -186,7 +186,7 @@ public sealed class HostApiTests
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         uint top = await MapTopAsync(c, host);
         XTopLevelWindow window = host.Mapped[top];
-        XPixelReader ignore = (_, _, _) => { };
+        static void ignore(ReadOnlySpan<uint> _1, int _2, int _3) { }
 
         await c.SendAsync(10, 0, b => b.U32(top));   // UnmapWindow
         await host.WaitForAsync(() => !window.Snapshot.IsMapped);
@@ -259,8 +259,8 @@ public sealed class HostApiTests
                 string path = Path.Combine(directory, $"X{i}");
                 X11Server server = new(new X11ServerOptions { DisplayNumber = 90, ListenTcp = false, UnixSocketPath = path });
                 using Barrier barrier = new(2);
-                Task start = Task.Run(() => { barrier.SignalAndWait(); return server.StartAsync(); });
-                Task dispose = Task.Run(async () => { barrier.SignalAndWait(); await server.DisposeAsync(); });
+                var start = Task.Run(() => { barrier.SignalAndWait(); return server.StartAsync(); });
+                var dispose = Task.Run(async () => { barrier.SignalAndWait(); await server.DisposeAsync(); });
                 await dispose;
                 try
                 {

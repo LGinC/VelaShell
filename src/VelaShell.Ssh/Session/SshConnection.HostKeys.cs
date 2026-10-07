@@ -92,12 +92,12 @@ public sealed partial class SshConnection
         }
 
         List<SshPublicKey> offered = [];
-        HashSet<string> announced = new(StringComparer.Ordinal);
+        HashSet<string> announced = [with(StringComparer.Ordinal)];
         foreach (byte[] blob in blobs)
         {
             try
             {
-                SshPublicKey key = SshPublicKey.Decode(blob);
+                var key = SshPublicKey.Decode(blob);
                 announced.Add(key.Sha256Fingerprint);
                 if (!key.IsCertificate && key.SignatureAlgorithms.Count > 0
                     && !offered.Any(k => k.Blob.Span.SequenceEqual(key.Blob.Span)))

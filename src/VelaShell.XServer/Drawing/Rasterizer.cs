@@ -959,7 +959,7 @@ internal sealed class Rasterizer
     /// 内部的端点按 line-style 加端帽(协议「CreateGC」的 line-style / cap-style / join-style)。整条折线的各块一起填,像素只画一次。
     /// </summary>
     /// <summary><see cref="WidePolyLine" /> 在一个请求里重复用的顶点、段列表与 PolySegment / PolyRectangle 的点数组。</summary>
-    private List<(double X, double Y)>? _vertices;
+    private Polygon? _vertices;
 
     private List<PathSegment>? _segments;
 
@@ -997,7 +997,7 @@ internal sealed class Rasterizer
         double half = _gc.LineWidth / 2.0;
         WorkBudget.Charge(points.Count);
         // 端点重合的段:协议说「效果如同这条线从路径里拿掉了」。顶点与段的列表在一个请求里重复用(PolySegment / PolyRectangle 一条请求几千段)。
-        List<(double X, double Y)> vertices = _vertices ??= [];
+        Polygon vertices = _vertices ??= [];
         vertices.Clear();
         for (int i = 0; i < points.Count; i++)
         {
@@ -1373,7 +1373,7 @@ internal sealed class Rasterizer
         (cx + (rx * Math.Cos(t)), cy - (ry * Math.Sin(t)));
 
     /// <summary>弧上的点:外接框 (x, y, w, h),起角与跨度以 1/64 度计。</summary>
-    private static List<(double X, double Y)> ArcPoints(int x, int y, int w, int h, int angle1, int angle2)
+    private static Polygon ArcPoints(int x, int y, int w, int h, int angle1, int angle2)
     {
         (double cx, double cy, double rx, double ry) = Ellipse(x, y, w, h);
         (double start, double extent) = ArcAngles(angle1, angle2);
@@ -1577,15 +1577,15 @@ internal sealed class Rasterizer
             {
                 return;
             }
-            (double X, double Y) p = Lerp(center, i, f);
+            (double x, double y) = Lerp(center, i, f);
             double dx = center[i + 1].X - center[i].X, dy = center[i + 1].Y - center[i].Y, d = Math.Sqrt((dx * dx) + (dy * dy));
             if (cap == 2)
             {
-                AddCircle(polys, p.X, p.Y, half);
+                AddCircle(polys, x, y, half);
             }
             else if (d < 1e-12)
             {
-                AddIfReaches(polys, [(p.X - half, p.Y - half), (p.X + half, p.Y - half), (p.X + half, p.Y + half), (p.X - half, p.Y + half)]);
+                AddIfReaches(polys, [(x - half, y - half), (x + half, y - half), (x + half, y + half), (x - half, y + half)]);
             }
             else
             {
@@ -1598,7 +1598,7 @@ internal sealed class Rasterizer
 
     public void FillArc(int x, int y, int w, int h, int angle1, int angle2)
     {
-        List<(double X, double Y)> points = ArcPoints(x, y, w, h, angle1, angle2);
+        Polygon points = ArcPoints(x, y, w, h, angle1, angle2);
         if (_gc.ArcMode == 1 && Math.Abs(angle2) < 360 * 64)
         {
             points.Add((x + (w / 2.0), y + (h / 2.0)));   // PieSlice:连回圆心

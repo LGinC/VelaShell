@@ -26,11 +26,8 @@ public sealed class SshHostConfig
     internal SshHostConfig(string host, string? originalHost = null)
     {
         QueriedHost = host;
-        _originalHost = originalHost ?? host;
+        HostName = originalHost ?? host;
     }
-
-    /// <summary>使用者输入的那个名字（<c>HostName</c> 里的 <c>%h</c> 换成它）。</summary>
-    private readonly string _originalHost;
 
     /// <summary>当初查的是哪个名字。</summary>
     public string QueriedHost { get; }
@@ -41,7 +38,7 @@ public sealed class SshHostConfig
     /// （<c>Host *.prod</c> 配 <c>HostName %h.example.com</c> 是常见写法）。曾经原样交出去：建连拿字面量
     /// <c>%h.example.com</c> 去连，<c>DnsFailure</c>；<c>IdentityFile</c> 等处代入的 <c>%h</c> 也是这个没展开的值。
     /// </remarks>
-    public string HostName => First("HostName") is { } configured ? ExpandHostTokens(configured, _originalHost) : QueriedHost;
+    public string HostName => First("HostName") is { } configured ? ExpandHostTokens(configured, field) : QueriedHost;
 
     /// <summary>展开 <c>HostName</c> 认的两个记号：<c>%h</c> 与 <c>%%</c>；别的原样留着。</summary>
     private static string ExpandHostTokens(string value, string originalHost)
@@ -126,7 +123,7 @@ public sealed class SshHostConfig
     /// </remarks>
     public IReadOnlyDictionary<string, string> SessionEnvironment()
     {
-        Dictionary<string, string> result = new(StringComparer.Ordinal);
+        Dictionary<string, string> result = [with(StringComparer.Ordinal)];
         foreach (string line in All("SetEnv"))
         {
             foreach (string pair in line.Split([' ', '\t'], StringSplitOptions.RemoveEmptyEntries))

@@ -204,7 +204,7 @@ public sealed class RenderTests
         await c.SendAsync(s.Major, 33, b => b.U32(black).U16(0).U16(0).U16(0).U16(0xFFFF));
 
         // 两个字形相距 31000:外接矩形约 10^9 像素。原先按它分配遮罩(a8 就是 1 GB)。
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await c.SendAsync(s.Major, 23, b => b.U8(3).U8(0).U8(0).U8(0).U32(black).U32(picture).U32(s.Formats.A8).U32(glyphSet)
             .I16(0).I16(0)
             .U8(1).U8(0).U8(0).U8(0).I16(5).I16(5).U8(65).U8(0).U8(0).U8(0)

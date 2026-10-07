@@ -34,10 +34,7 @@ internal abstract class XResource(uint id, XClient? owner)
 internal sealed class XPixmap(uint id, XClient? owner, PixelBuffer buffer) : XResource(id, owner)
 {
     public XPixmap(uint id, XClient? owner, int width, int height, byte depth)
-        : this(id, owner, new PixelBuffer(width, height, depth))
-    {
-        OwnsBuffer = true;
-    }
+        : this(id, owner, new PixelBuffer(width, height, depth)) => OwnsBuffer = true;
 
     /// <summary>缓冲是它自己的(而不是包住顶层窗口或后缓冲的那一块):只有这样才按像素记账。</summary>
     public bool OwnsBuffer { get; }

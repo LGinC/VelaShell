@@ -34,12 +34,11 @@ namespace VelaShell.Ssh.Keys;
 /// </remarks>
 public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDisposable
 {
-    private readonly ISshSigner _inner;
     private readonly bool _ownsInner;
 
     private SshCertificateSigner(ISshSigner inner, bool ownsInner, OpenSshCertificate certificate, SshPublicKey publicKey)
     {
-        _inner = inner;
+        Inner = inner;
         _ownsInner = ownsInner;
         Certificate = certificate;
         PublicKey = publicKey;
@@ -49,7 +48,7 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     public OpenSshCertificate Certificate { get; }
 
     /// <summary>证书里那把钥的签名器（往 agent 里加「证书 + 私钥」时要它的私钥）。</summary>
-    internal ISshSigner Inner => _inner;
+    internal ISshSigner Inner { get; }
 
     /// <summary>
     /// 认证时出示的「公钥」—— 它的 <see cref="SshPublicKey.Blob" /> 是整张证书。
@@ -60,7 +59,7 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     public IReadOnlyList<string> SignatureAlgorithms => PublicKey.SignatureAlgorithms;
 
     /// <inheritdoc />
-    public bool IsLocalAndCheap => _inner.IsLocalAndCheap;
+    public bool IsLocalAndCheap => Inner.IsLocalAndCheap;
 
     /// <summary>
     /// 把一张证书与它对应的私钥配成一个签名器。
@@ -116,19 +115,19 @@ public sealed class SshCertificateSigner : ISshSigner, ISessionAwareSigner, IDis
     /// </remarks>
     public ValueTask<byte[]> SignAsync(
         ReadOnlyMemory<byte> data, string algorithm, CancellationToken cancellationToken = default) =>
-        _inner.SignAsync(data, SshPublicKey.StripCertificateSuffix(algorithm), cancellationToken);
+        Inner.SignAsync(data, SshPublicKey.StripCertificateSuffix(algorithm), cancellationToken);
 
     /// <inheritdoc />
     /// <remarks>内层是 agent 里的钥时，会话声明照样要发 —— 证书不改变私钥在哪里。</remarks>
     ValueTask ISessionAwareSigner.PrepareForSessionAsync(SshSessionProof proof, CancellationToken cancellationToken) =>
-        _inner is ISessionAwareSigner aware ? aware.PrepareForSessionAsync(proof, cancellationToken) : ValueTask.CompletedTask;
+        Inner is ISessionAwareSigner aware ? aware.PrepareForSessionAsync(proof, cancellationToken) : ValueTask.CompletedTask;
 
     /// <summary>拥有内层的签名器时释放它（持有私钥材料时清零）。</summary>
     public void Dispose()
     {
         if (_ownsInner)
         {
-            (_inner as IDisposable)?.Dispose();
+            (Inner as IDisposable)?.Dispose();
         }
     }
 }

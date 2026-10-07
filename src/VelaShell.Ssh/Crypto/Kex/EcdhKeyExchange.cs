@@ -27,7 +27,6 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
     private const byte UncompressedPointTag = 0x04;
 
     private readonly ECCurve _curve;
-    private readonly int _coordinateBytes;
 
     /// <summary>曲线方程 y² = x³ − 3x + b (mod p) 的 p 与 b（三条 NIST 曲线的 a 都是 −3）。</summary>
     private readonly BigInteger _prime;
@@ -41,7 +40,7 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
     /// </param>
     public EcdhKeyExchange(string name)
     {
-        (_curve, HashAlgorithm, _coordinateBytes, string prime, string b) = name switch
+        (_curve, HashAlgorithm, CoordinateBytes, string prime, string b) = name switch
         {
             SshAlgorithmNames.EcdhSha2Nistp256 => (ECCurve.NamedCurves.nistP256, HashAlgorithmName.SHA256, 32,
                 "FFFFFFFF00000001000000000000000000000000FFFFFFFFFFFFFFFFFFFFFFFF",
@@ -66,7 +65,7 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
     public string Name { get; }
 
     /// <summary>一个坐标的字节数（P-256 是 32、P-384 是 48、P-521 是 66）：后量子混合要按它把 X 坐标补成定长（spec/03 §3.7.2）。</summary>
-    internal int CoordinateBytes => _coordinateBytes;
+    internal int CoordinateBytes { get; }
 
     /// <inheritdoc />
     public HashAlgorithmName HashAlgorithm { get; }
@@ -83,13 +82,13 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
         ObjectDisposedException.ThrowIf(_disposed, this);
 
         ECParameters parameters = _ecdh.ExportParameters(includePrivateParameters: false);
-        byte[] point = new byte[1 + (_coordinateBytes * 2)];
+        byte[] point = new byte[1 + (CoordinateBytes * 2)];
         point[0] = UncompressedPointTag;
 
         // X/Y 可能短于坐标长度（前导零被省略），必须**右对齐**补零。
         // 左对齐会产出一个完全不同的点，而对端只会报一句「协商失败」。
-        CopyRightAligned(parameters.Q.X!, point.AsSpan(1, _coordinateBytes));
-        CopyRightAligned(parameters.Q.Y!, point.AsSpan(1 + _coordinateBytes, _coordinateBytes));
+        CopyRightAligned(parameters.Q.X!, point.AsSpan(1, CoordinateBytes));
+        CopyRightAligned(parameters.Q.Y!, point.AsSpan(1 + CoordinateBytes, CoordinateBytes));
         return point;
     }
 
@@ -98,7 +97,7 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        int expected = 1 + (_coordinateBytes * 2);
+        int expected = 1 + (CoordinateBytes * 2);
         if (serverPublicValue.Length != expected)
         {
             throw new SshKeyExchangeException(
@@ -112,7 +111,7 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
 
         // 〔velashell-docs/zh/ssh/spec/03 §3.3〕点在不在曲线上先自己查一遍，不全靠下面平台后端的导入校验：
         // 那一层各平台各是各的（CNG / OpenSSL / Apple），曾经只在 Windows 上验证过。
-        if (!IsOnCurve(serverPublicValue.Slice(1, _coordinateBytes), serverPublicValue.Slice(1 + _coordinateBytes, _coordinateBytes)))
+        if (!IsOnCurve(serverPublicValue.Slice(1, CoordinateBytes), serverPublicValue.Slice(1 + CoordinateBytes, CoordinateBytes)))
         {
             throw new SshKeyExchangeException($"{Name} 协商失败：服务端公钥不在曲线上。");
         }
@@ -122,8 +121,8 @@ internal sealed class EcdhKeyExchange : ISshKeyExchange
             Curve = _curve,
             Q = new ECPoint
             {
-                X = serverPublicValue.Slice(1, _coordinateBytes).ToArray(),
-                Y = serverPublicValue.Slice(1 + _coordinateBytes, _coordinateBytes).ToArray(),
+                X = serverPublicValue.Slice(1, CoordinateBytes).ToArray(),
+                Y = serverPublicValue.Slice(1 + CoordinateBytes, CoordinateBytes).ToArray(),
             },
         };
 

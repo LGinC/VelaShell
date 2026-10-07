@@ -459,7 +459,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        if (level < 0 || level >= GlTexture.MaxLevels)
+        if (level is < 0 or >= GlTexture.MaxLevels)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;
@@ -548,7 +548,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        if (level < 0 || level >= GlTexture.MaxLevels)
+        if (level is < 0 or >= GlTexture.MaxLevels)
         {
             SetError(GlEnum.INVALID_VALUE);
             return;

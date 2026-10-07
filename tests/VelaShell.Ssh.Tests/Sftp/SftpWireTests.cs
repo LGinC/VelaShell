@@ -231,7 +231,7 @@ public sealed class SftpWireTests
     [TestMethod]
     public void 时间装不下无符号32位秒时报错_2038年之后照常表示()
     {
-        DateTimeOffset now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
+        var now = DateTimeOffset.FromUnixTimeSeconds(1_700_000_000);
 
         // 〔Q8〕无符号：2038 年之后照常表示（曾经按有符号算，一律报装不下）。
         DateTimeOffset in2040 = new(2040, 1, 1, 0, 0, 0, TimeSpan.Zero);

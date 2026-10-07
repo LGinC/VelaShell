@@ -62,7 +62,7 @@ public sealed class AvaloniaXServerHostUiTests
         HostKeymapResult abnt2 = HostKeymap.WithExtras(us, [('/', '?', 0, 0), (0, 0, 0, 0)]);
         Assert.HasCount(1, abnt2.Extras);
         Assert.AreEqual(XKeycodes.IntlRo, abnt2.Extras[0].Keycode);
-        Assert.AreSequenceEqual([(uint)'/', '?'], abnt2.Extras[0].Columns);
+        Assert.AreSequenceEqual(['/', '?'], abnt2.Extras[0].Columns);
         Assert.IsFalse(abnt2.SameAs(us), "多了额外的键就不是同一个结果");
         Assert.AreEqual(2, abnt2.ToXKeymap().KeysymsPerKeycode);
     }
@@ -199,7 +199,7 @@ public sealed class AvaloniaXServerHostUiTests
             },
         };
         await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
-        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         await host.AttachAsync(server, CancellationToken.None);
         (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
         _ = server.ServeAsync(serverSide, isLocal: true);

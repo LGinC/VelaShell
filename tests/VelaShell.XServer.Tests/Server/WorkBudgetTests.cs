@@ -90,7 +90,7 @@ public sealed class WorkBudgetTests
         const int count = 16000;
 
         // PolySegment:每条 65535 长,几乎全在 10 × 10 的像素图之外。原先每条逐像素走完,一个请求就是几十秒。
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         await c.SendAsync(66, 0, b =>
         {
             b.U32(pixmap).U32(gc);
@@ -122,7 +122,7 @@ public sealed class WorkBudgetTests
         uint gc = c.NewId();
         // Foreground(bit 2)、LineWidth(bit 4)、CapStyle(bit 6,Round = 2)。
         await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4 | 0x10 | 0x40).U32(0x0000FF).U32(65535).U32(2));
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         // 1000 个点的折线:每个接头一个半径 32767 的圆。原先每个圆按半径 × 4 取 13 万个顶点,一条请求要分配十几 GB。
         XMessage? error = null;
         ushort seq = await c.SendAsync(65, 0, b =>

@@ -141,7 +141,7 @@ public sealed class PrivateKeyFileTests
     [DataRow(521, SshAlgorithmNames.EcdsaSha2Nistp521)]
     public void NIST曲线照常认出(int bits, string algorithm)
     {
-        using ECDsa key = ECDsa.Create(bits switch
+        using var key = ECDsa.Create(bits switch
         {
             256 => ECCurve.NamedCurves.nistP256,
             384 => ECCurve.NamedCurves.nistP384,
@@ -244,7 +244,7 @@ public sealed class PrivateKeyFileTests
     [TestMethod]
     public void ECDSA的密钥类型与曲线名对不上时拒绝()
     {
-        using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP384);
         ECParameters p = ecdsa.ExportParameters(true);
         byte[] point = [0x04, .. p.Q.X!, .. p.Q.Y!];
 
@@ -266,8 +266,8 @@ public sealed class PrivateKeyFileTests
     [TestMethod]
     public void RSA的p乘q不等于n时拒绝()
     {
-        using RSA rsa = RSA.Create(2048);
-        using RSA other = RSA.Create(2048);
+        using var rsa = RSA.Create(2048);
+        using var other = RSA.Create(2048);
         RSAParameters p = rsa.ExportParameters(true);
         RSAParameters o = other.ExportParameters(true);
 

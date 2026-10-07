@@ -306,7 +306,7 @@ public static class KnownHostsFile
             }
             try
             {
-                SshPublicKey key = SshPublicKey.Decode(entry.KeyBlob);
+                var key = SshPublicKey.Decode(entry.KeyBlob);
                 if (!keys.Any(k => k.Blob.Span.SequenceEqual(key.Blob.Span)))
                 {
                     keys.Add(key);

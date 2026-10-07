@@ -14,8 +14,8 @@ public sealed class SshConnectionAssemblerSignerTests
     [TestMethod]
     public async Task 建连用完的私钥签名器被释放_交给自动加钥的那一把留着()
     {
-        InMemorySshSigner used = InMemorySshSigner.GenerateEd25519();
-        InMemorySshSigner handedOff = InMemorySshSigner.GenerateEd25519();
+        var used = InMemorySshSigner.GenerateEd25519();
+        var handedOff = InMemorySshSigner.GenerateEd25519();
         try
         {
             IReadOnlyList<SshCredential> credentials =

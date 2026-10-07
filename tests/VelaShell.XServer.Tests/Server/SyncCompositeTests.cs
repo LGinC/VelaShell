@@ -329,7 +329,7 @@ public sealed class SyncCompositeTests
         await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(0));
         const int count = 4000;
         uint[] alarms = [.. Enumerable.Range(0, count).Select(_ => c.NewId())];
-        System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+        var watch = System.Diagnostics.Stopwatch.StartNew();
         // 等待值 100 万、PositiveComparison:一个都不会触发,但每建一个都要整轮求值一遍。原先每个报警器还要在列表里 Contains 一遍。
         await c.SendManyAsync(alarms.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(id => (sync, 9, b => b.U32(id).U32(1 | 2 | 4 | 8 | 16)
             .U32(counter).U32(0).I32(0).U32(1_000_000).U32(2).I32(0).U32(1))));

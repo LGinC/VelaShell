@@ -67,15 +67,13 @@ internal sealed class XGc : XResource
     /// <summary>裁剪矩形(SetClipRectangles);与 <see cref="ClipPixmap" /> 互斥。null = 不裁剪。换的时候整份替换,不就地改。</summary>
     public List<XRect>? ClipRects
     {
-        get => _clipRects;
+        get;
         set
         {
-            _clipRects = value;
+            field = value;
             _clipRegion = null;
         }
     }
-
-    private List<XRect>? _clipRects;
 
     /// <summary>上一次按裁剪矩形建出来的区域与它平移的量(见 <see cref="ClipRegionAt" />)。</summary>
     private (int Dx, int Dy, Drawing.Region Region)? _clipRegion;
@@ -86,7 +84,7 @@ internal sealed class XGc : XResource
     /// </summary>
     public Drawing.Region? ClipRegionAt(int dx, int dy)
     {
-        if (_clipRects is not { } rects)
+        if (ClipRects is not { } rects)
         {
             return null;
         }

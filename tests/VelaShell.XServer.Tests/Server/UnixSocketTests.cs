@@ -36,7 +36,7 @@ public sealed partial class UnixSocketTests
                 {
                 }
             }
-            Stopwatch watch = Stopwatch.StartNew();
+            var watch = Stopwatch.StartNew();
             bool live = X11Server.IsUnixSocketLive(path);
             Assert.IsLessThan(2000L, watch.ElapsedMilliseconds, "原先同步 connect、不设时限,Linux 上挂死在这里");
             if (OperatingSystem.IsLinux())
