@@ -187,6 +187,34 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task ChangeTopLevelStates只改给的那几个状态_客户端设的其余状态保留()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint id = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        uint state = await InternAsync(c, "_NET_WM_STATE");
+        await SetCard32sAsync(c, id, state, 4, await InternAsync(c, "_NET_WM_STATE_SKIP_TASKBAR"), await InternAsync(c, "_NET_WM_STATE_STICKY"));
+        await c.SendAsync(8, 0, b => b.U32(id));   // 映射前设好:不进任务栏、所有工作区
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+        XTopLevelWindow window = host.Mapped[id];
+        Assert.AreEqual(XWindowStates.SkipTaskbar | XWindowStates.Sticky, window.Snapshot.States);
+
+        server.ChangeTopLevelStates(window, XWindowStates.Maximized, XWindowStates.Hidden | XWindowStates.Fullscreen);   // 用户点了最大化
+        await host.WaitForAsync(() => (window.Snapshot.States & XWindowStates.Maximized) != 0);
+        Assert.AreEqual(XWindowStates.SkipTaskbar | XWindowStates.Sticky | XWindowStates.Maximized, window.Snapshot.States);
+
+        server.ChangeTopLevelStates(window, XWindowStates.None, XWindowStates.Sticky);
+        await host.WaitForAsync(() => (window.Snapshot.States & XWindowStates.Sticky) == 0);
+        Assert.AreEqual(XWindowStates.SkipTaskbar | XWindowStates.Maximized, window.Snapshot.States);
+
+        Assert.Throws<ArgumentException>(() => server.ChangeTopLevelStates(window, XWindowStates.Above, XWindowStates.Above));
+        server.SetTopLevelStates(window, XWindowStates.Hidden);   // 整组覆盖
+        await host.WaitForAsync(() => window.Snapshot.States == XWindowStates.Hidden);
+    }
+
+    [TestMethod]
     public async Task 快照整份替换_变化按组报告_没变不报()
     {
         using RecordingHost host = new();

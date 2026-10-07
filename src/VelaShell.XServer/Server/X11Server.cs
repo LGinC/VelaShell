@@ -437,6 +437,7 @@ public sealed partial class X11Server : IAsyncDisposable
     /// <summary>
     /// 宿主(窗口管理器)设定了窗口状态 —— 通常是照办了一个 <see cref="XStateChangeRequest" />,或用户点了原生窗口的最大化按钮。
     /// 服务端写 <c>_NET_WM_STATE</c> 与 <c>WM_STATE</c>,客户端据此更新外观。<see cref="XWindowStates.Focused" /> 由服务端按焦点维护,这里给的会被忽略。
+    /// 整组覆盖:没给的状态都会去掉 —— 只改宿主管的那几个(最大化、全屏、最小化……)用 <see cref="ChangeTopLevelStates" />。
     /// </summary>
     public void SetTopLevelStates(XTopLevelWindow window, XWindowStates states)
     {
@@ -446,6 +447,28 @@ public sealed partial class X11Server : IAsyncDisposable
             if (LiveTopLevel(window) is { } top)
             {
                 ApplyStates(top, states);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 宿主(窗口管理器)改了窗口状态的一部分:加上 <paramref name="add" />、去掉 <paramref name="remove" />,其余状态原样保留 ——
+    /// 客户端映射前自己设的 SkipTaskbar、Modal、Sticky、Below、DemandsAttention 不会因为用户点了一下最大化就被清掉
+    /// (<see cref="SetTopLevelStates" /> 是整组覆盖)。服务端写 <c>_NET_WM_STATE</c> 与 <c>WM_STATE</c>;<see cref="XWindowStates.Focused" /> 由服务端维护,这里给的会被忽略。
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="add" /> 与 <paramref name="remove" /> 有重叠的位。</exception>
+    public void ChangeTopLevelStates(XTopLevelWindow window, XWindowStates add, XWindowStates remove)
+    {
+        CheckHandle(window);
+        if ((add & remove & ~XWindowStates.Focused) != 0)
+        {
+            throw new ArgumentException("同一个状态不能既加又去。", nameof(remove));
+        }
+        Post(null, () =>
+        {
+            if (LiveTopLevel(window) is { } top)
+            {
+                ApplyStates(top, (ReadNetWmStates(top) | add) & ~remove);
             }
         });
     }

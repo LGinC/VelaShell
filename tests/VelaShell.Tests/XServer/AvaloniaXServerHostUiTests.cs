@@ -500,6 +500,43 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 用户最大化 / 还原只改原生窗口管的那几个状态:客户端映射前设的 SkipTaskbar 留着,窗口照样不进任务栏
+    /// (原先整组覆盖,第一次最大化就把它清掉了)。客户端之后请求的 SkipTaskbar 之类也记进服务端。
+    /// </summary>
+    [TestMethod]
+    public async Task MaximizingKeepsClientStates_AndClientRequestedStatesAreRecorded() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, replies: replies);
+        uint state = await InternAsync(client, replies, "_NET_WM_STATE");
+        uint skipTaskbar = await InternAsync(client, replies, "_NET_WM_STATE_SKIP_TASKBAR");
+        uint sticky = await InternAsync(client, replies, "_NET_WM_STATE_STICKY");
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 18, 0, w => w.U32(window).U32(state).U32(4).U8(32).Zero(3).U32(1).U32(skipTaskbar));
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        Assert.IsFalse(native.ShowInTaskbar);
+
+        native.WindowState = Avalonia.Controls.WindowState.Maximized;
+        await WaitForAsync(() => (native.Handle.Snapshot.States & XWindowStates.Maximized) != 0 ? native : null);
+        Assert.AreNotEqual(XWindowStates.None, native.Handle.Snapshot.States & XWindowStates.SkipTaskbar, "SkipTaskbar 留着");
+        Assert.IsFalse(native.ShowInTaskbar);
+
+        // 映射之后客户端请求 _NET_WM_STATE add STICKY(根窗口 ClientMessage):记进服务端。
+        await SendAsync(client, 25, 0, w => w.U32(root).U32(0x180000).U8(33).U8(32).U16(0).U32(window).U32(state)
+            .U32(1).U32(sticky).U32(0).U32(1).U32(0));
+        await WaitForAsync(() => (native.Handle.Snapshot.States & XWindowStates.Sticky) != 0 ? native : null);
+        Assert.AreNotEqual(XWindowStates.None, native.Handle.Snapshot.States & XWindowStates.Maximized);
+        host.Detach();
+    });
+
+    /// <summary>
     /// 半透明的窗口(<c>_NET_WM_WINDOW_OPACITY</c>)要透明底,否则只是和自己的底色混;图像光标每个窗口只留最近的几个,
     /// 多的释放(原先放在 ConditionalWeakTable 里,系统光标句柄一直不释放)。
     /// </summary>

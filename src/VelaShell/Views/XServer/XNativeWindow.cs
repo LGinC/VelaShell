@@ -388,6 +388,14 @@ public sealed class XNativeWindow : Window
         _above = (target & XWindowStates.Above) != 0;
         UpdateTopmost(_host.XActive);
         ReportStates();
+        // 原生窗口不管的那几个(SkipTaskbar、Sticky、Below、DemandsAttention……)照客户端要的记进服务端:快照随之变,
+        // 是否进任务栏之类按它重新应用。原先只回写原生窗口管的,客户端映射之后再请求的这几个状态都被丢掉。
+        XWindowStates extraAdd = add & ~WindowManagedStates & ~XWindowStates.Focused;
+        XWindowStates extraRemove = remove & ~WindowManagedStates & ~XWindowStates.Focused & ~extraAdd;
+        if (extraAdd != XWindowStates.None || extraRemove != XWindowStates.None)
+        {
+            Server?.ChangeTopLevelStates(Handle, extraAdd, extraRemove);
+        }
     }
 
     // ================================================================== 窗口 → 服务端
@@ -496,6 +504,17 @@ public sealed class XNativeWindow : Window
     }
 
     /// <inheritdoc />
+    /// <remarks>窗口状态一变就写回服务端:有的平台最小化 / 最大化时尺寸没变,不来 Resized。</remarks>
+    protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
+    {
+        base.OnPropertyChanged(change);
+        if (change.Property == WindowStateProperty && _opened)
+        {
+            ReportStates();
+        }
+    }
+
+    /// <inheritdoc />
     protected override void OnPointerCaptureLost(PointerCaptureLostEventArgs e)
     {
         base.OnPointerCaptureLost(e);
@@ -556,14 +575,22 @@ public sealed class XNativeWindow : Window
         _ => XWindowStates.None,
     } | (_above && !Handle.Snapshot.OverrideRedirect ? XWindowStates.Above : XWindowStates.None);
 
-    /// <summary>窗口状态(用户点了最大化、系统最小化……)写回 <c>_NET_WM_STATE</c>。</summary>
+    /// <summary>原生窗口自己管的那几个状态(<see cref="StatesFromWindow" /> 给得出的);其余的(SkipTaskbar、Modal、Sticky……)记在服务端。</summary>
+    private const XWindowStates WindowManagedStates =
+        XWindowStates.Maximized | XWindowStates.Fullscreen | XWindowStates.Hidden | XWindowStates.Above;
+
+    /// <summary>
+    /// 窗口状态(用户点了最大化、系统最小化……)写回 <c>_NET_WM_STATE</c>:只改原生窗口管的那几个。原先整组覆盖,
+    /// 第一次最大化 / 最小化就把客户端映射前设的 SkipTaskbar、Modal、Sticky、Below、DemandsAttention 清掉了 ——
+    /// 本不进任务栏的窗口出现在任务栏里。
+    /// </summary>
     private void ReportStates()
     {
         XWindowStates states = StatesFromWindow();
         if (states != _reportedStates)
         {
             _reportedStates = states;
-            Server?.SetTopLevelStates(Handle, states);
+            Server?.ChangeTopLevelStates(Handle, states, WindowManagedStates & ~states);
         }
     }
 
