@@ -985,6 +985,29 @@ public sealed class GlxTests
         Assert.AreEqual(InvalidValue, gl.GetError());
     }
 
+    [TestMethod]
+    public async Task GetTexImage的回复大小有上限_超了回BadAlloc而不是把客户端顶断()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint floatType = 0x1406;
+
+        await RenderAsync(c, glx, tag, new Commands().Add(110, b => b.Bytes(TexImage2DBody(0, 2048, 2048))));   // 2048² 的默认纹理(不带数据)
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        XMessage huge = await c.RequestAsync(glx, 135, b => b.U32(tag).U32(Texture2D).I32(0).U32(Rgba).U32(floatType).U8(0).U8(0).U16(0));
+        Assert.IsTrue(huge.IsError, "按 FLOAT 取是 64 MB:原先照打包,顶到输出积压上限、客户端被断开");
+        Assert.AreEqual(11, huge.Bytes[1], "BadAlloc");
+
+        await RenderAsync(c, glx, tag, new Commands().Add(110, b => b.Bytes(TexImage2DBody(0, 2, 2, data: new byte[16]))));
+        XMessage small = await c.RequestAsync(glx, 135, b => b.U32(tag).U32(Texture2D).I32(0).U32(Rgba).U32(floatType).U8(0).U8(0).U16(0));
+        Assert.IsTrue(small.IsReply, "正常大小照常回");
+        Assert.AreEqual(2u, small.U32(16), "width");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

@@ -1104,6 +1104,12 @@ internal sealed partial class GlContext
         }
     }
 
+    /// <summary>TEXTURE_1D / TEXTURE_2D 当前绑定的纹理第 <paramref name="level" /> 级的尺寸;目标或级别不对、这一级没定义时为 null。</summary>
+    public (int Width, int Height)? TexLevelSize(uint target, int level) =>
+        target is GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D && level is >= 0 and < GlTexture.MaxLevels && BoundTexture(target)?.Levels[level] is { } image
+            ? (image.Width, image.Height)
+            : null;
+
     /// <summary>GetTexImage:第 <paramref name="level" /> 级按附录 A.3.1 打包;没有这一级时返回空。</summary>
     public byte[]? GetTexImage(uint target, int level, uint format, uint type, bool swapBytes, bool bigEndian, out int width, out int height)
     {

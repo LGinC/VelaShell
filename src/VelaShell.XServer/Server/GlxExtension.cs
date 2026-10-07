@@ -168,8 +168,8 @@ internal sealed class GlxExtension(X11Server server)
         public List<byte> Data { get; } = [];
     }
 
-    /// <summary>ReadPixels 的回复最多这么大:再大就超过一个客户端的输出队列上限(<see cref="XClient.MaxQueuedOutputBytes" />)了。</summary>
-    private const long MaxReadPixelsBytes = XClient.MaxQueuedOutputBytes / 2;
+    /// <summary>ReadPixels / GetTexImage 的回复最多这么大:再大就超过一个客户端的输出队列上限(<see cref="XClient.MaxQueuedOutputBytes" />)了。</summary>
+    private const long MaxPixelReplyBytes = XClient.MaxQueuedOutputBytes / 2;
 
     private static XProtocolError GlxError(byte code, uint value = 0) => new((XErrorCode)code, value);
 
@@ -1146,7 +1146,7 @@ internal sealed class GlxExtension(X11Server server)
                     bool swap = r.Bool();
                     r.Bool();   // lsb first:只对 BITMAP 有意义
                     // 回复的大小先算出来再分配:6400 万像素 × 4 个 float 就是 1 GB,远超一个客户端的输出队列上限。
-                    if (GlContext.PackedSize(width, height, format, type) > MaxReadPixelsBytes)
+                    if (GlContext.PackedSize(width, height, format, type) > MaxPixelReplyBytes)
                     {
                         throw new XProtocolError(XErrorCode.Alloc);
                     }
@@ -1234,6 +1234,11 @@ internal sealed class GlxExtension(X11Server server)
                     int level = r.I32();
                     uint format = r.U32(), type = r.U32();
                     bool swap = r.Bool();
+                    // 同 ReadPixels:回复的大小先算出来再打包。2048² 的 RGBA 按 FLOAT 取是 64 MB,正好顶到输出积压上限、客户端被断开。
+                    if (gl.TexLevelSize(target, level) is { } size && GlContext.PackedSize(size.Width, size.Height, format, type) > MaxPixelReplyBytes)
+                    {
+                        throw new XProtocolError(XErrorCode.Alloc);
+                    }
                     byte[] pixels = gl.GetTexImage(target, level, format, type, swap, c.BigEndian, out int width, out int height) ?? [];
                     c.Reply(0, w => w.Zero(8).I32(width).I32(height).I32(1).Zero(4).Bytes(pixels));
                     break;
