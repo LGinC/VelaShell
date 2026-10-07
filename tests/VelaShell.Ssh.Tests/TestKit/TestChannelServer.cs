@@ -106,6 +106,16 @@ internal sealed record TestChannelScript
     /// <summary>主机密钥证明里签的会话标识（首次交换的 H）。</summary>
     public byte[]? HostKeySessionId { get; init; }
 
+    /// <summary>
+    /// 宣告发出之后打的点：用例等它，而不是「睡一会儿再看」。
+    /// </summary>
+    /// <remarks>
+    /// 宣告在认证之后才由服务端发出，客户端还要再走一轮证明才给出结果 —— 光按次数轮询等于赌调度，
+    /// 3 核 runner 上忙起来就赌输（见 <c>HostKeyRotationTests</c> 与 plan.md §170）。给了这个点，
+    /// 「服务端发过了」是确定事件，剩下要等的只是客户端把它走完。
+    /// </remarks>
+    public TaskCompletionSource? HostKeysAnnouncementSent { get; init; }
+
     /// <summary>把第一把钥的证明签名弄坏。</summary>
     public bool CorruptHostKeyProof { get; init; }
 
@@ -461,6 +471,7 @@ internal sealed class TestChannelServer : IDisposable
                     writer.WriteString(key.PublicKeyBlob);
                 }
                 await SendAsync(buffer.WrittenMemory, cancellationToken);
+                _script.HostKeysAnnouncementSent?.TrySetResult();
             }
 
             while (!cancellationToken.IsCancellationRequested)
