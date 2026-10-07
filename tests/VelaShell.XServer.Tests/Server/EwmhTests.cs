@@ -145,6 +145,35 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task 别的客户端发NET_WM_MOVERESIZE不清按钮状态_不解除拖动方的抓取()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient dragger = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server, label: "别的会话");
+        uint top = await CreateTopAsync(dragger);
+        await dragger.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x4 | 0x8));   // ButtonPress | ButtonRelease
+        await dragger.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        uint theirs = await CreateTopAsync(other);
+        await other.SendAsync(8, 0, b => b.U32(theirs));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(theirs));
+        server.InjectPointerButton(host.Mapped[top], 10, 10, 1, pressed: true);   // 用户在 dragger 的窗口里按住左键拖选
+        await dragger.NextEventAsync(4);
+
+        uint moveresize = await InternAsync(other, "_NET_WM_MOVERESIZE");
+        await RootClientMessageAsync(other, theirs, moveresize, 10, 10, 8, 0, 1);   // 按钮 0
+        await RootClientMessageAsync(other, top, moveresize, 10, 10, 8, 999, 1);    // 越界的按钮,对别人的窗口
+        await other.SyncAsync();
+
+        XMessage pointer = await dragger.RequestAsync(38, 0, b => b.U32(top));   // QueryPointer
+        Assert.AreEqual(0x100, pointer.U16(24) & 0x100, "按钮 1 仍按着:原先被别的客户端一条消息清掉");
+        server.InjectPointerButton(host.Mapped[top], 300, 300, 1, pressed: false);   // 拖到窗口外松开
+        XMessage release = await dragger.NextEventAsync(5);
+        Assert.AreEqual(top, release.U32(12), "抓取还在:松开照样送到拖动方");
+    }
+
+    [TestMethod]
     public async Task NET_ACTIVE_WINDOW只有用户操作引起的才标成UserInitiated_CurrentTime与过期的时间戳不算()
     {
         using RecordingHost host = new();

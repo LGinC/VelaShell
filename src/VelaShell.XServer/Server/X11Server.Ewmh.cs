@@ -315,8 +315,10 @@ public sealed partial class X11Server
             case "_NET_WM_MOVERESIZE":
                 {
                     var direction = (XMoveResizeDirection)Math.Min(data[2], 11u);
-                    if (direction != XMoveResizeDirection.Cancel)
+                    if (direction != XMoveResizeDirection.Cancel && ReferenceEquals(PointerGrab?.Client, sender))
                     {
+                        // 只有发起拖动的那个程序(按下时的自动抓取归它)才能让服务端当按钮已经松开:原先任何客户端对任何顶层发一条、
+                        // data[3] 给 0 或越界值,就清掉全局的按钮状态并解除别人的抓取,打断别的会话正在进行的拖动。
                         ReleaseButtonForWindowManager((int)data[3]);
                     }
                     _host.WindowManagerRequested(new XMoveResizeRequest(handle, direction, (int)data[3], (int)data[0], (int)data[1]));
