@@ -174,6 +174,12 @@ public sealed record XTopLevelSnapshot
     /// 宿主应当让形状以外的部分透明、且不接收鼠标(xeyes 的两只眼睛、不规则弹层)。
     /// </summary>
     public IReadOnlyList<XRect>? Shape { get; init; }
+
+    /// <summary>
+    /// 输入形状(SHAPE 1.1 的 Input 形状与边界形状的交集,内区坐标):指针只在这里面才落到这个窗口,以外的点击应当穿过去。
+    /// null = 客户端没设输入形状(落在 <see cref="Shape" /> 里、没有形状时落在整个窗口里)。形状没变时各份快照共用同一个列表实例。
+    /// </summary>
+    public IReadOnlyList<XRect>? InputShape { get; init; }
 }
 
 /// <summary><see cref="IX11ServerHost.TopLevelChanged" /> 报告的变化:快照里哪几组字段跟上一份不同。</summary>

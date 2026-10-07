@@ -82,6 +82,29 @@ public sealed class ShapeTests
     }
 
     [TestMethod]
+    public async Task 宿主拿到顶层的输入形状_是输入形状与边界形状的交集()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        (uint top, XTopLevelWindow handle) = await MapTopAsync(c, host, 0x000000);
+        Assert.IsNull(handle.Snapshot.InputShape, "没设输入形状");
+
+        // 输入形状:左上 30×20(xeyes、透明的通知气泡只在眼睛 / 正文上接收鼠标)。
+        await c.SendAsync(major, 1, b => b.U8(0).U8(2).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(30).U16(20));
+        await host.WaitForAsync(() => handle.Snapshot.InputShape is not null);
+        Assert.AreEqual(new XRect(0, 0, 30, 20), handle.Snapshot.InputShape!.Single(), "原先快照里没有输入形状");
+        IReadOnlyList<XRect> first = handle.Snapshot.InputShape;
+
+        // 边界形状只留右半边 → 有效输入区是两者的交集。
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(20).I16(0).U16(40).U16(40));
+        await host.WaitForAsync(() => handle.Snapshot.Shape is not null);
+        Assert.AreEqual(new XRect(20, 0, 10, 20), handle.Snapshot.InputShape!.Single());
+        Assert.AreNotSame(first, handle.Snapshot.InputShape);
+    }
+
+    [TestMethod]
     public async Task 设形状发ShapeNotify且宿主拿到顶层形状()
     {
         using RecordingHost host = new();

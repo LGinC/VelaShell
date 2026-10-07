@@ -97,6 +97,14 @@ public sealed partial class X11Server
         {
             shape = previous.Shape;   // 形状没变就沿用上一份:宿主按引用判断要不要整窗重画
         }
+        // 输入形状:SHAPE 1.1 的有效输入区是输入形状与有效边界形状的交集。原先快照里没有,宿主做不出「形状以外不接收鼠标」。
+        IReadOnlyList<XRect>? inputShape = top.InputShape is { } input
+            ? [.. input.Clone().Intersect(EffectiveShape(top, ShapeBounding)).Intersect(new XRect(0, 0, top.Width, top.Height)).Rects]
+            : null;
+        if (inputShape is not null && previous.InputShape is not null && inputShape.SequenceEqual(previous.InputShape))
+        {
+            inputShape = previous.InputShape;
+        }
 
         XTopLevelSnapshot snapshot = previous with
         {
@@ -114,6 +122,7 @@ public sealed partial class X11Server
             HasAlpha = top.Depth == 32,
             InputOnly = top.IsInputOnly,
             Shape = shape,
+            InputShape = inputShape,
         };
         return ReadWindowManagerHints(top, snapshot, hasTransientFor: transientId != 0);
     }
