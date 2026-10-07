@@ -125,6 +125,7 @@ public sealed partial class X11Server
         {
             ClientClosed = CleanupPresent,
             WindowDestroyed = CleanupPresent,
+            PixmapFreed = PresentPixmapFreed,
         });
         Register(new Extension("XKEYBOARD", XkbMajor, Xkb)
         {

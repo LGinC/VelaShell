@@ -361,4 +361,133 @@ public sealed class SyncCompositeTests
         Assert.AreEqual(pixmap, idle.U32(24));
         Assert.AreEqual(0x0000FFu, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF);
     }
+
+    /// <summary>PresentPixmap:窗口、像素图、serial、无 valid / update、偏移 0、无 crtc,之后是两个栅栏、选项与 target / divisor / remainder。</summary>
+    private static Task<ushort> PresentPixmapAsync(XTestClient c, byte present, uint window, uint pixmap, uint serial,
+        ulong targetMsc = 0, uint waitFence = 0, uint idleFence = 0, IEnumerable<(uint Window, uint Serial)>? notifies = null) =>
+        c.SendAsync(present, 1, b =>
+        {
+            b.U32(window).U32(pixmap).U32(serial).U32(0).U32(0).I16(0).I16(0)
+                .U32(0).U32(waitFence).U32(idleFence).U32(0).U32(0)
+                .U32((uint)targetMsc).U32((uint)(targetMsc >> 32)).U32(0).U32(0).U32(0).U32(0);
+            foreach ((uint w, uint s) in notifies ?? [])
+            {
+                b.U32(w).U32(s);
+            }
+        });
+
+    private static Task<XMessage> PresentCompleteAsync(XTestClient c, uint serial, int timeoutMs = 5000) =>
+        c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 35 && m.U16(8) == 1 && m.U32(20) == serial, timeoutMs);
+
+    private static ulong CompleteMsc(XMessage complete) => complete.U32(32) | ((ulong)complete.U32(36) << 32);
+
+    /// <summary>一张填满一种颜色的 40×30 像素图。</summary>
+    private static async Task<uint> SolidPixmapAsync(XTestClient c, uint window, uint color)
+    {
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(window).U16(40).U16(30));
+        await FillAsync(c, pixmap, await GcAsync(c, pixmap, color), 0, 0, 40, 30);
+        return pixmap;
+    }
+
+    [TestMethod]
+    public async Task Present等到target_msc那一帧才呈现_像素图提前释放也照常呈现()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        _ = await ExtAsync(c, "Generic Event Extension");
+        (byte present, _, _) = await ExtAsync(c, "Present");
+        uint top = await MapTopAsync(c, host);
+        uint blue = await SolidPixmapAsync(c, top, 0x0000FF), red = await SolidPixmapAsync(c, top, 0xFF0000);
+        await c.SendAsync(present, 3, b => b.U32(c.NewId()).U32(top).U32(2));
+
+        await PresentPixmapAsync(c, present, top, blue, 1);
+        ulong msc = CompleteMsc(await PresentCompleteAsync(c, 1));
+
+        // 30 帧(约 0.5 秒)之后再呈现红的:按 MSC 控帧的客户端靠这个不空转。
+        await PresentPixmapAsync(c, present, top, red, 2, targetMsc: msc + 30);
+        await c.SendAsync(54, 0, b => b.U32(red));   // FreePixmap:规范说呈现之前一直持有引用
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => PresentCompleteAsync(c, 2, timeoutMs: 150), "目标帧之前不报完成");
+        Assert.AreEqual(0x0000FFu, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF, "目标帧之前窗口不变");
+
+        XMessage complete = await PresentCompleteAsync(c, 2);
+        Assert.IsGreaterThanOrEqualTo(msc + 30, CompleteMsc(complete), "完成时的 MSC 不早于目标");
+        Assert.AreEqual(0xFF0000u, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF);
+        Assert.AreEqual(0, await server.InvokeAsync(() => server.PendingPresents));
+    }
+
+    [TestMethod]
+    public async Task Present等wait_fence触发才呈现_idle_fence无效回BadFence()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        _ = await ExtAsync(c, "Generic Event Extension");
+        (byte present, _, _) = await ExtAsync(c, "Present");
+        (byte sync, _, byte syncError) = await ExtAsync(c, "SYNC");
+        uint top = await MapTopAsync(c, host);
+        uint red = await SolidPixmapAsync(c, top, 0xFF0000);
+        await c.SendAsync(present, 3, b => b.U32(c.NewId()).U32(top).U32(2));
+        uint fence = c.NewId(), idle = c.NewId();
+        await c.SendAsync(sync, 14, b => b.U32(top).U32(fence).U8(0).U8(0).U8(0).U8(0));   // CreateFence:未触发
+        await c.SendAsync(sync, 14, b => b.U32(top).U32(idle).U8(0).U8(0).U8(0).U8(0));
+
+        await PresentPixmapAsync(c, present, top, red, 5, waitFence: fence, idleFence: idle);
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => PresentCompleteAsync(c, 5, timeoutMs: 150), "栅栏没触发不呈现");
+        Assert.AreEqual(0xFFFFFFu, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF);
+
+        await c.SendAsync(sync, 15, b => b.U32(fence));   // TriggerFence
+        await PresentCompleteAsync(c, 5);
+        Assert.AreEqual(0xFF0000u, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF);
+        Assert.AreEqual(1, (await c.RequestAsync(sync, 18, b => b.U32(idle))).Bytes[8], "呈现之后 idle-fence 触发");
+
+        ushort bad = await PresentPixmapAsync(c, present, top, red, 6, idleFence: c.NewId());
+        XMessage error = await c.NextAsync(m => m.IsError && m.Sequence == bad);
+        Assert.AreEqual(syncError + 2, error.Detail, "idle-fence 不是栅栏:BadFence,而不是悄悄忽略");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => PresentCompleteAsync(c, 6, timeoutMs: 100), "出错的请求不呈现");
+    }
+
+    [TestMethod]
+    public async Task 较晚的Present先呈现时排在前面的按Skip了结_notifies有上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        _ = await ExtAsync(c, "Generic Event Extension");
+        (byte present, _, _) = await ExtAsync(c, "Present");
+        uint top = await MapTopAsync(c, host);
+        uint blue = await SolidPixmapAsync(c, top, 0x0000FF), red = await SolidPixmapAsync(c, top, 0xFF0000);
+        await c.SendAsync(present, 3, b => b.U32(c.NewId()).U32(top).U32(2));
+
+        await PresentPixmapAsync(c, present, top, red, 1, targetMsc: ulong.MaxValue / 2);   // 远在天边
+        await PresentPixmapAsync(c, present, top, blue, 2);
+        XMessage skipped = await PresentCompleteAsync(c, 1);
+        Assert.AreEqual(2, skipped.Bytes[11], "mode = Skip");
+        XMessage shown = await PresentCompleteAsync(c, 2);
+        Assert.AreEqual(0, shown.Bytes[11], "mode = Copy");
+        Assert.AreEqual(0x0000FFu, RecordingHost.Snapshot(host.Mapped[top]).Pixels[0] & 0xFFFFFF, "过时的那条不再盖上来");
+        Assert.AreEqual(0, await server.InvokeAsync(() => server.PendingPresents));
+
+        ushort tooMany = await PresentPixmapAsync(c, present, top, blue, 3,
+            notifies: Enumerable.Repeat((top, 9u), X11Server.MaxPresentNotifies + 1));
+        Assert.AreEqual(11, (await c.NextAsync(m => m.IsError && m.Sequence == tooMany)).Detail, "PRESENTNOTIFY 超过上限:BadAlloc");
+    }
+
+    [TestMethod]
+    public async Task Present与DAMAGE的QueryVersion不高于客户端要的版本()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte present, _, _) = await ExtAsync(c, "Present");
+        (byte damage, _, _) = await ExtAsync(c, "DAMAGE");
+        XMessage p = await c.RequestAsync(present, 0, b => b.U32(1).U32(0));
+        Assert.AreEqual((1u, 0u), (p.U32(8), p.U32(12)));
+        p = await c.RequestAsync(present, 0, b => b.U32(1).U32(9));
+        Assert.AreEqual((1u, 2u), (p.U32(8), p.U32(12)));
+        XMessage d = await c.RequestAsync(damage, 0, b => b.U32(1).U32(0));
+        Assert.AreEqual((1u, 0u), (d.U32(8), d.U32(12)));
+    }
 }

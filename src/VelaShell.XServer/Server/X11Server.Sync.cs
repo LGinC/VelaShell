@@ -237,6 +237,7 @@ public sealed partial class X11Server
                 {
                     XSyncFence fence = Fence(r.U32());
                     RemoveResource(fence.Id);
+                    RunReadyPresents();   // 等它的 PresentPixmap 不再等(Present 规范)
                     break;
                 }
             case 18:  // QueryFence
@@ -333,6 +334,7 @@ public sealed partial class X11Server
     {
         fence.Triggered = true;
         EvaluateSync();
+        RunReadyPresents();   // 以它为 wait-fence 的 PresentPixmap
     }
 
     private void DestroyCounter(XSyncCounter counter)

@@ -197,7 +197,7 @@ public sealed class MiscExtensionTests
         await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
 
         // NotifyMSC 目标 MSC 在几十天之后:每条一个计时器。
-        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingNotifyMsc + 1).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingPresents + 1).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
             (present, 2, b => b.U32(window).U32((uint)i).U32(0).U32(100_000_000).U32(0).U32(0).U32(0).U32(0).U32(0))));
         XMessage refused = await c.NextAsync(m => m.IsError && m.Sequence == last);
         Assert.AreEqual(11, refused.Detail, "超过上限:BadAlloc");
@@ -211,12 +211,12 @@ public sealed class MiscExtensionTests
                 await Task.Delay(10, timeout.Token);
             }
         }
-        Assert.AreEqual((1, X11Server.MaxPendingNotifyMsc), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)));
+        Assert.AreEqual((1, X11Server.MaxPendingPresents), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingPresents)));
 
         Task serving = c.ServerTask;
         await c.DisposeAsync();
         await serving.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)), "断开时计时器一并取消");
+        Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingPresents)), "断开时计时器一并取消");
     }
 
     [TestMethod]

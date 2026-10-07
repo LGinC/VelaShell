@@ -30,9 +30,13 @@ public sealed partial class X11Server
     {
         switch (r.Data)
         {
-            case 0:   // QueryVersion
-                c.Reply(0, w => w.U32(1).U32(1).Zero(16));
-                break;
+            case 0:   // QueryVersion:1.1,但不高于客户端要的(规范 §6)
+                {
+                    uint major = r.U32(), minor = r.U32();
+                    (uint maj, uint min) = major > 1 || (major == 1 && minor >= 1) ? (1u, 1u) : (major, minor);
+                    c.Reply(0, w => w.U32(maj).U32(min).Zero(16));
+                    break;
+                }
             case 1:   // Create
                 {
                     uint id = r.U32();
