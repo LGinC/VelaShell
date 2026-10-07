@@ -185,6 +185,42 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 单字节字体的CHAR2B按16位数取字_byte1不为0时画default_char()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint pixmap = c.NewId(), font = c.NewId(), gc = c.NewId(), clear = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(20).U16(20));
+        await c.SendAsync(45, 0, b => b.U32(font).U16(5).U16(0).Bytes(Encoding.Latin1.GetBytes("fixed")));
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4 | 0x8 | 0x4000).U32(0xFFFFFF).U32(0x000000).U32(font));
+        await c.SendAsync(55, 0, b => b.U32(clear).U32(pixmap).U32(0x4).U32(0x000000));
+
+        async Task<byte[]> DrawAsync(bool image, byte byte1, byte byte2)
+        {
+            await c.SendAsync(70, 0, b => b.U32(pixmap).U32(clear).I16(0).I16(0).U16(20).U16(20));   // 清成黑
+            if (image)
+            {
+                await c.SendAsync(77, 1, b => b.U32(pixmap).U32(gc).I16(2).I16(14).U8(byte1).U8(byte2));   // ImageText16
+            }
+            else
+            {
+                await c.SendAsync(75, 0, b => b.U32(pixmap).U32(gc).I16(2).I16(14).U8(1).U8(0).U8(byte1).U8(byte2));   // PolyText16
+            }
+            XMessage pixels = await c.RequestAsync(73, 2, b => b.U32(pixmap).I16(0).I16(0).U16(20).U16(20).U32(0xFFFFFFFF));   // GetImage
+            return pixels.Bytes[32..];
+        }
+
+        foreach (bool image in (bool[])[true, false])
+        {
+            byte[] fallback = await DrawAsync(image, 0, 0);       // default-char 是 0
+            byte[] letter = await DrawAsync(image, 0, (byte)'A');
+            byte[] outOfRange = await DrawAsync(image, 1, (byte)'A');   // 0x0141:单字节字体里没有
+            CollectionAssert.AreNotEqual(letter, fallback);
+            CollectionAssert.AreEqual(fallback, outOfRange, $"{(image ? "ImageText16" : "PolyText16")}:原先丢掉 byte1,画成了 A");
+        }
+    }
+
+    [TestMethod]
     public async Task QueryFont返回fixed的度量与每个字符的CHARINFO()
     {
         await using X11Server server = new();

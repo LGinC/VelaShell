@@ -101,8 +101,10 @@ public sealed partial class X11Server
         int[] codes = new int[Math.Max(0, count)];
         for (int i = 0; i < codes.Length; i++)
         {
-            byte b1 = r.U8(), b2 = r.U8();
-            codes[i] = font.IsTwoByte ? (b1 << 8) | b2 : b2;
+            // CHAR2B:矩阵式(双字节)字体是 byte1、byte2;线性(单字节)字体把它当成高位在前的 16 位数(协议「QueryTextExtents」
+            // 「PolyText16」「ImageText16」)——
+            // byte1 不是 0 就是超出范围的字符,按不存在的字符走 default-char。原先丢掉 byte1。
+            codes[i] = (r.U8() << 8) | r.U8();
         }
         (int width, int left, int right, int ascent, int descent) = font.Measure(codes);
         c.Reply(0, w => w
@@ -217,7 +219,7 @@ public sealed partial class X11Server
                 pen += delta;
                 foreach (int code in codes)
                 {
-                    if (font.Lookup(font.IsTwoByte ? code : code & 0xFF) is { } glyph)
+                    if (font.Lookup(code) is { } glyph)   // 线性字体的 CHAR2B 是 16 位数,超出范围的走 default-char(原先丢掉 byte1)
                     {
                         pen += raster.DrawGlyph(glyph, pen, y);
                     }
@@ -235,11 +237,7 @@ public sealed partial class X11Server
         int[] codes = new int[n];
         for (int i = 0; i < n; i++)
         {
-            codes[i] = wide ? (r.U8() << 8) | r.U8() : r.U8();
-            if (!font.IsTwoByte)
-            {
-                codes[i] &= 0xFF;
-            }
+            codes[i] = wide ? (r.U8() << 8) | r.U8() : r.U8();   // 线性字体的 CHAR2B 同样是 16 位数
         }
         Draw(drawable, gcId, raster => raster.ImageText(font, codes, x, y));
     }
