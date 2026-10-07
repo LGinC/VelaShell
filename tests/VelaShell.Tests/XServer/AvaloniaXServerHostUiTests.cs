@@ -372,6 +372,47 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 按住一个键:同一个键再来 KeyDown(系统的自动重复,中间没有 KeyUp)时告诉服务端这是重复 —— 核心客户端看到
+    /// 「按下、松开、按下、松开」(X 的自动重复),而不是「按下、按下、松开」;修饰键的重复由服务端丢掉。
+    /// </summary>
+    [TestMethod]
+    public async Task 按住键时重复的KeyDown按自动重复转交_修饰键不重复() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        Task serve = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte> events = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, events);
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0)
+            .U32(0x800).U32(0x1 | 0x2));                                                // KeyPress | KeyRelease
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault());
+        native.Activate();
+        server.FocusTopLevel(native.Handle);
+        byte[] Keys() => [.. events.Where(e => e is 2 or 3)];
+
+        native.KeyPressQwerty(PhysicalKey.A, RawInputModifiers.None);
+        native.KeyPressQwerty(PhysicalKey.A, RawInputModifiers.None);                   // 自动重复
+        native.KeyReleaseQwerty(PhysicalKey.A, RawInputModifiers.None);
+        await WaitForAsync(() => Keys().Length >= 4 ? native : null);
+        native.KeyPressQwerty(PhysicalKey.ShiftLeft, RawInputModifiers.Shift);
+        native.KeyPressQwerty(PhysicalKey.ShiftLeft, RawInputModifiers.Shift);         // Windows 上按住 Shift 一直有 KeyDown
+        native.KeyReleaseQwerty(PhysicalKey.ShiftLeft, RawInputModifiers.None);
+        await WaitForAsync(() => Keys().Length >= 6 ? native : null);
+        await Task.Delay(100);
+        Dispatcher.UIThread.RunJobs();
+        CollectionAssert.AreEqual(new byte[] { 2, 3, 2, 3, 2, 3 }, Keys());
+
+        native.CloseByHost();
+        host.Detach();
+        client.Dispose();
+        await serve.WaitAsync(TimeSpan.FromSeconds(5));
+    });
+
+    /// <summary>
     /// override-redirect 的弹出层只在用户正在用 X 窗口时才系统级置顶:用户在本机窗口里时映射上来的(远端程序画的假凭据框)不盖住本机程序,
     /// 用户回到某个 X 窗口时照常置顶(菜单要在最上面)。
     /// </summary>

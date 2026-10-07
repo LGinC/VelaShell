@@ -271,10 +271,23 @@ public sealed partial class X11Server : IAsyncDisposable
     public void InjectPointerLeave() => Post(null, ApplyPointerLeave);
 
     /// <summary>按键按下 / 松开(X 键码,见 <see cref="XKeycodes" />)。按键送往当前的键盘焦点(<see cref="FocusTopLevel" />)。</summary>
-    public void InjectKey(byte keycode, bool pressed)
+    public void InjectKey(byte keycode, bool pressed) => InjectKey(keycode, pressed, repeat: false);
+
+    /// <summary>
+    /// 同 <see cref="InjectKey(byte, bool)" />;<paramref name="repeat" /> 为真时是宿主的自动重复(键一直按着,系统又报了一次按下 ——
+    /// 重复的节奏由宿主定)。服务端按 X 的语义处理:自动重复关了(<c>xset r off</c>、这个键不重复、它是修饰键)就丢掉;否则客户端收到
+    /// 一个 KeyPress,没开 XKB DetectableAutoRepeat 的核心客户端先收一个 KeyRelease(「按下、松开、按下……」),XI2 的 KeyPress 带 KeyRepeat 标志。
+    /// 服务端认为这个键没按着时当普通的按下。宿主的松开照常用 <paramref name="pressed" /> 为假、<paramref name="repeat" /> 为假报。
+    /// </summary>
+    /// <exception cref="ArgumentException"><paramref name="repeat" /> 为真而 <paramref name="pressed" /> 为假。</exception>
+    public void InjectKey(byte keycode, bool pressed, bool repeat)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(keycode, XKeymap.MinKeycode);
-        Post(null, () => ApplyKey(keycode, pressed));
+        if (repeat && !pressed)
+        {
+            throw new ArgumentException("自动重复只有按下,没有松开。", nameof(repeat));
+        }
+        Post(null, () => ApplyKey(keycode, pressed, repeat));
     }
 
     /// <summary>

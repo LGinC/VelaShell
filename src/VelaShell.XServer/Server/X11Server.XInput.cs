@@ -931,7 +931,7 @@ public sealed partial class X11Server
         ReferenceEquals(_pointerWindow, window) || !_pointerWindow.IsDescendantOf(window) ? 0 : ChildOnPath(window, _pointerWindow);
 
     /// <summary>XI2 的 DeviceEvent(KeyPress / KeyRelease / ButtonPress / ButtonRelease / Motion)。</summary>
-    private void SendXi2DeviceEvent(XClient client, int evtype, byte detail, XWindow eventWindow, XWindow source, bool slave)
+    private void SendXi2DeviceEvent(XClient client, int evtype, byte detail, XWindow eventWindow, XWindow source, bool slave, uint flags = 0)
     {
         bool key = evtype is XEventCode.KeyPress or XEventCode.KeyRelease;
         ushort sourceId = key ? XiSlaveKeyboard : XiSlavePointer;
@@ -944,7 +944,7 @@ public sealed partial class X11Server
         {
             w.U16(device).U32(time).U32(detail).U32(Root.Id).U32(eventWindow.Id).U32(child)
                 .I32(Fp1616(px)).I32(Fp1616(py)).I32(Fp1616(px - ex)).I32(Fp1616(py - ey))
-                .U16(1).U16(key ? (ushort)0 : (ushort)1).U16(sourceId).Zero(2).U32(0);
+                .U16(1).U16(key ? (ushort)0 : (ushort)1).U16(sourceId).Zero(2).U32(flags);
             WriteXiModifiers(w);
             WriteButtonMask(w, 1);
             if (!key)
@@ -998,7 +998,7 @@ public sealed partial class X11Server
     /// XI2 的原始事件:发给在根窗口上选了它的客户端,不受焦点与抓取影响。移动事件的轴 0、1 是设备的位置 (<paramref name="x" />, <paramref name="y" />)
     /// —— 与 XIQueryDevice 的声明(Abs X / Abs Y、Absolute)一致;没有加速,处理后的值与原始值相同。
     /// </summary>
-    private void SendRawEvent(int evtype, uint detail, int x, int y)
+    private void SendRawEvent(int evtype, uint detail, int x, int y, uint flags = 0)
     {
         if (!Root.AnyXi2Selects(evtype))
         {
@@ -1017,7 +1017,7 @@ public sealed partial class X11Server
             ushort device = (master & (1UL << evtype)) != 0 && !IsFloating(!key) ? MasterOf(!key) : sourceId;
             client.GenericEvent(XInputMajor, (ushort)evtype, w =>
             {
-                w.U16(device).U32(time).U32(detail).U16(sourceId).U16(motion ? (ushort)1 : (ushort)0).U32(0).Zero(4);
+                w.U16(device).U32(time).U32(detail).U16(sourceId).U16(motion ? (ushort)1 : (ushort)0).U32(flags).Zero(4);
                 if (motion)
                 {
                     w.U32(0x3);

@@ -170,7 +170,7 @@ public sealed partial class X11Server
             case XOpcode.ListExtensions: ListExtensions(c); break;
             case XOpcode.ChangeKeyboardMapping: ChangeKeyboardMapping(c, r); break;
             case XOpcode.GetKeyboardMapping: GetKeyboardMapping(c, r); break;
-            case XOpcode.ChangeKeyboardControl: break;
+            case XOpcode.ChangeKeyboardControl: ChangeKeyboardControl(r); break;
             case XOpcode.GetKeyboardControl: GetKeyboardControl(c); break;
             case XOpcode.Bell: Bell(r); break;
             case XOpcode.ChangePointerControl: break;

@@ -242,7 +242,9 @@ public sealed partial class X11Server
             case 9:   // SetMap:上传的键值与修饰键映射写回核心键位表(X11Server.XkbSetMap.cs)
                 XkbSetMap(r);
                 break;
-            case 7:   // SetControls
+            case 7:   // SetControls:自动重复的几项生效(X11Server.KeyboardControl.cs)
+                XkbSetControls(r);
+                break;
             case 11:  // SetCompatMap
             case 14:  // SetIndicatorMap
             case 16:  // SetNamedIndicator
@@ -614,23 +616,6 @@ public sealed partial class X11Server
             // KeyAliases(第 10 位)与 RGNames(第 13 位):计数都是 0,没有内容。
         });
     }
-
-    // ------------------------------------------------------------------ GetControls
-
-    private static void XkbGetControls(XClient c) => c.Reply(XkbDeviceId, w =>
-    {
-        w.U8(0).U8(1).U8(0).U8(0).U8(0).U8(0).U8(0).Zero(1)   // mouseKeysDfltBtn、numGroups = 1、groupsWrap、内部 / 忽略锁定修饰
-            .U16(0).U16(0)
-            .U16(660).U16(40)                                  // repeatDelay、repeatInterval(毫秒)
-            .U16(300).U16(300).U16(160).U16(40).U16(30).U16(10).I16(0)
-            .U16(0).U16(120).U16(0).U16(0).Zero(2)
-            .U32(0).U32(0)
-            .U32(1);                                           // enabledControls:RepeatKeys
-        for (int i = 0; i < 32; i++)
-        {
-            w.U8(0xFF);                                        // 每个键都自动重复
-        }
-    });
 
     // ------------------------------------------------------------------ 事件
 

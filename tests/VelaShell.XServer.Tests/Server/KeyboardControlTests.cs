@@ -1,0 +1,201 @@
+using System.Text;
+using VelaShell.XServer.Tests.TestKit;
+
+namespace VelaShell.XServer.Tests.Server;
+
+/// <summary>键盘与指针的控制:自动重复(核心、XKB、XI2 三种看法)、ChangeKeyboardControl / GetKeyboardControl、响铃音量。</summary>
+[TestClass]
+[TestCategory("X11Server")]
+public sealed class KeyboardControlTests
+{
+    private const byte KeyPress = 2, KeyRelease = 3, GenericEvent = 35;
+    private const ushort UseCoreKbd = 0x100;
+
+    private static async Task<uint> MapTopAsync(XTestClient c, RecordingHost host, uint eventMask)
+    {
+        uint id = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(100).U16(80).U16(0).U16(1).U32(0)
+            .U32(0x800).U32(eventMask));
+        await c.SendAsync(8, 0, b => b.U32(id));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+        return id;
+    }
+
+    private static async Task<byte> ExtensionAsync(XTestClient c, string name)
+    {
+        XMessage q = await c.RequestAsync(98, 0, b => b.U16((ushort)name.Length).U16(0).Bytes(Encoding.Latin1.GetBytes(name)).Pad());
+        Assert.AreEqual(1, q.Bytes[8], name);
+        return q.Bytes[9];
+    }
+
+    /// <summary>收齐到目前为止的核心按键事件:(事件码, 键码)。</summary>
+    private static async Task<List<(byte Code, byte Key)>> KeyEventsAsync(XTestClient c)
+    {
+        await c.SyncAsync();
+        List<(byte, byte)> events = [];
+        while (true)
+        {
+            try
+            {
+                XMessage m = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode is KeyPress or KeyRelease, timeoutMs: 80);
+                events.Add((m.EventCode, m.Detail));
+            }
+            catch (OperationCanceledException)
+            {
+                return events;
+            }
+        }
+    }
+
+    /// <summary>ChangeKeyboardControl:按位给的值,每个 4 字节。等它执行完再返回(之后宿主注入的按键按新设置处理)。</summary>
+    private static async Task ChangeKeyboardControlAsync(XTestClient c, uint mask, params uint[] values)
+    {
+        await c.SendAsync(102, 0, b =>
+        {
+            b.U32(mask);
+            foreach (uint v in values)
+            {
+                b.U32(v);
+            }
+        });
+        await c.SyncAsync();
+    }
+
+    [TestMethod]
+    public async Task 自动重复_核心客户端收到成对的松开与按下_开了DetectableAutoRepeat的只收按下_XI2的按下带KeyRepeat()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient plain = await XTestClient.ConnectAsync(server);
+        await using XTestClient detectable = await XTestClient.ConnectAsync(server);
+        await using XTestClient xi2 = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(plain, host, 0x1 | 0x2);                           // KeyPress | KeyRelease
+        await detectable.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x1 | 0x2));
+        byte xkb = await ExtensionAsync(detectable, "XKEYBOARD");
+        await detectable.RequestAsync(xkb, 0, b => b.U16(1).U16(0));
+        XMessage flags = await detectable.RequestAsync(xkb, 21, b => b.U16(UseCoreKbd).U16(0).U32(1).U32(1).U32(0).U32(0).U32(0));
+        Assert.AreEqual(1u, flags.U32(12), "PerClientFlags:DetectableAutoRepeat 开了");
+        byte xi = await ExtensionAsync(xi2, "XInputExtension");
+        await xi2.RequestAsync(xi, 47, b => b.U16(2).U16(2));
+        await xi2.SendAsync(xi, 46, b => b.U32(top).U16(1).U16(0).U16(1).U16(1).U8((1 << 2) | (1 << 3)).U8(0).U8(0).U8(0));
+        await xi2.SyncAsync();
+        await plain.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: true, repeat: true);
+        server.InjectKey(XKeycodes.A, pressed: true, repeat: true);
+        server.InjectKey(XKeycodes.A, pressed: false);
+
+        CollectionAssert.AreEqual(
+            new List<(byte, byte)> { (KeyPress, 38), (KeyRelease, 38), (KeyPress, 38), (KeyRelease, 38), (KeyPress, 38), (KeyRelease, 38) },
+            await KeyEventsAsync(plain), "协议:自动重复的键交替产生 KeyPress 与 KeyRelease");
+        CollectionAssert.AreEqual(
+            new List<(byte, byte)> { (KeyPress, 38), (KeyPress, 38), (KeyPress, 38), (KeyRelease, 38) },
+            await KeyEventsAsync(detectable), "XKB Detectable Autorepeat:只在真的松开时收到 KeyRelease");
+
+        List<(int Type, uint Flags)> xiEvents = [];
+        for (int i = 0; i < 4; i++)
+        {
+            XMessage e = await xi2.NextAsync(m => m.EventCode == GenericEvent && m.Bytes[1] == xi && m.U16(8) is 2 or 3);
+            xiEvents.Add((e.U16(8), e.U32(56)));
+        }
+        CollectionAssert.AreEqual(new List<(int, uint)> { (2, 0), (2, 1u << 16), (2, 1u << 16), (3, 0) }, xiEvents,
+            "XI2:重复的 KeyPress 带 KeyRepeat,中间没有 KeyRelease");
+    }
+
+    [TestMethod]
+    public async Task 修饰键不重复_xset_r_off与逐键关掉的键不重复_XKB的控制看得到同一份设置()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host, 0x1 | 0x2);
+        await c.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: true);
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: true, repeat: true);   // Windows 上按住 Shift 一直有 KeyDown
+        server.InjectKey(XKeycodes.ShiftLeft, pressed: false);
+        Assert.HasCount(2, await KeyEventsAsync(c), "修饰键不重复:只有按下与松开");
+
+        await ChangeKeyboardControlAsync(c, 0x80, 0);   // auto-repeat-mode Off(xset r off)
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: true, repeat: true);
+        server.InjectKey(XKeycodes.A, pressed: false);
+        Assert.HasCount(2, await KeyEventsAsync(c), "全局关了:重复丢掉");
+        XMessage control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(0, control.Bytes[1], "global-auto-repeat = Off");
+
+        await ChangeKeyboardControlAsync(c, 0x80, 1);                       // 全局开回来
+        await ChangeKeyboardControlAsync(c, 0x40 | 0x80, XKeycodes.A, 0);   // 只关 a
+        server.InjectKey(XKeycodes.A, pressed: true);
+        server.InjectKey(XKeycodes.A, pressed: true, repeat: true);
+        server.InjectKey(XKeycodes.A, pressed: false);
+        server.InjectKey(XKeycodes.S, pressed: true);
+        server.InjectKey(XKeycodes.S, pressed: true, repeat: true);
+        server.InjectKey(XKeycodes.S, pressed: false);
+        List<(byte Code, byte Key)> events = await KeyEventsAsync(c);
+        Assert.AreEqual(2, events.Count(e => e.Key == XKeycodes.A), "a 不重复");
+        Assert.AreEqual(4, events.Count(e => e.Key == XKeycodes.S), "s 照常重复");
+
+        control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(1, control.Bytes[1]);
+        byte[] perKey = control.Bytes[20..52];
+        Assert.AreEqual(0, perKey[XKeycodes.A >> 3] & (1 << (XKeycodes.A & 7)), "a 的位清了");
+        Assert.AreNotEqual(0, perKey[XKeycodes.S >> 3] & (1 << (XKeycodes.S & 7)));
+        Assert.AreEqual(0, perKey[XKeycodes.ShiftLeft >> 3] & (1 << (XKeycodes.ShiftLeft & 7)), "修饰键默认不重复");
+
+        // XKB 的 RepeatKeys / PerKeyRepeat 与核心是同一份:GetControls 看得到,SetControls 改了核心也看得到。
+        byte xkb = await ExtensionAsync(c, "XKEYBOARD");
+        await c.RequestAsync(xkb, 0, b => b.U16(1).U16(0));
+        XMessage controls = await c.RequestAsync(xkb, 6, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(1u, controls.U32(56) & 1, "enabledControls:RepeatKeys");
+        Assert.AreEqual(0, controls.Bytes[60 + (XKeycodes.A >> 3)] & (1 << (XKeycodes.A & 7)), "perKeyRepeat 里 a 也关着");
+        // SetControls:changeControls = ControlsEnabled | RepeatKeys,关掉 RepeatKeys,重复间隔 30 / 25 ms。
+        await c.SendAsync(xkb, 7, b => b.U16(UseCoreKbd).Bytes(new byte[18]).U32(1).U32(0).U32(0x80000000 | 1)
+            .U16(300).U16(25).Bytes(new byte[28]).Bytes(new byte[32]));
+        await c.SyncAsync();
+        control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(0, control.Bytes[1], "XKB 关了 RepeatKeys:核心的全局自动重复也是关");
+        controls = await c.RequestAsync(xkb, 6, b => b.U16(UseCoreKbd).U16(0));
+        Assert.AreEqual(300, controls.U16(20), "repeatDelay");
+        Assert.AreEqual(25, controls.U16(22), "repeatInterval");
+
+        XMessage noMode = await c.RequestAsync(102, 0, b => b.U32(0x40).U32(XKeycodes.A));
+        Assert.IsTrue(noMode.IsError);
+        Assert.AreEqual(8, noMode.Bytes[1], "只给 key 不给 auto-repeat-mode 是 BadMatch");
+        XMessage zeroDelay = await c.RequestAsync(xkb, 7, b => b.U16(UseCoreKbd).Bytes(new byte[18]).U32(0).U32(0).U32(1)
+            .U16(0).U16(25).Bytes(new byte[28]).Bytes(new byte[32]));
+        Assert.IsTrue(zeroDelay.IsError, "RepeatKeys 的延迟为 0 是 BadValue");
+    }
+
+    [TestMethod]
+    public async Task ChangeKeyboardControl的响铃音量生效_xset_b_off不出声_LED按led_mode点亮()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+
+        await ChangeKeyboardControlAsync(c, 0x2 | 0x4 | 0x8, 0, 880, 0xFFFFFFFF);   // bell-percent 0、pitch 880、duration −1(默认)
+        await c.SendAsync(104, 0);                                                   // Bell 0
+        await host.WaitForAsync(() => host.Log.Contains("bell 0"));
+        XMessage control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(0, control.Bytes[13], "bell-percent");
+        Assert.AreEqual(880, control.U16(14), "bell-pitch");
+        Assert.AreEqual(100, control.U16(16), "bell-duration 恢复默认");
+
+        await ChangeKeyboardControlAsync(c, 0x10 | 0x20, 3, 1);   // LED 3 On
+        control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(0x4u, control.U32(8), "led-mask");
+        await ChangeKeyboardControlAsync(c, 0x20, 0);               // 只给 led-mode:所有 LED 灭
+        control = await c.RequestAsync(103, 0);
+        Assert.AreEqual(0u, control.U32(8));
+
+        XMessage badPercent = await c.RequestAsync(102, 0, b => b.U32(0x2).U32(0xFFFFFFFE));   // −2
+        Assert.IsTrue(badPercent.IsError);
+        Assert.AreEqual(2, badPercent.Bytes[1], "−1 以外的负值是 BadValue");
+        XMessage ledWithoutMode = await c.RequestAsync(102, 0, b => b.U32(0x10).U32(3));
+        Assert.AreEqual(8, ledWithoutMode.Bytes[1], "只给 led 不给 led-mode 是 BadMatch");
+    }
+}

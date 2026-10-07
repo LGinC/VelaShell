@@ -107,12 +107,18 @@ public sealed partial class X11Server
         ProcessPointerInput(() => MovePointer(-1, -1));
     }
 
-    private void ApplyKey(byte keycode, bool pressed)
+    private void ApplyKey(byte keycode, bool pressed, bool repeat)
     {
         NoteUserActivity();
         if (pressed)
         {
             _lastUserInputTime = Math.Max(1u, Now);
+        }
+        if (repeat)
+        {
+            // 重复不改变键盘状态:冻结的队列满了时可以像移动一样丢掉。
+            ProcessInput(pointer: false, motion: true, () => KeyRepeat(keycode));
+            return;
         }
         ProcessKeyboardInput(() => KeyEvent(keycode, pressed));
     }
@@ -408,8 +414,10 @@ public sealed partial class X11Server
     /// 投递一个设备事件:有主动抓取按抓取规则走,否则从源窗口向上传播到第一个有人选了它的窗口
     /// (核心事件掩码或 XI2 事件掩码都算)。在那个窗口上,选了核心事件的收核心事件,选了 XI2 的收 XI2 事件。
     /// XI2 的 evtype 与核心事件码相同(KeyPress 2 … Motion 6)。返回第一个收到事件的落点,没人收时为 null。
+    /// <paramref name="repeat" /> 是自动重复的哪一半(见 <see cref="KeyRepeat" />):中间那个 KeyRelease 跳过 XI2 与开了 DetectableAutoRepeat 的客户端,
+    /// 重复的 KeyPress 在 XI2 里带 KeyRepeat 标志。
     /// </summary>
-    private Delivery? DeliverDeviceEvent(byte code, byte detail, XEventMask mask, XWindow source)
+    private Delivery? DeliverDeviceEvent(byte code, byte detail, XEventMask mask, XWindow source, RepeatPhase repeat = RepeatPhase.None)
     {
         bool isKey = code is XEventCode.KeyPress or XEventCode.KeyRelease;
         if (IsFloating(!isKey))
@@ -432,7 +440,7 @@ public sealed partial class X11Server
             }
             if (grab.Xi2)
             {
-                if ((grab.Xi2Mask & (1UL << code)) == 0)
+                if ((grab.Xi2Mask & (1UL << code)) == 0 || repeat == RepeatPhase.Release)
                 {
                     return null;
                 }
@@ -440,7 +448,7 @@ public sealed partial class X11Server
                 Send(xi);
                 return xi;
             }
-            if (isKey || (grab.EventMask & (uint)mask) != 0)
+            if ((isKey || (grab.EventMask & (uint)mask) != 0) && (repeat != RepeatPhase.Release || WantsRepeatRelease(grab.Client)))
             {
                 SendDeviceEvent(grab.Client, code, detail, grab.Window, source, grab.EventMask);
                 return new Delivery(grab.Window, grab.Client, grab.EventMask, false, 0, false);
@@ -454,9 +462,12 @@ public sealed partial class X11Server
         {
             if (d.Xi2)
             {
-                SendXi2DeviceEvent(d.Client, code, detail, d.Window, source, d.Xi2Slave);
+                if (repeat != RepeatPhase.Release)
+                {
+                    SendXi2DeviceEvent(d.Client, code, detail, d.Window, source, d.Xi2Slave, repeat == RepeatPhase.Press ? XiKeyRepeatFlag : 0);
+                }
             }
-            else
+            else if (repeat != RepeatPhase.Release || WantsRepeatRelease(d.Client))
             {
                 SendDeviceEvent(d.Client, code, detail, d.Window, source, d.Mask);
             }
@@ -467,18 +478,23 @@ public sealed partial class X11Server
             Delivery? first = null;
             foreach ((XClient client, uint selected) in window.EventSelections)
             {
-                if ((selected & (uint)mask) != 0 && !client.Closed)
+                if ((selected & (uint)mask) != 0 && !client.Closed && (repeat != RepeatPhase.Release || WantsRepeatRelease(client)))
                 {
                     SendDeviceEvent(client, code, detail, window, source, selected);
                     first ??= new Delivery(window, client, selected, false, 0, false);
                 }
             }
+            if (repeat == RepeatPhase.Release)
+            {
+                return first;
+            }
+            uint flags = repeat == RepeatPhase.Press ? XiKeyRepeatFlag : 0;
             foreach ((XClient client, (ulong master, ulong slave)) in window.Xi2Selections)
             {
                 if (((master | slave) & (1UL << code)) != 0 && !client.Closed)
                 {
                     bool slaveOnly = (master & (1UL << code)) == 0;
-                    SendXi2DeviceEvent(client, code, detail, window, source, slaveOnly);
+                    SendXi2DeviceEvent(client, code, detail, window, source, slaveOnly, flags);
                     first ??= new Delivery(window, client, 0, true, master | slave, slaveOnly);
                 }
             }
@@ -1454,42 +1470,6 @@ public sealed partial class X11Server
         c.Reply(0, w => w.Zero(24));
         NotifyModifierMappingChanged();
     }
-
-    /// <summary>响铃的基准音量(GetKeyboardControl 回报的 bell-percent;ChangeKeyboardControl 不生效,始终是它)。</summary>
-    private const byte BellBaseVolume = 50;
-
-    private void Bell(XRequestReader r)
-    {
-        sbyte percent = (sbyte)r.Data;
-        if (percent is < -100 or > 100)
-        {
-            throw new XProtocolError(XErrorCode.Value, unchecked((uint)percent));
-        }
-        RingBell(percent);
-    }
-
-    /// <summary>
-    /// 响铃(核心 Bell、XKB Bell、XI DeviceBell 共用):<paramref name="percent" /> 是相对基准音量的 −100…100,
-    /// 按协议「Bell」的公式换算成实际音量 0–100 交给宿主。
-    /// </summary>
-    private void RingBell(int percent)
-    {
-        percent = Math.Clamp(percent, -100, 100);
-        int volume = percent >= 0
-            ? BellBaseVolume - (BellBaseVolume * percent / 100) + percent
-            : BellBaseVolume + (BellBaseVolume * percent / 100);
-        _host.BellRequested(volume);
-    }
-
-    private static void GetKeyboardControl(XClient c) =>
-        c.Reply(1, w =>
-        {
-            w.U32(0).U8(0).U8(BellBaseVolume).U16(400).U16(100).Zero(2);
-            for (int i = 0; i < 32; i++)
-            {
-                w.U8(0xFF);
-            }
-        });
 
     private static void GetPointerMapping(XClient c) =>
         c.Reply(5, w => w.Zero(24).Bytes([1, 2, 3, 4, 5]).Pad4());

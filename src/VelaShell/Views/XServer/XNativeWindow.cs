@@ -567,8 +567,10 @@ public sealed class XNativeWindow : Window
             e.Handled = true;
             return;
         }
-        _heldKeys.Add(keycode);
-        Server?.InjectKey(keycode, pressed: true);
+        // 已经按着又来一次按下:系统的自动重复(Avalonia 的 X11 后端开了 XKB 的 detectable autorepeat,中间没有 KeyUp)。
+        // 告诉服务端这是重复,由它按 X 的语义决定发不发、怎么发(xset r off、修饰键不重复、DetectableAutoRepeat)。
+        bool repeat = !_heldKeys.Add(keycode);
+        Server?.InjectKey(keycode, pressed: true, repeat);
         e.Handled = true;
     }
 
