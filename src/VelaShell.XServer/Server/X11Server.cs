@@ -34,8 +34,10 @@ namespace VelaShell.XServer;
 /// (<see cref="ServeAsync" />)—— 后者让宿主不必经本机端口:SSH 的 x11 通道本身就是一条双工流。
 /// </para>
 /// <para>
-/// 宿主方法的命名:<c>Inject*</c> 是合成的用户输入;<c>*TopLevel</c> 是宿主作为窗口管理器对某个顶层窗口的动作;
-/// <c>Set*</c> 是运行中换配置。它们都可以在任意线程上调、立即返回,参数不合法时当场抛异常;
+/// 宿主方法的命名:<c>Inject*</c> 是合成的用户输入;名字里带 <c>TopLevel</c>、第一个参数是 <see cref="XTopLevelWindow" /> 的,
+/// 是宿主作为窗口管理器对那个顶层的动作,按「动词 + TopLevel + 宾语」起名(<c>MoveTopLevel</c>、<c>SetTopLevelStates</c>、
+/// <c>ChangeTopLevelStates</c>、<c>KillTopLevelClient</c>);不带 <c>TopLevel</c> 的 <c>Set*</c> 是宿主那边的环境变了、换进服务端
+/// (键位表、显示器布局、DPI、锁定键、剪贴板内容)。它们都可以在任意线程上调、立即返回,参数不合法时当场抛异常;
 /// 指名的窗口在执行时已经不在(客户端刚销毁了它)时静默忽略。
 /// </para>
 /// <para>

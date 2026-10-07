@@ -49,8 +49,11 @@
 - **异步优先,不阻塞执行线程**:需要等的东西(XTEST / Present 的延迟、SYNC 的计时器)用 `Task.Delay` 到点后 `Post` 回来;
   连接层有背压(输出积压上限、每客户端未执行请求上限),大尺寸请求先校验再分配、只处理与目标相交的部分。
 - **公开面**:公开类型只放 `Host/`、一律在根命名空间 `VelaShell.XServer`;`X11Server` 的公开成员只放 `Server/X11Server.cs`,
-  其余 partial 文件里没有 `public`。宿主方法的命名:`Inject*` 是合成的用户输入,`*TopLevel` 是宿主作为窗口管理器的动作,
-  `Set*` 是运行中换配置;窗口用 `XTopLevelWindow` 句柄指名,不用 XID;参数不合法当场抛异常,窗口已不在时静默忽略。
+  其余 partial 文件里没有 `public`。宿主方法的命名:`Inject*` 是合成的用户输入;名字里带 `TopLevel`、第一个参数是
+  `XTopLevelWindow` 的是宿主作为窗口管理器对那个顶层的动作,按「动词 + TopLevel + 宾语」起名(`MoveTopLevel`、`SetTopLevelStates`、
+  `KillTopLevelClient`);不带 `TopLevel` 的 `Set*` 是宿主那边的环境变了、换进服务端(键位表、显示器布局、DPI、锁定键、剪贴板内容)。
+  公开方法改名就是对外的破坏性改动,命名对不上规则时先改规则的写法、别急着改名。
+  窗口用 `XTopLevelWindow` 句柄指名,不用 XID;参数不合法当场抛异常,窗口已不在时静默忽略。
   宿主回调一律用「主语 + 过去分词」(`TopLevelMapped`、`CursorChanged`、`BellRequested`)。
 - **请求处理**按领域 / 扩展拆成 `Server/X11Server.*.cs` 的 partial 文件:不同扩展不混在一个文件里(大的可以拆成几个,如 Xkb / XkbSetMap);
   只做基础设施的 BIG-REQUESTS、XC-MISC、Generic Event 跟着它们服务的那块代码(连接、资源 ID、扩展注册表)。处理器与协议请求同名
