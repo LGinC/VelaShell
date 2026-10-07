@@ -41,8 +41,8 @@ public sealed partial class X11Server
         }
         switch (r.Data)
         {
-            case 0:   // QueryVersion:1.1,共享像素图不支持,像素图格式 ZPixmap
-                c.Reply(0, w => w.U16(1).U16(1).U16(0).U16(0).U8(2).Zero(15));
+            case 0:   // QueryVersion:1.1,共享像素图不支持,服务端的有效 uid / gid(原先回 0),像素图格式 ZPixmap
+                c.Reply(0, static w => w.U16(1).U16(1).U16((ushort)GetEffectiveUid()).U16((ushort)GetEffectiveGid()).U8(2).Zero(15));
                 break;
             case 1:   // Attach
                 ShmAttach(c, r);
@@ -268,4 +268,7 @@ public sealed partial class X11Server
 
     [LibraryImport("libc", EntryPoint = "shmdt", SetLastError = true)]
     private static partial int ShmDt(nint address);
+
+    [LibraryImport("libc", EntryPoint = "getegid")]
+    private static partial uint GetEffectiveGid();
 }

@@ -112,6 +112,32 @@ public sealed partial class ShmTests
         });
     }
 
+    [TestMethod]
+    public async Task QueryVersion回服务端的有效uid与gid()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("MIT-SHM 只在 Linux 上提供");
+            return;
+        }
+        // 规范:uid / gid 是服务端的有效 uid / gid(客户端据此决定段的权限给谁);原先一律回 0。
+        string path = Path.Combine(Path.GetTempPath(), $"vx-shm-{Guid.NewGuid():N}.sock");
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path });
+        await server.StartAsync();
+        await using XTestClient c = await XTestClient.ConnectUnixAsync(path);
+        (byte shm, _) = await ShmAsync(c) ?? throw new AssertFailedException("Unix 套接字上应当有 MIT-SHM");
+        XMessage version = await c.RequestAsync(shm, 0);
+        Assert.AreEqual((ushort)GetEffectiveUid(), version.U16(12), "uid");
+        Assert.AreEqual((ushort)GetEffectiveGid(), version.U16(14), "gid");
+        Assert.AreEqual(2, version.Bytes[16], "pixmap-format = ZPixmap");
+    }
+
+    [LibraryImport("libc", EntryPoint = "geteuid")]
+    private static partial uint GetEffectiveUid();
+
+    [LibraryImport("libc", EntryPoint = "getegid")]
+    private static partial uint GetEffectiveGid();
+
     [LibraryImport("libc", EntryPoint = "shmget")]
     private static partial int ShmGet(int key, nint size, int flags);
 
