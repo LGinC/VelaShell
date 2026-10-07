@@ -152,14 +152,13 @@ public sealed class HostApiTests
         Assert.AreEqual(60, before.Width);
 
         await SetTitleAsync(c, top, "one");
-        await host.WaitForAsync(() => window.Snapshot.Title == "one");
-        Assert.AreEqual(XTopLevelChanges.Title, host.LastChanges);
+        // 快照先换、回调随后才由 DeferredHost 交给宿主:等回调到了再看报的是哪一组。
+        await host.WaitForAsync(() => window.Snapshot.Title == "one" && host.LastChanges == XTopLevelChanges.Title);
         Assert.AreEqual("", before.Title, "旧快照不变");
 
         await SetTitleAsync(c, top, "one");   // 值没变:不该报
         await c.SendAsync(12, 0, b => b.U32(top).U16(0xC).U16(0).U32(80).U32(50));   // ConfigureWindow 宽高
-        await host.WaitForAsync(() => window.Snapshot.Width == 80);
-        Assert.AreEqual(XTopLevelChanges.Geometry, host.LastChanges);
+        await host.WaitForAsync(() => window.Snapshot.Width == 80 && host.LastChanges == XTopLevelChanges.Geometry);
         Assert.ContainsSingle(e => e.Contains(" Title ", StringComparison.Ordinal), host.Log, "同样的标题再设一遍不算变化");
     }
 
