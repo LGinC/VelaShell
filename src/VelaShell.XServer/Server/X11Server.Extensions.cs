@@ -99,6 +99,7 @@ public sealed partial class X11Server
             FirstError = SyncErrorBase,
             ErrorCount = 3,
             ClientClosed = CleanupSync,
+            ClientResourcesDestroyed = CleanupSyncResources,
         });
         Register(new Extension("DAMAGE", DamageMajor, DamageExtension)
         {
@@ -106,7 +107,7 @@ public sealed partial class X11Server
             EventCount = 1,
             FirstError = DamageErrorBase,
             ErrorCount = 1,
-            ClientClosed = CleanupDamage,
+            ClientResourcesDestroyed = CleanupDamage,
             WindowDestroyed = CleanupDamage,
         });
         Register(new Extension("Composite", CompositeMajor, CompositeExtension)
@@ -119,12 +120,13 @@ public sealed partial class X11Server
         {
             FirstError = DbeErrorBase,
             ErrorCount = 1,
-            ClientClosed = CleanupDbe,
+            ClientResourcesDestroyed = CleanupDbe,
             WindowDestroyed = CleanupDbe,
         });
         Register(new Extension("Present", PresentMajor, Present)
         {
             ClientClosed = CleanupPresent,
+            ClientResourcesDestroyed = CleanupPresentResources,
             WindowDestroyed = CleanupPresent,
             PixmapFreed = PresentPixmapFreed,
         });

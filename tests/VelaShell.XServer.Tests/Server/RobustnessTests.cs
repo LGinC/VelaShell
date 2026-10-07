@@ -550,6 +550,45 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task Retain模式断开后扩展里挂在资源上的状态照常工作_KillClient时才清()
+    {
+        // 原先断开时就调 ClientClosed:DAMAGE 把还在资源表里的损伤对象摘了(从此不再累积),KillClient 时又调一次。
+        await using X11Server server = new();
+        await using XTestClient observer = await XTestClient.ConnectAsync(server);
+        async Task<byte> MajorAsync(string name)
+        {
+            byte[] bytes = System.Text.Encoding.Latin1.GetBytes(name);
+            return (await observer.RequestAsync(98, 0, b => b.U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad())).Bytes[9];
+        }
+        byte damage = await MajorAsync("DAMAGE"), xfixes = await MajorAsync("XFIXES");
+
+        XTestClient retainer = await XTestClient.ConnectAsync(server);
+        uint pixmap = retainer.NewId(), damageId = retainer.NewId();
+        await retainer.SendAsync(53, 24, b => b.U32(pixmap).U32(retainer.RootWindow).U16(8).U16(8));   // CreatePixmap
+        await retainer.SendAsync(damage, 1, b => b.U32(damageId).U32(pixmap).U8(0).U8(0).U8(0).U8(0));  // DamageCreate(RawRectangles)
+        await retainer.SendAsync(112, 1);   // SetCloseDownMode(RetainPermanent)
+        await retainer.SyncAsync();
+        Task serving = retainer.ServerTask;
+        await retainer.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+
+        // 别的客户端往留下来的像素图上画:损伤照常累积在留下来的损伤对象上。
+        uint gc = observer.NewId(), region = observer.NewId();
+        await observer.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0));   // CreateGC
+        await observer.SendAsync(70, 0, b => b.U32(pixmap).U32(gc).I16(2).I16(2).U16(3).U16(3));   // PolyFillRectangle
+        await observer.SendAsync(xfixes, 5, b => b.U32(region));   // CreateRegion(空)
+        await observer.SendAsync(damage, 3, b => b.U32(damageId).U32(0).U32(region));   // DamageSubtract(repair = None, parts = region)
+        XMessage fetched = await observer.RequestAsync(xfixes, 19, b => b.U32(region));   // FetchRegion
+        Assert.IsTrue(fetched.IsReply);
+        Assert.AreEqual((2, 2, 3, 3), (fetched.I16(8), fetched.I16(10), fetched.U16(12), fetched.U16(14)), "留下来的损伤对象还在累积");
+
+        // KillClient:资源连同损伤对象一并销毁。
+        await observer.SendAsync(113, 0, b => b.U32(pixmap));
+        XMessage gone = await observer.RequestAsync(damage, 3, b => b.U32(damageId).U32(0).U32(0));
+        Assert.IsTrue(gone.IsError, "损伤对象随 KillClient 销毁了");
+    }
+
+    [TestMethod]
     public async Task SetCloseDownMode的取值超出0到2回BadValue()
     {
         await using X11Server server = new();

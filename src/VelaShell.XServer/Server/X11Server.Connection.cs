@@ -725,7 +725,11 @@ public sealed partial class X11Server
     {
         if (_retainedClients.Remove(client.Index))
         {
-            CleanupClient(client);
+            // 连接状态在断开时已经清过(ReleaseConnectionState),这里只销毁留下的资源。
+            DestroyClientResources(client);
+            NotifyClientResourcesDestroyed(client);
+            UpdatePointerWindow();
+            UpdateCursor();
         }
     }
 
@@ -782,12 +786,25 @@ public sealed partial class X11Server
         ReleaseEventSelections(client);
     }
 
-    /// <summary>断开的客户端:释放它的资源、选区、抓取与事件选择,再让各扩展清掉自己的那份状态(<see cref="Extension.ClientClosed" />)。</summary>
+    /// <summary>
+    /// 以 Destroy 模式断开的客户端:释放它的选区、抓取、资源与事件选择,再让各扩展清掉自己的那份状态
+    /// (<see cref="Extension.ClientClosed" /> 与 <see cref="Extension.ClientResourcesDestroyed" />,各一次)。
+    /// </summary>
     private void CleanupClient(XClient client)
     {
         ReleaseSelectionsAndGrabs(client);
         DestroyClientResources(client);
         ReleaseEventSelections(client);
+        NotifyClientResourcesDestroyed(client);
+    }
+
+    /// <summary>客户端的资源刚销毁完:各扩展清挂在那些资源上的状态(<see cref="Extension.ClientResourcesDestroyed" />)。</summary>
+    private void NotifyClientResourcesDestroyed(XClient client)
+    {
+        foreach (Extension extension in _extensionList)
+        {
+            extension.ClientResourcesDestroyed?.Invoke(client);
+        }
     }
 
     private void ReleaseSelectionsAndGrabs(XClient client)

@@ -790,13 +790,24 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>客户端断开:它的 Await 作废,它不再收任何报警器的事件;它的计数器随它没了,按「计数器被销毁」处理别人的报警器与等待。</summary>
+    /// <summary>客户端断开:它的 Await 作废,它不再收任何报警器的事件。</summary>
     private void CleanupSync(XClient client)
     {
         _syncWaits.Remove(client);
-        foreach (XSyncAlarm alarm in _alarms.ToArray())
+        foreach (XSyncAlarm alarm in _alarms)
         {
             alarm.Listeners.Remove(client);
+        }
+    }
+
+    /// <summary>
+    /// 客户端的资源销毁了(<see cref="Extension.ClientResourcesDestroyed" />):它的报警器作废;它的计数器没了,按「计数器被销毁」处理别人的
+    /// 报警器与等待;等它的栅栏的 AwaitFence 放行。以 Retain 模式断开时资源还在,这些都不动(报警器照常触发、计数器与栅栏照常可等)。
+    /// </summary>
+    private void CleanupSyncResources(XClient client)
+    {
+        foreach (XSyncAlarm alarm in _alarms.ToArray())
+        {
             if (ReferenceEquals(alarm.Owner, client))
             {
                 ForgetAlarm(alarm);

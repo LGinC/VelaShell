@@ -57,7 +57,7 @@
   (`MapWindow(XClient, XRequestReader)`);同名的内部操作用别的动词(`Map`、`Configure`、`Destroy`),扩展里与核心请求重名的加扩展前缀(`RenderComposite`)。
   实现 X11Server 的对外动作的私有方法叫 `Apply*`。扩展的资源类型放 `Resources/X{扩展}Resources.cs`。
 - **新增扩展**:在 `X11Server.Extensions.cs` 的编号表里分主操作码 / 事件 / 错误编号,在 `InitExtensions` 里登记
-  (事件数、错误数、`ClientClosed` / `WindowDestroyed` 清理钩子 —— 注册时检查编号不重叠),请求处理放进自己的 partial 文件。
+  (事件数、错误数、`ClientClosed`(连接断开)/ `ClientResourcesDestroyed`(客户端的资源销毁,Retain 模式下晚于断开)/ `WindowDestroyed` 清理钩子 —— 注册时检查编号不重叠),请求处理放进自己的 partial 文件。
   不要再去改连接收尾(`CleanupClient`)与窗口销毁(`DestroyTree`)。
   状态自成一体、只需碰资源表与绘图目标的扩展照 `GlxExtension` 写成独立的类(经 `X11Server` 的少数 internal 成员访问服务端),不再往 `X11Server` 里加字段。
 - 协议错误一律 `throw new XProtocolError(...)`,由分派层统一转成错误报文。诊断只走 `X11ServerOptions.Log`(私有的 `Log(...)`),不用 `Trace`。

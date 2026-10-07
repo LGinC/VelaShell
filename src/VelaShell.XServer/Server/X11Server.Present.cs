@@ -483,7 +483,7 @@ public sealed partial class X11Server
         pending.Cancel.Dispose();
     }
 
-    /// <summary>客户端断开:取消它挂着的 NotifyMSC 与排队的呈现,摘掉它的事件上下文;等它的栅栏的呈现不再等(栅栏随它没了)。</summary>
+    /// <summary>客户端断开:取消它挂着的 NotifyMSC 与排队的呈现。</summary>
     private void CleanupPresent(XClient client)
     {
         foreach (PendingPresent present in _pendingPresents.ToArray())
@@ -498,6 +498,11 @@ public sealed partial class X11Server
             pending.Cancel.Cancel();
             pending.Cancel.Dispose();
         }
+    }
+
+    /// <summary>客户端的资源销毁了(<see cref="Extension.ClientResourcesDestroyed" />):摘掉它的事件上下文(它们是资源,Retain 模式断开时还留着);等它的栅栏的呈现不再等(栅栏随它没了)。</summary>
+    private void CleanupPresentResources(XClient client)
+    {
         foreach ((XWindow w, List<XPresentEventContext> list) in _presentContexts.ToArray())
         {
             list.RemoveAll(ctx => ReferenceEquals(ctx.Owner, client));

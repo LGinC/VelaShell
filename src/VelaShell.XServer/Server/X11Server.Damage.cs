@@ -150,7 +150,7 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>客户端断开:摘掉它建的损伤对象(资源本身已随资源表释放)。</summary>
+    /// <summary>客户端的资源销毁了(Extension.ClientResourcesDestroyed;以 Retain 模式断开时还不到这一步):摘掉它建的损伤对象。</summary>
     private void CleanupDamage(XClient client)
     {
         if (_damageObjects.Count == 0)

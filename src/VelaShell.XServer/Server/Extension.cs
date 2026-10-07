@@ -29,8 +29,19 @@ internal sealed class Extension(string name, byte majorOpcode, Action<XClient, X
     /// <summary>只对部分客户端可见(比如 MIT-SHM 只给同一台机器上的);null = 对谁都可见。</summary>
     public Func<XClient, bool>? VisibleTo { get; init; }
 
-    /// <summary>客户端断开时清它在这个扩展里的状态(它的资源此时已从资源表里释放)。</summary>
+    /// <summary>
+    /// 客户端的连接断开了:清它在这个扩展里与连接有关的状态 —— 事件选择、计时器、等着的请求。每个客户端调一次。
+    /// 它的资源这时<b>不一定</b>已经释放:以 RetainPermanent / RetainTemporary 断开的,资源还留在资源表里,
+    /// 挂在资源上的状态归 <see cref="ClientResourcesDestroyed" /> 清。
+    /// </summary>
     public Action<XClient>? ClientClosed { get; init; }
+
+    /// <summary>
+    /// 客户端的资源刚从资源表里销毁(Destroy 模式断开时,或者以 Retain 模式留下的资源被 KillClient 销毁时):
+    /// 清这个扩展里挂在那些资源上的状态。每个客户端调一次。原先只有 <see cref="ClientClosed" />:Retain 模式断开时它就清掉了
+    /// 还留在资源表里的资源(DAMAGE 从此不再累积,SYNC 的报警器不再触发),KillClient 时又调一次。
+    /// </summary>
+    public Action<XClient>? ClientResourcesDestroyed { get; init; }
 
     /// <summary>窗口销毁时清这个扩展里与它有关的状态。</summary>
     public Action<XWindow>? WindowDestroyed { get; init; }

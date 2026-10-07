@@ -215,7 +215,7 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>客户端断开:它分配的后缓冲名字已随它的资源一起释放,从登记里去掉;没名字了就整块丢掉。</summary>
+    /// <summary>客户端的资源销毁了(Extension.ClientResourcesDestroyed):它分配的后缓冲名字已随它的资源一起释放,从登记里去掉;没名字了就整块丢掉。</summary>
     private void CleanupDbe(XClient client)
     {
         foreach ((XWindow w, (XPixmap Buffer, List<uint> Names) back) in _backBuffers.ToArray())
