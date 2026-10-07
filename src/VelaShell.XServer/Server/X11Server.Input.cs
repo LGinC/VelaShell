@@ -68,7 +68,7 @@ public sealed partial class X11Server
         _pointerTop = top;
         // 根坐标在注入的那一刻算好:指针冻着时事件排队,之后窗口可能挪了。
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
-        ProcessPointerInput(() => MovePointer(rootX, rootY), motion: true);
+        ProcessPointerMotion(() => MovePointer(rootX, rootY));
     }
 
     private void ApplyPointerButton(XWindow top, int x, int y, int button, bool pressed)
@@ -80,7 +80,7 @@ public sealed partial class X11Server
         }
         _pointerTop = top;
         int rootX = top.X + top.BorderWidth + x, rootY = top.Y + top.BorderWidth + y;
-        ProcessPointerInput(() =>
+        ProcessPointerButton(button, pressed, () =>
         {
             MovePointer(rootX, rootY);
             ButtonEvent(button, pressed);
@@ -91,7 +91,7 @@ public sealed partial class X11Server
     private void ApplyPointerButtonRelease(int button)
     {
         NoteUserActivity();
-        ProcessPointerInput(() =>
+        ProcessPointerButton(button, pressed: false, () =>
         {
             if (IsPhysicalButtonDown(button))
             {
@@ -104,7 +104,7 @@ public sealed partial class X11Server
     private void ApplyPointerLeave()
     {
         _pointerTop = null;
-        ProcessPointerInput(() => MovePointer(-1, -1));
+        ProcessPointerMotion(() => MovePointer(-1, -1));
     }
 
     private void ApplyKey(byte keycode, bool pressed, bool repeat)
@@ -117,10 +117,10 @@ public sealed partial class X11Server
         if (repeat)
         {
             // 重复不改变键盘状态:冻结的队列满了时可以像移动一样丢掉。
-            ProcessInput(pointer: false, motion: true, () => KeyRepeat(keycode));
+            ProcessInput(pointer: false, InputKind.Droppable, keycode, () => KeyRepeat(keycode));
             return;
         }
-        ProcessKeyboardInput(() => KeyEvent(keycode, pressed));
+        ProcessKeyboardInput(keycode, pressed, () => KeyEvent(keycode, pressed));
     }
 
     // ================================================================== 宿主换键位表

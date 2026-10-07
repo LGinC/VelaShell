@@ -45,17 +45,34 @@ public sealed partial class X11Server
     /// <summary>引起键盘冻结、可被 ReplayKeyboard 重放的按键按下。</summary>
     private (byte Keycode, XWindow GrabWindow)? _keyboardReplay;
 
+    /// <summary>排着的设备事件是哪一类:决定队列满了时能不能丢(见 <see cref="ProcessInput" />)。</summary>
+    private enum InputKind : byte
+    {
+        /// <summary>指针移动、离开、按键的自动重复:不改变按键 / 按钮的状态,丢掉中间的一个只是少一个点。</summary>
+        Droppable,
+
+        /// <summary>按键 / 按钮按下(<c>Detail</c> 是键码或物理按钮号)。</summary>
+        Press,
+
+        /// <summary>按键 / 按钮松开。</summary>
+        Release,
+    }
+
     /// <summary>
     /// 冻结期间排着的设备事件,指针与键盘排在同一个队列里、按到达的先后 —— 两个设备都放行时按原来的相对顺序处理。
     /// 冻结是按设备的:某个设备冻着时,另一个设备排在它后面的事件照样可以先走。
     /// </summary>
-    private readonly List<(bool Pointer, bool Motion, Action Input)> _frozenInput = [];
+    private readonly List<(bool Pointer, InputKind Kind, Action Input)> _frozenInput = [];
 
     /// <summary>
-    /// 排着的事件上限。客户端抓着不放(一直不 AllowEvents)时宿主的输入一直进来:满了先丢最早的一个移动,
-    /// 全是按键 / 按钮时丢新来的。
+    /// 排着的事件上限。客户端抓着不放(一直不 AllowEvents)时宿主的输入一直进来:满了先丢最早的一个可丢的事件(移动之类);
+    /// 没有可丢的,丢新来的按下,并记下它 —— 它的松开来时一并丢掉。松开一律留着(可以超出上限:能排进来的松开不会多于按着的键与按钮),
+    /// 原先连松开也丢,解冻后键或按钮一直按着、自动抓取也不解除。
     /// </summary>
     internal const int MaxFrozenInput = 4096;
+
+    /// <summary>队列满时丢掉的按下:(是不是指针, 键码或物理按钮号)。它们的松开来时同样丢掉。</summary>
+    private readonly HashSet<(bool Pointer, int Detail)> _droppedPresses = [];
 
     /// <summary>放行之后一个工作项最多回放这么多个事件,余下的排到下一个工作项 —— 中间客户端的请求(下一个 AllowEvents)能插进来。</summary>
     private const int DrainBatch = 64;
@@ -130,35 +147,57 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 入口:设备事件按冻结状态排队
 
-    /// <summary>一个指针事件(移动、按钮、离开):见 <see cref="ProcessInput" />。</summary>
-    private void ProcessPointerInput(Action input, bool motion = false) => ProcessInput(pointer: true, motion, input);
+    /// <summary>指针移动、离开(可丢):见 <see cref="ProcessInput" />。</summary>
+    private void ProcessPointerMotion(Action input) => ProcessInput(pointer: true, InputKind.Droppable, 0, input);
 
-    /// <summary>一个键盘事件:见 <see cref="ProcessInput" />。</summary>
-    private void ProcessKeyboardInput(Action input) => ProcessInput(pointer: false, motion: false, input);
+    /// <summary>按钮按下 / 松开(<paramref name="button" /> 是物理按钮号):见 <see cref="ProcessInput" />。</summary>
+    private void ProcessPointerButton(int button, bool pressed, Action input) =>
+        ProcessInput(pointer: true, pressed ? InputKind.Press : InputKind.Release, button, input);
+
+    /// <summary>按键按下 / 松开:见 <see cref="ProcessInput" />。</summary>
+    private void ProcessKeyboardInput(byte keycode, bool pressed, Action input) =>
+        ProcessInput(pointer: false, pressed ? InputKind.Press : InputKind.Release, keycode, input);
 
     private bool IsFrozen(bool pointer) => pointer ? _pointerFrozenBy is not null : _keyboardFrozenBy is not null;
 
     /// <summary>
     /// 设备冻着、或者前面还排着这个设备的事件、或者排着已经可以走的事件(回放还没做完)时排队,否则立即处理 —— 保证先来的先处理。
+    /// 队列满了时怎么丢见 <see cref="MaxFrozenInput" />。
     /// </summary>
-    private void ProcessInput(bool pointer, bool motion, Action input)
+    private void ProcessInput(bool pointer, InputKind kind, int detail, Action input)
     {
+        if (kind == InputKind.Release ? _droppedPresses.Remove((pointer, detail)) : kind == InputKind.Droppable && detail != 0 && _droppedPresses.Contains((pointer, detail)))
+        {
+            return;   // 它的按下在队列满时丢掉了:X 这边从没按下过,松开与自动重复一并丢掉
+        }
+        if (kind == InputKind.Press)
+        {
+            _droppedPresses.Remove((pointer, detail));
+        }
         bool frozen = IsFrozen(pointer);
         if (!frozen && !_frozenInput.Exists(e => e.Pointer == pointer || !IsFrozen(e.Pointer)))
         {
             input();
             return;
         }
-        if (_frozenInput.Count >= MaxFrozenInput)
+        if (_frozenInput.Count >= MaxFrozenInput && kind != InputKind.Release)
         {
-            int oldestMotion = _frozenInput.FindIndex(e => e.Motion);
-            if (oldestMotion < 0)
+            int oldest = _frozenInput.FindIndex(e => e.Kind == InputKind.Droppable);
+            if (oldest >= 0)
             {
-                return;   // 全是按键 / 按钮:丢新来的
+                _frozenInput.RemoveAt(oldest);   // 移动带的是绝对位置,丢掉中间的一个只是轨迹少一个点
             }
-            _frozenInput.RemoveAt(oldestMotion);   // 移动带的是绝对位置,丢掉中间的一个只是轨迹少一个点
+            else if (kind == InputKind.Press)
+            {
+                _droppedPresses.Add((pointer, detail));
+                return;
+            }
+            else
+            {
+                return;   // 没有可丢的,新来的也是可丢的
+            }
         }
-        _frozenInput.Add((pointer, motion, input));
+        _frozenInput.Add((pointer, kind, input));
         if (!frozen)
         {
             ScheduleDrain();

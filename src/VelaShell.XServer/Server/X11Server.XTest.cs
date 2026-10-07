@@ -84,18 +84,20 @@ public sealed partial class X11Server
             _ => throw new XProtocolError(XErrorCode.Value, detail),
         };
 
-        bool keyboard = type is XEventCode.KeyPress or XEventCode.KeyRelease;
-
         void Run()
         {
             NoteUserActivity();
-            if (keyboard)
+            switch (type)
             {
-                ProcessKeyboardInput(inject);
-            }
-            else
-            {
-                ProcessPointerInput(inject, motion: type == XEventCode.MotionNotify);
+                case XEventCode.KeyPress or XEventCode.KeyRelease:
+                    ProcessKeyboardInput(detail, type == XEventCode.KeyPress, inject);
+                    break;
+                case XEventCode.ButtonPress or XEventCode.ButtonRelease:
+                    ProcessPointerButton(detail, type == XEventCode.ButtonPress, inject);
+                    break;
+                default:
+                    ProcessPointerMotion(inject);
+                    break;
             }
         }
 

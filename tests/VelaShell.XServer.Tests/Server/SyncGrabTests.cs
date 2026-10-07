@@ -257,6 +257,41 @@ public sealed class SyncGrabTests
         Assert.AreEqual(X11Server.MaxFrozenInput, await server.InvokeAsync(() => server.FrozenInputCount));
     }
 
+    /// <summary>
+    /// 冻结的队列被按键塞满:新来的按下丢掉(连同它的松开),松开一律留着 —— 原先连松开也丢,解冻之后 a 一直按着。
+    /// </summary>
+    [TestMethod]
+    public async Task 冻结队列满时丢新来的按下_松开一律留着_解冻后键不卡住()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        server.FocusTopLevel(host.Mapped[top]);
+        XMessage grab = await c.RequestAsync(31, 0, b => b.U32(top).U32(0).U8(Asynchronous).U8(Synchronous).U16(0));
+        Assert.AreEqual(0, grab.Bytes[1]);
+
+        server.InjectKey(XKeycodes.A, pressed: true);
+        for (int i = 0; i < (X11Server.MaxFrozenInput / 2) + 100; i++)
+        {
+            server.InjectKey(XKeycodes.S, pressed: true);
+            server.InjectKey(XKeycodes.S, pressed: false);
+        }
+        server.InjectKey(XKeycodes.D, pressed: true);    // 队列满了:丢掉
+        server.InjectKey(XKeycodes.A, pressed: false);   // 松开:留着
+        server.InjectKey(XKeycodes.D, pressed: false);   // 它的按下丢了:一并丢掉
+        int queued = await server.InvokeAsync(() => server.FrozenInputCount);
+        Assert.AreEqual(X11Server.MaxFrozenInput + 2, queued, "满了之后只多出按下已经排进去的松开:正好填满时的那个 s 与 a");
+
+        await c.SendAsync(35, 3, b => b.U32(0));   // AllowEvents AsyncKeyboard
+        for (int i = 0; i < 200 && await server.InvokeAsync(() => server.FrozenInputCount) > 0; i++)
+        {
+            await Task.Delay(10);
+        }
+        XMessage keymap = await c.RequestAsync(44, 0);   // QueryKeymap
+        Assert.IsFalse(keymap.Bytes[8..40].Any(b => b != 0), "解冻之后没有键一直按着");
+    }
+
     [TestMethod]
     public async Task 抓取期间Enter与Leave只报给抓取方_激活与解除时发Grab与Ungrab模式的crossing()
     {
