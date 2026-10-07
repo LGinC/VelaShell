@@ -207,6 +207,36 @@ public sealed class EwmhTests
     }
 
     [TestMethod]
+    public async Task WM_NAME按属性类型解码_UTF8_STRING与COMPOUND_TEXT的标题不再是乱码()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await CreateTopAsync(c);
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        Task<ushort> SetNameAsync(uint type, byte[] bytes) =>
+            c.SendAsync(18, 0, b => b.U32(top).U32(39).U32(type).U8(8).U8(0).U8(0).U8(0).U32((uint)bytes.Length).Bytes(bytes).Pad());
+
+        uint utf8 = await InternAsync(c, "UTF8_STRING");
+        await SetNameAsync(utf8, Encoding.UTF8.GetBytes("终端 — xterm"));
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.Title == "终端 — xterm");
+
+        // COMPOUND_TEXT:Latin-1 原样、UTF-8 段(ESC % G … ESC % @)、不认识的多字节字符集(GB2312 在 GR)每个字符换成 U+FFFD。
+        uint compound = await InternAsync(c, "COMPOUND_TEXT");
+        byte[] text = [(byte)'c', (byte)'a', (byte)'f', 0xE9, (byte)' ', 0x1B, (byte)'%', (byte)'G', .. Encoding.UTF8.GetBytes("文件"),
+            0x1B, (byte)'%', (byte)'@', (byte)' ', 0x1B, (byte)'$', (byte)')', (byte)'A', 0xD6, 0xD0, 0xCE, 0xC4];
+        await SetNameAsync(compound, text);
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.Title.StartsWith("caf", StringComparison.Ordinal));
+        Assert.AreEqual("café 文件 ��", host.Mapped[top].Snapshot.Title, "原先一律按 Latin-1 解,成了乱码");
+
+        Assert.AreEqual("a é 中文 b", Protocol.XText.DecodeCompoundText(Protocol.XText.EncodeCompoundText("a é 中文 b")), "编码再解码回到原文");
+
+        await SetNameAsync(31, [(byte)'x', 0xE9]);   // STRING:Latin-1
+        await host.WaitForAsync(() => host.Mapped[top].Snapshot.Title == "xé");
+    }
+
+    [TestMethod]
     public async Task InputOnly的顶层不建像素缓冲_快照标着InputOnly_不进客户端列表()
     {
         using RecordingHost host = new();

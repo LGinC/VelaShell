@@ -69,7 +69,7 @@ public sealed partial class X11Server
         string title = props.TryGetValue(_netWmNameAtom, out XProperty? utf8) && utf8.Format == 8
             ? HostText(utf8.Data, utf8: true, MaxHostTitleChars)
             : props.TryGetValue(XAtom.WmName, out XProperty? name) && name.Format == 8
-                ? HostText(name.Data, utf8: false, MaxHostTitleChars)
+                ? HostText(name.Data, TextEncodingOf(name.Type), MaxHostTitleChars)   // WM_NAME 是 TEXT:类型可以是 STRING、UTF8_STRING、COMPOUND_TEXT
                 : "";
 
         string className = "";

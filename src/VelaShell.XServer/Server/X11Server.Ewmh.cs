@@ -73,7 +73,7 @@ public sealed partial class X11Server
 
     // 刷新窗口快照时要读的属性的原子,初始化时算好。
     private uint _netWmNameAtom, _wmProtocolsAtom, _wmDeleteWindowAtom, _wmTakeFocusAtom, _motifHintsAtom, _netWmOpacityAtom,
-        _gtkFrameExtentsAtom, _netWmPidAtom, _wmClientMachineAtom, _wmRoleAtom, _netWmIconAtom;
+        _gtkFrameExtentsAtom, _netWmPidAtom, _wmClientMachineAtom, _wmRoleAtom, _netWmIconAtom, _utf8StringAtom, _compoundTextAtom;
 
     /// <summary>宿主给每个顶层设的外框尺寸(_NET_FRAME_EXTENTS):左、右、上、下。</summary>
     private readonly Dictionary<XWindow, XFrameExtents> _frameExtents = [];
@@ -97,6 +97,8 @@ public sealed partial class X11Server
         _wmClientMachineAtom = Intern("WM_CLIENT_MACHINE");
         _wmRoleAtom = Intern("WM_WINDOW_ROLE");
         _netWmIconAtom = Intern("_NET_WM_ICON");
+        _utf8StringAtom = Intern("UTF8_STRING");
+        _compoundTextAtom = Intern("COMPOUND_TEXT");
         XWindow check = SelectionWindow;   // 服务端自己的隐藏窗口兼作 _NET_SUPPORTING_WM_CHECK 窗口
         List<string> supported =
         [
@@ -161,11 +163,26 @@ public sealed partial class X11Server
     /// 交给宿主的字符串(标题、类名、机器名、角色):只解码够 <paramref name="maxChars" /> 个字符的那几个字节(属性能有 32 MB,
     /// 快照每次几何刷新都要重建),去掉控制字符与双向排版控制符 —— 后者能在任务栏、标题栏里把标题倒着显示、伪造来源。
     /// </summary>
-    internal static string HostText(ReadOnlySpan<byte> data, bool utf8, int maxChars)
+    internal static string HostText(ReadOnlySpan<byte> data, bool utf8, int maxChars) =>
+        HostText(data, utf8 ? XTextEncoding.Utf8 : XTextEncoding.Latin1, maxChars);
+
+    /// <summary>
+    /// TEXT 类属性(WM_NAME、WM_CLIENT_MACHINE、剪贴板)按类型解码(ICCCM §2.7.1):UTF8_STRING、COMPOUND_TEXT,其余按 STRING(Latin-1)。
+    /// 原先一律按 Latin-1,类型是 UTF8_STRING / COMPOUND_TEXT 的标题成了乱码。
+    /// </summary>
+    private XTextEncoding TextEncodingOf(uint type) =>
+        type == _utf8StringAtom ? XTextEncoding.Utf8 : type == _compoundTextAtom ? XTextEncoding.CompoundText : XTextEncoding.Latin1;
+
+    /// <summary>同 <see cref="HostText(ReadOnlySpan{byte}, bool, int)" />,按 <paramref name="encoding" /> 解码(COMPOUND_TEXT 的转义序列也算在字节预算里,多给一些)。</summary>
+    internal static string HostText(ReadOnlySpan<byte> data, XTextEncoding encoding, int maxChars)
     {
-        int maxBytes = utf8 ? maxChars * 4 : maxChars;
-        string text = utf8 ? Encoding.UTF8.GetString(data.Length > maxBytes ? data[..maxBytes] : data)
-                           : XWire.Latin1.GetString(data.Length > maxBytes ? data[..maxBytes] : data);
+        int maxBytes = encoding switch
+        {
+            XTextEncoding.Latin1 => maxChars,
+            XTextEncoding.Utf8 => maxChars * 4,
+            _ => (maxChars * 4) + 1024,
+        };
+        string text = XText.Decode(data.Length > maxBytes ? data[..maxBytes] : data, encoding);
         if (text.Length > maxChars)
         {
             text = text[..(char.IsHighSurrogate(text[maxChars - 1]) ? maxChars - 1 : maxChars)];
@@ -533,7 +550,7 @@ public sealed partial class X11Server
                 ? new XFrameExtents(HintSize(extents[0]), HintSize(extents[1]), HintSize(extents[2]), HintSize(extents[3]))
                 : default,
             ProcessId = pid.Length >= 1 && pid[0] <= int.MaxValue ? (int)pid[0] : 0,
-            ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? HostText(machine.Data, utf8: false, MaxHostNameChars) : "",
+            ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? HostText(machine.Data, TextEncodingOf(machine.Type), MaxHostNameChars) : "",
             Role = props.GetValueOrDefault(_wmRoleAtom) is { Format: 8 } role ? HostText(role.Data, utf8: false, MaxHostNameChars) : "",
             Icons = top.ParsedIcons.Icons,
         };

@@ -67,6 +67,50 @@ public sealed class ClipboardTests
     }
 
     [TestMethod]
+    public async Task TEXT目标在Latin1装不下时回UTF8_STRING_X端回COMPOUND_TEXT也照样解码()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false }, host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint clipboard = await InternAsync(c, "CLIPBOARD");
+        uint utf8 = await InternAsync(c, "UTF8_STRING");
+        uint text = await InternAsync(c, "TEXT");
+        uint prop = await InternAsync(c, "MY_PROP");
+        uint window = await CreateWindowAsync(c);
+        async Task<(uint Type, byte[] Data)> ConvertTextAsync()
+        {
+            await c.SendAsync(24, 0, b => b.U32(window).U32(clipboard).U32(text).U32(prop).U32(0));
+            await c.NextEventAsync(SelectionNotify);
+            XMessage value = await c.RequestAsync(20, 1, b => b.U32(window).U32(prop).U32(0).U32(0).U32(1000));
+            return (value.U32(8), value.Bytes[32..(32 + (int)value.U32(16))]);
+        }
+
+        server.SetClipboardText("中文 café");
+        while ((await c.RequestAsync(23, 0, b => b.U32(clipboard))).U32(8) == 0)
+        {
+        }
+        (uint type, byte[] data) = await ConvertTextAsync();
+        Assert.AreEqual(utf8, type, "原先按 Latin-1 有损转换,汉字成了「?」");
+        Assert.AreEqual("中文 café", Encoding.UTF8.GetString(data));
+
+        server.SetClipboardText("café");
+        await c.SyncAsync();
+        (type, data) = await ConvertTextAsync();
+        Assert.AreEqual(31u, type, "Latin-1 装得下:照旧回 STRING,老程序认得");
+        Assert.AreEqual("café", Encoding.Latin1.GetString(data));
+
+        // X 端的属主回 COMPOUND_TEXT:按类型解码后交给宿主。
+        uint compound = await InternAsync(c, "COMPOUND_TEXT");
+        uint owner = await CreateWindowAsync(c);
+        await c.SendAsync(22, 0, b => b.U32(owner).U32(clipboard).U32(0));
+        XMessage request = await c.NextEventAsync(SelectionRequest);
+        byte[] encoded = [(byte)'x', 0x1B, (byte)'%', (byte)'G', .. Encoding.UTF8.GetBytes("文本"), 0x1B, (byte)'%', (byte)'@'];
+        await ChangePropertyAsync(c, request.U32(12), request.U32(24), compound, encoded);
+        await SendSelectionNotifyAsync(c, request, request.U32(24));
+        await host.WaitForAsync(() => host.Clipboard == "x文本");
+    }
+
+    [TestMethod]
     public async Task X客户端复制的文本交给宿主_写回来不抢选区()
     {
         using RecordingHost host = new();

@@ -5,7 +5,8 @@
 //   Inter-Client Communication Conventions Manual (ICCCM) 2.0 —— §2.2「Responsibilities of the Selection Owner」
 //   (回应 SelectionRequest:写属性再发 SelectionNotify;property 为 None 的旧式请求用 target 当属性名)、
 //   §2.4「Requesting a Selection」(作为请求方:ConvertSelection、读属性、删属性)、
-//   §2.5「Large Data Transfers」(INCR 分块协议)、§2.6.2「Target Atoms」(TARGETS、TIMESTAMP、TEXT、STRING)
+//   §2.5「Large Data Transfers」(INCR 分块协议)、§2.6.2「Target Atoms」(TARGETS、TIMESTAMP、TEXT、STRING)、
+//   §2.7.1「Text Properties」(TEXT 由属主挑 STRING / UTF8_STRING / COMPOUND_TEXT,取回的按类型解码)
 //   X Window System Protocol —— 「SetSelectionOwner」「ConvertSelection」及 SelectionRequest / SelectionNotify 事件
 //
 //   与宿主的剪贴板互通:
@@ -183,6 +184,11 @@ public sealed partial class X11Server
         {
             value = new XProperty(target, 8, Encoding.UTF8.GetBytes(_hostClipboard));
         }
+        else if (target == text && !IsLatin1(_hostClipboard))
+        {
+            // TEXT 由属主挑编码(ICCCM §2.6.2):Latin-1 装不下(中日韩)就回 UTF8_STRING —— 原先按 Latin-1 有损转换,汉字变成「?」。
+            value = new XProperty(utf8, 8, Encoding.UTF8.GetBytes(_hostClipboard));
+        }
         else if (target == XAtom.String || target == text)
         {
             value = new XProperty(XAtom.String, 8, Encoding.Latin1.GetBytes(_hostClipboard));
@@ -295,6 +301,8 @@ public sealed partial class X11Server
         }
     }
 
+    private static bool IsLatin1(string text) => !text.AsSpan().ContainsAnyExceptInRange('\0', 'ÿ');
+
     private void DeleteSelectionProperty(uint property)
     {
         if (SelectionWindow.Properties.Remove(property, out XProperty? removed))
@@ -310,7 +318,10 @@ public sealed partial class X11Server
         {
             return;
         }
-        string text = type == XAtom.String ? Encoding.Latin1.GetString(data) : Encoding.UTF8.GetString(data);
+        // 我们要的是 UTF8_STRING(不给再要 STRING),属主回的类型照样按类型解码:STRING 是 Latin-1,COMPOUND_TEXT 解转义序列。
+        string text = XText.Decode(data, type == XAtom.String ? XTextEncoding.Latin1
+            : type == Intern("COMPOUND_TEXT") ? XTextEncoding.CompoundText
+            : XTextEncoding.Utf8);
         _lastDeliveredText = text;
         _host.ClipboardChanged(text);
     }
