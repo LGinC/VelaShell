@@ -47,7 +47,8 @@ internal sealed class XSyncAlarm(uint id, XClient owner) : XResource(id, owner)
 {
     public const byte Active = 0, Inactive = 1, Destroyed = 2;
 
-    public XSyncTrigger Trigger { get; } = new();
+    /// <summary>触发器;没给的属性取 CreateAlarm 的默认值:counter None、value-type Absolute、value 0、test-type PositiveComparison。</summary>
+    public XSyncTrigger Trigger { get; } = new() { TestType = XSyncTrigger.PositiveComparison };
 
     public long Delta { get; set; } = 1;
 

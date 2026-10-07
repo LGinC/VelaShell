@@ -362,6 +362,22 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task CreateAlarm不给test_type时默认是PositiveComparison()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint counter = c.NewId(), alarm = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(5));
+        // 只给 counter 与 value(5):计数器已经是 5。PositiveComparison 立即成立;原先默认 PositiveTransition,永远等不到。
+        await c.SendAsync(sync, 9, b => b.U32(alarm).U32(1 | 4).U32(counter).I32(0).U32(5));
+        XMessage fired = await c.NextEventAsync((byte)(syncEvent + 1));
+        Assert.AreEqual(alarm, fired.U32(4));
+        XMessage query = await c.RequestAsync(sync, 10, b => b.U32(alarm));
+        Assert.AreEqual(2u, query.U32(24), "test-type = PositiveComparison");
+    }
+
+    [TestMethod]
     public async Task SYNC的IDLETIME报警器到点触发()
     {
         await using X11Server server = new();
