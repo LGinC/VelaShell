@@ -1744,3 +1744,23 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **`服务端拒绝隧道时单条连接失败而转发器继续跑`(Ubuntu,偶发,修上面几条之后的那一轮冒出来)**:内存里的服务端拒得快,转发器重置本机连接的 RST 可能在 `ConnectAsync` 交回之前就到,Linux 上那时 connect 本身报 `ConnectionReset`,用例却只在之后的读里等它。改成「连上并读到被重置为止」,两种都认;转发器要是给了 FIN 照样红(变异检验:关掉 RST 时这条红)。同样写法的「打开通道超时」那条一并改了。
 
 「Code scanning AI findings」那一项是 GitHub 托管的 Copilot 任务,#562 之前就一直失败、日志里只有退出码,不在仓库的 CI 里,没有动。文档同步在 velashell-docs#92(规格 04 的 `.ppk` 决策)。
+
+## ✅ 167. 2026-10-07 内置 X 服务端:按第二次全库审查的结论逐条修复(`xs_plan.md`)
+
+**一、来由**:2026-10-07 对 `src/VelaShell.XServer` 与宿主的 X Server 做了第二次全库审查(第一次见 §124):分领域读代码、对照 X.Org 协议与扩展规范、ICCCM、EWMH(全程守净室规程,没有打开任何其它 X 服务端或 Mesa 的源码),结论写成仓库根的 `xs_plan.md`(未入库的草案):184 条问题(🔴 9 / 🟠 43 / 🟡 132,分 X、连接 CN、窗口 WN、绘图 DR、输入 IN、GLX GL、宿主 API、客户端兼容 CP 八组)、30 项可以支持的功能(F1–F30)、11 条待拍板的决策(Q1–Q11)、16 条测试缺口(T1–T16)。照计划逐条修,一条一个本地提交:`dev` 上 184 个(183 个带 `xs_plan:` 行,库 165 个、宿主 40 个,有的两边都动)。前 50 条在主会话里修;其余按子系统分给六个并行的会话,各在自己的 git worktree 里做完再 cherry-pick 回 `dev`、手工合冲突。产品层面的取舍按决策表里保守的建议走。文档在 velashell-docs 的 `fix/xserver-review-fixes`([velashell-docs#93](https://github.com/VelaShellLabs/velashell-docs/pull/93),`zh/` 与 `en/` 一起改)。每条提交信息里写着它对应哪一条、为什么、怎么验证的;这里只记全貌。
+
+**二、做了什么**(按领域):
+- **资源与拒绝服务**:每项工作的工作量预算(2²⁸ 单位,扣光回 BadAlloc / GL 的 OUT_OF_MEMORY),持锁超过 250 ms 记日志,宿主限时读像素;每客户端 1 GiB / 全局 2 GiB 的内存账(像素图、属性、字形、DBE、区域、GL 对象与表面);握手阶段至多 32 条、10 秒时限、授权字段 256 字节;宿主回调合并、响铃节流;Retain 客户端至多 16 个;客户端触发的日志转义并限额;GetImage 回复超 256 MB 回 BadAlloc。
+- **安全**:剪贴板跟着键盘焦点所在的会话(`ClipboardFollowsFocus`),PRIMARY 同步默认关(Q3);可以限制经 SSH 转发来的程序用 XTEST、原始按键与设备层级(`RestrictForwardedClients`,默认关,Q5);`_NET_ACTIVE_WINDOW` 防焦点窃取,弹出层只在用户用 X 窗口时置顶;服务端占住根窗口的 SubstructureRedirect 与 `WM_S0`,自己的窗口受保护,save-set 生效;SetSelectionOwner、SetInputFocus 的时间戳规则;Unix 套接字(占用探测限时、名字被占整个显示号不用、目录属主核对、`/tmp/.X{N}-lock`、按对端 uid 授权)、MIT-SHM 只给同一 IPC 命名空间的对端、Windows 上 TCP 独占绑定;`ListenTcp` 默认只在配了 cookie 时开(Q4);cookie 长度;交给宿主的标题去掉控制符与双向控制符;内置引擎下勾掉「受信任」时直说转发开不起来(X-3)。
+- **按协议改对的**:核心绘图在整数坐标采样,宽线与弧的虚线、接头、端帽;CopyArea / CopyPlane / GetImage 读窗口源;GC 参数校验与「出错不产生效果」;SYNC、Present、DAMAGE、DBE、Composite 的语义;XInput2 按 deviceid 存选择、原始事件报设备位置、自动抓取的 crossing、抓取的时间戳与冻结、被动抓取冲突;XKB 的字母类型、自动重复按 X 的语义(Q10)、ChangeKeyboardControl 与 SetPointerMapping 生效;RANDR / XINERAMA;ConfigureWindow 全集、CirculateWindow、VisibilityNotify、win-gravity;剪贴板双向 INCR、MULTIPLE、COMPOUND_TEXT;光标、字体别名;颜色名换成 X.Org 的 `rgb.txt`;GLX 的 create_context、纹理绑定悬空、像素图表面随 FreePixmap 释放、状态命令校验。
+- **宿主当窗口管理器**:快照补齐 ICCCM / Motif / EWMH 提示,外框按重力摆、USPosition 照办;锁定键同步、日韩巴西键盘与 F13–F24;最大化 / 全屏时客户端自己改尺寸推回原生尺寸;InputOnly 与桌面类窗口不开原生窗口;形状以外的点击穿透、窗口透明度、urgency 闪任务栏;对 `_NET_WM_PING` 没有回应时可以强制结束(KillTopLevelClient);停 X Server 前说清会断开几个程序;客户端清单与连接标签(SSH 会话的 `user@host:port`);`BreakGrabs` 等卡住时的恢复手段。
+- **Java**:实测 OpenJDK 17 的窗口管理器判定 —— 占住 `WM_S0` 之后名字不认得就当成会套外框、最大化与改尺寸后不重排 —— `WindowManagerName` 默认改为 `LG3D`(CP-9);互操作镜像加 `default-jdk`,RealClientTests 加 Swing 用例。
+- **性能**:光栅化与 RENDER 的整数路径、平铺按行整段拷、重画时的可见区域不再 O(n²)、被动抓取按 detail 分桶、GL 的三角形光栅与显示列表、交换只拷变化的像素等(前后数字写在各提交里)。
+
+**三、没做的 / 只做了一部分**(要做的已记入 `feature-plan.md`):
+- **新功能**:F1–F30 整体不在这一批(`xs_plan.md` 第五节)。修法要靠新功能的条目只做了库层面的最小修复:卡住时恢复与客户端清单的宿主入口(F3)、宿主光标的 Warp(F8)、屏保 Suspend 转告宿主(F9)、更宽的边缘缩放区(F11)、其余字族(F21)、GL 的选择 / 反馈 / 求值器(F23);点本机窗口或桌面就收起 X 的弹出菜单要全局指针钩子(WN-M7)。
+- **只做了一部分**:PolyArc 连续弧之间的接头(DR-M1);RENDER 的 alpha-map 接受不生效(DR-M4);a1 目标、Disjoint / Conjoint 与混合模式仍走浮点路径(DR-P3);cursor 字体的字形光标没有位图(WN-M5);别的会话仍能看到 SelectionClear 与属主跳变(WN-S11)。
+- **缺验证环境**:分数缩放下最后一列像素可能被裁(API-H13 ❓,各平台待查);macOS 上 Command 组合键收不到 KeyUp 的处理(IN-E19)没有实机;macOS / FreeBSD 的 `getpeereid`(CN-S8)。
+- **审查时新发现、没修**:间接 GLX 选不到单缓冲视觉(GetVisualConfigs 每个视觉只列双缓冲配置,要加单缓冲的 X 视觉)。
+
+**四、验证**:`VelaShell.XServer.Tests` 的测试方法从 199 个到 413 个,426 例通过 / 9 例按平台跳过;开互操作(Docker 里的真实客户端:xterm、xeyes、xclock、xlogo、RENDER 版本、直接与间接 glxgears、Swing)12 例全过、没有 `[SKIP]`。宿主 `VelaShell.Tests` 1811 / 8、`Infrastructure.Tests` 633 / 4、`Ssh.Tests` 1349 / 57、`Core.Tests` 704 通过,只有 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 因靶机镜像建于 Dockerfile 那次改动之前而失败(同 §159、§161,在这一批之前的提交上一样失败)。全解决方案零警告零错误。每条修复的回归用例都在旧代码上确认过失败(引用新 API、旧代码上编不过的除外);只在 Linux 上才有的行为(backlog 满的 AF_UNIX 阻塞 connect、fd 用尽、IPC 命名空间)在 Linux 容器里核对过。合并六个分支时手工合了几处冲突(Map 里 NameWindowPixmap 与 InputOnly、XFIXES 的光标图像、平铺背景、SYNC / Present 的清理钩子拆成「连接断开」与「资源销毁」、Dispatch),并修了三条机器忙时偶发失败的用例。
