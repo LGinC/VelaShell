@@ -89,7 +89,8 @@ public interface ILocalXServer
     /// 没在运行且设置允许自动启动时先启动。
     /// </summary>
     /// <remarks>
-    /// 本机已经有别的 X 服务端在用(Windows 上 6000 端口有人在听 —— X410、用户手开的 VcXsrv;其它平台上设了
+    /// 本机已经有别的 X 服务端在用(Windows 上当前用户会话里的进程在 6000 端口上听 —— X410、用户手开的 VcXsrv;别的会话的不算,
+    /// 终端服务器上那是别的用户的;其它平台上设了
     /// <c>DISPLAY</c>)时不自动启动,返回 <see cref="XServerDisplayResolution.None" /> —— 用户已经有一个在用的显示,
     /// 再开一个只会让窗口出现在意料之外的地方。VcXsrv 引擎找不到可执行文件时同样静默不接管:
     /// 没装 VcXsrv 的人不该在每次连接时收到一条提示。内置引擎在运行时一并给出

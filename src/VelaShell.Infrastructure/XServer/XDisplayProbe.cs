@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
 using VelaShell.Core.XServer;
 
 namespace VelaShell.Infrastructure.XServer;
@@ -9,8 +11,80 @@ namespace VelaShell.Infrastructure.XServer;
 /// 两处都要看:TCP <c>6000+N</c>(Windows 上的 X 服务端都走它),以及类 Unix 上的 <c>/tmp/.X11-unix/XN</c>
 /// —— 桌面自己的 Xorg / XWayland 通常关着 TCP,只看端口会以为 :0 空着。
 /// </remarks>
-internal static class XDisplayProbe
+internal static partial class XDisplayProbe
 {
+    /// <summary>
+    /// Windows 上在环回 <c>6000+N</c> 监听的进程是不是在当前用户会话里(按 <c>GetExtendedTcpTable</c> 给的属主进程号、
+    /// <c>ProcessIdToSessionId</c> 比会话号);没人在听、查不到属主或查不到会话时为 false。
+    /// </summary>
+    /// <remarks>
+    /// Windows 的 TCP 端口全机共享:终端服务器(多个用户同时登录)上 <c>localhost:0</c> 后面可能是别的用户开着的 VcXsrv(常带 <c>-ac</c>),
+    /// 把 X11 转发交给它,远端程序的窗口、键盘、剪贴板就都到了别人的桌面上。查不清楚的一律当作不是自己的。
+    /// </remarks>
+    [SupportedOSPlatform("windows")]
+    public static bool IsTcpListenerInThisSession(int display)
+    {
+        int port = XServerCommandLine.TcpPort(display);
+        if (port is <= 0 or > ushort.MaxValue)
+        {
+            return false;
+        }
+        uint? owner = ListenerProcess(port, AddressFamilyInet, rowSize: 24, portOffset: 8, pidOffset: 20)
+                      ?? ListenerProcess(port, AddressFamilyInet6, rowSize: 56, portOffset: 20, pidOffset: 52);
+        return owner is { } pid
+               && ProcessIdToSessionId(pid, out uint session) && ProcessIdToSessionId((uint)Environment.ProcessId, out uint own)
+               && session == own;
+    }
+
+    private const uint AddressFamilyInet = 2, AddressFamilyInet6 = 23;
+    private const int TcpTableOwnerPidListener = 3;
+
+    /// <summary>在 <paramref name="port" /> 上监听的进程号(MIB_TCP(6)TABLE_OWNER_PID 的一行:端口是网络字节序的低 16 位)。</summary>
+    [SupportedOSPlatform("windows")]
+    private static unsafe uint? ListenerProcess(int port, uint family, int rowSize, int portOffset, int pidOffset)
+    {
+        uint size = 0;
+        _ = GetExtendedTcpTable(null, ref size, false, family, TcpTableOwnerPidListener, 0);
+        for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+        {
+            byte[] buffer = new byte[size];
+            fixed (byte* table = buffer)
+            {
+                uint result = GetExtendedTcpTable(table, ref size, false, family, TcpTableOwnerPidListener, 0);
+                if (result == 122)   // ERROR_INSUFFICIENT_BUFFER:表在两次调用之间变大了
+                {
+                    continue;
+                }
+                if (result != 0)
+                {
+                    return null;
+                }
+            }
+            int count = (int)Math.Min(BitConverter.ToUInt32(buffer, 0), (uint)((buffer.Length - 4) / rowSize));
+            for (int i = 0; i < count; i++)
+            {
+                int row = 4 + (i * rowSize);
+                uint raw = BitConverter.ToUInt32(buffer, row + portOffset);
+                if ((((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)) == port)
+                {
+                    return BitConverter.ToUInt32(buffer, row + pidOffset);
+                }
+            }
+            return null;
+        }
+        return null;
+    }
+
+    [LibraryImport("iphlpapi.dll")]
+    [SupportedOSPlatform("windows")]
+    private static unsafe partial uint GetExtendedTcpTable(byte* table, ref uint size, [MarshalAs(UnmanagedType.Bool)] bool order,
+        uint family, int tableClass, uint reserved);
+
+    [LibraryImport("kernel32.dll")]
+    [SupportedOSPlatform("windows")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ProcessIdToSessionId(uint processId, out uint sessionId);
+
     /// <summary>探测一个端口有没有人听的上限。环回上连不上是立刻被拒,这个数只防意外。</summary>
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromMilliseconds(300);
 

@@ -410,10 +410,14 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         }
     }
 
-    /// <summary>本机是否已经有别的 X 显示在用:Windows 上看 <c>localhost:0</c>,其它平台看 <c>DISPLAY</c>。</summary>
+    /// <summary>
+    /// 本机是否已经有别的 X 显示在用:Windows 上看 <c>localhost:0</c>,而且在那里监听的进程要在当前用户会话里 —— 终端服务器上
+    /// 那可能是别的用户开着的 VcXsrv(常带 <c>-ac</c>),原先只要有人在听就不自动启动、转发落到别人的 X 服务端上
+    /// (见 <see cref="XDisplayProbe.IsTcpListenerInThisSession" />);其它平台看 <c>DISPLAY</c>。
+    /// </summary>
     private static async Task<bool> HasOtherDisplayAsync(CancellationToken cancellationToken) =>
         OperatingSystem.IsWindows()
-            ? await XDisplayProbe.IsTcpListeningAsync(0, cancellationToken).ConfigureAwait(false)
+            ? await XDisplayProbe.IsTcpListeningAsync(0, cancellationToken).ConfigureAwait(false) && XDisplayProbe.IsTcpListenerInThisSession(0)
             : !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("DISPLAY"));
 
     private void SetState(XServerState state, int display)
