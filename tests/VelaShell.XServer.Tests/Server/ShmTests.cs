@@ -132,6 +132,44 @@ public sealed partial class ShmTests
         Assert.AreEqual(2, version.Bytes[16], "pixmap-format = ZPixmap");
     }
 
+    [TestMethod]
+    public async Task 反复Attach错的shmid时每秒失败几次之后不再整读段表_过了这一秒照常()
+    {
+        if (!OperatingSystem.IsLinux())
+        {
+            Assert.Inconclusive("MIT-SHM 只在 Linux 上提供");
+            return;
+        }
+        // 原先每条 Attach 都整读、整份拆分一遍 /proc/sysvipc/shm:一串错的 shmid 就能持续占着执行线程。
+        string path = Path.Combine(Path.GetTempPath(), $"vx-shm-{Guid.NewGuid():N}.sock");
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path });
+        await server.StartAsync();
+        await using XTestClient c = await XTestClient.ConnectUnixAsync(path);
+        (byte shm, _) = await ShmAsync(c) ?? throw new AssertFailedException("Unix 套接字上应当有 MIT-SHM");
+        int before = server.ShmTableReads;
+        await c.SendManyAsync(Enumerable.Range(0, 200).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+            (shm, 1, b => b.U32(c.NewId()).I32(int.MaxValue - i).U8(0).U8(0).U8(0).U8(0))));   // Attach(不存在的 shmid)
+        await c.SyncAsync();
+        Assert.IsLessThanOrEqualTo(3 * X11Server.MaxShmAttachFailuresPerSecond, server.ShmTableReads - before, "失败几次之后不再读段表(200 条最多跨两三秒)");
+
+        await Task.Delay(1100);
+        int shmid = ShmGet(0, 64, 0x380);   // IPC_PRIVATE,IPC_CREAT | 0600
+        Assert.IsGreaterThanOrEqualTo(0, shmid);
+        try
+        {
+            uint segment = c.NewId();
+            ushort attach = await c.SendAsync(shm, 1, b => b.U32(segment).I32(shmid).U8(0).U8(0).U8(0).U8(0));
+            await c.SendAsync(shm, 2, b => b.U32(segment));   // Detach:Attach 成了才不报 BadShmSeg
+            await c.SyncAsync();
+            await Assert.ThrowsExactlyAsync<OperationCanceledException>(
+                () => c.NextAsync(m => m.IsError && m.Sequence >= attach, timeoutMs: 200), "过了这一秒,对的 shmid 照常 Attach");
+        }
+        finally
+        {
+            _ = ShmCtl(shmid, 0, 0);   // IPC_RMID
+        }
+    }
+
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEffectiveUid();
 

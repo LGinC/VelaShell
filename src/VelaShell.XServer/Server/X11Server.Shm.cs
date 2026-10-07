@@ -87,13 +87,15 @@ public sealed partial class X11Server
         uint id = r.U32();
         int shmid = r.I32();
         bool readOnly = r.Bool();
-        if (FindShmSegment(shmid) is not { } info || !MayAccess(c, info, readOnly))
+        if (!ShmAttachAllowed(c) || FindShmSegment(shmid) is not { } info || !MayAccess(c, info, readOnly))
         {
+            NoteShmAttachFailure(c);
             throw new XProtocolError(XErrorCode.Access, (uint)shmid);
         }
         nint address = ShmAttachSegment(shmid, readOnly);
         if (address == -1)
         {
+            NoteShmAttachFailure(c);
             throw new XProtocolError(XErrorCode.Access, (uint)shmid);
         }
         XShmSegment segment = new(id, c, shmid, readOnly, address, info);
@@ -216,43 +218,75 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ System V 共享内存
 
-    /// <summary>/proc/sysvipc/shm 里这个 shmid 的大小、属主、创建者与权限;没有时为 null。</summary>
-    private static XShmAccess? FindShmSegment(int shmid)
+    // ShmAttach 每次都要读一遍 /proc/sysvipc/shm(段的大小与属主没有别的可靠来源:shmctl 的结构体布局各架构不同)。
+    // 一个客户端拿一串错的 shmid 反复 Attach,原先每条都整读、整份拆分一遍,段多的机器上就是持续占着执行线程。
+    // 现在逐行读、找到就停、只拆要的那几列;同一个客户端每秒失败超过 MaxShmAttachFailuresPerSecond 次之后,
+    // 这一秒里的 Attach 直接回 BadAccess、不再读表(正常的程序几乎不会 Attach 失败)。
+
+    /// <summary>一个客户端每秒最多这么多次 Attach 失败,再多的这一秒里不再查表。</summary>
+    internal const int MaxShmAttachFailuresPerSecond = 16;
+
+    /// <summary>各客户端这一秒里 Attach 失败的次数(客户端断开时摘掉)。</summary>
+    private readonly Dictionary<XClient, (long Second, int Count)> _shmAttachFailures = [];
+
+    /// <summary>读 /proc/sysvipc/shm 的次数(测试用)。</summary>
+    internal int ShmTableReads { get; private set; }
+
+    private bool ShmAttachAllowed(XClient c) =>
+        !_shmAttachFailures.TryGetValue(c, out (long Second, int Count) failures)
+        || failures.Second != CurrentSecond || failures.Count < MaxShmAttachFailuresPerSecond;
+
+    private void NoteShmAttachFailure(XClient c)
     {
-        string[] lines;
+        long second = CurrentSecond;
+        _shmAttachFailures[c] = _shmAttachFailures.TryGetValue(c, out (long Second, int Count) failures) && failures.Second == second
+            ? (second, failures.Count + 1)
+            : (second, 1);
+    }
+
+    private static long CurrentSecond => System.Diagnostics.Stopwatch.GetTimestamp() / System.Diagnostics.Stopwatch.Frequency;
+
+    private void CleanupShm(XClient client) => _shmAttachFailures.Remove(client);
+
+    /// <summary>/proc/sysvipc/shm 里这个 shmid 的大小、属主、创建者与权限;没有时为 null。</summary>
+    private XShmAccess? FindShmSegment(int shmid)
+    {
+        ShmTableReads++;
         try
         {
-            lines = File.ReadAllLines("/proc/sysvipc/shm");
-        }
-        catch (IOException)
-        {
-            return null;
-        }
-        if (lines.Length == 0)
-        {
-            return null;
-        }
-        string[] header = lines[0].Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        int idCol = Array.IndexOf(header, "shmid"), sizeCol = Array.IndexOf(header, "size");
-        int uidCol = Array.IndexOf(header, "uid"), cuidCol = Array.IndexOf(header, "cuid"), permsCol = Array.IndexOf(header, "perms");
-        if (idCol < 0 || sizeCol < 0 || uidCol < 0 || cuidCol < 0 || permsCol < 0)
-        {
-            return null;
-        }
-        foreach (string line in lines.Skip(1))
-        {
-            string[] cols = line.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (cols.Length <= Math.Max(Math.Max(idCol, sizeCol), Math.Max(Math.Max(uidCol, cuidCol), permsCol))
-                || !int.TryParse(cols[idCol], out int id) || id != shmid)
+            using IEnumerator<string> lines = File.ReadLines("/proc/sysvipc/shm").GetEnumerator();
+            if (!lines.MoveNext())
             {
-                continue;
+                return null;
             }
-            return new XShmAccess(long.Parse(cols[sizeCol], System.Globalization.CultureInfo.InvariantCulture),
-                uint.Parse(cols[uidCol], System.Globalization.CultureInfo.InvariantCulture),
-                uint.Parse(cols[cuidCol], System.Globalization.CultureInfo.InvariantCulture),
-                Convert.ToInt32(cols[permsCol], 8));
+            string[] header = lines.Current.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            int idCol = Array.IndexOf(header, "shmid"), sizeCol = Array.IndexOf(header, "size");
+            int uidCol = Array.IndexOf(header, "uid"), cuidCol = Array.IndexOf(header, "cuid"), permsCol = Array.IndexOf(header, "perms");
+            if (idCol < 0 || sizeCol < 0 || uidCol < 0 || cuidCol < 0 || permsCol < 0)
+            {
+                return null;
+            }
+            int lastCol = Math.Max(Math.Max(idCol, sizeCol), Math.Max(Math.Max(uidCol, cuidCol), permsCol));
+            Span<Range> columns = stackalloc Range[lastCol + 2];
+            while (lines.MoveNext())
+            {
+                ReadOnlySpan<char> line = lines.Current;
+                if (line.Split(columns, ' ', StringSplitOptions.RemoveEmptyEntries) <= lastCol
+                    || !int.TryParse(line[columns[idCol]], out int id) || id != shmid)
+                {
+                    continue;
+                }
+                return new XShmAccess(long.Parse(line[columns[sizeCol]], System.Globalization.CultureInfo.InvariantCulture),
+                    uint.Parse(line[columns[uidCol]], System.Globalization.CultureInfo.InvariantCulture),
+                    uint.Parse(line[columns[cuidCol]], System.Globalization.CultureInfo.InvariantCulture),
+                    Convert.ToInt32(line[columns[permsCol]].ToString(), 8));
+            }
+            return null;
         }
-        return null;
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException or OverflowException)
+        {
+            return null;
+        }
     }
 
     private const int ShmReadOnlyFlag = 0x1000;   // SHM_RDONLY

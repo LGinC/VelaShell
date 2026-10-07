@@ -166,6 +166,7 @@ public sealed partial class X11Server
                 FirstError = ShmErrorBase,
                 ErrorCount = 1,
                 VisibleTo = static client => client.SameHost,
+                ClientClosed = CleanupShm,
             });
         }
     }
