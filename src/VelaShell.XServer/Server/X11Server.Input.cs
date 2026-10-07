@@ -1518,22 +1518,63 @@ public sealed partial class X11Server
 
     private void WarpPointer(XRequestReader r)
     {
-        r.U32();
-        uint dst = r.U32();
-        r.I16();
-        r.I16();
-        r.U16();
-        r.U16();
+        uint src = r.U32(), dst = r.U32();
+        short srcX = r.I16(), srcY = r.I16();
+        ushort srcWidth = r.U16(), srcHeight = r.U16();
         short dx = r.I16(), dy = r.I16();
-        if (dst == 0)
-        {
-            MovePointer(_pointerX + dx, _pointerY + dy, warp: true);
-            return;
-        }
-        (int x, int y) = Window(dst).AbsoluteInner();
-        // 宿主的系统指针挪不动(那是用户的鼠标);这里只改服务端认为的指针位置。
-        MovePointer(x + dx, y + dy, warp: true);
+        XWindow? srcWindow = src == 0 ? null : Window(src), dstWindow = dst == 0 ? null : Window(dst);
+        WarpPointerTo(srcWindow, srcX, srcY, srcWidth, srcHeight, dstWindow, dx, dy);
     }
+
+    /// <summary>
+    /// WarpPointer 与 XIWarpPointer 共用(协议「WarpPointer」):给了 src-window 时,只有指针在它里面、而且在它的源矩形里才挪
+    /// (宽 / 高为 0 换成窗口的宽 / 高减去 src-x / src-y);dst-window 为 None 时按偏移挪,否则挪到它原点加偏移。
+    /// 不出根窗口,有带 confine-to 的指针抓取时不出那个窗口(只挪到最近的边上)。指针冻着时与设备事件一样排队(原先越过排着的事件先到)。
+    /// 原先两条路不一致:核心的 src-window 与源矩形读了就丢、不校验;结果不夹,负坐标撞上「指针离开」的 −1。
+    /// 宿主的系统指针挪不动(那是用户的鼠标),这里只改服务端认为的指针位置(F8)。
+    /// </summary>
+    private void WarpPointerTo(XWindow? src, int srcX, int srcY, int srcWidth, int srcHeight, XWindow? dst, int dx, int dy) =>
+        ProcessPointerMotion(() =>
+        {
+            int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+            if (src is not null)
+            {
+                if (!IsLiveWindow(src) || !(ReferenceEquals(_pointerWindow, src) || _pointerWindow.IsDescendantOf(src)))
+                {
+                    return;
+                }
+                (int sx, int sy) = src.AbsoluteInner();
+                int w = srcWidth == 0 ? src.Width - srcX : srcWidth, h = srcHeight == 0 ? src.Height - srcY : srcHeight;
+                if (px < sx + srcX || py < sy + srcY || px >= sx + srcX + w || py >= sy + srcY + h)
+                {
+                    return;
+                }
+            }
+            int x, y;
+            if (dst is null)
+            {
+                (x, y) = (px + dx, py + dy);
+            }
+            else if (IsLiveWindow(dst))
+            {
+                (int ox, int oy) = dst.AbsoluteInner();
+                (x, y) = (ox + dx, oy + dy);
+            }
+            else
+            {
+                return;   // 排队期间目标窗口销毁了
+            }
+            if (PointerGrab?.ConfineTo is { } confine && IsLiveWindow(confine))
+            {
+                (int cx, int cy) = confine.AbsoluteInner();
+                x = Math.Clamp(x, cx, cx + Math.Max(0, confine.Width - 1));
+                y = Math.Clamp(y, cy, cy + Math.Max(0, confine.Height - 1));
+            }
+            MovePointer(Math.Clamp(x, 0, Root.Width - 1), Math.Clamp(y, 0, Root.Height - 1), warp: true);
+        });
+
+    /// <summary>窗口还在(没被销毁);根总是在的。</summary>
+    private bool IsLiveWindow(XWindow window) => window.IsRoot || ReferenceEquals(Lookup<XWindow>(window.Id), window);
 
     private void GetKeyboardMapping(XClient c, XRequestReader r)
     {

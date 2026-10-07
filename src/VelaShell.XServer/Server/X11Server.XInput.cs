@@ -212,24 +212,13 @@ public sealed partial class X11Server
                     int srcX = r.I32() >> 16, srcY = r.I32() >> 16;
                     ushort srcW = r.U16(), srcH = r.U16();
                     int dstX = r.I32() >> 16, dstY = r.I32() >> 16;
-                    if (src != 0)
+                    ushort id = r.U16();
+                    if (!IsPointerDevice(id))
                     {
-                        (int sx, int sy) = Window(src).AbsoluteInner();
-                        int w = srcW == 0 ? int.MaxValue : srcW, h = srcH == 0 ? int.MaxValue : srcH;
-                        if (_pointerX < sx + srcX || _pointerY < sy + srcY || _pointerX >= sx + srcX + w || _pointerY >= sy + srcY + h)
-                        {
-                            break;   // 指针不在源矩形里:什么也不做(同核心 WarpPointer)
-                        }
+                        throw BadDevice(id);   // 只能挪主指针或浮动的从指针
                     }
-                    if (dst != 0)
-                    {
-                        (int dx, int dy) = Window(dst).AbsoluteInner();
-                        MovePointer(dx + dstX, dy + dstY, warp: true);
-                    }
-                    else
-                    {
-                        MovePointer(Math.Max(0, _pointerX) + dstX, Math.Max(0, _pointerY) + dstY, warp: true);
-                    }
+                    // 与核心 WarpPointer 同一条路(源矩形、夹在根窗口与 confine-to 里、冻结时排队)。
+                    WarpPointerTo(src == 0 ? null : Window(src), srcX, srcY, srcW, srcH, dst == 0 ? null : Window(dst), dstX, dstY);
                     break;
                 }
             case 42:  // XIChangeCursor:同核心的窗口光标

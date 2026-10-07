@@ -121,6 +121,51 @@ public sealed class SyncGrabTests
         Assert.HasCount(1, await DrainAsync(c, MotionNotify));
     }
 
+    /// <summary>
+    /// WarpPointer:src-window 与源矩形生效(原先读了就丢)、不存在的 src-window 回 BadWindow;结果夹在根窗口里、有 confine-to 时夹在那个窗口里;
+    /// 指针冻着时 Warp 排在冻结的事件后面(原先越过排着的移动先到)。
+    /// </summary>
+    [TestMethod]
+    public async Task WarpPointer按源矩形生效_夹在根窗口与confine_to里_冻结时排在队列里()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ScreenWidth = 800, ScreenHeight = 600 }, host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host, eventMask: 0x40);   // 在 (0, 0),100 × 80
+        server.InjectPointerMotion(host.Mapped[top], 50, 40);
+        await DrainAsync(c, MotionNotify);
+        async Task<(int X, int Y)> PointerAsync()
+        {
+            XMessage q = await c.RequestAsync(38, 0, b => b.U32(c.RootWindow));
+            return (q.I16(16), q.I16(18));
+        }
+        Task<ushort> WarpAsync(uint src, short sx, short sy, ushort sw, ushort sh, uint dst, short dx, short dy) =>
+            c.SendAsync(41, 0, b => b.U32(src).U32(dst).I16(sx).I16(sy).U16(sw).U16(sh).I16(dx).I16(dy));
+
+        await WarpAsync(top, 0, 0, 10, 10, top, 5, 5);   // 指针 (50, 40) 不在源矩形 (0, 0, 10, 10) 里:不挪
+        Assert.AreEqual((50, 40), await PointerAsync(), "源矩形之外不挪");
+        await WarpAsync(top, 40, 30, 0, 0, top, 5, 5);   // 宽高为 0:换成窗口剩下的部分,指针在里面
+        Assert.AreEqual((5, 5), await PointerAsync());
+        XMessage bad = await c.RequestAsync(41, 0, b => b.U32(0x12345).U32(0).I16(0).I16(0).U16(0).U16(0).I16(0).I16(0));
+        Assert.AreEqual(3, bad.Detail, "不存在的 src-window:BadWindow");
+
+        await WarpAsync(0, 0, 0, 0, 0, c.RootWindow, -50, 9000);
+        Assert.AreEqual((0, 599), await PointerAsync(), "夹在根窗口里(原先 −50 撞上「指针离开」)");
+
+        await DrainAsync(c, MotionNotify);   // 前面几次 Warp 的移动
+        // 带 confine-to 的指针抓取(同步):Warp 夹在 confine-to 里,而且排在冻结的移动后面。
+        await c.RequestAsync(26, 0, b => b.U32(top).U16(0x40).U8(Synchronous).U8(Asynchronous).U32(top).U32(0).U32(0));
+        server.InjectPointerMotion(host.Mapped[top], 20, 20);
+        await WarpAsync(0, 0, 0, 0, 0, c.RootWindow, 500, 500);
+        Assert.IsEmpty(await DrainAsync(c, MotionNotify), "冻着:Warp 也排队");
+        await c.SendAsync(35, 0, b => b.U32(0));   // AsyncPointer
+        List<XMessage> moves = await DrainAsync(c, MotionNotify);
+        Assert.HasCount(2, moves);
+        Assert.AreEqual(20, moves[0].I16(24), "先是排着的移动");
+        Assert.AreEqual(99, moves[1].I16(24), "再是 Warp:夹在 confine-to 的右边缘");
+        Assert.AreEqual(79, moves[1].I16(26));
+    }
+
     /// <summary>重放的按下按事件之前的状态报:按钮 1 的位、Shift 自己的位都不在 state 里(原先重放时已经带上了)。</summary>
     [TestMethod]
     public async Task 重放的按下按事件之前的状态报_不带这次按下的按钮与修饰位()
