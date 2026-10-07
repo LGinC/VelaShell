@@ -997,9 +997,15 @@ internal sealed partial class GlContext
     }
 
     /// <summary>
-    /// DrawArrays(GLX 编码 §2.3.4):n 个顶点、m 个 ARRAY_INFO(类型、分量数、数组种类),再是逐顶点紧排的数据 ——
-    /// 每个顶点依次是边标记、纹理坐标、颜色、索引、法线、顶点,各自补齐到 4 字节。
+    /// DrawArrays(GLX 编码 §2.3.4):n 个顶点、m 个 ARRAY_INFO(类型、分量数、数组种类),再是逐顶点紧排的数据,
+    /// 每个数组的元素各自补齐到 4 字节。
     /// </summary>
+    /// <remarks>
+    /// 每个顶点里各数组的先后**按 ARRAY_INFO 出现的顺序**。编码规范的 VERTEX_DATA 一节按「边标记、纹理坐标、颜色、索引、法线、顶点」
+    /// 列出各段,同时说 ARRAY_INFO 的列表是无序的;实际的客户端(Mesa 的间接 GLX)按它自己列 ARRAY_INFO 的顺序
+    /// (比如颜色、边标记、顶点)放数据 —— 用 velashell-xclients 里的小程序核对过。原先按固定的槽位次序读,分量整个错位。
+    /// ARRAY_INFO 恰好按规范的次序列时两种读法一致。同一种数组列两次的记 INVALID_ENUM。
+    /// </remarks>
     private void DrawArrays(ref GlReader r)
     {
         int count = r.I32();
@@ -1010,7 +1016,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
-        (uint Type, int Size, int Bytes)[] info = new (uint, int, int)[6];   // 按数据里的次序:边、纹理、颜色、索引、法线、顶点
+        Span<(int Slot, uint Type, int Size, int Bytes)> info = stackalloc (int, uint, int, int)[arrays];   // 按 ARRAY_INFO 的顺序
+        int seen = 0;
         for (int i = 0; i < arrays; i++)
         {
             uint type = r.U32();
@@ -1034,12 +1041,13 @@ internal sealed partial class GlContext
                 GlEnum.DOUBLE => 8,
                 _ => 0,
             };
-            if (slot < 0 || elem == 0 || size is < 1 or > 4)
+            if (slot < 0 || elem == 0 || size is < 1 or > 4 || (seen & (1 << slot)) != 0)
             {
                 SetError(GlEnum.INVALID_ENUM);
                 return;
             }
-            info[slot] = (type, size, elem * size);
+            seen |= 1 << slot;
+            info[i] = (slot, type, size, elem * size);
         }
         Begin(mode);
         if (!InBeginEnd)
@@ -1048,23 +1056,20 @@ internal sealed partial class GlContext
         }
         // 顶点数以数据里真有的为准:一个数组都没给(每个顶点 0 字节)时不空转 count 次。
         int stride = 0;
-        foreach ((_, _, int bytes) in info)
+        foreach ((_, _, _, int bytes) in info)
         {
             stride += (bytes + 3) & ~3;
         }
         int vertices = stride == 0 ? 0 : Math.Min(count, r.Remaining / stride);
+        Span<float> c = stackalloc float[4];
         for (int v = 0; v < vertices; v++)
         {
             Vector4 position = new(0, 0, 0, 1);
             bool hasVertex = false;
-            for (int slot = 0; slot < 6; slot++)
+            foreach ((int slot, uint type, int size, int bytes) in info)
             {
-                (uint type, int size, int bytes) = info[slot];
-                if (bytes == 0)
-                {
-                    continue;
-                }
-                Span<float> c = [0, 0, 0, 1];
+                c[0] = c[1] = c[2] = 0;
+                c[3] = 1;
                 for (int k = 0; k < size; k++)
                 {
                     c[k] = ReadArrayComponent(ref r, type, normalized: slot is 2 or 4);

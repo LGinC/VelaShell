@@ -1185,6 +1185,29 @@ public sealed class GlxTests
         Assert.IsLessThan(0xC0u, (corner >> 8) & 0xFF, "角上混进了红色的边框(原先下标夹在图像里,是纯白)");
     }
 
+    [TestMethod]
+    public void DrawArrays每个顶点的数据按ARRAY_INFO的顺序读()
+    {
+        // Mesa 的间接 GLX 实际发的样子(velashell-xclients 里抓的):ARRAY_INFO 依次是颜色(4 × UNSIGNED_BYTE)、边标记、顶点(2 × FLOAT),
+        // 每个顶点的数据也按这个顺序:颜色 4 字节、边标记 1 字节补齐到 4、顶点 8 字节。
+        (Gl.GlContext gl, Gl.GlSurface surface) = DirectContext();
+        const uint vertexArray = 0x8074, colorArray = 0x8076, edgeFlagArray = 0x8079, floatType = 0x1406;
+        Run(gl, 193, b =>
+        {
+            b.I32(4).I32(3).U32(Quads)
+                .U32(UnsignedByte).I32(4).U32(colorArray)
+                .U32(UnsignedByte).I32(1).U32(edgeFlagArray)
+                .U32(floatType).I32(2).U32(vertexArray);
+            foreach ((float x, float y) in (ReadOnlySpan<(float, float)>)[(-1, -1), (1, -1), (1, 1), (-1, 1)])
+            {
+                b.Bytes([0, 0, 255, 255]).Bytes([1, 0, 0, 0]);
+                F(b, x, y);
+            }
+        });
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(0x0000FFu, SurfacePixel(surface, 4, 4), "原先按「边标记、纹理、颜色……」的固定次序读:颜色读成了边标记那 4 个字节");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {
