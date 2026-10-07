@@ -68,6 +68,16 @@ public sealed class MalformedKeyInputTests
         }
     }
 
+    /// <summary>截到任意位置都只许抛 <see cref="SshPrivateKeyException" />。</summary>
+    /// <remarks>
+    /// **最后一个点(整份文件只差结尾那个换行)不扫**:那不算「截断」,是完整文件 —— 而它是唯一一个会真的
+    /// 走到口令派生的点。实测过:493 个字符的加密 .ppk 上,只有截到 492 那一处花了 1.2 秒,其余 492 个
+    /// 截断点都在 20 毫秒以内(结构不全,解析在派生之前就抛)。
+    /// 派生一次是 Argon2id 8 MB × 55 passes:本机 1.2 秒、CI 上 4 秒;3 核 runner 上三套程序集并行、
+    /// 内存带宽被瓜分时实测涨到 30 秒以上,撞上本套件 30 秒的全局超时 —— run 37526852105 上这条用例
+    /// 就是这么红的,不是挂死。完整文件(口令对与错)由 <c>PuttyKeyTests</c> 与
+    /// <c>EncryptedOpenSshKeyTests</c> 覆盖,它们各派生一次;截断扫描要的是解析层的健壮性,不必再付一次。
+    /// </remarks>
     [TestMethod]
     [DataRow("putty-ed25519-v2-lo.ppk")]
     [DataRow("putty-ed25519-v3-hi-enc.ppk")]
@@ -75,7 +85,7 @@ public sealed class MalformedKeyInputTests
     {
         string text = Fixture(name);
 
-        for (int length = 0; length < text.Length; length += 3)
+        for (int length = 0; length < text.Length - 1; length += 3)
         {
             string truncated = text[..length];
             OnlyThrows<SshPrivateKeyException>(
