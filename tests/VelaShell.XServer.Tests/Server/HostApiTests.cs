@@ -387,6 +387,33 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task NET_WM_MOVERESIZE之后宿主补的松开不再投递()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapClickableAsync(c, host, 0, 0);
+        XTopLevelWindow window = host.Mapped[top];
+        server.InjectPointerButton(window, 10, 10, 1, pressed: true);
+        await c.NextEventAsync(4);
+
+        // GTK 的自绘标题栏被按下:请窗口管理器拖动,按钮交给了它。
+        uint moveResize = await InternAsync(c, "_NET_WM_MOVERESIZE");
+        await c.SendAsync(25, 0, b => b.U32(c.RootWindow).U32(0x180000).U8(33).U8(32).U16(0).U32(top).U32(moveResize)
+            .U32(10).U32(10).U32(8).U32(1).U32(1));   // Move,按钮 1
+        await host.WaitForAsync(() => host.Requests.OfType<XMoveResizeRequest>().Any());
+
+        server.InjectPointerButton(window, 30, 30, 1, pressed: false);   // 宿主的拖动循环结束后补的松开
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(5, timeoutMs: 300), "按钮已经交给窗口管理器:不再有孤立的 ButtonRelease");
+
+        server.InjectPointerButton(window, 10, 10, 1, pressed: true);   // 之后的点击照常成对
+        server.InjectPointerButton(window, 10, 10, 1, pressed: false);
+        await c.NextEventAsync(4);
+        await c.NextEventAsync(5);
+    }
+
+    [TestMethod]
     public async Task 最小化的顶层不再接住指针_客户端抬高顶层时请宿主照办()
     {
         using RecordingHost host = new();

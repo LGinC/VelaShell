@@ -83,7 +83,12 @@ public sealed partial class X11Server
         ProcessPointerButton(button, pressed, () =>
         {
             MovePointer(rootX, rootY);
-            ButtonEvent(button, pressed);
+            // X 这边并没按着它就不发松开:_NET_WM_MOVERESIZE 开始时按钮已经当作交给了窗口管理器(见 ReleaseButtonForWindowManager),
+            // 宿主拖动结束后再补的那个松开原先照样投递,客户端收到一个没有按下的 ButtonRelease。
+            if (pressed || IsPhysicalButtonDown(button))
+            {
+                ButtonEvent(button, pressed);
+            }
         });
     }
 
