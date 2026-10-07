@@ -118,22 +118,33 @@ public sealed class XInputTests
     }
 
     [TestMethod]
-    public async Task 根窗口上选的原始移动带增量()
+    public async Task 根窗口上选的原始移动报设备的绝对位置_Warp不发也不挪设备位置()
     {
         using RecordingHost host = new();
         await using X11Server server = new(host: host);
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         byte xi = await XiAsync(c);
-        uint top = await MapTopAsync(c, host);
+        uint top = await MapTopAsync(c, host);   // 在根坐标 (10, 20)
         await SelectAsync(c, xi, c.RootWindow, 0, 1u << 17);   // XIAllDevices:RawMotion
         await c.SyncAsync();
         server.InjectPointerMotion(host.Mapped[top], 1, 1);
-        await NextXiAsync(c, xi, 17);   // 从初始位置移过来的那一下
+        await NextXiAsync(c, xi, 17);
         server.InjectPointerMotion(host.Mapped[top], 4, 6);
         XMessage raw = await NextXiAsync(c, xi, 17);
         Assert.AreEqual(1, raw.U16(22), "valuators_len");
-        Assert.AreEqual(3, (int)raw.U32(36), "dx 的整数部分");
-        Assert.AreEqual(5, (int)raw.U32(44), "dy 的整数部分");
+        Assert.AreEqual(14, (int)raw.U32(36), "轴声明的是 Abs X:报设备的位置(整数部分)");
+        Assert.AreEqual(26, (int)raw.U32(44), "Abs Y");
+
+        // 程序 Warp 回窗口中心:服务端合成的,不是设备运动 —— 不发原始移动。
+        await c.SendAsync(41, 0, b => b.U32(0).U32(top).I16(0).I16(0).U16(0).U16(0).I16(30).I16(20));   // WarpPointer
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => NextXiAsync(c, xi, 17, timeoutMs: 100), "原先 Warp 也发一条反向的增量");
+
+        // 用户再挪 +2:原始值是设备的位置(没被 Warp 改过),客户端拿前后两次的差得到真实的 +2。
+        server.InjectPointerMotion(host.Mapped[top], 6, 6);
+        XMessage next = await NextXiAsync(c, xi, 17);
+        Assert.AreEqual(16, (int)next.U32(36));
+        Assert.AreEqual(26, (int)next.U32(44));
     }
 
     /// <summary>XIChangeHierarchy 的 AddMaster:一条 HIERARCHYCHANGE。</summary>

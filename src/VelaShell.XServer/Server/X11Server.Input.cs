@@ -30,6 +30,12 @@ public sealed partial class X11Server
     private uint _motionHintEpoch;
     private int _pointerX;
     private int _pointerY;
+
+    /// <summary>
+    /// 指针设备自己的位置(根坐标):宿主与 XTEST 给的位置,WarpPointer 不动它 —— 原始移动(XI_RawMotion)报的就是它。
+    /// 还没有过设备输入时为 −1。
+    /// </summary>
+    private int _deviceX = -1, _deviceY = -1;
     private ushort _buttons;
     /// <summary>生效的修饰键 = 按着的(base)| 锁存的(latched)| 锁定的(locked)。</summary>
     private ushort _modifiers;
@@ -231,12 +237,19 @@ public sealed partial class X11Server
     private bool IsMinimized(XWindow top) =>
         _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle) && (handle.Snapshot.States & XWindowStates.Hidden) != 0;
 
-    private void MovePointer(int rootX, int rootY)
+    /// <summary>
+    /// 指针挪到根坐标 (<paramref name="rootX" />, <paramref name="rootY" />)(−1 = 离开了所有顶层)。<paramref name="warp" /> 为真时是
+    /// WarpPointer / XIWarpPointer:服务端合成的,不是设备运动 —— 不发原始移动,设备位置不变。原先 Warp 也发,值还是增量:
+    /// 用户移动 +10、程序 Warp 回中心,随即收到一条 −10 的原始移动,两者抵消,靠「原始移动 + Warp 回中心」做相对鼠标的程序
+    /// (3D 视图、游戏、虚拟机控制台)视角不动或抖。原始值现在与轴的声明(Abs X / Abs Y、Absolute)一致:报设备的位置。
+    /// </summary>
+    private void MovePointer(int rootX, int rootY, bool warp = false)
     {
         bool moved = rootX != _pointerX || rootY != _pointerY;
-        if (moved && rootX >= 0 && _pointerX >= 0)
+        if (!warp && rootX >= 0 && (rootX != _deviceX || rootY != _deviceY))
         {
-            SendRawEvent(XiRawMotion, 0, rootX - _pointerX, rootY - _pointerY);
+            (_deviceX, _deviceY) = (rootX, rootY);
+            SendRawEvent(XiRawMotion, 0, rootX, rootY);
         }
         _pointerX = rootX;
         _pointerY = rootY;
@@ -1365,12 +1378,12 @@ public sealed partial class X11Server
         short dx = r.I16(), dy = r.I16();
         if (dst == 0)
         {
-            MovePointer(_pointerX + dx, _pointerY + dy);
+            MovePointer(_pointerX + dx, _pointerY + dy, warp: true);
             return;
         }
         (int x, int y) = Window(dst).AbsoluteInner();
         // 宿主的系统指针挪不动(那是用户的鼠标);这里只改服务端认为的指针位置。
-        MovePointer(x + dx, y + dy);
+        MovePointer(x + dx, y + dy, warp: true);
     }
 
     private void GetKeyboardMapping(XClient c, XRequestReader r)

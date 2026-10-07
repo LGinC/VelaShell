@@ -224,11 +224,11 @@ public sealed partial class X11Server
                     if (dst != 0)
                     {
                         (int dx, int dy) = Window(dst).AbsoluteInner();
-                        MovePointer(dx + dstX, dy + dstY);
+                        MovePointer(dx + dstX, dy + dstY, warp: true);
                     }
                     else
                     {
-                        MovePointer(Math.Max(0, _pointerX) + dstX, Math.Max(0, _pointerY) + dstY);
+                        MovePointer(Math.Max(0, _pointerX) + dstX, Math.Max(0, _pointerY) + dstY, warp: true);
                     }
                     break;
                 }
@@ -987,8 +987,11 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>XI2 的原始事件:发给在根窗口上选了它的客户端,不受焦点与抓取影响。</summary>
-    private void SendRawEvent(int evtype, uint detail, int dx, int dy)
+    /// <summary>
+    /// XI2 的原始事件:发给在根窗口上选了它的客户端,不受焦点与抓取影响。移动事件的轴 0、1 是设备的位置 (<paramref name="x" />, <paramref name="y" />)
+    /// —— 与 XIQueryDevice 的声明(Abs X / Abs Y、Absolute)一致;没有加速,处理后的值与原始值相同。
+    /// </summary>
+    private void SendRawEvent(int evtype, uint detail, int x, int y)
     {
         if (!Root.AnyXi2Selects(evtype))
         {
@@ -1011,8 +1014,8 @@ public sealed partial class X11Server
                 if (motion)
                 {
                     w.U32(0x3);
-                    w.I32(dx).U32(0).I32(dy).U32(0);   // 处理后的值
-                    w.I32(dx).U32(0).I32(dy).U32(0);   // 原始值
+                    w.I32(x).U32(0).I32(y).U32(0);   // 处理后的值
+                    w.I32(x).U32(0).I32(y).U32(0);   // 原始值
                 }
             });
         }
