@@ -984,7 +984,6 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>按键事件的源窗口:焦点是 PointerRoot 时是指针所在窗口;指针在焦点窗口里面时是指针所在窗口;否则是焦点窗口。</summary>
     /// <summary>
     /// 按键事件的源窗口:焦点是 PointerRoot 时是指针所在的窗口;焦点是某个窗口时,指针在它里面就是指针所在的窗口,否则是焦点本身。
     /// 键盘被抓着时照样按焦点算 —— 协议「GrabKeyboard」:owner-events 为 True 时按键事件「照常报告」就是按焦点报告;

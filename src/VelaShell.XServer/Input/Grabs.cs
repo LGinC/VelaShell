@@ -17,7 +17,7 @@ namespace VelaShell.XServer.Input;
 /// <param name="Modifiers">修饰键组合;0x8000 = AnyModifier。</param>
 /// <param name="OwnerEvents">owner-events。</param>
 /// <param name="EventMask">指针抓取的事件掩码(按键抓取不用)。</param>
-/// <param name="ConfineTo">限制指针的窗口(不实现限制,只记录)。</param>
+/// <param name="ConfineTo">限制指针的窗口:只约束 WarpPointer(用户的鼠标由宿主管,约束它要靠宿主,xs_plan F8)。</param>
 /// <param name="Cursor">抓取期间的光标。</param>
 /// <param name="Xi2">XInput2 的被动抓取(XIPassiveGrabDevice):激活后事件以 XI2 格式投递。</param>
 /// <param name="Xi2Mask">XI2 抓取的事件掩码(按 evtype)。</param>
