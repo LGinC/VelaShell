@@ -601,6 +601,13 @@ public sealed partial class X11Server
                 client.NoteWritten(written);
             }
         }
+        catch (Exception ex) when (ex is IOException or ObjectDisposedException)
+        {
+            // 写不出去:对端已经断了。读端这时可能正卡在背压上(这个客户端的请求被 SYNC Await、XTEST 的延迟、别人的 GrabServer 挂着,
+            // 未执行的请求到了上限),根本没去读套接字,察觉不到 —— 原先连接就一直挂着,窗口成了关不掉的僵尸。主动断开它。
+            client.Abort();
+            throw;
+        }
         finally
         {
             ArrayPool<byte>.Shared.Return(batch);

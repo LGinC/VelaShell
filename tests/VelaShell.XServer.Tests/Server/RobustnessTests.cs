@@ -512,6 +512,40 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 读端卡在背压上时对端断了_写不出去就断开这个客户端()
+    {
+        if (!System.Net.Sockets.Socket.OSSupportsUnixDomainSockets)
+        {
+            Assert.Inconclusive("这个系统不支持 Unix 套接字");
+        }
+        string path = Path.Combine(Path.GetTempPath(), $"vx-{Guid.NewGuid():N}.sock");
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = path });
+        await server.StartAsync();
+        await using XTestClient grabber = await XTestClient.ConnectAsync(server);
+        XTestClient victim = await XTestClient.ConnectUnixAsync(path);
+        await victim.SendAsync(2, 0, b => b.U32(victim.RootWindow).U32(0x800).U32(0x400000));   // 根窗口上选 PropertyChange
+        await victim.SyncAsync();
+        int victimId = (int)(victim.ResourceBase >> 21);
+
+        await grabber.SendAsync(36, 0);   // GrabServer:victim 之后的请求全部暂存
+        await grabber.SyncAsync();
+        // 未执行的请求塞到上限(1024 条):读端卡在背压上,不再读套接字。
+        await victim.SendManyAsync(Enumerable.Range(0, 1100).Select<int, (byte, byte, Action<XTestClient.Body>?)>(_ => (43, 0, null)));
+        await Task.Delay(200);
+        await victim.DisposeAsync();   // 对端走了;读端察觉不到
+
+        // 有东西要发给 victim 时写不出去:断开它。原先写出端默默结束,连接一直挂着。
+        byte[] value = "x"u8.ToArray();
+        IReadOnlyList<XClientInfo> clients = [];
+        for (int i = 0; i < 40 && (clients = await server.GetClientsAsync()).Any(c => c.Id == victimId); i++)
+        {
+            await grabber.SendAsync(18, 0, b => b.U32(grabber.RootWindow).U32(1).U32(31).U8(8).U8(0).U8(0).U8(0).U32(1).Bytes(value).Pad());
+            await Task.Delay(50);
+        }
+        Assert.DoesNotContain(c => c.Id == victimId, clients, "写不出去的客户端断开了");
+    }
+
+    [TestMethod]
     public async Task GrabServer期间别人的请求暂存_Ungrab后按原顺序执行()
     {
         await using X11Server server = new();
