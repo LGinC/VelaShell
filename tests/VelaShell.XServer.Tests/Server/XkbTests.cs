@@ -51,6 +51,47 @@ public sealed class XkbTests
         Assert.AreEqual('A', map.U32(o + 12));
     }
 
+    /// <summary>
+    /// 字母类型认所有有大小写之分的字母:Unicode 键值的西里尔字母、传统键值的西里尔字母都是 ALPHABETIC;只有一列的希腊字母按核心规则
+    /// 展开成小写、大写两级;FOUR_LEVEL_ALPHABETIC 有 Shift + Lock + Mod5 这一条。原先只认拉丁字母,CapsLock 在 XKB 客户端里无效。
+    /// </summary>
+    [TestMethod]
+    public async Task 非拉丁字母也推成ALPHABETIC_单列字母展开成大小写两级_四级字母类型有Shift加Lock加Mod5()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte xkb, _) = await XkbAsync(c);
+        // ChangeKeyboardMapping:38 = ф Ф(Unicode 键值),39 = Cyrillic_ef Cyrillic_EF(传统键值),40 = Greek_alpha、第二列 NoSymbol。
+        await c.SendAsync(100, 3, b => b.U8(38).U8(2).U16(0).U32(0x0100_0444).U32(0x0100_0424).U32(0x6c6).U32(0x6e6).U32(0x7e1).U32(0));
+        // GetMap:全部类型 + 键码 38 起 3 个键的键值。
+        XMessage map = await c.RequestAsync(xkb, 8, b => b.U16(UseCoreKbd).U16(0x1).U16(0x2).U8(0).U8(0).U8(38).U8(3).Bytes(new byte[14]));
+        int nTypes = map.Bytes[15];
+        int o = 40;
+        int fourLevelAlphabeticEntries = 0;
+        for (int t = 0; t < nTypes; t++)
+        {
+            int entries = map.Bytes[o + 5];
+            if (t == 5)
+            {
+                fourLevelAlphabeticEntries = entries;
+            }
+            o += 8 + (entries * 8);
+        }
+        Assert.AreEqual(6, fourLevelAlphabeticEntries, "FOUR_LEVEL_ALPHABETIC:Shift、Lock、Mod5、Shift+Mod5、Lock+Mod5、Shift+Lock+Mod5");
+
+        List<(byte Type, uint[] Syms)> keys = [];
+        for (int k = 0; k < 3; k++)
+        {
+            int n = map.U16(o + 6);
+            keys.Add((map.Bytes[o], [.. Enumerable.Range(0, n).Select(i => map.U32(o + 8 + (4 * i)))]));
+            o += 8 + (n * 4);
+        }
+        Assert.AreEqual(2, keys[0].Type, "Unicode 键值的 ф Ф 是 ALPHABETIC");
+        Assert.AreEqual(2, keys[1].Type, "传统键值的 Cyrillic_ef / EF 是 ALPHABETIC");
+        Assert.AreEqual(2, keys[2].Type, "单列的 Greek_alpha 是 ALPHABETIC");
+        CollectionAssert.AreEqual(new uint[] { 0x7e1, 0x7c1 }, keys[2].Syms, "按核心规则展开成 alpha、ALPHA");
+    }
+
     [TestMethod]
     public async Task 按Shift发StateNotify_CapsLock锁定并点亮指示灯()
     {
