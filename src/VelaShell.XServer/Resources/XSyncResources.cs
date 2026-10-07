@@ -22,11 +22,18 @@ internal sealed class XSyncTrigger
 {
     public const uint PositiveTransition = 0, NegativeTransition = 1, PositiveComparison = 2, NegativeComparison = 3;
 
+    public const uint Absolute = 0, Relative = 1;
+
     public XSyncCounter? Counter { get; set; }
 
-    public uint ValueType { get; set; }   // 0 Absolute,1 Relative(已换算成 Absolute 存在 WaitValue 里)
+    /// <summary>value-type:0 Absolute,1 Relative —— 客户端给的,照原样留着(QueryAlarm 报它,重新初始化时按它算)。</summary>
+    public uint ValueType { get; set; }
 
+    /// <summary>wait-value:客户端给的值;报警器触发后按 delta 推进时一同加上。</summary>
     public long WaitValue { get; set; }
+
+    /// <summary>测试值:初始化时按 value-type 算出(Relative 时是当时的计数器值 + wait-value),比较、事件里都用它。</summary>
+    public long TestValue { get; set; }
 
     public uint TestType { get; set; }
 
@@ -35,10 +42,10 @@ internal sealed class XSyncTrigger
 
     public bool Satisfied(long value) => TestType switch
     {
-        PositiveComparison => value >= WaitValue,
-        NegativeComparison => value <= WaitValue,
-        PositiveTransition => LastValue < WaitValue && value >= WaitValue,
-        _ => LastValue > WaitValue && value <= WaitValue,
+        PositiveComparison => value >= TestValue,
+        NegativeComparison => value <= TestValue,
+        PositiveTransition => LastValue < TestValue && value >= TestValue,
+        _ => LastValue > TestValue && value <= TestValue,
     };
 }
 

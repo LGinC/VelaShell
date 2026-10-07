@@ -293,16 +293,25 @@ public sealed partial class X11Server
                 throw new XProtocolError(XErrorCode.Value, t.TestType);
             }
         }
-        if (t.Counter is { } counter)
+        // 初始化:按 value-type 与 wait-value 算出测试值(规范 TRIGGER)。value-type 与 wait-value 本身照原样留着 ——
+        // QueryAlarm 报的是它们,只改 value 的 ChangeAlarm 重新初始化时也要按原来的 value-type 解释(原先换算之后改回了 Absolute)。
+        if (t.Counter is not { } counter)
         {
-            long now = CounterValue(counter);
-            if (t.ValueType == 1)
+            if (t.ValueType == XSyncTrigger.Relative)
             {
-                t.WaitValue = unchecked(now + t.WaitValue);   // Relative → Absolute(规范:在设置时换算)
-                t.ValueType = 0;
+                throw new XProtocolError(XErrorCode.Match);   // counter 为 None 时没有「相对于谁」
             }
-            t.LastValue = now;
+            t.TestValue = t.WaitValue;
+            return t;
         }
+        long now = CounterValue(counter);
+        Int128 test = t.ValueType == XSyncTrigger.Relative ? (Int128)now + t.WaitValue : t.WaitValue;
+        if (test > long.MaxValue || test < long.MinValue)
+        {
+            throw new XProtocolError(XErrorCode.Value);   // 测试值超出 INT64
+        }
+        t.TestValue = (long)test;
+        t.LastValue = now;
         return t;
     }
 
@@ -574,15 +583,17 @@ public sealed partial class X11Server
         Int128 steps = 1;
         if (comparison)
         {
-            Int128 gap = t.TestType == XSyncTrigger.PositiveComparison ? (Int128)value - t.WaitValue : (Int128)t.WaitValue - value;
+            Int128 gap = t.TestType == XSyncTrigger.PositiveComparison ? (Int128)value - t.TestValue : (Int128)t.TestValue - value;
             steps = gap < 0 ? 1 : (gap / Int128.Abs(delta)) + 1;
         }
-        Int128 next = t.WaitValue + (steps * delta);
-        if (next > long.MaxValue || next < long.MinValue)
+        // 测试值与 wait-value 一同推进(Absolute 时两者相等;Relative 时 wait-value 是客户端给的偏移,同样加上 delta)。
+        Int128 next = t.TestValue + (steps * delta), nextWait = t.WaitValue + (steps * delta);
+        if (next > long.MaxValue || next < long.MinValue || nextWait > long.MaxValue || nextWait < long.MinValue)
         {
             return false;
         }
-        t.WaitValue = (long)next;
+        t.TestValue = (long)next;
+        t.WaitValue = (long)nextWait;
         return true;
     }
 
@@ -602,11 +613,11 @@ public sealed partial class X11Server
             }
             // 正向跨越已经越过了等待值:系统计数器只会往上涨,要先掉回等待值以下才可能再成立 —— 那只会是 IDLETIME 因用户输入归零,
             // 那时另有一次求值(NoteIdleReset)。原先照样按 Max(1, 等待值 − 当前值) 排计时器,等于每毫秒醒一次、持锁求值。
-            if (t.TestType == XSyncTrigger.PositiveTransition && t.LastValue >= t.WaitValue)
+            if (t.TestType == XSyncTrigger.PositiveTransition && t.LastValue >= t.TestValue)
             {
                 return;
             }
-            soonest = Math.Min(soonest, Math.Max(1, t.WaitValue - CounterValue(counter)));
+            soonest = Math.Min(soonest, Math.Max(1, t.TestValue - CounterValue(counter)));
         }
         foreach (SyncWait wait in _syncWaits.Values)
         {
@@ -683,7 +694,7 @@ public sealed partial class X11Server
             client.Event(SyncEventBase, 0, w =>
             {
                 w.U32(counter.Id);
-                WriteInt64(w, trigger.WaitValue);
+                WriteInt64(w, trigger.TestValue);
                 WriteInt64(w, value);
                 w.U32(time).U16((ushort)remaining).Bool(destroyed);
             });
@@ -703,7 +714,7 @@ public sealed partial class X11Server
             {
                 w.U32(alarm.Id);
                 WriteInt64(w, counterValue);
-                WriteInt64(w, alarm.Trigger.WaitValue);
+                WriteInt64(w, alarm.Trigger.TestValue);
                 w.U32(time).U8(alarm.State);
             });
         }

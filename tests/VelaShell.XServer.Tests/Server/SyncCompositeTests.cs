@@ -378,6 +378,33 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task Relative的报警器保留value_type_只改value时仍按相对值解释()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte sync, byte syncEvent, _) = await ExtAsync(c, "SYNC");
+        uint counter = c.NewId(), alarm = c.NewId();
+        await c.SendAsync(sync, 2, b => b.U32(counter).I32(0).U32(100));
+        // Relative(1)、value 10、PositiveComparison、delta 0:计数器 100 → 测试值 110。
+        await c.SendAsync(sync, 9, b => b.U32(alarm).U32(1 | 2 | 4 | 8 | 16).U32(counter).U32(1).I32(0).U32(10).U32(2).I32(0).U32(0));
+        XMessage query = await c.RequestAsync(sync, 10, b => b.U32(alarm));
+        Assert.AreEqual((1u, 10u), (query.U32(12), query.U32(20)), "QueryAlarm 报客户端给的 value-type 与 value");
+
+        // 只改 value(20):重新初始化时仍是 Relative —— 测试值 120;原先被当成绝对值 20,计数器 100 立即满足。
+        await c.SendAsync(sync, 8, b => b.U32(alarm).U32(4).I32(0).U32(20));
+        await c.SendAsync(sync, 3, b => b.U32(counter).I32(0).U32(115));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync((byte)(syncEvent + 1), timeoutMs: 150), "115 < 120,不触发");
+        await c.SendAsync(sync, 3, b => b.U32(counter).I32(0).U32(120));
+        XMessage fired = await c.NextEventAsync((byte)(syncEvent + 1));
+        Assert.AreEqual(120u, fired.U32(20), "alarm-value 是测试值 120");
+
+        // counter 为 None 时没有「相对于谁」:BadMatch。
+        ushort bad = await c.SendAsync(sync, 9, b => b.U32(c.NewId()).U32(2).U32(1));
+        Assert.AreEqual(8, (await c.NextAsync(m => m.IsError && m.Sequence == bad)).Detail);
+    }
+
+    [TestMethod]
     public async Task SYNC的IDLETIME报警器到点触发()
     {
         await using X11Server server = new();
