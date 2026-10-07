@@ -1439,6 +1439,59 @@ public sealed class GlxTests
         Assert.AreEqual(1.0, gl.GetLight(0x4000, 0x1201)!.Value.Values[0], "LIGHT0 的漫反射恢复成初值 1");
     }
 
+    [TestMethod]
+    public async Task RenderLarge拼到一半的缓冲记在客户端的内存账上_拼完退还_超了回BadAlloc()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(new X11ServerOptions { MaxClientMemory = 24L * 1024 * 1024 }, host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        byte[] clearColor = [.. BitConverter.GetBytes(1f), .. BitConverter.GetBytes(0f), .. BitConverter.GetBytes(0f), .. BitConverter.GetBytes(1f)];
+        long baseline = await server.InvokeAsync(() => server.MemoryInUse);
+
+        // 声明 256 KB 的正文(ClearColor 后面跟一大段填充),小参数一段、填充四段。
+        const int body = 256 * 1024;
+        await c.SendAsync(glx, 2, b => b.U32(tag).U16(1).U16(5).U32(16).U32(8 + body).U32(130).Bytes(clearColor));
+        await c.SyncAsync();
+        Assert.IsGreaterThanOrEqualTo(baseline + body, await server.InvokeAsync(() => server.MemoryInUse), "拼正文的缓冲按声明的长度记账");
+        byte[] quarter = new byte[(body - 16) / 4];
+        for (int number = 2; number <= 5; number++)
+        {
+            int n = number;
+            await c.SendAsync(glx, 2, b => b.U32(tag).U16((ushort)n).U16(5).U32((uint)quarter.Length).Bytes(quarter));
+        }
+        await c.SyncAsync();
+        Assert.AreEqual(baseline, await server.InvokeAsync(() => server.MemoryInUse), "拼完执行之后退还");
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+
+        // 声明 32 MB:超过每客户端 24 MiB 的账,第一段就回 BadAlloc。
+        XMessage refused = await c.RequestAsync(glx, 2, b => b.U32(tag).U16(1).U16(2).U32(16).U32(8 + (32 * 1024 * 1024)).U32(130).Bytes(clearColor));
+        Assert.IsTrue(refused.IsError);
+        Assert.AreEqual(11, refused.Bytes[1], "BadAlloc");
+    }
+
+    [TestMethod]
+    public void GenLists与GenTextures接在用过的最大名字之后_名字快用完时回到前面找空位()
+    {
+        (Gl.GlContext gl, _) = DirectContext();
+        Assert.AreEqual(1u, gl.GenLists(3));
+        Assert.AreEqual(4u, gl.GenLists(1));
+        gl.DeleteLists(1, 3);
+        Assert.AreEqual(5u, gl.GenLists(2), "接在最大的名字之后");
+        gl.NewList(uint.MaxValue - 1, Compile);
+        gl.EndList();
+        Assert.AreEqual(1u, gl.GenLists(3), "后面接不下了:回到前面找第一个够大的空档");
+
+        uint[] textures = gl.GenTextures(2)!;
+        Assert.AreSequenceEqual(new uint[] { 1, 2 }, textures);
+        Run(gl, 4117, b => b.U32(Texture2D).U32(uint.MaxValue));                   // 绑一个最大的名字
+        uint[] more = gl.GenTextures(2)!;
+        Assert.AreSequenceEqual(new uint[] { 3, 4 }, more, "回到 1 起找没用过的");
+        Assert.AreEqual(0u, gl.GetError());
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

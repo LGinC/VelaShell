@@ -160,6 +160,9 @@ internal sealed class GlxExtension(X11Server server)
     /// <summary>每个客户端正在拼的 RenderLarge。</summary>
     private readonly Dictionary<XClient, GlxLargeCommand> _glxLarge = [];
 
+    /// <summary>X 窗口 → 建在它上面的 GLXWindow(一个窗口只能有一个);GLXWindow 离开资源表时摘掉(<see cref="ResourceFreed" />)。</summary>
+    private readonly Dictionary<uint, XGlxDrawable> _glxWindows = [];
+
     private uint _nextGlxTag;
 
     /// <summary>一个标签上的当前绑定;<see cref="DrawIsWindow" />:绘制可绘对象是窗口(GLX 1.2 的窗口或 GLXWindow),它没了时报 GLXBadCurrentWindow。</summary>
@@ -178,7 +181,11 @@ internal sealed class GlxExtension(X11Server server)
         /// <summary>正文的字节数:第一段声明的长度减去 8 字节的头(长度与操作码)。</summary>
         public int Length { get; } = length;
 
-        public List<byte> Data { get; } = [];
+        /// <summary>拼正文的缓冲:正文加上至多 3 字节的补齐,第一段到时一次分配。</summary>
+        public byte[] Buffer { get; } = new byte[length + 3];
+
+        /// <summary>已经拼进来的字节数。</summary>
+        public int Filled { get; set; }
     }
 
     /// <summary>ReadPixels / GetTexImage 的回复最多这么大:再大就超过一个客户端的输出队列上限(<see cref="XClient.MaxQueuedOutputBytes" />)了。</summary>
@@ -430,11 +437,14 @@ internal sealed class GlxExtension(X11Server server)
                     {
                         throw new XProtocolError(XErrorCode.Match);
                     }
-                    if (server.AllResources.OfType<XGlxDrawable>().Any(d => d.Kind == GlxDrawableKind.Window && d.Target == window))
+                    // 一个窗口只能有一个 GLXWindow。原先每次扫一遍整张资源表(表的大小由客户端决定),现在查自己的登记。
+                    if (_glxWindows.TryGetValue(window, out XGlxDrawable? existing) && ReferenceEquals(server.Lookup<XGlxDrawable>(existing.Id), existing))
                     {
-                        throw new XProtocolError(XErrorCode.Alloc);   // 一个窗口只能有一个 GLXWindow
+                        throw new XProtocolError(XErrorCode.Alloc);
                     }
-                    server.AddResource(c, new XGlxDrawable(glxWindow, c, GlxDrawableKind.Window, window, config));
+                    XGlxDrawable created = new(glxWindow, c, GlxDrawableKind.Window, window, config);
+                    server.AddResource(c, created);
+                    _glxWindows[window] = created;
                     break;
                 }
             case 32:   // DestroyWindow
@@ -1020,6 +1030,10 @@ internal sealed class GlxExtension(X11Server server)
                                                                             && ReferenceEquals(entry.Source, pbuffer):
                 DropSurface(pbuffer.Id);
                 break;
+            case XGlxDrawable { Kind: GlxDrawableKind.Window } glxWindow
+                when _glxWindows.TryGetValue(glxWindow.Target, out XGlxDrawable? registered) && ReferenceEquals(registered, glxWindow):
+                _glxWindows.Remove(glxWindow.Target);
+                break;
         }
     }
 
@@ -1029,7 +1043,7 @@ internal sealed class GlxExtension(X11Server server)
     /// </summary>
     public void CleanupClient(XClient client)
     {
-        _glxLarge.Remove(client);
+        DropLarge(client);
         foreach ((uint key, SurfaceEntry entry) in _glxSurfaces.ToArray())
         {
             if (ReferenceEquals(entry.Source.Owner, client) || ReferenceEquals(entry.ChargedTo, client))
@@ -1121,7 +1135,7 @@ internal sealed class GlxExtension(X11Server server)
         (GlxBinding binding, GlContext gl) = GlxRenderTarget(c, tag);
         if (number == 1)
         {
-            _glxLarge.Remove(c);
+            DropLarge(c);
             uint length = r.U32();
             int opcode = (int)r.U32();
             // n 是小参数的字节数;有的客户端把 8 字节的长度与操作码也算在内 —— 按请求里实际剩下的字节判断。
@@ -1135,41 +1149,66 @@ internal sealed class GlxExtension(X11Server server)
                 throw new XProtocolError(XErrorCode.Alloc);
             }
             // 声明的长度含 8 字节的头(长度与操作码):正文就是 length − 8 字节,之后各段拼起来得正好这么多(最多再补齐 3 字节)。
-            GlxLargeCommand large = new(tag, total, opcode, (int)length - 8);
-            if (small > large.Length + 3)
+            int bodyLength = (int)length - 8;
+            if (small > bodyLength + 3)
             {
                 throw GlxError(GlxBadLargeRequest, (uint)number);
             }
-            large.Data.AddRange(r.Bytes(small));
+            ReadOnlySpan<byte> first = r.Rest()[..small];
             if (total == 1)
             {
-                gl.ExecuteOrCompile(opcode, CompletedBody(large, number), c.BigEndian);
+                // 一段就完:直接在请求的缓冲上执行,不复制。
+                if (small < bodyLength)
+                {
+                    throw GlxError(GlxBadLargeRequest, (uint)number);   // 命令被截断了
+                }
+                gl.ExecuteOrCompile(opcode, first[..bodyLength], c.BigEndian);
                 ReportUnimplemented(c, gl);
                 PresentGlx(binding);
                 return;
             }
+            // 拼正文的缓冲按声明的长度一次分配、记在客户端的内存账上,各段直接拷进来、拼完原地执行 —— 原先 List<byte> 逐段
+            // AddRange(每段先复制一份,容量翻倍还要再复制)、拼完 GetRange 再 ToArray,64 MB 的命令峰值约 256 MB。
+            server.ChargeMemory(c, bodyLength + 3L);
+            GlxLargeCommand large = new(tag, total, opcode, bodyLength);
+            first.CopyTo(large.Buffer);
+            large.Filled = small;
             _glxLarge[c] = large;
             return;
         }
         if (!_glxLarge.TryGetValue(c, out GlxLargeCommand? pending) || pending.Tag != tag || pending.Next != number
             || pending.Total != total || n < 0 || n > r.Remaining)
         {
-            _glxLarge.Remove(c);
+            DropLarge(c);
             throw GlxError(GlxBadLargeRequest, (uint)number);
         }
-        if (pending.Data.Count + n > pending.Length + 3)
+        if (pending.Filled + (long)n > pending.Length + 3)
         {
-            _glxLarge.Remove(c);
+            DropLarge(c);
             throw GlxError(GlxBadLargeRequest, (uint)number);   // 拼起来比第一段声明的长度还长
         }
-        pending.Data.AddRange(r.Bytes(n));
+        r.Rest()[..n].CopyTo(pending.Buffer.AsSpan(pending.Filled));
+        pending.Filled += n;
         pending.Next++;
         if (number == total)
         {
-            _glxLarge.Remove(c);
-            gl.ExecuteOrCompile(pending.Opcode, CompletedBody(pending, number), c.BigEndian);
+            DropLarge(c);
+            if (pending.Filled < pending.Length)
+            {
+                throw GlxError(GlxBadLargeRequest, (uint)number);   // 比声明的短:命令被截断了
+            }
+            gl.ExecuteOrCompile(pending.Opcode, pending.Buffer.AsSpan(0, pending.Length), c.BigEndian);
             ReportUnimplemented(c, gl);
             PresentGlx(binding);
+        }
+    }
+
+    /// <summary>丢掉这个客户端拼到一半的 RenderLarge(拼完、出错、重新开始、断开),缓冲的账退还。</summary>
+    private void DropLarge(XClient c)
+    {
+        if (_glxLarge.Remove(c, out GlxLargeCommand? large))
+        {
+            server.RefundMemory(c, large.Buffer.Length);
         }
     }
 
@@ -1187,16 +1226,6 @@ internal sealed class GlxExtension(X11Server server)
 
     /// <summary>一条 RenderLarge 命令的正文上限(第一段声明的长度减去 8 字节头)。</summary>
     private const int MaxLargeCommandBytes = 64 * 1024 * 1024;
-
-    /// <summary>拼完的正文:比声明的短(命令被截断了)回 GLXBadLargeRequest;多出来的补齐字节去掉。</summary>
-    private static byte[] CompletedBody(GlxLargeCommand large, int number)
-    {
-        if (large.Data.Count < large.Length)
-        {
-            throw GlxError(GlxBadLargeRequest, (uint)number);
-        }
-        return [.. large.Data.GetRange(0, large.Length)];
-    }
 
     // ------------------------------------------------------------------ 非渲染命令(101–159)
 

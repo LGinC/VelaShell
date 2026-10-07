@@ -112,7 +112,7 @@ internal sealed partial class GlContext
                     return;
                 }
                 texture = new GlTexture(name);
-                Shared.Textures[name] = texture;
+                Shared.AddTexture(texture);
             }
             if (texture.Target == 0)
             {

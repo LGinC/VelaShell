@@ -181,7 +181,21 @@ internal sealed class GlShared(IGlMemoryAccount? account = null)
         RemoveList(name);
         Lists[name] = list;
         ListBytes += size;
+        MaxListName = Math.Max(MaxListName, name);
         return true;
+    }
+
+    /// <summary>用过的最大的显示列表名(只增不减):GenLists 从它之后分配,不必每次把已占的名字排序。</summary>
+    public uint MaxListName { get; private set; }
+
+    /// <summary>用过的最大的纹理名(只增不减):GenTextures 从它之后分配,不必每次从 1 起逐个探测。</summary>
+    public uint MaxTextureName { get; private set; }
+
+    /// <summary>登记一个纹理对象。</summary>
+    public void AddTexture(GlTexture texture)
+    {
+        Textures[texture.Name] = texture;
+        MaxTextureName = Math.Max(MaxTextureName, texture.Name);
     }
 
     /// <summary>删掉一个显示列表,销账。</summary>
@@ -561,19 +575,24 @@ internal sealed partial class GlContext
             SetError(GlEnum.OUT_OF_MEMORY);
             return 0;
         }
-        // 已占的名字排个序,找第一个够大的空档。用 long 算:名字是 32 位,在 uint 上加会回绕成死循环。
-        long start = 1;
-        foreach (uint used in Shared.Lists.Keys.Order())
+        // 通常直接接在用过的最大的名字之后(那之后的名字都没用过);只有接不下(名字快用到 2^32)时才把已占的名字排个序、
+        // 找第一个够大的空档 —— 原先每次都排序,建几万个列表就是平方级。用 long 算:名字是 32 位,在 uint 上加会回绕成死循环。
+        long start = (long)Shared.MaxListName + 1;
+        if (start + range - 1 > uint.MaxValue)
         {
-            if (used < start)
+            start = 1;
+            foreach (uint used in Shared.Lists.Keys.Order())
             {
-                continue;
+                if (used < start)
+                {
+                    continue;
+                }
+                if (used - start >= range)
+                {
+                    break;
+                }
+                start = (long)used + 1;
             }
-            if (used - start >= range)
-            {
-                break;
-            }
-            start = (long)used + 1;
         }
         if (start + range - 1 > uint.MaxValue)
         {
@@ -674,15 +693,17 @@ internal sealed partial class GlContext
             return null;
         }
         uint[] names = new uint[n];
-        uint next = 1;
+        // 通常直接接在用过的最大的名字之后(那之后都没用过);快用到 2^32 时才回到 1 起逐个探测 —— 原先每次都从 1 探起,
+        // 建几万个纹理就是平方级。名字总数有上限,探测总能找到空位(0 不是纹理名,跳过)。
+        uint next = Shared.MaxTextureName <= uint.MaxValue - (uint)n ? Shared.MaxTextureName + 1 : 1;
         for (int i = 0; i < n; i++)
         {
-            while (Shared.Textures.ContainsKey(next))
+            while (next == 0 || Shared.Textures.ContainsKey(next))
             {
                 next++;
             }
             names[i] = next;
-            Shared.Textures[next] = new GlTexture(next);
+            Shared.AddTexture(new GlTexture(next));
             next++;
         }
         return names;
