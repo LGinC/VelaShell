@@ -1375,6 +1375,31 @@ public sealed class GlxTests
         Assert.IsLessThan(64 * 1024, allocated, $"原先每个三角形约 650 字节(裁剪的 List、迭代器、窗口坐标数组),一千个约 0.7 MB;这次 {allocated} 字节");
     }
 
+    [TestMethod]
+    public async Task 细长的斜三角形按扫描线只走覆盖到的那一段_不再白扫整个包围盒()
+    {
+        // 工作量预算是确定的代价计数:原先每个三角形先按整个包围盒(这里约 1024²)扣,二十个就是两千多万单位;
+        // 现在每行只扣边函数解出来的那一段,二十个不到一百万。
+        await using X11Server server = new() { RequestWorkBudget = 4_000_000 };
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint pbuffer = c.NewId(), context = c.NewId();
+        await c.SendAsync(glx, 27, b => b.U32(0).U32(SingleBufferedRgb).U32(pbuffer).U32(2).U32(0x8041).U32(1024).U32(0x8040).U32(1024));
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(pbuffer).U32(pbuffer).U32(context))).U32(8);
+
+        Commands commands = new Commands().Add(8, b => F(b, 1, 1, 1)).Add(4, b => b.U32(Triangles));
+        for (int i = 0; i < 20; i++)
+        {
+            float o = i * 0.01f;
+            commands.Add(66, b => F(b, -1 + o, -1)).Add(66, b => F(b, 1 + o, 1)).Add(66, b => F(b, 1 + o + 0.003f, 1));
+        }
+        await RenderAsync(c, glx, tag, commands.Add(23));
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag), "原先按包围盒计费:OUT_OF_MEMORY");
+        XMessage pixel = await c.RequestAsync(glx, 111, b => b.U32(tag).I32(512).I32(512).I32(1).I32(1).U32(Rgba).U32(UnsignedByte).U8(0).U8(0).U16(0));
+        Assert.AreEqual(255, pixel.Bytes[32], "对角线上画上了");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

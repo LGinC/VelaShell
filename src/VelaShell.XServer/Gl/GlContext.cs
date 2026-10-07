@@ -480,6 +480,10 @@ internal sealed partial class GlContext
             SetError(GlEnum.OUT_OF_MEMORY);
             _workExhausted = true;
         }
+        finally
+        {
+            FlushDrawn();
+        }
     }
 
     // ------------------------------------------------------------------ 显示列表
