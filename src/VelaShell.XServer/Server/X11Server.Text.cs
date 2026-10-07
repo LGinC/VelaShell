@@ -32,7 +32,7 @@ public sealed partial class X11Server
         {
             if (ShouldLogFrequent())
             {
-                Log($"{c} OpenFont: no font matches '{name}'");
+                LogFrequent($"{c} OpenFont: no font matches '{LogText(name)}'");
             }
             throw new XProtocolError(XErrorCode.Name);
         }

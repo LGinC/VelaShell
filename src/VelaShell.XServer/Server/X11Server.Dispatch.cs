@@ -50,7 +50,7 @@ public sealed partial class X11Server
         {
             if (ShouldLogFrequent())
             {
-                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
+                LogFrequent($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
                     + $"(之前:{client.RecentRequests()})");
             }
             client.Error(error.Code, error.BadValue, minor, r.Opcode);
@@ -59,7 +59,7 @@ public sealed partial class X11Server
         {
             if (ShouldLogFrequent())
             {
-                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation {ex}");
+                LogFailure($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation", $"{r.Opcode}.{minor}", ex);
             }
             client.Error(XErrorCode.Implementation, 0, minor, r.Opcode);
         }

@@ -7,6 +7,7 @@
 //   架构:velashell-docs/zh/xserver/design/architecture.md §5(线程模型)
 
 using System.Diagnostics;
+using System.Text;
 using System.Threading.Channels;
 using VelaShell.XServer.Protocol;
 using VelaShell.XServer.Server;
@@ -112,8 +113,25 @@ public sealed partial class X11Server
     }
 
     /// <summary>
-    /// 这一条客户端能成批触发的日志要不要记:每秒最多 <see cref="FrequentLogsPerSecond" /> 条 —— 一个客户端每秒能打出
-    /// 几十万条错误请求、连上又断开几千次,条条都记,日志文件一晚上就是几个 GB。只在执行线程上调。
+    /// 客户端能成批触发的日志按字节另有一道限额(全部客户端合计):先给这么多字节的余量,之后每秒补
+    /// <see cref="FrequentLogBytesPerSecond" />。只数条数的话,每秒 50 条 × 64 KB 的字体名几十秒就写满宿主日志一天的额度(64 MB),
+    /// 正常一天的日志只有几十 KB —— 真正要查的那几行就被挤掉了。
+    /// </summary>
+    private const int FrequentLogBurstBytes = 32 * 1024;
+
+    /// <summary>见 <see cref="FrequentLogBurstBytes" />:持续刷屏时一天最多二十来 MB。</summary>
+    private const int FrequentLogBytesPerSecond = 256;
+
+    /// <summary>经 <see cref="LogFrequent" /> 记的一行最多这么多个字符。</summary>
+    private const int MaxFrequentLogChars = 512;
+
+    private double _frequentLogCredit = FrequentLogBurstBytes;
+    private long _frequentLogCreditAt = Stopwatch.GetTimestamp();
+
+    /// <summary>
+    /// 这一条客户端能成批触发的日志要不要记:每秒最多 <see cref="FrequentLogsPerSecond" /> 条,字节另有限额(<see cref="FrequentLogBurstBytes" />)
+    /// —— 一个客户端每秒能打出几十万条错误请求、连上又断开几千次,条条都记,日志文件一晚上就是几个 GB。
+    /// 记了的话用 <see cref="LogFrequent" /> 写那一行。没记的只计数,下一次能记时先补一行「没记的有几条」。只在执行线程上调。
     /// </summary>
     private bool ShouldLogFrequent()
     {
@@ -121,24 +139,88 @@ public sealed partial class X11Server
         {
             return false;
         }
-        long second = Stopwatch.GetTimestamp() / Stopwatch.Frequency;
+        long now = Stopwatch.GetTimestamp();
+        long second = now / Stopwatch.Frequency;
         if (second != _frequentLogSecond)
         {
-            if (_frequentLogsSuppressed > 0)
-            {
-                Log($"{_frequentLogsSuppressed} more log lines were not written (limit {FrequentLogsPerSecond} per second)");
-            }
             _frequentLogSecond = second;
             _frequentLogsThisSecond = 0;
-            _frequentLogsSuppressed = 0;
         }
-        if (_frequentLogsThisSecond >= FrequentLogsPerSecond)
+        _frequentLogCredit = Math.Min(FrequentLogBurstBytes,
+            _frequentLogCredit + (Stopwatch.GetElapsedTime(_frequentLogCreditAt, now).TotalSeconds * FrequentLogBytesPerSecond));
+        _frequentLogCreditAt = now;
+        if (_frequentLogsThisSecond >= FrequentLogsPerSecond || _frequentLogCredit <= 0)
         {
             _frequentLogsSuppressed++;
             return false;
         }
         _frequentLogsThisSecond++;
+        if (_frequentLogsSuppressed > 0)
+        {
+            int suppressed = _frequentLogsSuppressed;
+            _frequentLogsSuppressed = 0;
+            LogFrequent($"{suppressed} more log lines were not written (limit {FrequentLogsPerSecond} lines and {FrequentLogBytesPerSecond} bytes per second)");
+        }
         return true;
+    }
+
+    /// <summary>
+    /// 写一行 <see cref="ShouldLogFrequent" /> 放行了的日志:整行按 <see cref="LogText" /> 去掉控制字符、截到 <see cref="MaxFrequentLogChars" />,
+    /// 从字节限额里扣掉。
+    /// </summary>
+    private void LogFrequent(string message)
+    {
+        string line = LogText(message, MaxFrequentLogChars);
+        _frequentLogCredit -= line.Length;
+        Log(line);
+    }
+
+    /// <summary>
+    /// 客户端给的字符串进日志之前用它:控制字符(CR / LF / ESC 等 C0、DEL、C1)与双向文字控制符写成 <c>\xNN</c> / <c>\uNNNN</c>,
+    /// 超过 <paramref name="max" /> 个字符截断并注明原长。原先 OpenFont 的名字(最长 64 KB、什么字节都能带)原样进日志:
+    /// 换行能伪造日志行,ESC 能往看日志的终端里注入控制序列。
+    /// </summary>
+    internal static string LogText(string text, int max = 200)
+    {
+        StringBuilder? escaped = null;
+        int end = Math.Min(text.Length, max);
+        for (int i = 0; i < end; i++)
+        {
+            char ch = text[i];
+            bool control = ch < 0x20 || ch is >= '\u007F' and <= '\u009F' || ch is >= '‪' and <= '‮' || ch is >= '⁦' and <= '⁩';
+            if (control)
+            {
+                escaped ??= new StringBuilder(text, 0, i, end + 16);
+                escaped.Append(ch <= 0xFF ? $"\\x{(int)ch:X2}" : $"\\u{(int)ch:X4}");
+            }
+            else
+            {
+                escaped?.Append(ch);
+            }
+        }
+        string result = escaped?.ToString() ?? (end == text.Length ? text : text[..end]);
+        return end == text.Length ? result : $"{result}…({text.Length} chars)";
+    }
+
+    /// <summary>已经记过完整调用栈的失败(「操作码.次操作码:异常类型」);同一种之后只记一行。</summary>
+    private readonly HashSet<string> _reportedFailures = [];
+
+    /// <summary>
+    /// 记一次请求或工作项的意外失败(BadImplementation 之类 —— 都是我们自己的缺陷):每种(<paramref name="where" /> + 异常类型)
+    /// 第一次记完整的调用栈,之后只记一行。原先每次都打完整的栈(几 KB),一个能稳定触发它的客户端很快就写满日志。
+    /// 异常消息可能带着客户端给的值,经 <see cref="LogText" />。调用方先过 <see cref="ShouldLogFrequent" />。
+    /// </summary>
+    private void LogFailure(string head, string where, Exception ex)
+    {
+        string summary = $"{head} {ex.GetType().FullName}: {LogText(ex.Message)}";
+        if (_reportedFailures.Count < 256 && _reportedFailures.Add($"{where}:{ex.GetType().FullName}"))
+        {
+            string full = $"{summary}{Environment.NewLine}{ex.StackTrace}";
+            _frequentLogCredit -= full.Length;
+            Log(full);
+            return;
+        }
+        LogFrequent(summary);
     }
 
     /// <summary>
@@ -236,7 +318,10 @@ public sealed partial class X11Server
         }
         catch (Exception ex)
         {
-            Log($"work item failed: {ex}");
+            if (ShouldLogFrequent())
+            {
+                LogFailure("work item failed:", "work", ex);
+            }
         }
         finally
         {
@@ -249,7 +334,7 @@ public sealed partial class X11Server
             string what = item.Request is { } r
                 ? $"{item.Client} opcode {r[0]}{(r[0] >= XOpcode.FirstExtension ? $".{r[1]}" : "")}"
                 : item.Client is { } owner ? $"{owner} (internal)" : "host or timer";
-            Log($"slow work item: {what} held the pixel lock for {elapsed * 1000 / Stopwatch.Frequency} ms");
+            LogFrequent($"slow work item: {what} held the pixel lock for {elapsed * 1000 / Stopwatch.Frequency} ms");
         }
     }
 

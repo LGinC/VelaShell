@@ -224,7 +224,7 @@ public sealed partial class X11Server
                 {
                     if (ShouldLogFrequent())
                     {
-                        Log($"connection refused: {reason}");
+                        LogFrequent($"connection refused: {reason}");
                     }
                 });
                 await SendSetupFailureAsync(stream, bigEndian, reason, setup.Token).ConfigureAwait(false);
@@ -263,7 +263,7 @@ public sealed partial class X11Server
                 {
                     if (ShouldLogFrequent())
                     {
-                        Log("connection setup timed out");
+                        LogFrequent("connection setup timed out");
                     }
                 });
             }
@@ -362,13 +362,13 @@ public sealed partial class X11Server
             client.Send(BuildSetupReply(client));
             if (ShouldLogFrequent())
             {
-                Log($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
+                LogFrequent($"{client} connected ({(bigEndian ? "MSB" : "LSB")} first)");
             }
             return client;
         }
         if (ShouldLogFrequent())
         {
-            Log($"connection refused: {MaxClients} clients already connected");
+            LogFrequent($"connection refused: {MaxClients} clients already connected");
         }
         return null;
     }
@@ -543,7 +543,7 @@ public sealed partial class X11Server
         client.Closed = true;
         if (ShouldLogFrequent())
         {
-            Log($"{client} disconnected");
+            LogFrequent($"{client} disconnected");
         }
         try
         {
@@ -551,7 +551,10 @@ public sealed partial class X11Server
         }
         catch (Exception ex)
         {
-            Log($"save-set of {client} failed: {ex}");
+            if (ShouldLogFrequent())
+            {
+                LogFailure($"save-set of {client} failed:", "save-set", ex);
+            }
         }
         try
         {
@@ -564,14 +567,17 @@ public sealed partial class X11Server
             {
                 if (client.CloseDownMode is 1 or 2 && ShouldLogFrequent())
                 {
-                    Log($"{client} asked to retain its resources, but {MaxRetainedClients} clients already do: destroying them");
+                    LogFrequent($"{client} asked to retain its resources, but {MaxRetainedClients} clients already do: destroying them");
                 }
                 CleanupClient(client);
             }
         }
         catch (Exception ex)
         {
-            Log($"cleanup of {client} failed: {ex}");
+            if (ShouldLogFrequent())
+            {
+                LogFailure($"cleanup of {client} failed:", "cleanup", ex);
+            }
         }
         if (ReferenceEquals(_serverGrabber, client))
         {

@@ -234,6 +234,33 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 客户端给的字符串进日志前去掉控制字符并截断_刷屏的日志按字节限额()
+    {
+        System.Collections.Concurrent.ConcurrentQueue<string> lines = new();
+        await using X11Server server = new(new X11ServerOptions { Log = lines.Enqueue });
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+
+        // OpenFont 的名字是客户端给的(最长 64 KB、什么字节都能带):换行能伪造日志行,ESC 能往看日志的终端里注入控制序列。
+        string name = "no-such-font\n2026-10-06 [XServer] forged line\u001b[2J" + new string('x', 4000);
+        byte[] bytes = System.Text.Encoding.Latin1.GetBytes(name);
+        await c.SendManyAsync(Enumerable.Range(0, 200).Select<int, (byte, byte, Action<XTestClient.Body>?)>(_ =>
+            (45, 0, b => b.U32(c.NewId()).U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad())));
+        await c.SyncAsync();
+
+        string[] fontLines = [.. lines.Where(l => l.Contains("OpenFont", StringComparison.Ordinal))];
+        Assert.IsNotEmpty(fontLines);
+        foreach (string line in fontLines)
+        {
+            Assert.IsFalse(line.Any(ch => ch < 0x20), "日志行里没有换行、ESC 之类的控制字符");
+            Assert.Contains(@"\x0A", line, "控制字符写成转义");
+            Assert.IsLessThan(700, line.Length, "客户端给的长字符串截断了");
+        }
+        // 原先每秒 50 条 × 4 KB 照记:一秒 200 KB。现在先给 32 KB 的余量,之后每秒补 256 字节。
+        long logged = lines.Sum(l => (long)l.Length);
+        Assert.IsLessThan(48 * 1024L, logged, $"刷屏的日志按字节限额,实际 {logged} 个字符");
+    }
+
+    [TestMethod]
     public async Task 像素图超过像素上限回BadAlloc_顶层缓冲只保留上限之内的一块()
     {
         using RecordingHost host = new();
