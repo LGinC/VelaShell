@@ -99,14 +99,14 @@ internal sealed partial class GlContext
     /// <summary>当前生效的纹理:2D 优先于 1D,不完整的视为未启用(§3.8.10、§3.8.15)。</summary>
     private GlTexture? CompleteTexture()
     {
-        (uint cap, uint bound) = State.Enabled.Contains(GlEnum.TEXTURE_2D) ? (GlEnum.TEXTURE_2D, State.Texture2D)
-            : State.Enabled.Contains(GlEnum.TEXTURE_1D) ? (GlEnum.TEXTURE_1D, State.Texture1D)
-            : (0u, 0u);
+        uint cap = State.Enabled.Contains(GlEnum.TEXTURE_2D) ? GlEnum.TEXTURE_2D
+            : State.Enabled.Contains(GlEnum.TEXTURE_1D) ? GlEnum.TEXTURE_1D
+            : 0u;
         if (cap == 0)
         {
             return null;
         }
-        GlTexture? t = bound == 0 ? DefaultTexture(cap) : Shared.Textures.GetValueOrDefault(bound);
+        GlTexture? t = BoundTexture(cap);
         return t is not null && t.IsComplete ? t : null;
     }
 

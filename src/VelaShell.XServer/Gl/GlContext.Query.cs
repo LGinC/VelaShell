@@ -170,8 +170,8 @@ internal sealed partial class GlContext
 
             // 纹理
             0x2200 => One(State.TexEnvMode),
-            0x8068 => One(State.Texture1D),                   // TEXTURE_BINDING_1D
-            0x8069 => One(State.Texture2D),                   // TEXTURE_BINDING_2D
+            0x8068 => One(TextureBinding(GlEnum.TEXTURE_1D)),  // TEXTURE_BINDING_1D
+            0x8069 => One(TextureBinding(GlEnum.TEXTURE_2D)),  // TEXTURE_BINDING_2D
             0x84E0 => One(GlEnum.TEXTURE0),                   // ACTIVE_TEXTURE
             0x84E1 => One(GlEnum.TEXTURE0),                   // CLIENT_ACTIVE_TEXTURE
 

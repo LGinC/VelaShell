@@ -731,6 +731,33 @@ public sealed class GlxTests
     }
 
     [TestMethod]
+    public async Task PopAttrib恢复了已删掉的纹理绑定_TexImage与CopyTexImage按绑定退回0处理_不回BadImplementation()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        static XTestClient.Body Store(XTestClient.Body b) => b.U8(0).U8(0).U16(0).I32(0).I32(0).I32(0).I32(1);
+        const uint textureBit = 0x40000;
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4117, b => b.U32(Texture2D).U32(5))      // BindTexture 5
+            .Add(142, b => b.U32(textureBit)));           // PushAttrib(TEXTURE_BIT):记下绑定 5
+        await c.SendAsync(glx, 144, b => b.U32(tag).I32(1).U32(5));   // DeleteTextures 5:绑定退回 0
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(141)                                     // PopAttrib:把已删掉的 5 恢复回来(合法的 GL 序列)
+            .Add(110, b => Store(b).U32(Texture2D).I32(0).U32(Rgba).I32(2).I32(2).I32(0).U32(Rgba).U32(UnsignedByte)
+                .Bytes(new byte[16]))                     // TexImage2D
+            .Add(4120, b => b.U32(Texture2D).I32(0).U32(Rgba).I32(0).I32(0).I32(2).I32(2).I32(0)));   // CopyTexImage2D
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await c.NextAsync(m => m.IsError, 100).ContinueWith(t => t.IsCompletedSuccessfully), "原先 NullReferenceException → BadImplementation");
+        XMessage binding = await c.RequestAsync(glx, 117, b => b.U32(tag).U32(0x8069));   // GetIntegerv(TEXTURE_BINDING_2D)
+        Assert.AreEqual(0u, binding.U32(16), "悬空的名字按删掉处理:绑定是 0");
+    }
+
+    [TestMethod]
     public async Task RenderMode只在之前是反馈或选择模式时回复()
     {
         using RecordingHost host = new();

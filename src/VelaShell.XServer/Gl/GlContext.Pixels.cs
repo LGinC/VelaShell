@@ -31,17 +31,32 @@ internal sealed partial class GlContext
     private readonly GlTexture _proxy1D = new(0) { Target = GlEnum.PROXY_TEXTURE_1D };
     private readonly GlTexture _proxy2D = new(0) { Target = GlEnum.PROXY_TEXTURE_2D };
 
-    private GlTexture? DefaultTexture(uint cap) => cap == GlEnum.TEXTURE_1D ? _default1D : _default2D;
-
     /// <summary>目标当前绑定的纹理对象(含名字 0 的默认纹理与代理纹理)。</summary>
     private GlTexture? BoundTexture(uint target) => target switch
     {
-        GlEnum.TEXTURE_1D => State.Texture1D == 0 ? _default1D : Shared.Textures.GetValueOrDefault(State.Texture1D),
-        GlEnum.TEXTURE_2D => State.Texture2D == 0 ? _default2D : Shared.Textures.GetValueOrDefault(State.Texture2D),
+        GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D when TextureBinding(target) is not 0 and var name => Shared.Textures[name],
+        GlEnum.TEXTURE_1D => _default1D,
+        GlEnum.TEXTURE_2D => _default2D,
         GlEnum.PROXY_TEXTURE_1D => _proxy1D,
         GlEnum.PROXY_TEXTURE_2D => _proxy2D,
         _ => null,
     };
+
+    /// <summary>
+    /// TEXTURE_1D / TEXTURE_2D 当前绑定的纹理名。名字已不在共享组里时按「删掉即退回 0」处理(§3.8.12,与本上下文 DeleteTextures
+    /// 的效果一样)并就地改回 0。名字悬空有三条来路:PushAttrib(TEXTURE_BIT) 之后删了当前绑定再 PopAttrib(合法的 GL 序列)、
+    /// CopyContext 拷来另一个共享组的名字、共享组里另一个上下文删了它。原先 TexImage / CopyTexImage 拿到 null 抛
+    /// NullReferenceException,客户端收到 BadImplementation。
+    /// </summary>
+    private uint TextureBinding(uint target)
+    {
+        ref uint bound = ref target == GlEnum.TEXTURE_1D ? ref State.Texture1D : ref State.Texture2D;
+        if (bound != 0 && !Shared.Textures.ContainsKey(bound))
+        {
+            bound = 0;
+        }
+        return bound;
+    }
 
     /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记账的对象;名字 0 的默认纹理与代理纹理每个上下文就几个,不记)。</summary>
     private bool IsNamed(GlTexture texture) =>
@@ -374,7 +389,11 @@ internal sealed partial class GlContext
             return;
         }
         bool proxy = target is GlEnum.PROXY_TEXTURE_1D or GlEnum.PROXY_TEXTURE_2D;
-        GlTexture texture = BoundTexture(target)!;
+        if (BoundTexture(target) is not { } texture)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
         if (w > MaxTextureSize || h > MaxTextureSize || w < 0 || h < 0)
         {
@@ -475,7 +494,11 @@ internal sealed partial class GlContext
             return;
         }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
-        GlTexture texture = BoundTexture(target)!;
+        if (BoundTexture(target) is not { } texture)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
         if (!FitsTexture(texture, level, Math.Max(0, (long)w * h * 4)))
         {
             return;
