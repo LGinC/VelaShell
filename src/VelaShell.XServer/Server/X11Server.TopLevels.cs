@@ -72,7 +72,7 @@ public sealed partial class X11Server
                 ? HostText(name.Data, TextEncodingOf(name.Type), MaxHostTitleChars)   // WM_NAME 是 TEXT:类型可以是 STRING、UTF8_STRING、COMPOUND_TEXT
                 : "";
 
-        string className = "";
+        string className = "", instanceName = "";
         if (props.TryGetValue(XAtom.WmClass, out XProperty? cls) && cls.Format == 8)
         {
             // WM_CLASS = "instance\0class\0"
@@ -81,6 +81,7 @@ public sealed partial class X11Server
             ReadOnlySpan<byte> classPart = split < 0 ? data : data[(split + 1)..];
             int end = classPart.IndexOf((byte)0);
             className = HostText(end < 0 ? classPart : classPart[..end], utf8: false, MaxHostNameChars);
+            instanceName = split < 0 ? "" : HostText(data[..split], utf8: false, MaxHostNameChars);
         }
 
         uint transientId = props.TryGetValue(XAtom.WmTransientFor, out XProperty? transient) && transient is { Format: 32, Data.Length: >= 4 }
@@ -112,8 +113,11 @@ public sealed partial class X11Server
             Y = top.Y,
             Width = top.Width,
             Height = top.Height,
+            BorderWidth = top.BorderWidth,
+            NeedsPlacement = top.PositionRequested && !top.OverrideRedirect,
             Title = title,
             ClassName = className,
+            InstanceName = instanceName,
             OverrideRedirect = top.OverrideRedirect,
             TransientFor = transientFor,
             SupportsDeleteWindow = SupportsProtocol(top, _wmDeleteWindowAtom),
@@ -131,11 +135,12 @@ public sealed partial class X11Server
     private static XTopLevelChanges Diff(XTopLevelSnapshot a, XTopLevelSnapshot b)
     {
         XTopLevelChanges changes = XTopLevelChanges.None;
-        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height)
+        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height || a.BorderWidth != b.BorderWidth
+            || a.NeedsPlacement != b.NeedsPlacement)
         {
             changes |= XTopLevelChanges.Geometry;
         }
-        if (a.Title != b.Title || a.ClassName != b.ClassName)
+        if (a.Title != b.Title || a.ClassName != b.ClassName || a.InstanceName != b.InstanceName)
         {
             changes |= XTopLevelChanges.Title;
         }
@@ -147,7 +152,7 @@ public sealed partial class X11Server
         {
             changes |= XTopLevelChanges.Icons;
         }
-        if (!ReferenceEquals(a.Shape, b.Shape))
+        if (!ReferenceEquals(a.Shape, b.Shape) || !ReferenceEquals(a.InputShape, b.InputShape))
         {
             changes |= XTopLevelChanges.Shape;
         }
@@ -158,12 +163,16 @@ public sealed partial class X11Server
             Y = b.Y,
             Width = b.Width,
             Height = b.Height,
+            BorderWidth = b.BorderWidth,
+            NeedsPlacement = b.NeedsPlacement,
             IsMapped = b.IsMapped,
             Title = b.Title,
             ClassName = b.ClassName,
+            InstanceName = b.InstanceName,
             States = b.States,
             Icons = b.Icons,
             Shape = b.Shape,
+            InputShape = b.InputShape,
         };
         if (rest != b)
         {
@@ -261,16 +270,24 @@ public sealed partial class X11Server
     /// 原生窗口被用户挪了:像真的移动窗口一样走 <see cref="Configure" /> —— 真实的 ConfigureNotify(窗口上选了 StructureNotify、
     /// 根窗口上选了 SubstructureNotify 的都收到)、Present 的 ConfigureNotify、重算指针所在的窗口;再按 ICCCM §4.1.5 补一条合成的
     /// ConfigureNotify(根坐标)。原先只发合成的那条,根窗口上的监听者收不到,指针所在的窗口也不重算。
+    /// 宿主按重力摆好了客户端请求的位置(<see cref="XTopLevelSnapshot.NeedsPlacement" />)也走这里,之后不再要摆。
     /// </summary>
     private void ApplyMove(XWindow top, int x, int y)
     {
+        bool placed = top.PositionRequested;
+        top.PositionRequested = false;
         if (top.X == x && top.Y == y)
         {
+            if (placed && _topLevelHandles.TryGetValue(top, out XTopLevelWindow? same))
+            {
+                same.Snapshot = same.Snapshot with { NeedsPlacement = false };   // 摆好的位置恰好就是请求的位置
+            }
             return;
         }
         if (_topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
         {
-            handle.Snapshot = handle.Snapshot with { X = x, Y = y };   // 宿主自己挪的,不再回报(快照先改好,Configure 比不出变化)
+            // 宿主自己挪的,不再回报(快照先改好,Configure 比不出变化)
+            handle.Snapshot = handle.Snapshot with { X = x, Y = y, NeedsPlacement = false };
         }
         Configure(top, x, y, top.Width, top.Height, top.BorderWidth, null, -1);
         DeliverToSelectors(top, XEventMask.StructureNotify, c => c.Event(XEventCode.ConfigureNotify, 0, w => w

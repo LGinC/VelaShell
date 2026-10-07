@@ -185,6 +185,121 @@ public sealed class HostApiTests
         await host.WaitForAsync(() => window.Snapshot.Title.Length == 4096);
     }
 
+    /// <summary>ChangeProperty(Replace)写一串 32 位值。</summary>
+    private static Task<ushort> SetCard32sAsync(XTestClient c, uint window, uint property, uint type, params uint[] values) =>
+        c.SendAsync(18, 0, b =>
+        {
+            b.U32(window).U32(property).U32(type).U8(32).U8(0).U8(0).U8(0).U32((uint)values.Length);
+            foreach (uint v in values)
+            {
+                b.U32(v);
+            }
+        });
+
+    [TestMethod]
+    public async Task 快照带上ICCCM的位置提示_重力_基准尺寸_宽高比_窗口组_边框宽_输入形状与STRUT()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        XTopLevelWindow window = host.Mapped[top];
+        Assert.AreEqual(XGravity.NorthWest, window.Snapshot.WinGravity, "没给 win_gravity:NorthWest");
+        Assert.IsFalse(window.Snapshot.UserPosition);
+
+        uint leader = c.NewId();   // 组长:一个不映射的顶层
+        await c.SendAsync(1, 0, b => b.U32(leader).U32(c.RootWindow).I16(0).I16(0).U16(1).U16(1).U16(0).U16(1).U32(0).U32(0));
+        byte[] cls = Encoding.Latin1.GetBytes("inst\0Cls\0");
+        await c.SendAsync(18, 0, b => b.U32(top).U32(67).U32(31).U8(8).U8(0).U8(0).U8(0).U32((uint)cls.Length).Bytes(cls).Pad());   // WM_CLASS
+        // WM_NORMAL_HINTS:USPosition | PPosition | PAspect | PBaseSize | PWinGravity;宽高比 4:3–16:9,基准 20×10,SouthEast。
+        await SetCard32sAsync(c, top, 40, 41, 1 | 4 | 128 | 256 | 512, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 4, 3, 16, 9, 20, 10, 9);
+        await SetCard32sAsync(c, top, 35, 35, 64, 0, 0, 0, 0, 0, 0, 0, leader);   // WM_HINTS:WindowGroupHint
+        await SetCard32sAsync(c, top, await InternAsync(c, "_NET_WM_STRUT_PARTIAL"), 6, 0, 0, 30, 0, 0, 0, 0, 0, 0, 100, 0, 0);
+        await c.SendAsync(12, 0, b => b.U32(top).U16(0x10).U16(0).U32(3));   // ConfigureWindow:border-width 3
+        byte shape = await MajorAsync(c, "SHAPE");
+        await c.SendAsync(shape, 1, b => b.U8(0).U8(2).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(10).U16(10));   // 输入形状 10×10
+
+        await host.WaitForAsync(() => window.Snapshot is { InputShape: not null, BorderWidth: 3, Strut.Top: 30, WindowGroup: not null });
+        XTopLevelSnapshot s = window.Snapshot;
+        Assert.AreEqual(("inst", "Cls"), (s.InstanceName, s.ClassName));
+        Assert.IsTrue(s.UserPosition && s.ProgramPosition);
+        Assert.AreEqual(XGravity.SouthEast, s.WinGravity);
+        Assert.AreEqual((20, 10), (s.BaseWidth, s.BaseHeight));
+        Assert.AreEqual(4 / 3.0, s.MinAspect, 1e-9);
+        Assert.AreEqual(16 / 9.0, s.MaxAspect, 1e-9);
+        Assert.AreEqual(leader, s.WindowGroup!.Id);
+        Assert.AreEqual(new XFrameExtents(0, 0, 30, 0), s.Strut);
+        Assert.AreSequenceEqual([new XRect(0, 0, 10, 10)], s.InputShape!.ToArray());
+        Assert.IsNull(s.Shape, "边界形状没设");
+    }
+
+    [TestMethod]
+    public void 按重力套外框_外框的参考点落在请求的位置()
+    {
+        XFrameExtents frame = new(4, 6, 30, 8);
+        XTopLevelSnapshot s = new() { X = 100, Y = 50, BorderWidth = 2 };
+        // NorthWest:外框左上角在 (100, 50),内容区在 (104, 80),X 窗口(边框外沿)再退一个边框宽。
+        Assert.AreEqual((102, 78), s.PlaceInFrame(frame));
+        // SouthEast:外框右下角落在 X 窗口(含边框)的右下角 (100 + w + 4, 50 + h + 4)。
+        Assert.AreEqual((96, 44), (s with { WinGravity = XGravity.SouthEast }).PlaceInFrame(frame));
+        // Center:左右各宽 4、6,中心对齐时内容区往左挪一个像素。
+        Assert.AreEqual((99, 61), (s with { WinGravity = XGravity.Center }).PlaceInFrame(frame));
+        Assert.AreEqual((100, 50), (s with { WinGravity = XGravity.Static }).PlaceInFrame(frame), "Static:内容区不动");
+        Assert.AreEqual((98, 48), s.PlaceInFrame(default), "无装饰的外框直接包着内容区:X 的边框不画");
+    }
+
+    [TestMethod]
+    public async Task 客户端给的位置要宿主摆_宿主报回之后不再要_客户端再挪又要()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        XTopLevelWindow window = host.Mapped[top];
+        Assert.IsTrue(window.Snapshot.NeedsPlacement, "建窗口时给的位置还没摆过");
+        await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x20000));   // StructureNotify
+        await c.SyncAsync();
+
+        server.MoveTopLevel(window, 8, 31);   // 宿主按重力摆好了:外框在 (0, 0),内容区在 (8, 31)
+        await c.NextEventAsync(22);           // 真实的 ConfigureNotify
+        XMessage configure = await c.NextEventAsync(22);
+        Assert.AreEqual(0x80, configure.Kind & 0x80, "ICCCM §4.1.5:再补一条合成的 ConfigureNotify");
+        Assert.AreEqual(8, configure.I16(16));
+        Assert.AreEqual(31, configure.I16(18));
+        Assert.IsFalse(window.Snapshot.NeedsPlacement);
+
+        await c.SendAsync(12, 0, b => b.U32(top).U16(0x3).U16(0).U32(8).U32(31));   // 挪到它已经在的地方:不算新请求
+        await c.SyncAsync();
+        Assert.IsFalse(window.Snapshot.NeedsPlacement);
+        await c.SendAsync(12, 0, b => b.U32(top).U16(0x3).U16(0).U32(200).U32(100));
+        await host.WaitForAsync(() => window.Snapshot is { X: 200, NeedsPlacement: true });
+        Assert.AreEqual(XTopLevelChanges.Geometry, host.LastChanges);
+    }
+
+    [TestMethod]
+    public async Task NET_MOVERESIZE_WINDOW按重力让外框对准请求的位置()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint top = await MapTopAsync(c, host);
+        XTopLevelWindow window = host.Mapped[top];
+        server.SetTopLevelFrameExtents(window, new XFrameExtents(4, 6, 30, 8));
+        uint moveResize = await InternAsync(c, "_NET_MOVERESIZE_WINDOW");
+        Task Send(uint flags, int x, int y) => c.SendAsync(25, 0, b => b.U32(c.RootWindow).U32(0x180000)
+            .U8(33).U8(32).U16(0).U32(top).U32(moveResize).U32(flags).U32(unchecked((uint)x)).U32(unchecked((uint)y)).U32(0).U32(0));
+
+        // wmctrl -e 0,0,0,-1,-1:重力 0 用窗口自己的(NorthWest),外框左上角到 (0, 0),内容区在系统边框里面。
+        await Send(0x300, 0, 0);
+        await host.WaitForAsync(() => window.Snapshot.X == 4);
+        Assert.AreEqual(30, window.Snapshot.Y);
+        Assert.IsFalse(window.Snapshot.NeedsPlacement, "窗口管理器已经摆好,宿主照着摆即可");
+
+        await Send(0x300 | 10, 50, 60);   // Static:内容区就在请求的位置
+        await host.WaitForAsync(() => window.Snapshot.X == 50);
+        Assert.AreEqual(60, window.Snapshot.Y);
+    }
+
     [TestMethod]
     public async Task 位图光标连图像交给宿主_XFIXES起的名字推出形状()
     {

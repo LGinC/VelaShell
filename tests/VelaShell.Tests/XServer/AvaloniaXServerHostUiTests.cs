@@ -423,6 +423,41 @@ public sealed class AvaloniaXServerHostUiTests
     }
 
     /// <summary>
+    /// 客户端给的位置像窗口管理器那样摆(ICCCM §4.1.2.3):外框对准请求的位置、摆好之后把 X 窗口的实际位置报回服务端;
+    /// 用户指定的 (0, 0)(<c>xterm -geometry +0+0</c>,USPosition)照办,不再当成「没给位置」挪到屏幕中央;
+    /// X 的边框不画,内容区对准内区(边框外沿 + 边框宽),与服务端算指针根坐标的方式一致。
+    /// </summary>
+    [TestMethod]
+    public async Task ClientPosition_PlacesTheFrameByGravity_HonorsUserPositionAtOrigin_AndOffsetsTheBorder() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        (uint idBase, uint root) = await HandshakeAsync(client);
+        uint origin = idBase | 1, bordered = idBase | 2;
+
+        // (0, 0) 带 USPosition:用户指定的位置。
+        await SendAsync(client, 1, 24, w => w.U32(origin).U32(root).I16(0).I16(0).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 18, 0, w => w.U32(origin).U32(40).U32(41).U8(32).Zero(3).U32(18).U32(1).Zero(17 * 4));   // WM_NORMAL_HINTS
+        await SendAsync(client, 8, 0, w => w.U32(origin));
+        // (100, 50)、边框宽 5、没有提示:按默认的 NorthWest 摆。
+        await SendAsync(client, 1, 24, w => w.U32(bordered).U32(root).I16(100).I16(50).U16(60).U16(40).U16(5).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(bordered));
+
+        XNativeWindow first = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == origin && !w.Handle.Snapshot.NeedsPlacement));
+        (int ox, int oy) = host.RootOrigin;
+        Assert.AreEqual(new PixelPoint(ox, oy), first.Position, "外框在用户指定的 (0, 0)");
+
+        XNativeWindow second = await WaitForAsync(() => host.Windows.FirstOrDefault(w => w.Handle.Id == bordered && !w.Handle.Snapshot.NeedsPlacement));
+        Assert.AreEqual(new PixelPoint(100 + ox, 50 + oy), second.Position, "外框左上角在请求的位置");
+        XTopLevelSnapshot s = second.Handle.Snapshot;
+        Assert.AreEqual((95, 45), (s.X, s.Y), "无装饰的外框直接包着内容区:X 窗口的边框外沿在内容区左上再退 5");
+        host.Detach();
+    });
+
+    /// <summary>
     /// owner 级联关闭(Avalonia 关 owner 时先问它拥有的窗口,有一个不肯 owner 就关不掉):
     /// 父窗口在 X 里取消映射、对话框还映射着 → 父窗口收掉,对话框不带 owner 重新显示;停服时一个都不留;
     /// 弹层的关闭不转给客户端(没有 WM_DELETE_WINDOW 的弹层原先一关就断开了整个程序)。

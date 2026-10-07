@@ -698,6 +698,10 @@ public sealed partial class X11Server
         {
             RequireBufferMemory(window, width, height);   // 缓冲要跟着变大:先核账(xs_plan X-2)
         }
+        if (window.IsTopLevel && (x != window.X || y != window.Y))
+        {
+            window.PositionRequested = true;   // 客户端自己给的位置:宿主按重力摆外框(ICCCM §4.1.5,见 XTopLevelSnapshot.NeedsPlacement)
+        }
         Configure(window, x, y, width, height, border, sibling, stackMode);
         if (stackMode == 0 && sibling is null && window.IsTopLevel && window.Mapped && !window.OverrideRedirect
             && _topLevelHandles.TryGetValue(window, out XTopLevelWindow? handle))
@@ -719,6 +723,7 @@ public sealed partial class X11Server
         bool resized = width != window.Width || height != window.Height;
         bool moved = x != window.X || y != window.Y;
         (int dx, int dy, int dw, int dh) = (x - window.X, y - window.Y, width - window.Width, height - window.Height);
+        bool rebordered = border != window.BorderWidth;
 
         window.X = x;
         window.Y = y;
@@ -770,7 +775,7 @@ public sealed partial class X11Server
                 Drawing.Region exposed = new(buffer.Bounds);
                 ExposeWindowTree(window, exposed);
             }
-            if (resized || moved)
+            if (resized || moved || rebordered)
             {
                 RefreshTopLevel(window);
             }
@@ -1011,6 +1016,7 @@ public sealed partial class X11Server
         window.Parent = parent;
         window.X = x;
         window.Y = y;
+        window.PositionRequested = true;   // 挪到根窗口下成了顶层:位置是客户端给的,宿主按重力摆
         InvalidateVisibility();
         if (wasTopLevel && !window.IsTopLevel)
         {

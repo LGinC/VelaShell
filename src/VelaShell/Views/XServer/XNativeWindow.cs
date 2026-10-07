@@ -17,8 +17,9 @@ namespace VelaShell.Views.XServer;
 /// <remarks>
 /// <para>
 /// <b>坐标一律按物理像素。</b>X 客户端看到的根窗口是整个虚拟桌面(所有显示器的外接矩形,原点平移到 0,0),
-/// 顶层的 X / Y 是它<b>内容区</b>在根窗口里的位置;原生窗口的系统标题栏与边框在内容区之外,
-/// 尺寸经 <c>_NET_FRAME_EXTENTS</c> 告诉客户端。DIP 只在给 Avalonia 设尺寸时换算一次。
+/// 顶层的 X / Y 是它边框外沿在根窗口里的位置,<b>内容区</b>在 (X + 边框宽, Y + 边框宽);X 的边框不画,原生窗口的系统标题栏与边框
+/// 在内容区之外,尺寸经 <c>_NET_FRAME_EXTENTS</c> 告诉客户端。客户端自己给的位置像窗口管理器那样按重力摆外框(ICCCM §4.1.2.3),
+/// 摆好之后把 X 窗口的实际位置报回服务端。DIP 只在给 Avalonia 设尺寸时换算一次。
 /// </para>
 /// <para>
 /// 只在 UI 线程上碰;服务端的回调由 <see cref="AvaloniaXServerHost" /> 切过来。
@@ -48,8 +49,19 @@ public sealed class XNativeWindow : Window
     private Vector _wheelRemainder;
     private XFrameExtents _frame;
     private XWindowStates _reportedStates;
-    private (int X, int Y)? _placed;
     private WindowState _resizeState = WindowState.Normal;
+
+    /// <summary>原生窗口已经显示出来(<c>Opened</c>):外框尺寸量得到了,摆好的位置才报回服务端。</summary>
+    private bool _opened;
+
+    /// <summary>宿主替没给位置的窗口选的外框左上角(根窗口坐标);服务端那边摆好之后清掉。</summary>
+    private (int X, int Y)? _frameAt;
+
+    /// <summary>已经按哪一份快照把摆好的位置报回服务端了(同一份快照不重复报)。</summary>
+    private XTopLevelSnapshot? _placedFor;
+
+    /// <summary>最近一次摆的:客户端请求的位置,与摆好之后 X 窗口的位置。</summary>
+    private ((int X, int Y) Request, (int X, int Y) Placed)? _placement;
     private long _controlLeftDownAt;
 
     internal XNativeWindow(AvaloniaXServerHost host, XTopLevelWindow handle)
@@ -69,7 +81,7 @@ public sealed class XNativeWindow : Window
         Activated += (_, _) => _host.OnWindowActivated(this);
         Deactivated += (_, _) => OnDeactivated();
         ScalingChanged += (_, _) => ApplyGeometry();
-        Opened += (_, _) => { UpdateFrameExtents(); ApplyGeometry(); _surface.Start(); };
+        Opened += (_, _) => { _opened = true; UpdateFrameExtents(); ApplyGeometry(); _surface.Start(); };
     }
 
     /// <summary>服务端那边的顶层窗口。</summary>
@@ -119,11 +131,18 @@ public sealed class XNativeWindow : Window
     }
 
     /// <summary>
-    /// 宿主替没给位置的窗口选了一个位置(已经告诉服务端,但服务端那边的几何还没更新过来):在那之前按这个摆。
+    /// 宿主替没给位置的窗口选了外框的位置(根窗口坐标,外框左上角):代替按重力摆,摆好之后照常报回服务端。
     /// </summary>
-    public void PlaceAt(int x, int y) => _placed = (x, y);
+    public void PlaceFrameAt(int x, int y) => _frameAt = (x, y);
 
-    /// <summary>按服务端的几何摆放原生窗口。</summary>
+    /// <summary>系统边框的四边宽(物理像素;显示出来之前是 0)。</summary>
+    public XFrameExtents FrameExtents => _frame;
+
+    /// <summary>
+    /// 按服务端的几何摆放原生窗口:内容区对准 X 窗口的内区(边框外沿 + 边框宽)。快照说位置是客户端请求的
+    /// (<see cref="XTopLevelSnapshot.NeedsPlacement" />)时像窗口管理器那样摆:外框按重力对准它(ICCCM §4.1.2.3)——
+    /// 原先一律让内容区对准请求的坐标,请求 y = 0 的窗口标题栏落在屏幕外 —— 显示出来、外框尺寸量到之后,把 X 窗口摆好的位置报回服务端。
+    /// </summary>
     public void ApplyGeometry()
     {
         if (WindowState is WindowState.Maximized or WindowState.FullScreen)
@@ -141,15 +160,28 @@ public sealed class XNativeWindow : Window
             Height = _appliedSize.Height / scale;
             (int ox, int oy) = _host.RootOrigin;
             (int x, int y) = (s.X, s.Y);
-            if (_placed is { } placed)
+            if (s.NeedsPlacement)
             {
-                if (placed == (x, y))
+                if (_placement is { } done && done.Request == (s.X, s.Y))
                 {
-                    _placed = null;   // 服务端已经跟上
+                    (x, y) = done.Placed;   // 这个请求已经摆过(服务端还没跟上,或者客户端又请求了同一个位置)
                 }
-                (x, y) = placed;
+                else
+                {
+                    (x, y) = _frameAt is { } at
+                        ? (at.X + _frame.Left - s.BorderWidth, at.Y + _frame.Top - s.BorderWidth)
+                        : s.PlaceInFrame(_frame);
+                    (x, y) = (Math.Clamp(x, short.MinValue, short.MaxValue), Math.Clamp(y, short.MinValue, short.MaxValue));
+                }
+                if (_opened && !ReferenceEquals(_placedFor, s) && Server is { } server)
+                {
+                    _placedFor = s;
+                    _placement = ((s.X, s.Y), (x, y));
+                    _frameAt = null;   // 选的位置用过了:之后客户端再自己挪,就按重力摆
+                    server.MoveTopLevel(Handle, x, y);
+                }
             }
-            Position = new PixelPoint(x + ox - _frame.Left, y + oy - _frame.Top);
+            Position = new PixelPoint(x + s.BorderWidth + ox - _frame.Left, y + s.BorderWidth + oy - _frame.Top);
         }
         finally
         {
@@ -303,17 +335,20 @@ public sealed class XNativeWindow : Window
 
     private void OnMovedByUser()
     {
-        if (_applying || Server is not { } server || WindowState is WindowState.Minimized)
+        // 显示出来之前外框尺寸还不知道,算出来的位置不对(位置等 Opened 之后由 ApplyGeometry 摆好再报)。
+        if (_applying || !_opened || Server is not { } server || WindowState is WindowState.Minimized)
         {
             return;
         }
         (int ox, int oy) = _host.RootOrigin;
-        int x = Position.X + _frame.Left - ox, y = Position.Y + _frame.Top - oy;
+        XTopLevelSnapshot s = Handle.Snapshot;
+        // 内容区对准 X 窗口的内区:X 窗口的位置(边框外沿)再往左上退一个边框宽。
+        int x = Position.X + _frame.Left - ox - s.BorderWidth, y = Position.Y + _frame.Top - oy - s.BorderWidth;
         if (x is < short.MinValue or > short.MaxValue || y is < short.MinValue or > short.MaxValue)
         {
             return;   // X 的坐标是 16 位:离谱的位置不报(服务端会当场拒绝)
         }
-        if (Handle.Snapshot is var s && (x != s.X || y != s.Y))
+        if (x != s.X || y != s.Y)
         {
             server.MoveTopLevel(Handle, x, y);
         }

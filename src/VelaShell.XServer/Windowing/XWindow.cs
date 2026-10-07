@@ -158,6 +158,12 @@ internal sealed class XWindow : XResource
     public bool OverrideRedirect { get; set; }
 
     /// <summary>
+    /// 顶层窗口的位置是客户端自己给的(建窗口、移动窗口、reparent 到根窗口时),窗口管理器(宿主)还没按重力摆过
+    /// (ICCCM §4.1.2.3、§4.1.5;见 <see cref="XTopLevelSnapshot.NeedsPlacement" />)。宿主报回摆好的位置时清掉。
+    /// </summary>
+    public bool PositionRequested { get; set; } = true;
+
+    /// <summary>
     /// 顶层窗口:解析出宿主快照里图标的那份 _NET_WM_ICON 属性值与解析结果。属性值总是整份替换,
     /// 同一个引用就不必重新解析(图标动辄几百 KB)。
     /// </summary>

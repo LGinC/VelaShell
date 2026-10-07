@@ -73,7 +73,8 @@ public sealed partial class X11Server
 
     // 刷新窗口快照时要读的属性的原子,初始化时算好。
     private uint _netWmNameAtom, _wmProtocolsAtom, _wmDeleteWindowAtom, _wmTakeFocusAtom, _motifHintsAtom, _netWmOpacityAtom,
-        _gtkFrameExtentsAtom, _netWmPidAtom, _wmClientMachineAtom, _wmRoleAtom, _netWmIconAtom, _utf8StringAtom, _compoundTextAtom;
+        _gtkFrameExtentsAtom, _netWmPidAtom, _wmClientMachineAtom, _wmRoleAtom, _netWmIconAtom, _utf8StringAtom, _compoundTextAtom,
+        _netWmStrutAtom, _netWmStrutPartialAtom;
 
     /// <summary>宿主给每个顶层设的外框尺寸(_NET_FRAME_EXTENTS):左、右、上、下。</summary>
     private readonly Dictionary<XWindow, XFrameExtents> _frameExtents = [];
@@ -99,6 +100,8 @@ public sealed partial class X11Server
         _netWmIconAtom = Intern("_NET_WM_ICON");
         _utf8StringAtom = Intern("UTF8_STRING");
         _compoundTextAtom = Intern("COMPOUND_TEXT");
+        _netWmStrutAtom = Intern("_NET_WM_STRUT");
+        _netWmStrutPartialAtom = Intern("_NET_WM_STRUT_PARTIAL");
         XWindow check = SelectionWindow;   // 服务端自己的隐藏窗口兼作 _NET_SUPPORTING_WM_CHECK 窗口
         List<string> supported =
         [
@@ -134,7 +137,7 @@ public sealed partial class X11Server
             XAtom.WmName, XAtom.WmClass, XAtom.WmTransientFor, XAtom.WmHints, XAtom.WmNormalHints,
             .. ((string[])["_NET_WM_NAME", "WM_PROTOCOLS", "_NET_WM_WINDOW_TYPE", "_NET_WM_STATE", "_MOTIF_WM_HINTS",
                 "_NET_WM_ICON", "_NET_WM_WINDOW_OPACITY", "_GTK_FRAME_EXTENTS", "_NET_WM_PID", "WM_CLIENT_MACHINE",
-                "WM_WINDOW_ROLE"]).Select(Intern),
+                "WM_WINDOW_ROLE", "_NET_WM_STRUT", "_NET_WM_STRUT_PARTIAL"]).Select(Intern),
         ];
     }
 
@@ -469,10 +472,17 @@ public sealed partial class X11Server
                     // data[0]:低 8 位重力,第 8–11 位表示 x / y / 宽 / 高各给没给。值是任意 32 位整数,而 X 的坐标是 16 位、
                     // 尺寸 1–32767:宽高越界的请求整个不理,坐标夹到 16 位 —— 原先原样交给 Configure,别的会话的客户端发一个
                     // 2³¹ 的宽度,GetGeometry 与 ConfigureNotify 截断成乱值、指针的根坐标溢出、宿主收到 2³¹ 大小的原生窗口。
-                    // (重力与外框的换算与 ConfigureWindow 一致,见 API-M3。)
+                    // 给的坐标与 ConfigureRequest 一样指参考点(EWMH「_NET_MOVERESIZE_WINDOW」,ICCCM §4.1.2.3):映射着的窗口按重力
+                    // (0 = 用窗口自己的 win_gravity)与宿主给的外框换算成 X 窗口的位置,外框而不是内容区对准它 —— 窗口管理器在这里就摆好了,
+                    // 宿主照着摆即可;还没映射的只记下请求的位置,映射时由宿主摆(见 XTopLevelSnapshot.NeedsPlacement)。
                     uint flags = data[0];
-                    int x = (flags & (1 << 8)) != 0 ? Math.Clamp((int)data[1], short.MinValue, short.MaxValue) : top.X;
-                    int y = (flags & (1 << 9)) != 0 ? Math.Clamp((int)data[2], short.MinValue, short.MaxValue) : top.Y;
+                    bool move = (flags & (3 << 8)) != 0;
+                    XGravity gravity = (flags & 0xFF) is >= 1 and <= 10 ? (XGravity)(flags & 0xFF) : HandleFor(top).Snapshot.WinGravity;
+                    (int dx, int dy) = top.Mapped
+                        ? XTopLevelSnapshot.GravityOffset(gravity, _frameExtents.GetValueOrDefault(top), top.BorderWidth)
+                        : (0, 0);
+                    int x = (flags & (1 << 8)) != 0 ? (int)Math.Clamp((long)(int)data[1] + dx, short.MinValue, short.MaxValue) : top.X;
+                    int y = (flags & (1 << 9)) != 0 ? (int)Math.Clamp((long)(int)data[2] + dy, short.MinValue, short.MaxValue) : top.Y;
                     int w = (flags & (1 << 10)) != 0 ? (int)data[3] : top.Width;
                     int h = (flags & (1 << 11)) != 0 ? (int)data[4] : top.Height;
                     if (w is < 1 or > short.MaxValue || h is < 1 or > short.MaxValue)
@@ -489,6 +499,10 @@ public sealed partial class X11Server
                         {
                             break;
                         }
+                    }
+                    if (move && (x != top.X || y != top.Y))
+                    {
+                        top.PositionRequested = !top.Mapped;
                     }
                     Configure(top, x, y, w, h, top.BorderWidth, null, -1);
                     break;
@@ -555,6 +569,9 @@ public sealed partial class X11Server
         uint[] opacity = ReadCard32s(props.GetValueOrDefault(_netWmOpacityAtom), 1);
         uint[] extents = ReadCard32s(props.GetValueOrDefault(_gtkFrameExtentsAtom), 4);
         uint[] pid = ReadCard32s(props.GetValueOrDefault(_netWmPidAtom), 1);
+        uint[] strut = ReadCard32s(props.GetValueOrDefault(_netWmStrutPartialAtom), 4) is { Length: 4 } partial
+            ? partial
+            : ReadCard32s(props.GetValueOrDefault(_netWmStrutAtom), 4);
 
         // _NET_WM_ICON 优先;没有时取 WM_HINTS 的 icon_pixmap / icon_mask(老程序只给那个)。
         XProperty? icon = props.GetValueOrDefault(_netWmIconAtom);
@@ -583,6 +600,9 @@ public sealed partial class X11Server
             ClientMachine = props.GetValueOrDefault(_wmClientMachineAtom) is { Format: 8 } machine ? HostText(machine.Data, TextEncodingOf(machine.Type), MaxHostNameChars) : "",
             Role = props.GetValueOrDefault(_wmRoleAtom) is { Format: 8 } role ? HostText(role.Data, utf8: false, MaxHostNameChars) : "",
             Icons = top.ParsedIcons.Icons,
+            Strut = strut.Length == 4
+                ? new XFrameExtents(HintSize(strut[0]), HintSize(strut[1]), HintSize(strut[2]), HintSize(strut[3]))
+                : default,
         };
     }
 

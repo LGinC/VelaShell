@@ -537,22 +537,23 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     }
 
     /// <summary>
-    /// 客户端没给位置(映射在 0,0)的普通窗口,像窗口管理器那样摆:对话框居中压在父窗口上,其余放在主显示器工作区正中。
-    /// 用户指定的位置(USPosition,如 <c>xterm -geometry +0+0</c>)哪怕是 (0, 0) 也照办 —— 原先一律当成「没给位置」挪到屏幕中央。
+    /// 客户端没给位置的普通窗口像窗口管理器那样摆:对话框居中压在父窗口上,其余放在主显示器工作区正中。「没给位置」指请求的位置是 (0, 0)
+    /// 而且不是用户指定的(没有 USPosition;程序自己设的 PPosition 在 (0, 0) 时多半只是默认值)—— 原先只看坐标是不是 0,
+    /// <c>xterm -geometry +0+0</c> 也被挪到屏幕中央。给了位置的由原生窗口按重力摆外框(见 <see cref="XNativeWindow.ApplyGeometry" />)。
     /// </summary>
     private void PlaceIfUnpositioned(XTopLevelWindow handle, XNativeWindow window)
     {
         XTopLevelSnapshot snapshot = handle.Snapshot;
-        if (snapshot.OverrideRedirect || snapshot.UserPosition || snapshot.X != 0 || snapshot.Y != 0 || _server is not { } server)
+        if (!snapshot.NeedsPlacement || snapshot.UserPosition || snapshot.X != 0 || snapshot.Y != 0)
         {
             return;
         }
+        (int ox, int oy) = RootOrigin;
         PixelRect area;
         if (snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent))
         {
-            (int ox, int oy) = RootOrigin;
             XTopLevelSnapshot p = parent.Handle.Snapshot;
-            area = new PixelRect(p.X + ox, p.Y + oy, p.Width, p.Height);
+            area = new PixelRect(p.X + p.BorderWidth + ox, p.Y + p.BorderWidth + oy, p.Width, p.Height);
         }
         else if ((MainWindow()?.Screens ?? window.Screens).Primary is { } primary)
         {
@@ -562,10 +563,10 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             return;
         }
-        int x = area.X + Math.Max(0, (area.Width - snapshot.Width) / 2) - RootOrigin.X;
-        int y = area.Y + Math.Max(0, (area.Height - snapshot.Height) / 2) - RootOrigin.Y;
-        window.PlaceAt(x, y);
-        server.MoveTopLevel(handle, x, y);
+        // 居中的是外框(内容区加系统边框);边框尺寸要等显示出来才量得到,之前按 0 算。
+        XFrameExtents frame = window.FrameExtents;
+        int outerWidth = snapshot.Width + frame.Left + frame.Right, outerHeight = snapshot.Height + frame.Top + frame.Bottom;
+        window.PlaceFrameAt(area.X + Math.Max(0, (area.Width - outerWidth) / 2) - ox, area.Y + Math.Max(0, (area.Height - outerHeight) / 2) - oy);
     }
 
     /// <summary>某个 X 窗口成了活动窗口:键盘焦点给它;顺带把系统剪贴板里别的程序复制的新文本交给 X。</summary>
