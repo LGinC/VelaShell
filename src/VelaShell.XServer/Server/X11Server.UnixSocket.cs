@@ -8,6 +8,7 @@
 //
 //   本机客户端(DISPLAY=:N)走这里,比 TCP 快,也不必开端口。连进来的一律算本机连接;是不是「运行服务端的这个用户」:
 //   套接字文件在 Listen 之前就改成 0600,连得上的只有属主(与 root);抽象命名空间没有文件权限,按 SO_PEERCRED 的 uid 核对。
+//   名字被别人占着时整个显示号不用(StartAsync 抛异常),放套接字文件的目录属主不可信时不开套接字文件 —— 见 StartUnixListeners。
 
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -18,9 +19,6 @@ public sealed partial class X11Server
 {
     private readonly List<(Socket Socket, string? File)> _unixListeners = [];
 
-    /// <summary>本进程的有效 uid(Linux;只有那里取得到对端的 uid,见 <see cref="PeerUidOf" />)。</summary>
-    private static readonly uint? ProcessUid = OperatingSystem.IsLinux() ? GetEffectiveUid() : null;
-
     /// <summary>Unix 套接字的路径:选项给了就用它,否则 Windows 以外默认 /tmp/.X11-unix/X{N};空字符串 = 不监听。</summary>
     private string? UnixSocketPath => _options.UnixSocketPath switch
     {
@@ -30,6 +28,16 @@ public sealed partial class X11Server
         null => $"/tmp/.X11-unix/X{_options.DisplayNumber}",
     };
 
+    /// <summary>
+    /// 开 Unix 套接字(Linux 上先开抽象名,再开套接字文件)。
+    /// </summary>
+    /// <remarks>
+    /// 名字被别人占着 —— 抽象名已经有人 bind、套接字文件后面有人在听、或者是别的用户留下而删不掉的 —— 时抛
+    /// <see cref="SocketException" />(<see cref="SocketError.AddressAlreadyInUse" />):这个显示号不能用。原先只记一行日志、
+    /// 照样用别的传输开起来,<see cref="Display" /> 照样是 <c>:N</c>:攻击者先 bind 抽象名不 listen(我们的探测连过去被拒、判为空闲),
+    /// 等我们开起来再 listen,Xlib / XCB 对 <c>:N</c> 先试抽象名,建立报文里带着 <c>.Xauthority</c> 里的 cookie 就交到了它手上,
+    /// 它再拿 cookie 经 TCP 连进真服务端。放套接字文件的目录不可信(<see cref="SocketDirectoryProblem" />)时不开套接字文件、只记日志。
+    /// </remarks>
     private void StartUnixListeners(CancellationToken cancellationToken)
     {
         if (UnixSocketPath is not { } path || !Socket.OSSupportsUnixDomainSockets)
@@ -53,16 +61,28 @@ public sealed partial class X11Server
                     File.SetUnixFileMode(directory, (UnixFileMode)0x3FF);   // 八进制 1777
                 }
             }
+            // 建完再核:别人可能抢在 CreateDirectory 之前把目录(或指向别处的符号链接)建好了,CreateDirectory 对已有的目录不报错。
+            if (directory is not null && !OperatingSystem.IsWindows() && SocketDirectoryProblem(directory) is { } problem)
+            {
+                Log($"Unix socket {path}: {problem}; not listening on it");
+                return;
+            }
             if (File.Exists(path))
             {
-                // 有人在听(桌面自己的 Xorg 通常不开 TCP,TCP 那一侧的占用检查看不出它):不碰,这条传输不开。
-                // 没人应答才是上次没收拾干净的残留,删掉重建。
+                // 有人在听(桌面自己的 Xorg 通常不开 TCP,TCP 那一侧的占用检查看不出它):不碰,这个显示号不能用。
+                // 没人应答才是上次没收拾干净的残留,删掉重建;删不掉(别的用户的文件)同样不能用 —— 它的属主随时可以再 listen。
                 if (IsUnixSocketLive(path))
                 {
-                    Log($"Unix socket {path} is in use by another X server; not listening on it");
-                    return;
+                    throw NameTaken(path, "another X server is listening on it");
                 }
-                File.Delete(path);
+                try
+                {
+                    File.Delete(path);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    throw NameTaken(path, $"a stale socket cannot be removed: {ex.Message}");
+                }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -72,6 +92,106 @@ public sealed partial class X11Server
         }
         TryListen(path, path, cancellationToken);
     }
+
+    /// <summary>记一行「名字被占、这个显示号不能用」,返回要抛的异常。</summary>
+    private SocketException NameTaken(string endpoint, string why)
+    {
+        Log($"Unix socket {EndpointText(endpoint)} is taken ({why}): display :{_options.DisplayNumber} is unusable");
+        return new SocketException((int)SocketError.AddressAlreadyInUse);
+    }
+
+    /// <summary>日志里的写法:抽象名按惯例写成 <c>@/tmp/.X11-unix/XN</c>。</summary>
+    private static string EndpointText(string endpoint) => endpoint.StartsWith('\0') ? "@" + endpoint[1..] : endpoint;
+
+    /// <summary>
+    /// 放套接字文件的目录可不可信;不可信时返回原因,可信(或者这个平台查不了属主)时返回 null。
+    /// </summary>
+    /// <remarks>
+    /// 目录的属主能把里面的条目改名、删掉,粘滞位也拦不住属主:属主是别的用户的话,它随时能把我们的 0600 套接字挪走、换上自己的,
+    /// 用 <c>:N</c> 连的本机客户端就把 cookie 交给了它(macOS 上 <c>/tmp/.X11-unix</c> 通常不存在,谁先建谁就是属主;
+    /// Linux 上开机时没建它的发行版同样)。要求:本身是目录、不是符号链接;属主是本用户,或者是 root 且带粘滞位(<c>/tmp/.X11-unix</c> 的标准形态)。
+    /// 只在 Linux(statx)与 macOS(lstat)上查;别的平台返回 null,照旧开。
+    /// </remarks>
+    internal static string? SocketDirectoryProblem(string directory)
+    {
+        if (LStat(directory) is not { } stat || EffectiveUid is not { } self)
+        {
+            return null;
+        }
+        const uint typeMask = 0xF000, directoryType = 0x4000, sticky = 0x200;   // S_IFMT、S_IFDIR、S_ISVTX
+        if ((stat.Mode & typeMask) != directoryType)
+        {
+            return $"{directory} is not a directory (a symbolic link?)";
+        }
+        if (stat.Uid == self || (stat.Uid == 0 && (stat.Mode & sticky) != 0))
+        {
+            return null;
+        }
+        return stat.Uid == 0
+            ? $"{directory} is owned by root but lacks the sticky bit"
+            : $"{directory} is owned by another user (uid {stat.Uid})";
+    }
+
+    /// <summary>本进程的有效 uid(Linux 与 macOS);别的平台为 null。</summary>
+    private static readonly uint? EffectiveUid = OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() ? GetEffectiveUid() : null;
+
+    /// <summary>
+    /// 不跟随符号链接地取路径的属主与 st_mode。查不了(不是 Linux / macOS、libc 没有这个函数、内核或 seccomp 不给 statx)时返回 null;
+    /// 取失败(不存在、没权限)时抛 <see cref="IOException" />。
+    /// </summary>
+    private static unsafe (uint Uid, uint Mode)? LStat(string path)
+    {
+        byte* buffer = stackalloc byte[512];   // struct statx 256 字节;macOS 的 struct stat 144 字节
+        int result;
+        try
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                // statx 的结构各架构一样(stx_uid 在 20、stx_mode 在 28);struct stat 的布局随架构变,glibc 2.33 之前也不导出 stat。
+                const int atFdCwd = -100, atSymlinkNoFollow = 0x100;
+                const uint statxType = 0x1, statxMode = 0x2, statxUid = 0x8;
+                result = StatX(atFdCwd, path, atSymlinkNoFollow, statxType | statxMode | statxUid, buffer);
+                if (result == 0)
+                {
+                    uint mask = *(uint*)buffer;
+                    return (mask & (statxType | statxMode | statxUid)) == (statxType | statxMode | statxUid)
+                        ? (*(uint*)(buffer + 20), *(ushort*)(buffer + 28))
+                        : null;
+                }
+            }
+            else if (OperatingSystem.IsMacOS())
+            {
+                // 64 位 inode 的 struct stat:st_mode(16 位)在 4、st_uid 在 16。x64 上它的符号是 lstat$INODE64,arm64 上就是 lstat。
+                result = RuntimeInformation.ProcessArchitecture == Architecture.X64 ? LStatInode64(path, buffer) : LStatDarwin(path, buffer);
+                if (result == 0)
+                {
+                    return (*(uint*)(buffer + 16), *(ushort*)(buffer + 4));
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            return null;
+        }
+        int errno = Marshal.GetLastPInvokeError();
+        const int enosys = 38;   // Linux:内核太老,或容器的 seccomp 不放行 statx
+        return OperatingSystem.IsLinux() && errno == enosys
+            ? null
+            : throw new IOException($"cannot stat {path} (errno {errno})");
+    }
+
+    [LibraryImport("libc", EntryPoint = "statx", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static unsafe partial int StatX(int directoryFd, string path, int flags, uint mask, byte* buffer);
+
+    [LibraryImport("libc", EntryPoint = "lstat", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static unsafe partial int LStatDarwin(string path, byte* buffer);
+
+    [LibraryImport("libc", EntryPoint = "lstat$INODE64", StringMarshalling = StringMarshalling.Utf8, SetLastError = true)]
+    private static unsafe partial int LStatInode64(string path, byte* buffer);
 
     /// <summary>
     /// 这个 Unix 套接字文件后面有没有进程在听。限时 300 毫秒:Linux 上对 backlog 已满的 AF_UNIX 流套接字做阻塞 connect 会一直等 ——
@@ -126,7 +246,12 @@ public sealed partial class X11Server
         catch (SocketException ex)
         {
             socket.Dispose();
-            Log($"Unix socket {endpoint.TrimStart('\0')} unavailable: {ex.SocketErrorCode}");
+            if (ex.SocketErrorCode == SocketError.AddressAlreadyInUse)
+            {
+                // 抽象名被人 bind 了(不必 listen),或者套接字文件在我们删掉之后又被人建了回来。
+                throw NameTaken(endpoint, "someone else has bound it");
+            }
+            Log($"Unix socket {EndpointText(endpoint)} unavailable: {ex.SocketErrorCode}");
             return;
         }
         _unixListeners.Add((socket, file));
@@ -156,7 +281,7 @@ public sealed partial class X11Server
     private async Task ServeUnixAsync(Socket connection, bool ownerOnly, CancellationToken cancellationToken)
     {
         uint? peerUid = PeerUidOf(connection);
-        bool localUser = ownerOnly || (peerUid is { } uid && uid == ProcessUid);
+        bool localUser = ownerOnly || (peerUid is { } uid && uid == EffectiveUid);
         await using NetworkStream stream = new(connection, ownsSocket: true);
         if (!localUser && peerUid is not null && _options.AuthorizationCookie is null)
         {

@@ -60,6 +60,15 @@ public sealed partial class X11Server
         _acceptTask = AcceptLoopAsync(listener, _lifetime.Token);
     }
 
+    /// <summary>关掉全部监听(收工,或 <see cref="StartAsync" /> 半途失败时撤回已经开起来的)。接受循环随之结束。</summary>
+    private void StopListeners()
+    {
+        _listener?.Stop();
+        _listener = null;
+        Port = 0;
+        StopUnixListeners();
+    }
+
     private async Task AcceptLoopAsync(TcpListener listener, CancellationToken cancellationToken)
     {
         while (!cancellationToken.IsCancellationRequested)

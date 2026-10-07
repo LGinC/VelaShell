@@ -49,13 +49,33 @@ internal static class XDisplayProbe
             return false;
         }
         string path = $"/tmp/.X11-unix/X{display}";
-        return (OperatingSystem.IsLinux() && await CanConnectAsync("\0" + path, cancellationToken).ConfigureAwait(false))
+        return (OperatingSystem.IsLinux() && IsAbstractNameBound("\0" + path))
                || (File.Exists(path) && await CanConnectAsync(path, cancellationToken).ConfigureAwait(false));
     }
 
     /// <summary>
+    /// Linux 抽象命名空间里的这个名字有没有人 bind(不论 listen 没有):自己 bind 一下试试,成了立刻放掉(抽象名不落文件)。
+    /// 原先连过去看:有人先 bind 不 listen 时连接被拒、判为空闲,内置服务端开起来之后它再 listen,
+    /// 用 <c>:N</c> 连的本机程序先试抽象名,就把 cookie 交给了它。
+    /// </summary>
+    private static bool IsAbstractNameBound(string name)
+    {
+        using Socket probe = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+        try
+        {
+            probe.Bind(new UnixDomainSocketEndPoint(name));
+            return false;
+        }
+        catch (SocketException e)
+        {
+            // 别的错误(这个环境不支持抽象名之类):服务端那边同样开不了它,只跳过、不算占用。
+            return e.SocketErrorCode == SocketError.AddressAlreadyInUse;
+        }
+    }
+
+    /// <summary>
     /// 连得上就是有人在听。限时:Linux 上对 backlog 已满的 AF_UNIX 流套接字做阻塞 connect 会一直等 —— 原先同步 Connect、不设时限,
-    /// 本机任何用户在 <c>\0/tmp/.X11-unix/X1</c> 上 listen(0) 并自己先连一条不 accept,显示号探测就挂死在那里,X Server 再也启动不了。
+    /// 本机任何用户在 <c>/tmp/.X11-unix/X1</c>(那个目录人人可写)上 listen(0) 并自己先连一条不 accept,显示号探测就挂死在那里,X Server 再也启动不了。
     /// 到时限还没连上按「有人占着」算(确实有人在听,只是不收)。
     /// </summary>
     private static async Task<bool> CanConnectAsync(string endpoint, CancellationToken cancellationToken)

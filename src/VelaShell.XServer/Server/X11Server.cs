@@ -124,7 +124,9 @@ public sealed partial class X11Server : IAsyncDisposable
 
     /// <summary>
     /// 开始监听:TCP 6000 + N(<see cref="X11ServerOptions.ListenTcp" />)与 Unix 套接字(<see cref="X11ServerOptions.UnixSocketPath" />)。
-    /// TCP 端口被占用时抛 <see cref="SocketException" />;Unix 套接字建不起来只记日志。
+    /// TCP 端口被占用、或者 Unix 套接字的名字被别人占着(Linux 的抽象名有人 bind 了、套接字文件后面有人在听或删不掉)时抛
+    /// <see cref="SocketException" />(<see cref="SocketError.AddressAlreadyInUse" />),已经开起来的监听一并关掉 —— 这个显示号不能用,换一个;
+    /// Unix 套接字因别的原因建不起来(目录建不了、属主不可信)只记日志。
     /// </summary>
     /// <exception cref="InvalidOperationException">已经开始监听了。</exception>
     public Task StartAsync(CancellationToken cancellationToken = default)
@@ -135,11 +137,19 @@ public sealed partial class X11Server : IAsyncDisposable
         {
             throw new InvalidOperationException("服务端已经在监听了。");
         }
-        if (_options.ListenTcp)
+        try
         {
-            StartTcpListener();
+            if (_options.ListenTcp)
+            {
+                StartTcpListener();
+            }
+            StartUnixListeners(_lifetime.Token);
         }
-        StartUnixListeners(_lifetime.Token);
+        catch
+        {
+            StopListeners();
+            throw;
+        }
         Display = DisplayAddress();
         return Task.CompletedTask;
     }
@@ -201,8 +211,7 @@ public sealed partial class X11Server : IAsyncDisposable
         {
             return;
         }
-        _listener?.Stop();
-        StopUnixListeners();
+        StopListeners();
         await _lifetime.CancelAsync().ConfigureAwait(false);
         _work.Writer.TryComplete();
         foreach (Task? task in (Task?[])[_acceptTask, _loopTask])
