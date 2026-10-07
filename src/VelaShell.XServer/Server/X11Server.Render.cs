@@ -12,8 +12,10 @@
 //   CompositeGlyphs8/16/32」(GLYPHITEM、len = 255 时切换字形集;源与第一个元素的 delta 对齐)、
 //   §13「CreateCursor / CreateAnimCursor」(光标的处理与交给宿主见 X11Server.Cursors.cs)
 //
-//   不做的:alpha-map(接受但忽略)、源 picture 的裁剪(只裁目标)、索引色格式(没有)、
-//   poly-edge / poly-mode / dither(接受但忽略,多边形一律平滑边)。
+//   源 / 遮罩 picture 的裁剪(§7 clip-mask「restricts reads and writes … including sources」):Composite 里源与遮罩
+//   没有变换、不重复时,裁剪之外的部分不合成;有变换或重复时、以及梯形 / 字形的源,仍只裁目标。
+//   源窗口的 subwindow-mode 按规范忽略(被挡住的像素内容未定义)。
+//   不做的:alpha-map(接受但忽略)、索引色格式(没有)、poly-edge / poly-mode / dither(接受但忽略,多边形一律平滑边)。
 
 using System.Buffers;
 using VelaShell.XServer.Drawing;
@@ -362,8 +364,8 @@ public sealed partial class X11Server
         return new ImageSource(buffer, ox, oy, w.Width, w.Height, format);
     }
 
-    /// <summary>目标:可写区域 = 可绘对象范围 ∩ 窗口可见部分 ∩ picture 的裁剪。画不了(未映射等)时为 null。</summary>
-    private (RenderTarget Target, XWindow? TopLevel)? TargetOf(XPicture p)
+    /// <summary>目标:可写区域 = 可绘对象范围 ∩ 窗口可见部分 ∩ picture 的裁剪(∩ <paramref name="readable" />,目标坐标)。画不了(未映射等)时为 null。</summary>
+    private (RenderTarget Target, XWindow? TopLevel)? TargetOf(XPicture p, Region? readable = null)
     {
         if (p.Drawable is null || p.Format is null)
         {
@@ -392,13 +394,27 @@ public sealed partial class X11Server
         {
             region.Intersect(clip.Clone().Translate(p.ClipX + ox, p.ClipY + oy));
         }
+        if (readable is not null)
+        {
+            region.Intersect(readable.Clone().Translate(ox, oy));
+        }
         return region.IsEmpty ? null : (new RenderTarget(buffer, ox, oy, p.Format, [.. region.Rects]), top);
     }
 
+    /// <summary>
+    /// 源 / 遮罩 picture 的裁剪换到目标坐标(源的 (0, 0) 对着目标的 (<paramref name="dx" />, <paramref name="dy" />)):RENDER 规范说 clip-mask
+    /// 限制对这个 picture 的读写,裁剪之外的源像素读不到,对应的目标像素就不合成。只在源没有变换、不重复时这样做 ——
+    /// 有变换或重复时读到的源像素与目标不是一一平移的关系,仍只裁目标。没有裁剪时为 null。
+    /// </summary>
+    private static Region? ReadableIn(XPicture? p, int dx, int dy) =>
+        p is { Clip: { } clip, Transform: null, Repeat: 0, Drawable: not null }
+            ? clip.Clone().Translate(p.ClipX + dx, p.ClipY + dy)
+            : null;
+
     private void CompositeTo(XPicture dst, byte op, RenderSource src, RenderSource? mask, bool componentAlpha,
-        int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
+        int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height, Region? readable = null)
     {
-        if (width <= 0 || height <= 0 || TargetOf(dst) is not { } target)
+        if (width <= 0 || height <= 0 || TargetOf(dst, readable) is not { } target)
         {
             return;
         }
@@ -439,8 +455,14 @@ public sealed partial class X11Server
         CheckOp(op);
         // 分量 alpha 只对有颜色通道的遮罩有意义(纯色 / 渐变也算有)。
         bool componentAlpha = mask is { ComponentAlpha: true } && (mask.Format?.HasColor ?? true);
+        // 源与遮罩的裁剪也限制读:裁剪之外的像素读不到,目标上对应的地方不合成。
+        Region? readable = ReadableIn(src, dstX - srcX, dstY - srcY);
+        if (ReadableIn(mask, dstX - maskX, dstY - maskY) is { } maskReadable)
+        {
+            readable = readable?.Intersect(maskReadable) ?? maskReadable;
+        }
         CompositeTo(dst, op, SourceOf(src), mask is null ? null : SourceOf(mask), componentAlpha,
-            srcX, srcY, maskX, maskY, dstX, dstY, width, height);
+            srcX, srcY, maskX, maskY, dstX, dstY, width, height, readable);
     }
 
     private void FillRectangles(XRequestReader r)

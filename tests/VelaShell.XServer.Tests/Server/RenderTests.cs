@@ -129,6 +129,29 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task 源picture的裁剪也限制读_裁剪之外的目标不合成()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        // 10×10 的红像素图做源,源 picture 只留左上 5×5。
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(s.Window).U16(10).U16(10));
+        uint gc = c.NewId();
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4).U32(0xFF0000));
+        await c.SendAsync(70, 0, b => b.U32(pixmap).U32(gc).I16(0).I16(0).U16(10).U16(10));
+        uint source = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(source).U32(pixmap).U32(s.Formats.Rgb24).U32(0));
+        await c.SendAsync(s.Major, 6, b => b.U32(source).I16(0).I16(0).I16(0).I16(0).U16(5).U16(5));   // SetPictureClipRectangles
+
+        // Src 合成 10×10 到白底窗口的 (20, 5):RENDER 规范说 clip-mask 也限制读,裁剪之外的源读不到、对应的目标不动。
+        await c.SendAsync(s.Major, 8, b => b.U8(1).U8(0).U8(0).U8(0).U32(source).U32(0).U32(s.Picture)
+            .I16(0).I16(0).I16(0).I16(0).I16(20).I16(5).U16(10).U16(10));
+        await c.SyncAsync();
+        Assert.AreEqual(0xFF0000u, s.Pixel(22, 7), "裁剪之内照常合成");
+        Assert.AreEqual(0xFFFFFFu, s.Pixel(27, 12), "裁剪之外不合成");
+    }
+
+    [TestMethod]
     public async Task FreeGlyphs里有一个不存在时哪个都不释放()
     {
         await using Setup s = await SetupAsync();
