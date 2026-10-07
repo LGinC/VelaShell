@@ -43,6 +43,11 @@ namespace VelaShell.XServer.Server;
 /// GLX 扩展:自己的状态(上下文标签、帧缓冲表面、拼到一半的 RenderLarge)与全部请求处理。自成一体 ——
 /// 只经服务端少数 internal 成员碰资源表、绘图目标与损伤。只在执行线程上用。
 /// </summary>
+/// <remarks>
+/// 上下文 ID 是全局的:任何客户端都可以拿别人的上下文当 share list(读到对方的纹理与显示列表)、MakeCurrent 别人的上下文、
+/// CopyContext / DestroyContext 别人的(标记「跨客户端」的几处)。这与核心协议「客户端之间不隔离」的信任模型一致,
+/// 不是越权;上下文标签按客户端分表,伪造标签不可行。做非受信的连接级别(feature-plan F2)时这几处要一起收紧(xs_plan GL-D1)。
+/// </remarks>
 internal sealed class GlxExtension(X11Server server)
 {
     private const byte GlxBadContext = X11Server.GlxErrorBase + 0;
@@ -203,7 +208,7 @@ internal sealed class GlxExtension(X11Server server)
                     CreateGlxContext(c, id, config, share, direct);
                     break;
                 }
-            case 4:   // DestroyContext
+            case 4:   // DestroyContext(跨客户端:别人的也能销毁,见类注释)
                 {
                     uint id = r.U32();
                     _ = server.Lookup<XGlxContext>(id) ?? throw GlxError(GlxBadContext, id);
@@ -242,7 +247,7 @@ internal sealed class GlxExtension(X11Server server)
                 {
                     uint source = r.U32(), dest = r.U32(), mask = r.U32(), tag = r.U32();
                     XGlxContext src = server.Lookup<XGlxContext>(source) ?? throw GlxError(GlxBadContext, source);
-                    XGlxContext dst = server.Lookup<XGlxContext>(dest) ?? throw GlxError(GlxBadContext, dest);
+                    XGlxContext dst = server.Lookup<XGlxContext>(dest) ?? throw GlxError(GlxBadContext, dest);   // 跨客户端:见类注释
                     if (tag != 0)
                     {
                         GlxBinding current = GlxBindingOf(c, tag);
@@ -471,7 +476,7 @@ internal sealed class GlxExtension(X11Server server)
         XGlxContext? share = null;
         if (shareId != 0)
         {
-            share = server.Lookup<XGlxContext>(shareId) ?? throw GlxError(GlxBadContext, shareId);
+            share = server.Lookup<XGlxContext>(shareId) ?? throw GlxError(GlxBadContext, shareId);   // 跨客户端:见类注释
             if (share.Direct != direct)
             {
                 throw new XProtocolError(XErrorCode.Match);   // 直接与间接上下文不在同一个地址空间
@@ -936,7 +941,7 @@ internal sealed class GlxExtension(X11Server server)
             c.Reply(0, w => w.U32(0).Zero(20));
             return;
         }
-        XGlxContext context = server.Lookup<XGlxContext>(contextId) ?? throw GlxError(GlxBadContext, contextId);
+        XGlxContext context = server.Lookup<XGlxContext>(contextId) ?? throw GlxError(GlxBadContext, contextId);   // 跨客户端:见类注释
         if (drawable == 0 || read == 0)
         {
             throw new XProtocolError(XErrorCode.Match);
