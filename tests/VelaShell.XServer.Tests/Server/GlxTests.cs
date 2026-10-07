@@ -936,6 +936,38 @@ public sealed class GlxTests
         Assert.AreEqual(baseline, await server.InvokeAsync(() => server.MemoryInUse), "还是当前的上下文、共享组、表面在断开时一并销账");
     }
 
+    /// <summary>这个客户端在 <paramref name="ms" /> 毫秒内有没有收到 X 错误(先往返一次,之前的请求出错的话错误已经到了)。</summary>
+    private static async Task<bool> AnyErrorAsync(XTestClient c, int ms = 100)
+    {
+        await c.SyncAsync();
+        return await c.NextAsync(m => m.IsError, ms).ContinueWith(t => t.IsCompletedSuccessfully);
+    }
+
+    [TestMethod]
+    public async Task 代理目标的CopyTexSubImage回INVALID_ENUM_坐标为int最小值的CopyPixels照常_都不回BadImplementation()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint proxyTexture2D = 0x8064;
+
+        await RenderAsync(c, glx, tag, new Commands().Add(110, b => b.Bytes(TexImage2DBody(0, 4, 4, target: proxyTexture2D))));   // 代理:只记尺寸
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(4122, b => b.U32(proxyTexture2D).I32(0).I32(0).I32(0).I32(0).I32(0).I32(2).I32(2)));   // CopyTexSubImage2D(PROXY_TEXTURE_2D, …)
+        Assert.AreEqual(InvalidEnum, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await AnyErrorAsync(c), "原先往代理级的空纹素里写:IndexOutOfRange → BadImplementation");
+
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(34, b => F(b, -1, -1))
+            .Add(172, b => b.I32(int.MinValue).I32(int.MinValue).I32(10).I32(10).U32(Color)));          // CopyPixels(int.MinValue, int.MinValue, …)
+        Assert.AreEqual(0u, await GlErrorAsync(c, glx, tag));
+        Assert.IsFalse(await AnyErrorAsync(c), "原先 −x 转回 int 回绕:ArgumentOutOfRange → BadImplementation");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

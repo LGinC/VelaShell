@@ -437,9 +437,14 @@ internal sealed partial class GlContext
         {
             (yoffset, height) = (0, 1);
         }
-        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D) || level < 0 || level >= GlTexture.MaxLevels)
+        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D))
         {
             SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        if (level < 0 || level >= GlTexture.MaxLevels)
+        {
+            SetError(GlEnum.INVALID_VALUE);
             return;
         }
         if (BoundTexture(target)?.Levels[level] is not { } image)
@@ -506,11 +511,25 @@ internal sealed partial class GlContext
         texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
     }
 
-    private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height)
+    /// <summary>
+    /// CopyTexSubImage1D / 2D(§3.8.2):target 只能是 TEXTURE_1D / TEXTURE_2D —— 原先不核,代理目标的那一级只记尺寸、
+    /// 纹素是空数组,往里写抛 IndexOutOfRange,客户端收到 BadImplementation。
+    /// </summary>
+    private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height, bool oneD)
     {
-        if (level < 0 || level >= GlTexture.MaxLevels || BoundTexture(target)?.Levels[level] is not { } image)
+        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D))
         {
-            SetError(GlEnum.INVALID_OPERATION);
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        if (level < 0 || level >= GlTexture.MaxLevels)
+        {
+            SetError(GlEnum.INVALID_VALUE);
+            return;
+        }
+        if (BoundTexture(target)?.Levels[level] is not { } image)
+        {
+            SetError(GlEnum.INVALID_OPERATION);   // 这一级没有用 TexImage 定义过
             return;
         }
         // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
@@ -519,6 +538,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
+        WorkBudget.Charge(2L * width * height);
         for (int j = 0; j < height; j++)
         {
             for (int i = 0; i < width; i++)
@@ -840,14 +860,15 @@ internal sealed partial class GlContext
         {
             return;
         }
-        i0 = (int)Math.Max(i0, -(long)x);
-        i1 = (int)Math.Min(i1, s.Width - (long)x);
-        j0 = (int)Math.Max(j0, -(long)y);
-        j1 = (int)Math.Min(j1, s.Height - (long)y);
-        if (i0 >= i1 || j0 >= j1)
+        // 读缓冲里真有的那部分:源像素 i 落在缓冲的第 x + i 列。全按 long 算再比 —— x 为 int.MinValue 时 −x 转回 int 会回绕成负数,
+        // 原先拿它当下标抛 ArgumentOutOfRange(BadImplementation)。比完之后夹在 [i0, i1) 里,转回 int 是安全的。
+        long li0 = Math.Max(i0, -(long)x), li1 = Math.Min(i1, s.Width - (long)x);
+        long lj0 = Math.Max(j0, -(long)y), lj1 = Math.Min(j1, s.Height - (long)y);
+        if (li0 >= li1 || lj0 >= lj1)
         {
             return;
         }
+        (i0, i1, j0, j1) = ((int)li0, (int)li1, (int)lj0, (int)lj1);
         int w = i1 - i0, h = j1 - j0;
         WorkBudget.Charge(2L * w * h);
         uint[] source = new uint[w * h];

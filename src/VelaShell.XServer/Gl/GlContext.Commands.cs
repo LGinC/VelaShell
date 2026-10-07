@@ -528,11 +528,11 @@ internal sealed partial class GlContext
                 {
                     uint target = r.U32();
                     int level = r.I32(), xoffset = r.I32(), x = r.I32(), y = r.I32(), width = r.I32();
-                    CopyTexSubImage(target, level, xoffset, 0, x, y, width, 1);
+                    CopyTexSubImage(target, level, xoffset, 0, x, y, width, 1, oneD: true);
                     break;
                 }
             case 4122:   // CopyTexSubImage2D
-                CopyTexSubImage(r.U32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32());
+                CopyTexSubImage(r.U32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), r.I32(), oneD: false);
                 break;
             case 4134:   // BlendFuncSeparate
                 State.BlendSrcRgb = r.U32();
