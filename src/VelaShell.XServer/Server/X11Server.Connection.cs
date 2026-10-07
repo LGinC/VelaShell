@@ -300,7 +300,7 @@ public sealed partial class X11Server
             }
 
             setup.CancelAfter(Timeout.InfiniteTimeSpan);   // 报文收齐了:下面等执行线程登记,不计时
-            Task<XClient?> registering = InvokeAsync(() => RegisterClient(bigEndian, peer.Label));
+            Task<XClient?> registering = InvokeAsync(() => RegisterClient(bigEndian, peer));
             try
             {
                 client = await registering.WaitAsync(ct).ConfigureAwait(false);
@@ -329,9 +329,6 @@ public sealed partial class X11Server
                 await SendSetupFailureAsync(stream, bigEndian, "Maximum number of clients reached", setup.Token).ConfigureAwait(false);
                 return;
             }
-            client.SameHost = peer.SameHost;
-            client.Forwarded = peer.Authenticated;
-            client.PeerUid = peer.Uid;
             SetupDone();   // 登记成了客户端:不再占「正在握手」的名额
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
             connection = CancellationTokenSource.CreateLinkedTokenSource(ct, client.Aborted);
@@ -470,7 +467,7 @@ public sealed partial class X11Server
     internal const int MaxClients = 255;
 
     /// <summary>分一个空闲的客户端编号并发出连接建立回复;编号用完了返回 null。</summary>
-    private XClient? RegisterClient(bool bigEndian, string? label)
+    private XClient? RegisterClient(bool bigEndian, Peer peer)
     {
         int index = _nextClientIndex;
         for (int tried = 0; tried < MaxClients; tried++, index = index >= MaxClients ? 1 : index + 1)
@@ -480,7 +477,15 @@ public sealed partial class X11Server
                 continue;
             }
             _nextClientIndex = index >= MaxClients ? 1 : index + 1;
-            XClient client = new(index, bigEndian) { Label = label };
+            // 对端的身份在执行线程上随登记一起写进去(之后不再变):原先连接线程在登记之后才写,违反 XClient「只在执行线程上读写」的约定,
+            // 只是恰好靠工作队列的先后关系(写完才开始读请求)没出事。
+            XClient client = new(index, bigEndian)
+            {
+                Label = peer.Label,
+                SameHost = peer.SameHost,
+                Forwarded = peer.Authenticated,
+                PeerUid = peer.Uid,
+            };
             _clients[index] = client;
             client.Send(BuildSetupReply(client));
             if (ShouldLogFrequent())

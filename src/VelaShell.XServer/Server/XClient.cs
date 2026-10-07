@@ -278,13 +278,13 @@ internal sealed class XClient : IDisposable
     }
 
     /// <summary>经 Unix 套接字连进来、与服务端在同一个 IPC 命名空间里的(Linux,见 X11Server.SameIpcNamespace):MIT-SHM 只对这样的客户端可见。</summary>
-    public bool SameHost { get; set; }
+    public bool SameHost { get; init; }
 
     /// <summary>经 <see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" /> 进来的(SSH 转发):<see cref="X11ServerOptions.RestrictForwardedClients" /> 管它。</summary>
-    public bool Forwarded { get; set; }
+    public bool Forwarded { get; init; }
 
     /// <summary>连接对端的 uid(Linux 上经 SO_PEERCRED、macOS / FreeBSD 上经 getpeereid 取得);取不到时为 null。MIT-SHM 按它核对段的访问权限。</summary>
-    public uint? PeerUid { get; set; }
+    public uint? PeerUid { get; init; }
 
     /// <summary>
     /// 选了 PointerMotionHint 时已经发过提示的那个事件窗口,和发的时候的提示轮次(<c>X11Server</c> 在
