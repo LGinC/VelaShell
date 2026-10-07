@@ -1314,6 +1314,32 @@ public sealed class GlxTests
         Assert.AreEqual(151 + 8, unknown.Bytes[1], "别的厂商码仍是 GLXUnsupportedPrivateRequest");
     }
 
+    [TestMethod]
+    public async Task 第一次用到选择模式或求值器时记一行日志_每个上下文每样一次()
+    {
+        using RecordingHost host = new();
+        List<string> log = [];
+        await using X11Server server = new(new X11ServerOptions { Log = line => { lock (log) { log.Add(line); } } }, host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+        const uint select = 0x1C02, render = 0x1C00;
+
+        for (int i = 0; i < 3; i++)
+        {
+            await c.SendAsync(glx, 107, b => b.U32(tag).U32(select));                                 // RenderMode(SELECT)
+            await c.RequestAsync(glx, 107, b => b.U32(tag).U32(render));
+        }
+        await RenderAsync(c, glx, tag, new Commands().Add(155, b => b.U32(0x1B02).I32(0).I32(10)));  // EvalMesh1
+        await c.SyncAsync();
+        lock (log)
+        {
+            Assert.AreEqual(1, log.Count(line => line.Contains("Selection", StringComparison.Ordinal)), "拾取落空不再无迹可查,同一样只记一次");
+            Assert.AreEqual(1, log.Count(line => line.Contains("Evaluators", StringComparison.Ordinal)));
+        }
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

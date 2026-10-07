@@ -377,6 +377,7 @@ internal sealed partial class GlContext
                 PushAttrib(r.U32());
                 break;
             case >= 143 and <= 158:   // Map / MapGrid / EvalCoord / EvalMesh / EvalPoint:求值器不实现
+                NoteUnimplemented(GlUnimplementedFeatures.Evaluators);
                 break;
             case 159:   // AlphaFunc
                 {
