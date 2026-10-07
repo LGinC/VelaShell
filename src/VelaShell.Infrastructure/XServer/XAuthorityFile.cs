@@ -16,7 +16,7 @@ namespace VelaShell.Infrastructure.XServer;
 /// </para>
 /// <para>
 /// <b>这个文件里装的是能打开用户各个显示的钥匙</b>,改的时候格外小心:整份解析不了就不动它(截断的、别的格式的);
-/// 按 xauth 的约定先建 <c>文件名-c</c> 当锁(别的 xauth 正在改就等一会儿,等不到就放弃);新内容写进同目录的临时文件、
+/// 按 xauth 的约定先建 <c>文件名-c</c>、再建 <c>文件名-l</c> 当锁(别的 xauth 正在改就等一会儿,等不到就放弃);新内容写进同目录的临时文件、
 /// 权限 0600,再整个换过去 —— 写到一半崩了,原文件也还是完整的。任何一步失败只记日志,不影响服务端运行。
 /// </para>
 /// </remarks>
@@ -27,8 +27,11 @@ internal static class XAuthorityFile
 
     public const string MitMagicCookie1 = "MIT-MAGIC-COOKIE-1";
 
-    /// <summary>锁文件比这更老就当作上次没收拾干净的残留。</summary>
-    private static readonly TimeSpan StaleLock = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// 锁文件比这更老就当作上次没收拾干净的残留。原先 10 秒:家目录在慢的 NFS 上时,别的程序正拿着的锁可能被当成残留删掉,
+    /// 两边同时改写、丢掉对方的记录。拿不到锁的代价只是这一次 cookie 没登记(记一行日志),宁可等不到。
+    /// </summary>
+    private static readonly TimeSpan StaleLock = TimeSpan.FromSeconds(60);
 
     /// <summary>一条记录。</summary>
     internal sealed record Entry(ushort Family, byte[] Address, string Number, string Name, byte[] Data)
@@ -127,8 +130,8 @@ internal static class XAuthorityFile
     /// <summary>在锁里读、改、整个换掉。<paramref name="change" /> 返回 false 表示没改动,不写文件。</summary>
     private static bool Update(string path, Func<List<Entry>, bool> change)
     {
-        string lockPath = path + "-c";
-        if (!TryLock(lockPath))
+        string lockPath = path + "-c", linkPath = path + "-l";
+        if (!TryLock(lockPath, linkPath))
         {
             Trace.WriteLine($"[XServer] {path} is locked by another program; the cookie was not updated");
             return false;
@@ -166,50 +169,90 @@ internal static class XAuthorityFile
         }
         finally
         {
-            try
+            foreach (string held in (string[])[linkPath, lockPath])   // 先 -l 后 -c(与上锁的次序相反)
             {
-                File.Delete(lockPath);
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Trace.WriteLine($"[XServer] cannot remove {lockPath}: {ex.Message}");
+                try
+                {
+                    File.Delete(held);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Trace.WriteLine($"[XServer] cannot remove {held}: {ex.Message}");
+                }
             }
         }
     }
 
-    /// <summary>建锁文件(不存在才建得成);别人拿着就等一会儿,残留的旧锁直接清掉。</summary>
-    private static bool TryLock(string lockPath)
+    /// <summary>
+    /// 按 xauth 的约定上锁(Xau 的 XauLockAuth:先建 <c>文件名-c</c>,再由它得到 <c>文件名-l</c>,两个都成了才算拿到锁)。
+    /// 原先只建 <c>-c</c>:xauth 那一侧以 <c>-l</c> 是否建得成为准的话,两边会同时以为自己拿着锁,与 xauth 只是部分互斥。
+    /// 这里两个都以「不存在才建得成」的方式建;<c>-l</c> 建不成就放掉自己的 <c>-c</c>,等一会儿再试。别人拿着就等,
+    /// 比 <see cref="StaleLock" /> 还老的当作残留清掉(<c>-c</c> 老了连同 <c>-l</c> 一起清,与 XauLockAuth 的 dead 参数同义)。
+    /// </summary>
+    private static bool TryLock(string lockPath, string linkPath)
     {
         for (int attempt = 0; attempt < 20; attempt++)
         {
             try
             {
-                using (new FileStream(lockPath, FileMode.CreateNew, FileAccess.Write))
-                {
-                }
-                return true;
+                CreateExclusive(lockPath);
             }
             catch (IOException) when (File.Exists(lockPath))
             {
-                if (DateTime.UtcNow - File.GetLastWriteTimeUtc(lockPath) > StaleLock)
+                if (IsStale(lockPath))
                 {
-                    try
-                    {
-                        File.Delete(lockPath);
-                    }
-                    catch (IOException)
-                    {
-                    }
+                    TryDelete(linkPath);
+                    TryDelete(lockPath);
                     continue;
                 }
                 Thread.Sleep(50);
+                continue;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 Trace.WriteLine($"[XServer] cannot lock {lockPath}: {ex.Message}");
                 return false;
             }
+            try
+            {
+                CreateExclusive(linkPath);
+                return true;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // -l 在别人手里(或者是上次没收拾干净的):放掉自己的 -c,不挡着别人收尾。
+                bool stale = File.Exists(linkPath) && IsStale(linkPath);
+                if (stale)
+                {
+                    TryDelete(linkPath);
+                }
+                TryDelete(lockPath);
+                if (!stale)
+                {
+                    Thread.Sleep(50);
+                }
+            }
         }
         return false;
+
+        static void CreateExclusive(string path)
+        {
+            using (new FileStream(path, FileMode.CreateNew, FileAccess.Write))
+            {
+            }
+        }
+
+        static bool IsStale(string path) => DateTime.UtcNow - File.GetLastWriteTimeUtc(path) > StaleLock;
+
+        static void TryDelete(string path)
+        {
+            try
+            {
+                File.Delete(path);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+            }
+        }
     }
 }

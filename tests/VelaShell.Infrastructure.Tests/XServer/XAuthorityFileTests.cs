@@ -16,7 +16,7 @@ public class XAuthorityFileTests
     [TestCleanup]
     public void Cleanup()
     {
-        foreach (string file in (string[])[_path, _path + "-c", _path + "-n"])
+        foreach (string file in (string[])[_path, _path + "-c", _path + "-l", _path + "-n"])
         {
             File.Delete(file);
         }
@@ -75,8 +75,34 @@ public class XAuthorityFileTests
     {
         File.WriteAllBytes(_path + "-c", []);
         File.SetLastWriteTimeUtc(_path + "-c", DateTime.UtcNow.AddMinutes(-5));
+        File.WriteAllBytes(_path + "-l", []);
+        File.SetLastWriteTimeUtc(_path + "-l", DateTime.UtcNow.AddMinutes(-5));
 
         Assert.IsTrue(XAuthorityFile.Add(_path, "box", 10, [1, 2, 3]));
         Assert.HasCount(1, Read());
+        Assert.IsFalse(File.Exists(_path + "-c") || File.Exists(_path + "-l"), "两个锁文件都放掉了");
+    }
+
+    /// <summary>xauth(Xau 的 XauLockAuth)以 -c 与 -l 两个文件上锁:只有 -l 在别人手里时同样要等,不能只看 -c。</summary>
+    [TestMethod]
+    public void Add_WhileAnotherProgramHoldsTheLinkLock_GivesUp_AndReleasesItsOwnCreateLock()
+    {
+        File.WriteAllBytes(_path + "-l", []);
+
+        Assert.IsFalse(XAuthorityFile.Add(_path, "box", 10, [1, 2, 3]), "原先只建 -c,-l 在别人手里也照写");
+        Assert.IsFalse(File.Exists(_path), "没写");
+        Assert.IsTrue(File.Exists(_path + "-l"), "别人的锁不删");
+        Assert.IsFalse(File.Exists(_path + "-c"), "自己建的 -c 放掉了,不挡着别人收尾");
+    }
+
+    /// <summary>慢的 NFS 家目录上别的程序拿锁可能要好几秒:一分钟之内的锁不当残留删掉(原先 10 秒就删)。</summary>
+    [TestMethod]
+    public void Add_LockHeldForHalfAMinute_IsNotBroken()
+    {
+        File.WriteAllBytes(_path + "-c", []);
+        File.SetLastWriteTimeUtc(_path + "-c", DateTime.UtcNow.AddSeconds(-30));
+
+        Assert.IsFalse(XAuthorityFile.Add(_path, "box", 10, [1, 2, 3]));
+        Assert.IsTrue(File.Exists(_path + "-c"), "别人的锁不删");
     }
 }

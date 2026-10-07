@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Cryptography;
 using VelaShell.Core.Data;
@@ -58,20 +59,25 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     {
     }
 
-    /// <summary>可注入显示探测与 .Xauthority 的位置(单测用;<paramref name="xauthorityPath" /> 为 null 时不写)。</summary>
+    /// <summary>可注入显示探测、.Xauthority 的位置与本机主机名(单测用;<paramref name="xauthorityPath" /> 为 null 时不写)。</summary>
     internal BuiltInLocalXServer(
         ISettingsService settings,
         Func<IEmbeddedXServerHost?> host,
         Func<int, CancellationToken, Task<bool>> isDisplayInUse,
         Func<CancellationToken, Task<bool>> hasOtherDisplay,
-        string? xauthorityPath = null)
+        string? xauthorityPath = null,
+        Func<string?>? hostName = null)
     {
         _settings = settings ?? throw new ArgumentNullException(nameof(settings));
         _host = host ?? throw new ArgumentNullException(nameof(host));
         _isDisplayInUse = isDisplayInUse;
         _hasOtherDisplay = hasOtherDisplay;
         _xauthorityPath = xauthorityPath;
+        _hostName = hostName ?? HostName;
     }
+
+    /// <summary>本机主机名(.Xauthority 记录的地址;Xlib 连本机时按它找)。</summary>
+    private readonly Func<string?> _hostName;
 
     /// <inheritdoc />
     public bool IsSupported => true;
@@ -236,13 +242,14 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// <summary>把 cookie 写进 .Xauthority,本机 X 程序经 Xlib 自动带上;写不成只记日志(SSH 转发不受影响)。</summary>
     private void PublishCookie(int display, byte[] cookie)
     {
-        if (_xauthorityPath is not { } path || HostName() is not { } hostName)
+        if (_xauthorityPath is not { } path || _hostName() is not { } hostName)
         {
             return;
         }
         if (XAuthorityFile.Add(path, hostName, display, cookie))
         {
             _published = (path, hostName, display, cookie);
+            NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         }
     }
 
@@ -251,8 +258,39 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     {
         if (_published is { } published)
         {
+            NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
             _published = null;
             _ = XAuthorityFile.Remove(published.Path, published.Host, published.Display, published.Cookie);
+        }
+    }
+
+    private void OnNetworkAddressChanged(object? sender, EventArgs e) => _ = RepublishCookieAsync();
+
+    /// <summary>
+    /// 主机名变了就按新名字重登 cookie、撤掉旧的那一条。记录的地址是登记时的主机名,Xlib 连本机(包括 localhost 的 TCP)时按
+    /// <b>连接那一刻</b>的主机名找:macOS 换了网络,主机名常跟着 DHCP / Bonjour 变,按启动时的名字登记的那条从此对不上,
+    /// 本机 X 程序一律 <c>Authorization required</c>。网络地址变化时(<see cref="NetworkChange.NetworkAddressChanged" />)核对一次。
+    /// </summary>
+    internal async Task RepublishCookieAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_published is not { } published || _hostName() is not { } hostName
+                || string.Equals(hostName, published.Host, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+            if (XAuthorityFile.Add(published.Path, hostName, published.Display, published.Cookie))
+            {
+                _ = XAuthorityFile.Remove(published.Path, published.Host, published.Display, published.Cookie);
+                _published = published with { Host = hostName };
+                Trace.WriteLine($"[XServer] host name changed to {hostName}: the cookie was registered again");
+            }
+        }
+        finally
+        {
+            _gate.Release();
         }
     }
 

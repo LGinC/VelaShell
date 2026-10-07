@@ -195,6 +195,38 @@ public class BuiltInLocalXServerTests
         }
     }
 
+    /// <summary>
+    /// macOS 换了网络主机名常跟着变,Xlib 按连接那一刻的主机名在 .Xauthority 里找:主机名变了就按新名字重登、撤掉旧的那一条
+    /// (原先一直是启动时的名字,之后本机 X 程序一律被拒)。
+    /// </summary>
+    [TestMethod]
+    public async Task HostNameChange_RegistersTheCookieUnderTheNewName_AndStopRetractsIt()
+    {
+        string xauthority = Path.Combine(Path.GetTempPath(), $"vx-xauth-{Guid.NewGuid():N}");
+        string hostName = "box-a";
+        try
+        {
+            await using BuiltInLocalXServer server = new(Settings(new XServerOptions()), () => new RecordingHost(), LowDisplaysBusy,
+                _ => Task.FromResult(false), xauthority, () => hostName);
+            Assert.IsTrue((await server.StartAsync()).Success);
+            Assert.AreEqual("box-a", Encoding.ASCII.GetString(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single().Address));
+
+            await server.RepublishCookieAsync();   // 主机名没变:什么也不做
+            hostName = "box-b";
+            await server.RepublishCookieAsync();
+            XAuthorityFile.Entry entry = XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!.Single();
+            Assert.AreEqual("box-b", Encoding.ASCII.GetString(entry.Address), "按新名字登记,旧的那条撤掉");
+            Assert.AreEqual("10", entry.Number);
+
+            await server.StopAsync();
+            Assert.IsEmpty(XAuthorityFile.Parse(File.ReadAllBytes(xauthority))!, "停下时撤出的是新名字的那一条");
+        }
+        finally
+        {
+            File.Delete(xauthority);
+        }
+    }
+
     [TestMethod]
     public async Task ResolveForwarding_AutoStartOff_DoesNotTakeOver()
     {
