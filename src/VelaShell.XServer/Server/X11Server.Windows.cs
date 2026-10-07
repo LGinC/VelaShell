@@ -705,16 +705,32 @@ public sealed partial class X11Server
         list.Insert(above ? index + 1 : index, window);
     }
 
-    private void CirculateWindow(XRequestReader r)
+    /// <summary>
+    /// 协议「CirculateWindow」:RaiseLowest 把被别的子窗口挡着的最低的已映射子窗口抬到最上,LowerHighest 把挡着别的子窗口的
+    /// 最高的已映射子窗口压到最下;没有这样的子窗口什么也不做。真要挪、而别的客户端在这个窗口上选了 SubstructureRedirect 时,
+    /// 发 CirculateRequest 给它、不再处理;否则挪了发 CirculateNotify,原先被挡住的部分重画。
+    /// 原先不改道、不看遮挡(总挪最低 / 最高的那个),压下去之后让出来的兄弟留着旧像素。
+    /// </summary>
+    private void CirculateWindow(XClient c, XRequestReader r)
     {
         byte direction = r.Data;
+        if (direction > 1)
+        {
+            throw new XProtocolError(XErrorCode.Value, direction);
+        }
         XWindow window = Window(r.U32());
-        List<XWindow> mapped = [.. window.Children.Where(w => w.Mapped)];
-        if (mapped.Count < 2)
+        XWindow? moving = direction == 0 ? LowestOccluded(window.Children) : HighestOccluding(window.Children);
+        if (moving is null)
         {
             return;
         }
-        XWindow moving = direction == 0 ? mapped[0] : mapped[^1];
+        // 附录 B:CirculateRequest 是 parent、window、4 字节不用,place 在第 16 字节(Top 0、Bottom 1);CirculateNotify 同样把 place 放在第 16 字节。
+        if (RedirectClient(window, XEventMask.SubstructureRedirect) is { } wm && !ReferenceEquals(wm, c))
+        {
+            wm.Event(XEventCode.CirculateRequest, 0, w => w.U32(window.Id).U32(moving.Id).U32(0).U8(direction));
+            return;
+        }
+        Drawing.Region old = moving.IsViewable && !moving.IsTopLevel ? VisibleOuter(moving) : new Drawing.Region();
         window.Children.Remove(moving);
         if (direction == 0)
         {
@@ -725,12 +741,62 @@ public sealed partial class X11Server
             window.Children.Insert(0, moving);
         }
         InvalidateVisibility();
-        // 附录 B:event、window、4 字节不用,place 在第 16 字节(Top 0、Bottom 1)。
-        DeliverStructure(moving, XEventCode.CirculateNotify, 0, w => w.U32(moving.Id).U32(0).U8(direction == 0 ? (byte)0 : (byte)1));
-        if (moving.TopLevel is { } top && !moving.IsTopLevel)
+        DeliverStructure(moving, XEventCode.CirculateNotify, 0, w => w.U32(moving.Id).U32(0).U8(direction));
+        if (window.IsRoot)
         {
-            ExposeWindowTree(top, VisibleOuter(moving));
+            UpdateClientLists();
         }
+        else if (moving.TopLevel is { } top && moving.IsViewable)
+        {
+            ExposeWindowTree(top, old.Union(VisibleOuter(moving)));   // 抬上来的露出被挡的部分;压下去的让出来的兄弟重画
+        }
+        UpdatePointerWindow();
+    }
+
+    /// <summary>被它上面的某个已映射兄弟挡着的、最低的已映射子窗口(<paramref name="children" /> 从下到上)。</summary>
+    private static XWindow? LowestOccluded(List<XWindow> children)
+    {
+        for (int i = 0; i < children.Count; i++)
+        {
+            if (children[i].Mapped && OverlapsAny(children[i], children, i + 1, children.Count, othersOcclude: true))
+            {
+                return children[i];
+            }
+        }
+        return null;
+    }
+
+    /// <summary>挡着它下面的某个已映射兄弟的、最高的已映射子窗口。</summary>
+    private static XWindow? HighestOccluding(List<XWindow> children)
+    {
+        for (int i = children.Count - 1; i >= 0; i--)
+        {
+            if (children[i].Mapped && !children[i].IsInputOnly && OverlapsAny(children[i], children, 0, i, othersOcclude: false))
+            {
+                return children[i];
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// <paramref name="window" /> 与 [<paramref name="from" />, <paramref name="to" />) 之间的已映射兄弟的外框(含边框)有没有重叠。
+    /// 遮挡按外框矩形算(不看 SHAPE);InputOnly 窗口看不见,不算挡住别人 —— <paramref name="othersOcclude" /> 时那些兄弟是挡的一方,要求它们不是 InputOnly。
+    /// </summary>
+    private static bool OverlapsAny(XWindow window, List<XWindow> siblings, int from, int to, bool othersOcclude)
+    {
+        XRect outer = OuterInParent(window);
+        for (int i = from; i < to; i++)
+        {
+            XWindow other = siblings[i];
+            if (other.Mapped && !(othersOcclude && other.IsInputOnly) && !outer.Intersect(OuterInParent(other)).IsEmpty)
+            {
+                return true;
+            }
+        }
+        return false;
+
+        static XRect OuterInParent(XWindow w) => new(w.X, w.Y, w.Width + (2 * w.BorderWidth), w.Height + (2 * w.BorderWidth));
     }
 
     private void ReparentWindow(XRequestReader r)

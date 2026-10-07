@@ -81,7 +81,7 @@ public sealed partial class X11Server
             case XOpcode.UnmapWindow: UnmapWindow(r); break;
             case XOpcode.UnmapSubwindows: UnmapSubwindows(r); break;
             case XOpcode.ConfigureWindow: ConfigureWindow(c, r); break;
-            case XOpcode.CirculateWindow: CirculateWindow(r); break;
+            case XOpcode.CirculateWindow: CirculateWindow(c, r); break;
             case XOpcode.GetGeometry: GetGeometry(c, r); break;
             case XOpcode.QueryTree: QueryTree(c, r); break;
             case XOpcode.InternAtom: InternAtom(c, r); break;
