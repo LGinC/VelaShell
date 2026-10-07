@@ -269,6 +269,33 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 等执行线程登记时调用方取消了_登记成的客户端随即断开不占编号()
+    {
+        await using X11Server server = new();
+        using SemaphoreSlim gate = new(0);
+        Task<bool> blocker = server.InvokeAsync(() => gate.Wait(TimeSpan.FromSeconds(10)));   // 占住执行线程:登记排在后面
+
+        using CancellationTokenSource cancel = new();
+        (Stream serverSide, Stream clientSide) = DuplexPair.Create();
+        Task serving = server.ServeAsync(serverSide, isLocal: true, cancel.Token);
+        await clientSide.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
+        await clientSide.FlushAsync();
+        await Task.Delay(300);   // 建立报文读进来了,登记排进了队列
+        await cancel.CancelAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(5));   // ServeAsync 随取消结束
+
+        gate.Release();
+        Assert.IsTrue(await blocker);
+        IReadOnlyList<XClientInfo> clients = [];
+        for (int i = 0; i < 50 && (clients = await server.GetClientsAsync()).Count != 0; i++)
+        {
+            await Task.Delay(20);   // 断开是登记之后再排的一项
+        }
+        Assert.IsEmpty(clients, "原先登记照样执行、没人收拾,永久占着一个编号");
+        await clientSide.DisposeAsync();
+    }
+
+    [TestMethod]
     public async Task 协议错误日志在放掉像素锁之后才交给宿主_刷屏时每秒只记五十条()
     {
         using RecordingHost host = new();

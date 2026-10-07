@@ -290,7 +290,29 @@ public sealed partial class X11Server
             }
 
             setup.CancelAfter(Timeout.InfiniteTimeSpan);   // 报文收齐了:下面等执行线程登记,不计时
-            client = await InvokeAsync(() => RegisterClient(bigEndian, peer.Label)).WaitAsync(ct).ConfigureAwait(false);
+            Task<XClient?> registering = InvokeAsync(() => RegisterClient(bigEndian, peer.Label));
+            try
+            {
+                client = await registering.WaitAsync(ct).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // 等的时候调用方取消了:登记照样会在执行线程上执行,登记成了就当场断开 —— 原先没人管它,永久占着一个编号。
+                _ = registering.ContinueWith(t =>
+                {
+                    if (t.Result is { } orphan)
+                    {
+                        Post(null, () =>
+                        {
+                            DisconnectClient(orphan);
+                            orphan.Abort();
+                            orphan.Dispose();
+                        });
+                    }
+                }, CancellationToken.None, TaskContinuationOptions.OnlyOnRanToCompletion | TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                throw;
+            }
             if (client is null)
             {
                 setup.CancelAfter(SetupTimeout);
