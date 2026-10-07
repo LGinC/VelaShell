@@ -347,8 +347,9 @@ public sealed class HostApiTests
         await c.SyncAsync();
         Assert.IsFalse(window.Snapshot.NeedsPlacement);
         await c.SendAsync(12, 0, b => b.U32(top).U16(0x3).U16(0).U32(200).U32(100));
-        await host.WaitForAsync(() => window.Snapshot is { X: 200, NeedsPlacement: true });
-        Assert.AreEqual(XTopLevelChanges.Geometry, host.LastChanges);
+        // 快照先换、回调在执行线程放锁之后才交给宿主:等到宿主收到这一次的变化(只有几何)再算完。
+        await host.WaitForAsync(() => window.Snapshot is { X: 200, NeedsPlacement: true }
+            && host.Log.Any(e => e.StartsWith($"changed {top:x} Geometry ", StringComparison.Ordinal)));
     }
 
     [TestMethod]
