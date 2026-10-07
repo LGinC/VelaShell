@@ -148,7 +148,7 @@ public sealed partial class X11Server
                         {
                             w.U8(2).Zero(23);
                             w.U8(1).U8(36).U8(XiButtonCount).Zero(1).Bytes(_buttonsDown);            // ButtonState
-                            w.U8(2).U8(12).U8(2).U8(1).I32(Math.Max(0, _pointerX)).I32(Math.Max(0, _pointerY));   // ValuatorState
+                            w.U8(2).U8(12).U8(2).U8(1).I32(_pointerX).I32(_pointerY);   // ValuatorState
                         }
                         else
                         {
@@ -196,7 +196,7 @@ public sealed partial class X11Server
                     c.MotionHint = default;   // 同核心 QueryPointer:客户端来问了位置,下一次移动再给它一条提示
                     (int wx, int wy) = window.AbsoluteInner();
                     uint child = ChildTowardPointer(window);
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    int px = _pointerX, py = _pointerY;
                     c.Reply(minor, w =>
                     {
                         w.U32(Root.Id).U32(child).I32(Fp1616(px)).I32(Fp1616(py)).I32(Fp1616(px - wx)).I32(Fp1616(py - wy))
@@ -473,8 +473,8 @@ public sealed partial class X11Server
             {
                 w.U32(Intern(label));
             }
-            WriteValuatorClass(w, source, 0, "Abs X", Root.Width, Math.Max(0, _pointerX));
-            WriteValuatorClass(w, source, 1, "Abs Y", Root.Height, Math.Max(0, _pointerY));
+            WriteValuatorClass(w, source, 0, "Abs X", Root.Width, _pointerX);
+            WriteValuatorClass(w, source, 1, "Abs Y", Root.Height, _pointerY);
         }
         else
         {
@@ -999,7 +999,7 @@ public sealed partial class X11Server
         ushort device = slave || IsFloating(!key) ? sourceId : MasterOf(!key);
         (int ex, int ey) = eventWindow.AbsoluteInner();
         uint child = ChildOnPath(eventWindow, source);
-        int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+        int px = _pointerX, py = _pointerY;
         uint time = Now;
         client.GenericEvent(XInputMajor, (ushort)evtype, w =>
         {
@@ -1031,7 +1031,7 @@ public sealed partial class X11Server
         ushort attached = MasterOf(!focusEvent);
         ushort device = attached != 0 ? attached : sourceId;
         (int ex, int ey) = window.AbsoluteInner();
-        int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+        int px = _pointerX, py = _pointerY;
         bool focus = _focus is { } f && (ReferenceEquals(f, window) || window.IsDescendantOf(f));
         uint time = Now;
         IEnumerable<XClient> targets = force && only is not null

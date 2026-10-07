@@ -105,7 +105,7 @@ public sealed partial class X11Server
                 }
             case 4:   // GetCursorImage:光标由宿主的系统光标画,这里给一个 1×1 透明像素与热点
                 {
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    int px = _pointerX, py = _pointerY;
                     uint serial = _cursorSerial;
                     c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).Zero(8).U32(0));
                     break;
@@ -274,7 +274,7 @@ public sealed partial class X11Server
                 }
             case 25:  // GetCursorImageAndName
                 {
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    int px = _pointerX, py = _pointerY;
                     uint serial = _cursorSerial;
                     c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).U32(0).U16(0).Zero(2).U32(0));
                     break;

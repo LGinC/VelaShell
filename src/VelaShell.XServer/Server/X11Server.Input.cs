@@ -104,7 +104,11 @@ public sealed partial class X11Server
     private void ApplyPointerLeave()
     {
         _pointerTop = null;
-        ProcessPointerMotion(() => MovePointer(-1, -1));
+        ProcessPointerMotion(() =>
+        {
+            _pointerOutside = true;   // 位置留着最后一次的(见 _pointerOutside)
+            UpdatePointerWindow();
+        });
     }
 
     private void ApplyKey(byte keycode, bool pressed, bool repeat)
@@ -304,23 +308,30 @@ public sealed partial class X11Server
         _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle) && (handle.Snapshot.States & XWindowStates.Hidden) != 0;
 
     /// <summary>
-    /// 指针挪到根坐标 (<paramref name="rootX" />, <paramref name="rootY" />)(−1 = 离开了所有顶层)。<paramref name="warp" /> 为真时是
+    /// 指针离开了所有 X 顶层(在宿主别的窗口或桌面上):位置留着最后一次的,指针所在的窗口算根。原先把位置记成 (−1, −1) 当哨兵:
+    /// QueryPointer 报 (0, 0)、按键事件的 root-x 是 −1,Warp 或拖出屏幕左边的负坐标也会被当成「离开」。
+    /// </summary>
+    private bool _pointerOutside;
+
+    /// <summary>
+    /// 指针挪到根坐标 (<paramref name="rootX" />, <paramref name="rootY" />)。<paramref name="warp" /> 为真时是
     /// WarpPointer / XIWarpPointer:服务端合成的,不是设备运动 —— 不发原始移动,设备位置不变。原先 Warp 也发,值还是增量:
     /// 用户移动 +10、程序 Warp 回中心,随即收到一条 −10 的原始移动,两者抵消,靠「原始移动 + Warp 回中心」做相对鼠标的程序
     /// (3D 视图、游戏、虚拟机控制台)视角不动或抖。原始值现在与轴的声明(Abs X / Abs Y、Absolute)一致:报设备的位置。
     /// </summary>
     private void MovePointer(int rootX, int rootY, bool warp = false)
     {
-        bool moved = rootX != _pointerX || rootY != _pointerY;
-        if (!warp && rootX >= 0 && (rootX != _deviceX || rootY != _deviceY))
+        bool moved = rootX != _pointerX || rootY != _pointerY || _pointerOutside;
+        if (!warp && (rootX != _deviceX || rootY != _deviceY))
         {
             (_deviceX, _deviceY) = (rootX, rootY);
             SendRawEvent(XiRawMotion, 0, rootX, rootY);
         }
         _pointerX = rootX;
         _pointerY = rootY;
+        _pointerOutside = false;
         UpdatePointerWindow();
-        if (moved && rootX >= 0)
+        if (moved)
         {
             XEventMask mask = XEventMask.PointerMotion;   // 只选了 PointerMotionHint 的不算选了移动事件
             if (_buttons != 0)
@@ -413,7 +424,7 @@ public sealed partial class X11Server
     /// <summary>重新算指针所在窗口;变了就发 Enter / Leave、更新光标。窗口树变化后也调它。</summary>
     internal void UpdatePointerWindow()
     {
-        XWindow now = _pointerX < 0 ? Root : WindowAt(_pointerX, _pointerY);
+        XWindow now = _pointerOutside ? Root : WindowAt(_pointerX, _pointerY);
         if (!ReferenceEquals(now, _pointerWindow))
         {
             XWindow old = _pointerWindow;
@@ -1560,7 +1571,7 @@ public sealed partial class X11Server
                 break;
             }
         }
-        int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+        int px = _pointerX, py = _pointerY;
         ushort state = State;
         c.Reply(1, w => w.U32(Root.Id).U32(child).I16(px).I16(py).I16(px - wx).I16(py - wy).U16(state).Zero(6));
     }
@@ -1585,7 +1596,7 @@ public sealed partial class X11Server
     private void WarpPointerTo(XWindow? src, int srcX, int srcY, int srcWidth, int srcHeight, XWindow? dst, int dx, int dy) =>
         ProcessPointerMotion(() =>
         {
-            int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+            int px = _pointerX, py = _pointerY;
             if (src is not null)
             {
                 if (!IsLiveWindow(src) || !(ReferenceEquals(_pointerWindow, src) || _pointerWindow.IsDescendantOf(src)))

@@ -79,7 +79,7 @@ public sealed partial class X11Server
             XEventCode.ButtonPress or XEventCode.ButtonRelease when detail != 0 =>
                 () => ButtonEvent(detail, type == XEventCode.ButtonPress),
             XEventCode.MotionNotify => detail != 0
-                ? () => MovePointer(Math.Max(0, _pointerX) + rootX, Math.Max(0, _pointerY) + rootY)
+                ? () => MovePointer(_pointerX + rootX, _pointerY + rootY)
                 : () => MovePointer(rootX, rootY),
             _ => throw new XProtocolError(XErrorCode.Value, detail),
         };

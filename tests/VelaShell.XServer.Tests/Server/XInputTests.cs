@@ -379,6 +379,36 @@ public sealed class XInputTests
         Assert.AreEqual(1, (await c.NextEventAsync(6)).Detail, "问过位置之后再给一条提示");
     }
 
+    /// <summary>
+    /// 指针离开所有顶层之后位置留着最后一次的:QueryPointer / XIQueryPointer 报它(child 为 None),按键事件的 root-x 也是它 ——
+    /// 原先报 (0, 0),按键事件的 root-x 是 −1。
+    /// </summary>
+    [TestMethod]
+    public async Task 指针离开所有顶层之后位置留着最后一次的()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint top = await MapTopAsync(c, host);   // 在根坐标 (10, 20)
+        await c.SendAsync(2, 0, b => b.U32(top).U32(0x800).U32(0x1));
+        await c.SyncAsync();
+        server.FocusTopLevel(host.Mapped[top]);
+        server.InjectPointerMotion(host.Mapped[top], 30, 15);
+        server.InjectPointerLeave();
+
+        XMessage core = await c.RequestAsync(38, 0, b => b.U32(c.RootWindow));
+        Assert.AreEqual(40, core.I16(16), "root-x");
+        Assert.AreEqual(35, core.I16(18), "root-y");
+        Assert.AreEqual(0u, core.U32(12), "child = None:指针不在任何顶层里");
+        XMessage xi2 = await c.RequestAsync(xi, 40, b => b.U32(c.RootWindow).U16(2).U16(0));
+        Assert.AreEqual(40, (int)xi2.U32(16) >> 16);
+
+        server.InjectKey(XKeycodes.A, pressed: true);
+        XMessage key = await c.NextEventAsync(2);
+        Assert.AreEqual(40, key.I16(20), "按键事件的 root-x");
+    }
+
     /// <summary>根窗口变大:指针设备的 Abs X / Abs Y 范围跟着变,发 XI_DeviceChanged(reason DeviceChange)带上新的类。原先从不发。</summary>
     [TestMethod]
     public async Task 根窗口尺寸变了发XI_DeviceChanged_轴的范围跟着变()
