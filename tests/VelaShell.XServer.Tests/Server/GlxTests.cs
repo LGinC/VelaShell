@@ -1132,6 +1132,59 @@ public sealed class GlxTests
         Assert.AreEqual(InvalidEnum, gl.GetError());
     }
 
+    [TestMethod]
+    public void 边标记为假的边在线框模式下不画_镶嵌出来的内部对角线不出现()
+    {
+        (Gl.GlContext gl, Gl.GlSurface surface) = DirectContext();
+        Run(gl, 101, b => b.U32(0x0408).U32(0x1B01));                  // PolygonMode(FRONT_AND_BACK, LINE)
+        Run(gl, 8, b => F(b, 1, 1, 1));
+        // 像 GLU 镶嵌器那样把正方形拆成两个三角形,对角线 (−1, −1)–(1, 1) 标成非边界边。
+        Run(gl, 4, b => b.U32(Triangles));
+        Run(gl, 66, b => F(b, -1, -1));
+        Run(gl, 66, b => F(b, 1, -1));
+        Run(gl, 22, b => b.U8(0));                                     // EdgeFlagv(False):从下一个顶点出发的边不是边界边
+        Run(gl, 66, b => F(b, 1, 1));
+        Run(gl, 66, b => F(b, -1, -1));                                // 第二个三角形从对角线起
+        Run(gl, 22, b => b.U8(1));
+        Run(gl, 66, b => F(b, 1, 1));
+        Run(gl, 66, b => F(b, -1, 1));
+        Run(gl, 23);
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(0xFFFFFFu, SurfacePixel(surface, 4, 0), "底边是边界边,画了");
+        Assert.AreEqual(0u, SurfacePixel(surface, 4, 4), "原先边标记没人读,对角线照样画出来");
+        Assert.AreEqual(0u, SurfacePixel(surface, 2, 2));
+    }
+
+    [TestMethod]
+    public void GL_CLAMP配LINEAR在纹理边上与边框色混合()
+    {
+        (Gl.GlContext gl, Gl.GlSurface surface) = DirectContext();
+        const uint clamp = 0x2900, linear = 0x2601;
+        Run(gl, 4117, b => b.U32(Texture2D).U32(1));
+        Run(gl, 107, b => b.U32(Texture2D).U32(MinFilter).U32(linear));
+        Run(gl, 107, b => b.U32(Texture2D).U32(MagFilter).U32(linear));
+        Run(gl, 107, b => b.U32(Texture2D).U32(0x2802).U32(clamp));    // WRAP_S
+        Run(gl, 107, b => b.U32(Texture2D).U32(0x2803).U32(clamp));    // WRAP_T
+        Run(gl, 106, b => F(b.U32(Texture2D).U32(0x1004), 1, 0, 0, 1));   // TEXTURE_BORDER_COLOR 红
+        Run(gl, 110, b => b.Bytes(TexImage2DBody(0, 2, 2, data: [.. Enumerable.Repeat((byte)0xFF, 16)])));   // 2×2 全白
+        Run(gl, 139, b => b.U32(Texture2D));
+        Run(gl, 4, b => b.U32(Quads));
+        Run(gl, 54, b => F(b, 0, 0));                                  // TexCoord2fv + Vertex2fv
+        Run(gl, 66, b => F(b, -1, -1));
+        Run(gl, 54, b => F(b, 1, 0));
+        Run(gl, 66, b => F(b, 1, -1));
+        Run(gl, 54, b => F(b, 1, 1));
+        Run(gl, 66, b => F(b, 1, 1));
+        Run(gl, 54, b => F(b, 0, 1));
+        Run(gl, 66, b => F(b, -1, 1));
+        Run(gl, 23);
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.AreEqual(0xFFFFFFu, SurfacePixel(surface, 4, 4), "中间只取图像里的纹素:白");
+        uint corner = SurfacePixel(surface, 0, 0);
+        Assert.AreEqual(0xFFu, corner >> 16, "红色分量满");
+        Assert.IsLessThan(0xC0u, (corner >> 8) & 0xFF, "角上混进了红色的边框(原先下标夹在图像里,是纯白)");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

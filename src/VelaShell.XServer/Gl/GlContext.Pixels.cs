@@ -650,18 +650,41 @@ internal sealed partial class GlContext
             return Texel(image, Wrap(texture.WrapS, (int)MathF.Floor(WrapCoord(texture.WrapS, s) * w), w),
                 Wrap(texture.WrapT, (int)MathF.Floor(WrapCoord(texture.WrapT, t) * h), h));
         }
-        float u = (WrapCoord(texture.WrapS, s) * w) - 0.5f, v = (WrapCoord(texture.WrapT, t) * h) - 0.5f;
-        int i0 = (int)MathF.Floor(u), j0 = (int)MathF.Floor(v);
-        float a = u - i0, b = v - j0;
-        int x0 = Wrap(texture.WrapS, i0, w), x1 = Wrap(texture.WrapS, i0 + 1, w);
-        int y0 = Wrap(texture.WrapT, j0, h), y1 = Wrap(texture.WrapT, j0 + 1, h);
-        return ((1 - a) * (1 - b) * Texel(image, x0, y0)) + (a * (1 - b) * Texel(image, x1, y0))
-               + ((1 - a) * b * Texel(image, x0, y1)) + (a * b * Texel(image, x1, y1));
+        float u = (WrapCoord(texture.WrapS, s) * w) - 0.5f;
+        int i0 = (int)MathF.Floor(u);
+        float a = u - i0;
+        int x0 = LinearIndex(texture.WrapS, i0, w), x1 = LinearIndex(texture.WrapS, i0 + 1, w);
+        if (texture.Target == GlEnum.TEXTURE_1D)
+        {
+            // 一维纹理只沿 s 插值(t 无关,§3.8.8):不然 CLAMP 的 t 方向会把边框色混进来。
+            return ((1 - a) * TexelOrBorder(texture, image, x0, 0)) + (a * TexelOrBorder(texture, image, x1, 0));
+        }
+        float v = (WrapCoord(texture.WrapT, t) * h) - 0.5f;
+        int j0 = (int)MathF.Floor(v);
+        float b = v - j0;
+        int y0 = LinearIndex(texture.WrapT, j0, h), y1 = LinearIndex(texture.WrapT, j0 + 1, h);
+        return ((1 - a) * (1 - b) * TexelOrBorder(texture, image, x0, y0)) + (a * (1 - b) * TexelOrBorder(texture, image, x1, y0))
+               + ((1 - a) * b * TexelOrBorder(texture, image, x0, y1)) + (a * b * TexelOrBorder(texture, image, x1, y1));
     }
 
     private static float WrapCoord(uint mode, float c) => mode == GlEnum.REPEAT ? c - MathF.Floor(c) : Math.Clamp(c, 0, 1);
 
+    /// <summary>NEAREST 的纹素下标:REPEAT 取模,其余夹到图像里(CLAMP 在 s = 1 时取最后一个纹素,§3.8.8)。</summary>
     private static int Wrap(uint mode, int i, int size) => mode == GlEnum.REPEAT ? ((i % size) + size) % size : Math.Clamp(i, 0, size - 1);
+
+    /// <summary>
+    /// LINEAR 取的纹素下标(§3.8.7–3.8.8):REPEAT 取模,CLAMP_TO_EDGE 夹到图像里;CLAMP 取到图像之外时给 −1,表示用边框色
+    /// (TEXTURE_BORDER_COLOR)—— 原先也夹到图像里,GL_CLAMP 配 LINEAR 的边上不与边框色混合。
+    /// </summary>
+    private static int LinearIndex(uint mode, int i, int size) => mode switch
+    {
+        GlEnum.REPEAT => ((i % size) + size) % size,
+        GlEnum.CLAMP => (uint)i < (uint)size ? i : -1,
+        _ => Math.Clamp(i, 0, size - 1),
+    };
+
+    private static Vector4 TexelOrBorder(GlTexture texture, GlTexImage image, int x, int y) =>
+        x < 0 || y < 0 ? texture.BorderColor : Texel(image, x, y);
 
     private static Vector4 Texel(GlTexImage image, int x, int y)
     {

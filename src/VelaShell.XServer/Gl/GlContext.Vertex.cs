@@ -33,6 +33,12 @@ internal sealed partial class GlContext
         public Vector4 Tex;
         public float Fog;
 
+        /// <summary>
+        /// 指定这个顶点时的边标记(§2.6.2):POLYGON / TRIANGLES / QUADS 里从它出发的那条边是不是边界边。裁剪出来的顶点不用它
+        /// (裁剪时边标记跟着多边形的边走)。
+        /// </summary>
+        public bool EdgeFlag;
+
         public static GlVertex Lerp(in GlVertex a, in GlVertex b, float t) => new()
         {
             Clip = Vector4.Lerp(a.Clip, b.Clip, t),
@@ -434,7 +440,9 @@ internal sealed partial class GlContext
             return;
         }
         WorkBudget.Charge(VertexWork);
-        _primitive.Add(Transform(obj));
+        GlVertex vertex = Transform(obj);
+        vertex.EdgeFlag = State.EdgeFlag;
+        _primitive.Add(vertex);
     }
 
     /// <summary>一个顶点(变换、光照)按这么多个工作量单位计(见 <see cref="WorkBudget" />;一个单位约等于画一个 2D 像素)。</summary>
@@ -588,9 +596,16 @@ internal sealed partial class GlContext
 
     // ------------------------------------------------------------------ 图元装配
 
-    /// <summary>把 Begin/End 之间的顶点拆成点、线段、三角形(带边界边标记),处理平直着色后送去裁剪与光栅化。</summary>
+    /// <summary>
+    /// 把 Begin/End 之间的顶点拆成点、线段、三角形(带边界边标记),处理平直着色后送去裁剪与光栅化。
+    /// 边界边(§2.6.2):POLYGON、TRIANGLES、QUADS 的每条边由起点顶点的边标记决定(GLU 的镶嵌器靠它把内部对角线标成非边界,
+    /// PolygonMode(LINE) 时不画);拆四边形 / 多边形产生的对角线不是边界边;条带与扇形的边都是边界边。
+    /// 边标记位:bit0 = v0→v1,bit1 = v1→v2,bit2 = v2→v0。
+    /// </summary>
     private void Assemble(uint mode, List<GlVertex> v)
     {
+        static int Edge(GlVertex vertex, int bit) => vertex.EdgeFlag ? bit : 0;
+
         int n = v.Count;
         bool flat = State.ShadeModel == GlEnum.FLAT;
         switch (mode)
@@ -621,7 +636,8 @@ internal sealed partial class GlContext
             case GlEnum.TRIANGLES:
                 for (int i = 0; i + 2 < n; i += 3)
                 {
-                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], 0b111, flat ? i + 2 : -1, v);
+                    int edges = Edge(v[i], 0b001) | Edge(v[i + 1], 0b010) | Edge(v[i + 2], 0b100);
+                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], edges, flat ? i + 2 : -1, v);
                 }
                 break;
             case GlEnum.TRIANGLE_STRIP:
@@ -647,9 +663,9 @@ internal sealed partial class GlContext
             case GlEnum.QUADS:
                 for (int i = 0; i + 3 < n; i += 4)
                 {
-                    // 0-1-2 与 0-2-3:对角线 0-2 不是边界边。边标记位:bit0 = v0v1,bit1 = v1v2,bit2 = v2v0。
-                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], 0b011, flat ? i + 3 : -1, v);
-                    TrianglePrimitive(v[i], v[i + 2], v[i + 3], 0b110, flat ? i + 3 : -1, v);
+                    // 0-1-2 与 0-2-3:对角线 0-2 不是边界边,其余四条边按各自起点的边标记。
+                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], Edge(v[i], 0b001) | Edge(v[i + 1], 0b010), flat ? i + 3 : -1, v);
+                    TrianglePrimitive(v[i], v[i + 2], v[i + 3], Edge(v[i + 2], 0b010) | Edge(v[i + 3], 0b100), flat ? i + 3 : -1, v);
                 }
                 break;
             case GlEnum.QUAD_STRIP:
@@ -663,7 +679,8 @@ internal sealed partial class GlContext
             case GlEnum.POLYGON:
                 for (int i = 1; i + 1 < n; i++)
                 {
-                    int edges = 0b010 | (i == 1 ? 0b001 : 0) | (i + 2 == n ? 0b100 : 0);
+                    // 扇形拆分:0→i(i = 1 时是原边)、i→i+1(原边)、i+1→0(最后一个三角形时是原边);其余是对角线。
+                    int edges = Edge(v[i], 0b010) | (i == 1 ? Edge(v[0], 0b001) : 0) | (i + 2 == n ? Edge(v[n - 1], 0b100) : 0);
                     TrianglePrimitive(v[0], v[i], v[i + 1], edges, flat ? 0 : -1, v);
                 }
                 break;
@@ -745,7 +762,11 @@ internal sealed partial class GlContext
                     float offset = OffsetFor(w, GlEnum.POLYGON_OFFSET_POINT);
                     for (int i = 0; i < w.Length; i++)
                     {
-                        // 只画原图元的顶点(边标记为起点的那些),裁剪产生的新顶点也算 —— 近似。
+                        // 只画边界边的起点(§3.5.4);裁剪进来的那个交点接着原来那条边,也算 —— 近似。
+                        if (!polygon[i].Edge)
+                        {
+                            continue;
+                        }
                         RasterVertex p = w[i];
                         p.Z += offset;
                         RasterPoint(p, State.PointSize);
