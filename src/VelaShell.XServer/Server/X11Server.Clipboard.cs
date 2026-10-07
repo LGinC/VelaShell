@@ -103,7 +103,9 @@ public sealed partial class X11Server
             previous.Event(XEventCode.SelectionClear, 0, w => w.U32(now).U32(old.Id).U32(selection));
         }
         _selections[selection] = (SelectionWindow, null, now);
-        NotifySelectionChange(selection, 0, SelectionWindowId, now);
+        // XFIXES 的属主变化通知只发给读得到宿主文本的会话(InFocusedSession):服务端已经是属主时 GetSelectionOwner 看不出变化,
+        // 原先别的会话靠这条通知精确得知「宿主剪贴板有了新内容」,等用户切到它的窗口时去取(xs_plan WN-S11)。
+        NotifySelectionChange(selection, 0, SelectionWindowId, now, InFocusedSession);
     }
 
     /// <summary>

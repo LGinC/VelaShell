@@ -255,6 +255,37 @@ public sealed class ClipboardTests
         await host.WaitForAsync(() => host.Clipboard == "从 A 复制");
     }
     [TestMethod]
+    public async Task 宿主接管剪贴板的XFIXES通知只发给焦点所在的会话_别的会话不知道何时有新内容()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server, label: "joe@a:22");
+        await using XTestClient b = await XTestClient.ConnectAsync(server, label: "joe@b:22");
+        uint clipboard = await InternAsync(a, "CLIPBOARD");
+        XMessage xfixes = await b.RequestAsync(98, 0, w => w.U16(6).U16(0).Bytes(Encoding.Latin1.GetBytes("XFIXES")).Pad());
+        byte major = xfixes.Bytes[9], firstEvent = xfixes.Bytes[10];
+        await a.SendAsync(major, 2, w => w.U32(a.RootWindow).U32(clipboard).U32(0x1));   // SelectSelectionInput:SetSelectionOwner
+        await b.SendAsync(major, 2, w => w.U32(b.RootWindow).U32(clipboard).U32(0x1));
+        await a.SyncAsync();
+        await b.SyncAsync();
+
+        uint windowA = a.NewId();
+        await a.SendAsync(1, 0, w => w.U32(windowA).U32(a.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0));
+        await a.SendAsync(8, 0, w => w.U32(windowA));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(windowA));
+        server.FocusTopLevel(host.Mapped[windowA]);
+
+        server.SetClipboardText("本机复制的第一段");
+        await a.NextEventAsync(firstEvent);
+        server.SetClipboardText("本机复制的第二段");   // 服务端本来就是属主:GetSelectionOwner 看不出变化
+        XMessage second = await a.NextEventAsync(firstEvent);
+        Assert.AreEqual(clipboard, second.U32(12), "焦点所在的会话照常收到");
+        await b.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => b.NextEventAsync(firstEvent, timeoutMs: 200),
+            "别的会话收不到:原先它据此精确得知宿主剪贴板何时有了新内容");
+    }
+
+    [TestMethod]
     public async Task SetSelectionOwner的时间戳规则与当前有没有属主无关_未来的时间戳锁不住选区()
     {
         await using X11Server server = new();
