@@ -2,6 +2,7 @@
 // Copyright 2026 VelaShell Labs
 
 using VelaShell.XServer.Protocol;
+using VelaShell.XServer.Resources;
 using VelaShell.XServer.Windowing;
 
 namespace VelaShell.XServer.Server;
@@ -33,6 +34,9 @@ internal sealed class Extension(string name, byte majorOpcode, Action<XClient, X
 
     /// <summary>窗口销毁时清这个扩展里与它有关的状态。</summary>
     public Action<XWindow>? WindowDestroyed { get; init; }
+
+    /// <summary>像素图的 ID 释放了(FreePixmap、客户端断开):清这个扩展里挂在它上面的状态。</summary>
+    public Action<XPixmap>? PixmapFreed { get; init; }
 
     public bool IsVisibleTo(XClient client) => VisibleTo?.Invoke(client) ?? true;
 

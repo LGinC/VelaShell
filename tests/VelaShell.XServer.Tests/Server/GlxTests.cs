@@ -556,6 +556,29 @@ public sealed class GlxTests
     }
 
     [TestMethod]
+    public async Task 每轮新建像素图画一次再释放_表面随FreePixmap释放_不攒到客户端断开()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint context = c.NewId();
+        await c.SendAsync(glx, 24, b => b.U32(context).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        for (int round = 0; round < 5; round++)
+        {
+            uint pixmap = c.NewId(), glxPixmap = c.NewId();   // XID 递增,很久才重用
+            await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(64).U16(64));
+            await c.SendAsync(glx, 22, b => b.U32(0).U32(SingleBufferedRgb).U32(pixmap).U32(glxPixmap).U32(0));
+            uint tag = (await c.RequestAsync(glx, 26, b => b.U32(0).U32(glxPixmap).U32(glxPixmap).U32(context))).U32(8);
+            await RenderAsync(c, glx, tag, new Commands().Add(127, b => b.U32(ColorBit)));
+            await c.RequestAsync(glx, 26, b => b.U32(tag).U32(0).U32(0).U32(0));   // 放下当前上下文
+            await c.SendAsync(glx, 23, b => b.U32(glxPixmap));                      // DestroyPixmap(GLX)
+            await c.SendAsync(54, 0, b => b.U32(pixmap));                           // FreePixmap
+        }
+        await c.SyncAsync();
+        Assert.AreEqual(0, await server.InvokeAsync(() => server.Glx.SurfaceCount), "原先每轮漏一份表面加一份像素缓冲");
+    }
+
+    [TestMethod]
     public async Task 单缓冲每个Render请求只拷画过的那一块_不盖掉窗口里别处X画的内容()
     {
         using RecordingHost host = new();

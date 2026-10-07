@@ -738,6 +738,19 @@ internal sealed class GlxExtension(X11Server server)
     /// <summary>窗口销毁:它的表面随之丢掉。</summary>
     public void CleanupWindow(XWindow window) => _glxSurfaces.Remove(window.Id);
 
+    /// <summary>
+    /// 像素图的 ID 释放了:建在它上面的表面(GLX 像素图画进的那份帧缓冲,连同表面项抓着的像素图本身)随之丢掉。
+    /// 原先只在 ID 被重用、客户端断开时才回收 —— 每帧新建像素图画一张缩略图的程序,每轮漏一份表面加一份像素缓冲。
+    /// 还当前着的上下文下一次渲染时找不到可绘对象,与 ID 被重用时一样回 GLXBadDrawable。
+    /// </summary>
+    public void CleanupPixmap(XPixmap pixmap)
+    {
+        if (_glxSurfaces.TryGetValue(pixmap.Id, out (XResource Source, GlSurface Surface) entry) && ReferenceEquals(entry.Source, pixmap))
+        {
+            _glxSurfaces.Remove(pixmap.Id);
+        }
+    }
+
     // ------------------------------------------------------------------ 渲染请求
 
     private (GlxBinding Binding, GlContext Gl) GlxRenderTarget(XClient c, uint tag)

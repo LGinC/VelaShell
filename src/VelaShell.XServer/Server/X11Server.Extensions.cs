@@ -146,6 +146,7 @@ public sealed partial class X11Server
             ErrorCount = 14,
             ClientClosed = _glx.CleanupClient,
             WindowDestroyed = _glx.CleanupWindow,
+            PixmapFreed = _glx.CleanupPixmap,
         });
         if (ShmSupported)
         {

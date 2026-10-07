@@ -55,6 +55,13 @@ public sealed partial class X11Server
             ReleaseGlyphs(glyphSet.Table.Glyphs.Values);   // 最后一个引用这张字形表的 ID 没了:字形一并释放
             glyphSet.Table.Glyphs.Clear();
         }
+        if (resource is XPixmap pixmap)
+        {
+            foreach (Extension extension in _extensionList)
+            {
+                extension.PixmapFreed?.Invoke(pixmap);
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 内存账(xs_plan X-2)
