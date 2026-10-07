@@ -1764,3 +1764,10 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **审查时新发现、没修**:间接 GLX 选不到单缓冲视觉(GetVisualConfigs 每个视觉只列双缓冲配置,要加单缓冲的 X 视觉)。
 
 **四、验证**:`VelaShell.XServer.Tests` 的测试方法从 199 个到 413 个,426 例通过 / 9 例按平台跳过;开互操作(Docker 里的真实客户端:xterm、xeyes、xclock、xlogo、RENDER 版本、直接与间接 glxgears、Swing)12 例全过、没有 `[SKIP]`。宿主 `VelaShell.Tests` 1811 / 8、`Infrastructure.Tests` 633 / 4、`Ssh.Tests` 1349 / 57、`Core.Tests` 704 通过,只有 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 因靶机镜像建于 Dockerfile 那次改动之前而失败(同 §159、§161,在这一批之前的提交上一样失败)。全解决方案零警告零错误。每条修复的回归用例都在旧代码上确认过失败(引用新 API、旧代码上编不过的除外);只在 Linux 上才有的行为(backlog 满的 AF_UNIX 阻塞 connect、fd 用尽、IPC 命名空间)在 Linux 容器里核对过。合并六个分支时手工合了几处冲突(Map 里 NameWindowPixmap 与 InputOnly、XFIXES 的光标图像、平铺背景、SYNC / Present 的清理钩子拆成「连接断开」与「资源销毁」、Dispatch),并修了三条机器忙时偶发失败的用例。
+
+## ✅ 168. 2026-10-07 CI:#565 上的两处红
+
+- **`放套接字文件的目录是符号链接或属于别的用户时不开套接字文件`(macOS)**:§167 起配置了要监听、结果一种传输也没开起来时 `StartAsync` 抛 `IOException`。这条用例 `ListenTcp = false`、套接字文件又因目录不可信不开:Linux 上抽象名照样开着,macOS 没有抽象名,按约定就该抛 —— 用例原先当它照常返回。改为 Linux 上照常开起来、别的平台抛 `IOException`;没写成按平台的 `if` 分支,免得打断分析器对前面 Linux / macOS 守卫的推断(CA1416)。库不用改。
+- **`输出读够了告诉OpenSSH_之后的输出丢弃且不会停住`(Ubuntu,偶发;平时 15–28 ms,这次 30 秒被掐)**:真的卡死,是 SSH 库的竞态。`WindowedPipeReader` 收尾时先清点管道里没读的字节、报成已消费(回补窗口),再完成内层读端;两步之间接收循环照样往管道里写,那几包随读端完成一起丢掉、没人回补。机器忙、用户线程恰好在那里被换下时,这段空隙里能进来半个窗口以上,攒着的回补就再也够不到阈值(窗口的一半),对端停在零窗口上,退出状态等不来。修法:读端收尾时先在通道的状态锁里标记 `IsAbandoned`,`TryDeliver` 在同一把锁里看它 —— 之后到的数据走「丢弃并立刻回补」那条路,清点到的就是全部。在清点与完成之间人为睡 20 ms 能稳定摆出来:改之前两例都 30 秒超时,改之后通过。回归用例 `WindowedPipeReaderTests` 在清点回调里(正是那段空隙)模拟接收循环送到一包,把标记挪回清点之后它就红。规格 05 §3.2 / §5.2 说的本来就是「丢弃的数据照常回补」,行为没变,文档不用改。
+
+「GitHub Advanced Security」那一项失败是 Copilot 的月度额度用完(HTTP 402),不在仓库的 CI 里,没有动。
