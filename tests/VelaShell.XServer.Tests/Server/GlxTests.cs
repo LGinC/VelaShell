@@ -660,15 +660,15 @@ public sealed class GlxTests
     }
 
     [TestMethod]
-    public async Task MakeCurrent因表面太大回BadAlloc时不留下任何效果_上下文随后还能用()
+    public async Task MakeCurrent因表面记不下账回BadAlloc时不留下任何效果_上下文随后还能用()
     {
         using RecordingHost host = new();
-        await using X11Server server = new(host: host);
+        await using X11Server server = new(new X11ServerOptions { MaxClientMemory = 1024 * 1024 }, host);
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         byte glx = await GlxAsync(c);
         uint window = await MapWindowAsync(c, host);
-        uint huge = c.NewId();   // 5000 × 5000:超过 GLX 表面 4096² 的上限
-        await c.SendAsync(1, 0, b => b.U32(huge).U32(c.RootWindow).I16(0).I16(0).U16(5000).U16(5000).U16(0).U16(1).U32(0).U32(0));
+        uint huge = c.NewId();   // 1000 × 1000(不映射):表面每像素 13 字节,超过每客户端 1 MiB 的账
+        await c.SendAsync(1, 0, b => b.U32(huge).U32(c.RootWindow).I16(0).I16(0).U16(1000).U16(1000).U16(0).U16(1).U32(0).U32(0));
         uint context = c.NewId();
         await c.SendAsync(glx, 3, b => b.U32(context).U32(RootVisual).U32(0).U32(0).U8(0).U8(0).U16(0));
 
@@ -1206,6 +1206,84 @@ public sealed class GlxTests
         });
         Assert.AreEqual(0u, gl.GetError());
         Assert.AreEqual(0x0000FFu, SurfacePixel(surface, 4, 4), "原先按「边标记、纹理、颜色……」的固定次序读:颜色读成了边标记那 4 个字节");
+    }
+
+    [TestMethod]
+    public async Task 当前窗口被销毁后渲染与查询照常不报错_WaitGL回GLXBadCurrentWindow()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);
+
+        await c.SendAsync(4, 0, b => b.U32(window));                                         // DestroyWindow:上下文还是当前的
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 1, 0, 0, 1)).Add(127, b => b.U32(ColorBit)));
+        XMessage error = await c.RequestAsync(glx, 115, b => b.U32(tag));                  // GetError
+        Assert.IsTrue(error.IsReply, "原先每个请求都回 GLXBadDrawable,Xlib 默认的错误处理让程序退出");
+        Assert.AreEqual(0u, error.U32(8));
+        Assert.IsTrue((await c.RequestAsync(glx, 108, b => b.U32(tag))).IsReply, "Finish");
+
+        XMessage wait = await c.RequestAsync(glx, 8, b => b.U32(tag));                      // WaitGL
+        Assert.IsTrue(wait.IsError);
+        Assert.AreEqual(151 + 5, wait.Bytes[1], "GLXBadCurrentWindow");
+        Assert.AreEqual(window, wait.U32(4), "带的是没了的那个窗口");
+
+        XMessage released = await c.RequestAsync(glx, 5, b => b.U32(0).U32(0).U32(tag));    // 放下:照常
+        Assert.IsTrue(released.IsReply);
+    }
+
+    [TestMethod]
+    public async Task 超过表面上限的窗口夹到上限_只渲染左下一块并记日志()
+    {
+        using RecordingHost host = new();
+        List<string> log = [];
+        await using X11Server server = new(new X11ServerOptions { Log = line => { lock (log) { log.Add(line); } } }, host);
+        await server.InvokeAsync(() => server.Glx.MaxSurfacePixels = 32 * 32);             // 60 × 40 的窗口超了:夹到 32 × 32
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+        (_, uint tag) = await CurrentAsync(c, glx, window);                                // 原先回 BadAlloc
+
+        XMessage viewport = await c.RequestAsync(glx, 117, b => b.U32(tag).U32(0x0BA2));
+        Assert.AreEqual((uint)Width, viewport.U32(40), "视口仍按整个窗口初始化");
+        Assert.AreEqual((uint)Height, viewport.U32(44));
+        await RenderAsync(c, glx, tag, new Commands()
+            .Add(126, b => b.U32(0x0404))
+            .Add(130, b => F(b, 1, 0, 0, 1))
+            .Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 1, Height - 1), "左下角画上了");
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 31, Height - 32));
+        Assert.AreEqual(0u, await PixelAsync(c, window, 1, 1), "表面之外(左上)没画");
+        Assert.AreEqual(0u, await PixelAsync(c, window, 40, Height - 1), "表面之外(右下)没画");
+        lock (log)
+        {
+            Assert.IsTrue(log.Exists(line => line.Contains("over the surface limit", StringComparison.Ordinal)), "记一行日志");
+        }
+    }
+
+    [TestMethod]
+    public async Task GLX1点2的窗口按视觉的配置建表面_单缓冲上下文先绑过_双缓冲上下文照样要交换才上屏()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte glx = await GlxAsync(c);
+        uint window = await MapWindowAsync(c, host);
+
+        uint single = c.NewId();
+        await c.SendAsync(glx, 24, b => b.U32(single).U32(SingleBufferedRgb).U32(0).U32(RgbaType).U32(0).U8(0).U8(0).U16(0));
+        uint tag = (await c.RequestAsync(glx, 5, b => b.U32(window).U32(single).U32(0))).U32(8);   // 单缓冲的上下文先绑到窗口上
+        await RenderAsync(c, glx, tag, new Commands().Add(130, b => F(b, 0, 0, 1, 1)).Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 3, 3), "单缓冲的上下文画前缓冲,随请求上屏");
+        await c.RequestAsync(glx, 5, b => b.U32(0).U32(0).U32(tag));
+
+        (_, uint doubleTag) = await CurrentAsync(c, glx, window);                             // 双缓冲的上下文(GLX 1.2 的 CreateContext)
+        await RenderAsync(c, glx, doubleTag, new Commands().Add(130, b => F(b, 1, 0, 0, 1)).Add(127, b => b.U32(ColorBit)));
+        Assert.AreEqual(0x0000FFu, await PixelAsync(c, window, 3, 3), "画在后缓冲:交换之前不上屏(原先表面是第一个上下文定的单缓冲,直接上屏)");
+        await c.SendAsync(glx, 11, b => b.U32(doubleTag).U32(window));
+        Assert.AreEqual(0xFF0000u, await PixelAsync(c, window, 3, 3));
     }
 
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>

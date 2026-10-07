@@ -358,7 +358,10 @@ internal sealed partial class GlContext
     /// <summary>当前渲染模式(RENDER / FEEDBACK / SELECT)。</summary>
     public uint RenderModeValue { get; private set; } = GlEnum.RENDER;
 
-    /// <summary>MakeCurrent:第一次绑上表面时,视口与剪裁框初始化成表面的尺寸(GLX 1.4 §3.3.7)。</summary>
+    /// <summary>
+    /// MakeCurrent:第一次绑上表面时,视口与剪裁框初始化成可绘对象的尺寸(GLX 1.4 §3.3.7;表面被夹小了也按整个可绘对象)。
+    /// 可绘对象已经没了时绑 null:渲染不落到任何地方,查询照常。
+    /// </summary>
     public void Bind(GlSurface? draw, GlSurface? read)
     {
         Draw = draw;
@@ -366,8 +369,8 @@ internal sealed partial class GlContext
         if (draw is not null && !_viewportInitialized)
         {
             _viewportInitialized = true;
-            (State.ViewportX, State.ViewportY, State.ViewportWidth, State.ViewportHeight) = (0, 0, draw.Width, draw.Height);
-            (State.ScissorX, State.ScissorY, State.ScissorWidth, State.ScissorHeight) = (0, 0, draw.Width, draw.Height);
+            (State.ViewportX, State.ViewportY, State.ViewportWidth, State.ViewportHeight) = (0, 0, draw.DrawableWidth, draw.DrawableHeight);
+            (State.ScissorX, State.ScissorY, State.ScissorWidth, State.ScissorHeight) = (0, 0, draw.DrawableWidth, draw.DrawableHeight);
         }
     }
 

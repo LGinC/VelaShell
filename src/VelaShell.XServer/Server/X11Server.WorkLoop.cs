@@ -75,7 +75,7 @@ public sealed partial class X11Server
     /// 诊断日志的唯一出口(<see cref="X11ServerOptions.Log" />)。执行线程持锁时先攒着,放锁之后按原顺序交出去;
     /// 连接的读写线程上直接交。
     /// </summary>
-    private void Log(string message)
+    internal void Log(string message)
     {
         if (_options.Log is not { } log)
         {
