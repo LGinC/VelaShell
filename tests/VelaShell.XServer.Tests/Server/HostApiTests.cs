@@ -215,6 +215,55 @@ public sealed class HostApiTests
     }
 
     [TestMethod]
+    public async Task 第二个DisposeAsync等第一个收完_Completion在收完时完成()
+    {
+        using RecordingHost host = new();
+        X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await MapTopAsync(c, host);
+        Assert.IsFalse(server.Completion.IsCompleted);
+
+        Task first = server.DisposeAsync().AsTask();
+        Task second = server.DisposeAsync().AsTask();
+        await second.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.IsTrue(first.IsCompleted, "后来的调用等第一次收完才返回(原先立即返回)");
+        Assert.IsTrue(server.Completion.IsCompletedSuccessfully);
+        await server.DisposeAsync();   // 收完之后再调:立即返回
+    }
+
+    [TestMethod]
+    public async Task StartAsync与DisposeAsync同时跑_不留下监听与套接字文件()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"vxs-race-{Guid.NewGuid():N}"[..20]);
+        Directory.CreateDirectory(directory);
+        try
+        {
+            for (int i = 0; i < 20; i++)
+            {
+                string path = Path.Combine(directory, $"X{i}");
+                X11Server server = new(new X11ServerOptions { DisplayNumber = 90, ListenTcp = false, UnixSocketPath = path });
+                using Barrier barrier = new(2);
+                Task start = Task.Run(() => { barrier.SignalAndWait(); return server.StartAsync(); });
+                Task dispose = Task.Run(async () => { barrier.SignalAndWait(); await server.DisposeAsync(); });
+                await dispose;
+                try
+                {
+                    await start;
+                }
+                catch (ObjectDisposedException)
+                {
+                    // 收工先到:不开了
+                }
+                Assert.IsFalse(File.Exists(path), $"第 {i} 次:套接字文件没人收");
+            }
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [TestMethod]
     public async Task Serve一族与注入坐标的参数当场核对()
     {
         using RecordingHost host = new();

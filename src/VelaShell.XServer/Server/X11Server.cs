@@ -82,6 +82,12 @@ public sealed partial class X11Server : IAsyncDisposable
     private int _started;
     private int _disposed;
 
+    /// <summary>StartAsync 开监听与 DisposeAsync 收监听互斥(两边同时跑时开起来的监听没人收)。</summary>
+    private readonly Lock _listenGate = new();
+
+    /// <summary>收工做完(<see cref="Completion" />);第二个调 DisposeAsync 的等它。</summary>
+    private readonly TaskCompletionSource _shutdown = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
     /// <summary>用选项与宿主构造;宿主为 null 时不显示任何东西(无头,测试与诊断用)。</summary>
     /// <exception cref="ArgumentException">选项不合法(见 <see cref="X11ServerOptions" /> 各项的取值范围)。</exception>
     public X11Server(X11ServerOptions? options = null, IX11ServerHost? host = null)
@@ -138,6 +144,7 @@ public sealed partial class X11Server : IAsyncDisposable
     /// 失败之后已经开起来的监听一并关掉,可以再调一次(比如换个显示号之前先等占用的程序退出)。
     /// </summary>
     /// <exception cref="InvalidOperationException">已经开始监听了。</exception>
+    /// <exception cref="ObjectDisposedException">服务端已经释放,或者正在释放(与 <see cref="DisposeAsync" /> 同时调)。</exception>
     public Task StartAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
@@ -146,24 +153,29 @@ public sealed partial class X11Server : IAsyncDisposable
         {
             throw new InvalidOperationException("服务端已经在监听了。");
         }
-        try
+        lock (_listenGate)
         {
-            ClaimDisplayLock();
-            if (ListensOnTcp)
+            // 与 DisposeAsync 收监听互斥:那边先收了这边才开,开起来的监听器、套接字文件与显示号锁就没人收了。
+            ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            try
             {
-                StartTcpListener();
+                ClaimDisplayLock();
+                if (ListensOnTcp)
+                {
+                    StartTcpListener();
+                }
+                StartUnixListeners(_lifetime.Token);
+                if (_listener is null && _unixListeners.Count == 0 && (ListensOnTcp || UnixSocketPath is not null))
+                {
+                    throw new IOException("没有一种传输监听起来(Unix 套接字建不起来的原因见日志)。");
+                }
             }
-            StartUnixListeners(_lifetime.Token);
-            if (_listener is null && _unixListeners.Count == 0 && (ListensOnTcp || UnixSocketPath is not null))
+            catch
             {
-                throw new IOException("没有一种传输监听起来(Unix 套接字建不起来的原因见日志)。");
+                StopListeners();
+                Volatile.Write(ref _started, 0);   // 原先失败之后再调报「已经在监听了」,这个实例就再也开不起来
+                throw;
             }
-        }
-        catch
-        {
-            StopListeners();
-            Volatile.Write(ref _started, 0);   // 原先失败之后再调报「已经在监听了」,这个实例就再也开不起来
-            throw;
         }
         Display = DisplayAddress();
         return Task.CompletedTask;
@@ -231,14 +243,44 @@ public sealed partial class X11Server : IAsyncDisposable
         }
     });
 
-    /// <inheritdoc />
+    /// <summary>
+    /// 收工做完时完成(<see cref="DisposeAsync" /> 断开了所有客户端、收掉了监听与执行线程)。宿主可以拿它知道服务端什么时候真正停了。
+    /// </summary>
+    public Task Completion => _shutdown.Task;
+
+    /// <summary>
+    /// 收工:关监听、断开所有客户端、停执行线程。可以多次调、可以并发调:后来的调用等第一次收完才返回(原先立即返回,
+    /// 调用方以为已经停了,其实还在收)。
+    /// </summary>
+    /// <remarks>
+    /// 收工时<b>不</b>对还映射着的顶层发 <see cref="IX11ServerHost.TopLevelUnmapped" />:宿主自己收掉它的原生窗口
+    /// (先脱离、再释放服务端)。之后句柄的 <see cref="XTopLevelWindow.IsAlive" /> 都是 false,再用它们调服务端的方法会被忽略或抛
+    /// <see cref="ObjectDisposedException" />(ServeAsync 一族、StartAsync)。
+    /// </remarks>
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0)
         {
+            await _shutdown.Task.ConfigureAwait(false);   // 第二个调用者等第一个收完
             return;
         }
-        StopListeners();
+        try
+        {
+            await ShutdownAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _shutdown.TrySetResult();   // 收尾半途抛了也要放后来的调用者走
+        }
+    }
+
+    /// <summary><see cref="DisposeAsync" /> 的收尾,只走一次。</summary>
+    private async Task ShutdownAsync()
+    {
+        lock (_listenGate)
+        {
+            StopListeners();
+        }
         await _lifetime.CancelAsync().ConfigureAwait(false);
         _work.Writer.TryComplete();
         foreach (Task? task in (Task?[])[_acceptTask, _loopTask])
