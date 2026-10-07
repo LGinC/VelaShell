@@ -55,9 +55,25 @@ internal sealed partial class GlContext
     private GlTexture? _activeTexture;
     private Vector4 _fogColor;
 
-    /// <summary>取当前状态,准备写片元;没有表面或没有可写的颜色缓冲时返回 false。</summary>
+    /// <summary>
+    /// <see cref="PrepareRaster" /> 已经为当前这条命令取过状态(结果在 <see cref="_rasterReady" />):一个图元拆出的各个三角形、
+    /// 各段线共用一份,不每个都重新查一遍开关、重新判断纹理完整(xs_plan GL-P1)。每条命令开始执行、换表面时作废。
+    /// </summary>
+    private bool _rasterPrepared;
+    private bool _rasterReady;
+
+    /// <summary>状态可能变了:下一次光栅化重新取。</summary>
+    private void InvalidateRaster() => _rasterPrepared = false;
+
+    /// <summary>取当前状态,准备写片元;没有表面或没有可写的颜色缓冲时返回 false。同一条命令里只取一次。</summary>
     private bool PrepareRaster()
     {
+        if (_rasterPrepared)
+        {
+            return _rasterReady;
+        }
+        _rasterPrepared = true;
+        _rasterReady = false;
         if (Draw is not { } surface || RenderModeValue != GlEnum.RENDER)
         {
             return false;
@@ -72,35 +88,36 @@ internal sealed partial class GlContext
         _fbWidth = surface.Width;
         _fbHeight = surface.Height;
         (_clipX0, _clipY0, _clipX1, _clipY1) = (0, 0, _fbWidth, _fbHeight);
-        if (State.Enabled.Contains(GlEnum.SCISSOR_TEST))
+        if (State.Enabled.Has(GlEnum.SCISSOR_TEST))
         {
             _clipX0 = Math.Max(_clipX0, State.ScissorX);
             _clipY0 = Math.Max(_clipY0, State.ScissorY);
             _clipX1 = Math.Min(_clipX1, State.ScissorX + State.ScissorWidth);
             _clipY1 = Math.Min(_clipY1, State.ScissorY + State.ScissorHeight);
         }
-        _depthTest = State.Enabled.Contains(GlEnum.DEPTH_TEST);
-        _stencilTest = State.Enabled.Contains(GlEnum.STENCIL_TEST);
-        _alphaTest = State.Enabled.Contains(GlEnum.ALPHA_TEST);
-        _logicOp = State.Enabled.Contains(GlEnum.COLOR_LOGIC_OP);
-        _blend = !_logicOp && State.Enabled.Contains(GlEnum.BLEND);
-        _fog = State.Enabled.Contains(GlEnum.FOG);
+        _depthTest = State.Enabled.Has(GlEnum.DEPTH_TEST);
+        _stencilTest = State.Enabled.Has(GlEnum.STENCIL_TEST);
+        _alphaTest = State.Enabled.Has(GlEnum.ALPHA_TEST);
+        _logicOp = State.Enabled.Has(GlEnum.COLOR_LOGIC_OP);
+        _blend = !_logicOp && State.Enabled.Has(GlEnum.BLEND);
+        _fog = State.Enabled.Has(GlEnum.FOG);
         _fogColor = State.FogColor;
-        _colorSum = State.Enabled.Contains(GlEnum.LIGHTING) && State.LightModelColorControl == GlEnum.SEPARATE_SPECULAR_COLOR;
+        _colorSum = State.Enabled.Has(GlEnum.LIGHTING) && State.LightModelColorControl == GlEnum.SEPARATE_SPECULAR_COLOR;
         _anyColorMask = State.ColorMask[0] || State.ColorMask[1] || State.ColorMask[2] || State.ColorMask[3];
         _colorKeep = (State.ColorMask[0] ? 0 : 0x00FF0000u) | (State.ColorMask[1] ? 0 : 0x0000FF00u)
                      | (State.ColorMask[2] ? 0 : 0x000000FFu) | (State.ColorMask[3] ? 0 : 0xFF000000u);
         _surfaceAlpha = surface.HasAlpha;
         _targetIsFront = ReferenceEquals(_targetFront, surface.Front);
         _activeTexture = CompleteTexture();
-        return _clipX0 < _clipX1 && _clipY0 < _clipY1;
+        _rasterReady = _clipX0 < _clipX1 && _clipY0 < _clipY1;
+        return _rasterReady;
     }
 
     /// <summary>当前生效的纹理:2D 优先于 1D,不完整的视为未启用(§3.8.10、§3.8.15)。</summary>
     private GlTexture? CompleteTexture()
     {
-        uint cap = State.Enabled.Contains(GlEnum.TEXTURE_2D) ? GlEnum.TEXTURE_2D
-            : State.Enabled.Contains(GlEnum.TEXTURE_1D) ? GlEnum.TEXTURE_1D
+        uint cap = State.Enabled.Has(GlEnum.TEXTURE_2D) ? GlEnum.TEXTURE_2D
+            : State.Enabled.Has(GlEnum.TEXTURE_1D) ? GlEnum.TEXTURE_1D
             : 0u;
         if (cap == 0)
         {

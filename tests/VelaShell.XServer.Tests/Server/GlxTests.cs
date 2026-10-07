@@ -1340,6 +1340,41 @@ public sealed class GlxTests
         }
     }
 
+    [TestMethod]
+    public void 画一千个带光照的小三角形几乎不分配内存()
+    {
+        (Gl.GlContext gl, _) = DirectContext(256, 256);
+        foreach (uint cap in (uint[])[0x0B50, 0x4000, 0x4001, 0x0B57, DepthTest, 0x3000])   // LIGHTING、LIGHT0、LIGHT1、COLOR_MATERIAL、深度测试、CLIP_PLANE0
+        {
+            Run(gl, 139, b => b.U32(cap));
+        }
+        byte[] color = new XTestClient.Body(bigEndian: false).U32(BitConverter.SingleToUInt32Bits(0.5f)).U32(0).U32(0).ToArray();
+        byte[][] vertices = new byte[3000][];
+        for (int i = 0; i < vertices.Length; i += 3)
+        {
+            float x = ((i % 90) / 50f) - 0.9f, y = ((i / 90) / 20f) - 0.9f;
+            vertices[i] = F(new XTestClient.Body(bigEndian: false), x, y, 0).ToArray();
+            vertices[i + 1] = F(new XTestClient.Body(bigEndian: false), x + 0.05f, y, 0).ToArray();
+            vertices[i + 2] = F(new XTestClient.Body(bigEndian: false), x, y + 0.05f, 0).ToArray();
+        }
+        void Draw()
+        {
+            gl.ExecuteOrCompile(4, BitConverter.GetBytes(Triangles), bigEndian: false);
+            foreach (byte[] v in vertices)
+            {
+                gl.ExecuteOrCompile(8, color, bigEndian: false);
+                gl.ExecuteOrCompile(70, v, bigEndian: false);
+            }
+            gl.ExecuteOrCompile(23, [], bigEndian: false);
+        }
+        Draw();   // 图元缓冲长到位
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        Draw();
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.AreEqual(0u, gl.GetError());
+        Assert.IsLessThan(64 * 1024, allocated, $"原先每个三角形约 650 字节(裁剪的 List、迭代器、窗口坐标数组),一千个约 0.7 MB;这次 {allocated} 字节");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

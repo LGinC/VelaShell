@@ -23,6 +23,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_OPERATION);
             return;
         }
+        InvalidateRaster();
         GlReader r = new(body, bigEndian);
         switch (opcode)
         {
@@ -614,7 +615,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        State.Enabled.Add(cap);
+        State.Enabled.Set(cap, on: true);
         if (cap == GlEnum.COLOR_MATERIAL)
         {
             ApplyColorMaterial();   // 打开的那一刻起材质就跟随当前颜色(§2.14.3)
@@ -628,7 +629,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        State.Enabled.Remove(cap);
+        State.Enabled.Set(cap, on: false);
     }
 
     // ------------------------------------------------------------------ 枚举与 Begin / End 的合法性(§2.5、§2.6.3)

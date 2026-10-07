@@ -383,6 +383,7 @@ internal sealed partial class GlContext
     /// </summary>
     public void Bind(GlSurface? draw, GlSurface? read)
     {
+        InvalidateRaster();
         Draw = draw;
         Read = read ?? draw;
         if (draw is not null && !_viewportInitialized)
@@ -821,21 +822,7 @@ internal sealed partial class GlContext
     /// 加上声明了的扩展带来的(POLYGON_OFFSET_FILL 即 EXT 的 POLYGON_OFFSET、RESCALE_NORMAL)与 MULTISAMPLE。
     /// 别的值按 §2.5 记 INVALID_ENUM、不进状态 —— 原先照单全收,16 MB 的 Enable 流把开关集合撑大,再经 PushAttrib 复制 16 份。
     /// </summary>
-    private static bool IsKnownCap(uint cap) => cap switch
-    {
-        GlEnum.POINT_SMOOTH or GlEnum.LINE_SMOOTH or GlEnum.LINE_STIPPLE or GlEnum.POLYGON_SMOOTH or GlEnum.POLYGON_STIPPLE
-            or GlEnum.CULL_FACE or GlEnum.LIGHTING or GlEnum.COLOR_MATERIAL or GlEnum.FOG or GlEnum.DEPTH_TEST
-            or GlEnum.STENCIL_TEST or GlEnum.NORMALIZE or GlEnum.ALPHA_TEST or GlEnum.DITHER or GlEnum.BLEND
-            or GlEnum.INDEX_LOGIC_OP or GlEnum.COLOR_LOGIC_OP or GlEnum.SCISSOR_TEST or GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D
-            or GlEnum.TEXTURE_GEN_S or GlEnum.TEXTURE_GEN_T or GlEnum.TEXTURE_GEN_R or GlEnum.TEXTURE_GEN_Q
-            or GlEnum.AUTO_NORMAL or GlEnum.POLYGON_OFFSET_FILL or GlEnum.POLYGON_OFFSET_LINE or GlEnum.POLYGON_OFFSET_POINT
-            or GlEnum.RESCALE_NORMAL or GlEnum.MULTISAMPLE => true,
-        >= GlEnum.CLIP_PLANE0 and < GlEnum.CLIP_PLANE0 + MaxClipPlanes => true,
-        >= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights => true,
-        >= GlEnum.MAP1_COLOR_4 and <= GlEnum.MAP1_VERTEX_4 => true,
-        >= GlEnum.MAP2_COLOR_4 and <= GlEnum.MAP2_VERTEX_4 => true,
-        _ => false,
-    };
+    private static bool IsKnownCap(uint cap) => GlCaps.BitOf(cap) >= 0;
 
     private void PushAttrib(uint mask)
     {

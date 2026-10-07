@@ -43,7 +43,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return false;
         }
-        return State.Enabled.Contains(cap);
+        return State.Enabled.Has(cap);
     }
 
     /// <summary>Get{Boolean,Integer,Float,Double}v 的值;不认识的 pname 记 INVALID_ENUM 并返回 null。</summary>
@@ -75,7 +75,7 @@ internal sealed partial class GlContext
                 or GlEnum.AUTO_NORMAL or GlEnum.POLYGON_OFFSET_FILL or GlEnum.POLYGON_OFFSET_LINE or GlEnum.POLYGON_OFFSET_POINT
                 or GlEnum.RESCALE_NORMAL or GlEnum.MULTISAMPLE
                 or (>= GlEnum.CLIP_PLANE0 and < GlEnum.CLIP_PLANE0 + MaxClipPlanes)
-                or (>= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights) => Bool(State.Enabled.Contains(pname)),
+                or (>= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights) => Bool(State.Enabled.Has(pname)),
 
             // 当前值
             0x0B00 => Color(State.Color),                                                   // CURRENT_COLOR
