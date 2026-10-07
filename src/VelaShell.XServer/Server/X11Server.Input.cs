@@ -436,6 +436,10 @@ public sealed partial class X11Server
             _pointerWindow = now;
             _motionHintEpoch++;
             GenerateCrossing(old, now);
+            if (ReferenceEquals(_focus, Root))
+            {
+                SyncFocusedSessionClipboard();   // PointerRoot:焦点跟着指针走,换了顶层可能就换了会话
+            }
         }
         UpdateCursor();
     }
@@ -1057,6 +1061,7 @@ public sealed partial class X11Server
         _focus = focus;
         UpdateActiveWindow(old, focus);
         GenerateFocusEvents(old, focus, KeyboardGrab is null ? FocusModeNormal : FocusModeWhileGrabbed);
+        SyncFocusedSessionClipboard();   // 换到了另一个会话:它那一份剪贴板若比最新的旧,服务端替宿主占有
     }
 
     /// <summary>焦点事件的 mode(协议附录 B「FocusIn」)。</summary>

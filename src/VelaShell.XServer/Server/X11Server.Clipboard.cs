@@ -13,6 +13,8 @@
 //   · 宿主 → X:SetClipboardText 让服务端自己占有 CLIPBOARD(可选 PRIMARY),X 客户端来要时直接回;
 //   · X → 宿主:X 客户端占有 CLIPBOARD(可选 PRIMARY)时,服务端以一个隐藏的 InputOnly 窗口为请求方
 //     把内容要过来(支持 INCR),交给宿主的 ClipboardChanged。
+//   · 开着 ClipboardFollowsFocus 时 PRIMARY / SECONDARY / CLIPBOARD 按会话隔离(每个会话各有各的属主);
+//     两个方向都只与键盘焦点所在的会话来往,跨会话的复制粘贴经宿主的剪贴板中转。
 
 using System.Buffers.Binary;
 using System.Text;
@@ -59,9 +61,12 @@ public sealed partial class X11Server
     internal TimeSpan FetchStepTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     /// <summary>一次进行中的「从 X 客户端取选区」。</summary>
-    private sealed class SelectionFetch(uint selection, uint target, uint time, uint property)
+    private sealed class SelectionFetch(SelectionSlot slot, uint target, uint time, uint property)
     {
-        public uint Selection { get; } = selection;
+        /// <summary>取的是哪一份选区(按会话隔离时带着焦点所在的会话)。</summary>
+        public SelectionSlot Slot { get; } = slot;
+
+        public uint Selection => Slot.Atom;
 
         public uint Target { get; set; } = target;
 
@@ -98,7 +103,59 @@ public sealed partial class X11Server
         }
     }
 
-    /// <summary>宿主的剪贴板有了新文本(见 <see cref="SetClipboardText" />):服务端替宿主占有 CLIPBOARD(与 PRIMARY)。</summary>
+    // ------------------------------------------------------------------ 会话与选区的作用域
+
+    /// <summary>没有连接名的客户端(本机经 TCP / Unix 套接字连进来的程序)同属的那个会话;连接名不会是这个值。</summary>
+    private const string LocalSession = "\0local";
+
+    /// <summary>
+    /// 客户端所属的会话:连接名相同的算一个(同一个 SSH 会话里的程序,见 <see cref="ServeAuthenticatedAsync(Stream, string?, CancellationToken)" />),
+    /// 没有连接名的本机程序同属一个本机会话。
+    /// </summary>
+    private static string SessionOf(XClient client) => client.Label ?? LocalSession;
+
+    /// <summary>
+    /// 按会话隔离的选区:开着 <see cref="X11ServerOptions.ClipboardFollowsFocus" /> 时,PRIMARY、SECONDARY、CLIPBOARD 每个会话各有各的属主 ——
+    /// 别的会话看不到属主变化、收不到因此发的 SelectionClear 与 XFIXES 通知,也读不到另一个会话里的复制(xs_plan WN-S11)。
+    /// 跨会话的复制粘贴经宿主的剪贴板中转(见 <see cref="SyncFocusedSessionClipboard" />)。其余选区(窗口管理器、XSETTINGS、拖放……)照协议全显示共享。
+    /// </summary>
+    private bool IsIsolatedSelection(uint atom) =>
+        _options.ClipboardFollowsFocus && (atom == XAtom.Primary || atom == XAtom.Secondary || atom == Intern("CLIPBOARD"));
+
+    /// <summary>这个客户端眼里的那一份选区。</summary>
+    private SelectionSlot SlotOf(uint atom, XClient client) => new(atom, IsIsolatedSelection(atom) ? SessionOf(client) : null);
+
+    /// <summary>这一份选区的变化该让这个客户端知道吗:全显示共享的谁都知道,按会话隔离的只有那个会话的。</summary>
+    private static bool InScope(XClient client, SelectionSlot slot) => slot.Scope is null || SessionOf(client) == slot.Scope;
+
+    /// <summary>键盘焦点所在的会话(焦点是 PointerRoot 时看指针所在的顶层);没有 X 窗口有焦点时为 null。</summary>
+    private string? FocusedSession()
+    {
+        XWindow? focused = _focus is null ? null : ReferenceEquals(_focus, Root) ? _pointerWindow : _focus;
+        return focused?.TopLevel?.Owner is { } peer ? SessionOf(peer) : null;
+    }
+
+    /// <summary>
+    /// 这个客户端此刻能不能与宿主的剪贴板来往(<see cref="X11ServerOptions.ClipboardFollowsFocus" />):它属于键盘焦点所在的会话
+    /// (与焦点窗口的客户端连接名相同;本机程序同属一个会话)。
+    /// </summary>
+    private bool InFocusedSession(XClient client) => !_options.ClipboardFollowsFocus || FocusedSession() == SessionOf(client);
+
+    // ------------------------------------------------------------------ 宿主 → X
+
+    /// <summary>
+    /// 剪贴板内容的逻辑时钟:宿主给了新文本、X 端的复制交给了宿主、哪个会话里的程序占有了同步的选区,各推进一格。
+    /// 某个会话的那一份选区记着它最后一次变化时的钟点(<see cref="_slotStamps" />),比 <see cref="_clipboardStamp" /> 旧,
+    /// 那个会话拿到焦点时服务端就替宿主在那里占有最新的文本 —— 「最近一次复制」赢,不管它发生在哪个会话或本机。
+    /// </summary>
+    private long _clipboardClock;
+
+    /// <summary>最新的剪贴板文本(宿主给的,或从 X 端取来交给宿主的)对应的钟点;0 = 还没有过。</summary>
+    private long _clipboardStamp;
+
+    private readonly Dictionary<SelectionSlot, long> _slotStamps = [];
+
+    /// <summary>宿主的剪贴板有了新文本(见 <see cref="SetClipboardText" />):服务端替宿主在焦点所在的会话里占有 CLIPBOARD(与 PRIMARY)。</summary>
     private void ApplyClipboardText(string text)
     {
         if (!_options.SyncClipboard || text == _lastDeliveredText)
@@ -106,63 +163,83 @@ public sealed partial class X11Server
             return;   // 宿主把我们刚给的写回来了
         }
         SetHostClipboard(text);
-        TakeSelectionForHost(Intern("CLIPBOARD"));
-        if (_options.SyncPrimary)
+        _clipboardStamp = ++_clipboardClock;
+        SyncFocusedSessionClipboard();
+    }
+
+    /// <summary>
+    /// 让焦点所在的会话看到最新的剪贴板:它那一份同步的选区比最新的文本旧,服务端就替宿主在那里占有。不隔离时(全显示一份)
+    /// 不看焦点,有新文本就占。焦点换了、PointerRoot 下指针换了顶层、宿主给了新文本时调。
+    /// </summary>
+    private void SyncFocusedSessionClipboard()
+    {
+        if (!_options.SyncClipboard || _clipboardStamp == 0)
         {
-            TakeSelectionForHost(XAtom.Primary);
+            return;
+        }
+        string? session = _options.ClipboardFollowsFocus ? FocusedSession() : null;
+        if (_options.ClipboardFollowsFocus && session is null)
+        {
+            return;   // 没有 X 窗口有焦点:等用户回到某个会话再交
+        }
+        foreach (uint atom in (uint[])[Intern("CLIPBOARD"), XAtom.Primary])
+        {
+            if (!IsSyncedSelection(atom))
+            {
+                continue;
+            }
+            SelectionSlot slot = new(atom, IsIsolatedSelection(atom) ? session : null);
+            if (_slotStamps.GetValueOrDefault(slot) < _clipboardStamp)
+            {
+                TakeSelectionForHost(slot);
+            }
         }
     }
 
-    private void TakeSelectionForHost(uint selection)
+    /// <summary>某个会话里的程序占有了一份同步的选区:它就是那个会话里最新的复制。</summary>
+    private void NoteClientSelection(SelectionSlot slot)
     {
+        if (IsSyncedSelection(slot.Atom))
+        {
+            _slotStamps[slot] = ++_clipboardClock;
+        }
+    }
+
+    private void TakeSelectionForHost(SelectionSlot slot)
+    {
+        uint selection = slot.Atom;
         // 宿主的占有也是一次换属主:不早于最后一次换属主的时间(否则之后带着更早事件时间的客户端反而能抢回来),并推进它。
         uint now = Now;
-        if (_selectionLastChange.TryGetValue(selection, out uint lastChange) && unchecked((int)(lastChange - now)) > 0)
+        if (_selectionLastChange.TryGetValue(slot, out uint lastChange) && unchecked((int)(lastChange - now)) > 0)
         {
             now = lastChange;
         }
-        _selectionLastChange[selection] = now;
-        if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) current) && current.Client is { } previous)
+        _selectionLastChange[slot] = now;
+        // 按会话隔离时,只有这个会话里原先的属主收到 SelectionClear、只有这个会话收到 XFIXES 通知:别的会话看不出宿主何时有了新内容。
+        if (_selections.TryGetValue(slot, out (XWindow Window, XClient? Client, uint Time) current) && current.Client is { } previous)
         {
             XWindow old = current.Window;
             previous.Event(XEventCode.SelectionClear, 0, w => w.U32(now).U32(old.Id).U32(selection));
         }
-        _selections[selection] = (SelectionWindow, null, now);
-        // XFIXES 的属主变化通知只发给读得到宿主文本的会话(InFocusedSession):服务端已经是属主时 GetSelectionOwner 看不出变化,
-        // 原先别的会话靠这条通知精确得知「宿主剪贴板有了新内容」,等用户切到它的窗口时去取(xs_plan WN-S11)。
-        NotifySelectionChange(selection, 0, SelectionWindowId, now, InFocusedSession);
+        _selections[slot] = (SelectionWindow, null, now);
+        _slotStamps[slot] = _clipboardStamp;
+        NotifySelectionChange(selection, 0, SelectionWindowId, now, client => InScope(client, slot));
     }
 
     /// <summary>
-    /// 同步的选区没了属主(属主 SetSelectionOwner(None)、属主窗口销毁、属主断开):服务端替宿主接管,内容是最近一次交给宿主的文本 ——
+    /// 同步的选区没了属主(属主 SetSelectionOwner(None)、属主窗口销毁、属主断开):服务端替宿主接管,内容是最新的剪贴板文本 ——
     /// 相当于剪贴板管理器。原先 X 程序复制之后一退出,别的 X 程序就再也粘贴不到,宿主手里明明还有这段文本(两道防回声都拦着它)。
     /// </summary>
-    private void OnSelectionOwnerLost(uint selection)
+    private void OnSelectionOwnerLost(SelectionSlot slot)
     {
-        if (IsSyncedSelection(selection) && _lastDeliveredText is { } text && !_selections.ContainsKey(selection))
+        if (IsSyncedSelection(slot.Atom) && _clipboardStamp != 0 && !_selections.ContainsKey(slot))
         {
-            SetHostClipboard(text);
-            TakeSelectionForHost(selection);
+            TakeSelectionForHost(slot);
         }
     }
 
     private bool IsSyncedSelection(uint selection) =>
         _options.SyncClipboard && (selection == Intern("CLIPBOARD") || (_options.SyncPrimary && selection == XAtom.Primary));
-
-    /// <summary>
-    /// 这个客户端此刻能不能与宿主的剪贴板来往(<see cref="X11ServerOptions.ClipboardFollowsFocus" />):它是键盘焦点所在顶层的客户端
-    /// (焦点是 PointerRoot 时看指针所在的顶层),或与那个客户端的连接名相同(同一个会话)。
-    /// </summary>
-    private bool InFocusedSession(XClient client)
-    {
-        if (!_options.ClipboardFollowsFocus)
-        {
-            return true;
-        }
-        XWindow? focused = _focus is null ? null : ReferenceEquals(_focus, Root) ? _pointerWindow : _focus;
-        return focused?.TopLevel?.Owner is { } peer
-               && (ReferenceEquals(peer, client) || (peer.Label is { } label && label == client.Label));
-    }
 
     // ------------------------------------------------------------------ 服务端当属主
 
@@ -382,13 +459,14 @@ public sealed partial class X11Server
     // ------------------------------------------------------------------ 服务端当请求方
 
     /// <summary>X 客户端占有了同步的选区:向它要 UTF8_STRING(不给再退回 STRING)。</summary>
-    private void OnClientTookSelection(XClient owner, XWindow ownerWindow, uint selection, uint time)
+    private void OnClientTookSelection(XClient owner, XWindow ownerWindow, SelectionSlot slot, uint time)
     {
+        uint selection = slot.Atom;
         if (!IsSyncedSelection(selection) || !InFocusedSession(owner))
         {
             return;   // 后台会话的复制不进系统剪贴板:否则远端程序可以反复改写本机剪贴板,用户往别处粘贴时中招
         }
-        SelectionFetch fetch = new(selection, Intern("UTF8_STRING"), time, Intern("_VELASHELL_" + (AtomName(selection) ?? "SELECTION")));
+        SelectionFetch fetch = new(slot, Intern("UTF8_STRING"), time, Intern("_VELASHELL_" + (AtomName(selection) ?? "SELECTION")));
         _fetches[selection] = fetch;   // 同一个选区又换了属主:旧的那次作废
         RequestFetch(fetch, owner, ownerWindow);
     }
@@ -428,7 +506,7 @@ public sealed partial class X11Server
     {
         foreach (SelectionFetch fetch in _fetches.Values.ToArray())
         {
-            if (!_selections.ContainsKey(fetch.Selection))
+            if (!_selections.ContainsKey(fetch.Slot))
             {
                 EndFetch(fetch);
             }
@@ -451,7 +529,7 @@ public sealed partial class X11Server
         if (property == 0)
         {
             // 属主不给这个目标:UTF8_STRING 不行就退回 STRING,再不行就算了。
-            if (fetch.Target != XAtom.String && _selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) owner) && owner.Client is { } client)
+            if (fetch.Target != XAtom.String && _selections.TryGetValue(fetch.Slot, out (XWindow Window, XClient? Client, uint Time) owner) && owner.Client is { } client)
             {
                 fetch.Target = XAtom.String;
                 RequestFetch(fetch, client, owner.Window);
@@ -477,7 +555,7 @@ public sealed partial class X11Server
             return;
         }
         EndFetch(fetch);
-        Deliver(value.Type, value.Data.ToArray());
+        Deliver(fetch.Slot, value.Type, value.Data.ToArray());
     }
 
     /// <summary>INCR 传输中:属主往请求窗口写了一块。空块表示结束。</summary>
@@ -504,7 +582,7 @@ public sealed partial class X11Server
         if (chunk.Data.Length == 0)
         {
             EndFetch(fetch);
-            Deliver(fetch.IncrType, [.. buffer]);
+            Deliver(fetch.Slot, fetch.IncrType, [.. buffer]);
             return;
         }
         fetch.IncrType = chunk.Type;
@@ -528,7 +606,11 @@ public sealed partial class X11Server
         }
     }
 
-    private void Deliver(uint type, byte[] data)
+    /// <summary>
+    /// 从 X 端取来的文本交给宿主。它也就成了最新的剪贴板内容:复制它的那个会话已经有了,别的会话拿到焦点时由服务端替宿主占有
+    /// (按会话隔离时,跨会话的复制粘贴就是这样经宿主的剪贴板中转的)。
+    /// </summary>
+    private void Deliver(SelectionSlot slot, uint type, byte[] data)
     {
         if (data.Length > MaxClipboardBytes)
         {
@@ -539,6 +621,9 @@ public sealed partial class X11Server
             : type == Intern("COMPOUND_TEXT") ? XTextEncoding.CompoundText
             : XTextEncoding.Utf8);
         _lastDeliveredText = text;
+        SetHostClipboard(text);
+        _clipboardStamp = ++_clipboardClock;
+        _slotStamps[slot] = _clipboardStamp;
         _host.ClipboardChanged(text);
     }
 }

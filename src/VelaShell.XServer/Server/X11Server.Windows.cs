@@ -380,13 +380,13 @@ public sealed partial class X11Server
             extension.WindowDestroyed?.Invoke(window);
         }
         CleanupEwmh(window);
-        foreach ((uint atom, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
+        foreach ((SelectionSlot slot, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
         {
             if (ReferenceEquals(owner.Window, window))
             {
-                _selections.Remove(atom);
-                NotifySelectionChange(atom, 1, 0, owner.Time);
-                OnSelectionOwnerLost(atom);
+                _selections.Remove(slot);
+                NotifySelectionChange(slot.Atom, 1, 0, owner.Time, client => InScope(client, slot));
+                OnSelectionOwnerLost(slot);
             }
         }
         if (ReferenceEquals(_focus, window))

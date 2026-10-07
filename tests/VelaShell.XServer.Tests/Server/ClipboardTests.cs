@@ -496,6 +496,113 @@ public sealed class ClipboardTests
             "别的会话收不到:原先它据此精确得知宿主剪贴板何时有了新内容");
     }
 
+    /// <summary>两个 SSH 会话(连接名不同)各连一个客户端,各映射一个顶层窗口。</summary>
+    private static async Task<(XTestClient A, uint WindowA, XTestClient B, uint WindowB)> TwoSessionsAsync(X11Server server, RecordingHost host)
+    {
+        XTestClient a = await XTestClient.ConnectAsync(server, label: "joe@a:22");
+        XTestClient b = await XTestClient.ConnectAsync(server, label: "joe@b:22");
+        async Task<uint> MapAsync(XTestClient c)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, w => w.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0));
+            await c.SendAsync(8, 0, w => w.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        return (a, await MapAsync(a), b, await MapAsync(b));
+    }
+
+    /// <summary>X 客户端占有 CLIPBOARD,并回应服务端随之发来的 SelectionRequest(把文本交给宿主)。</summary>
+    private static async Task CopyAsync(XTestClient c, uint window, uint clipboard, uint utf8, string text)
+    {
+        await c.SendAsync(22, 0, w => w.U32(window).U32(clipboard).U32(0));
+        XMessage request = await c.NextEventAsync(SelectionRequest);
+        await ChangePropertyAsync(c, request.U32(12), request.U32(24), utf8, Encoding.UTF8.GetBytes(text));
+        await SendSelectionNotifyAsync(c, request, request.U32(24));
+    }
+
+    [TestMethod]
+    public async Task 剪贴板按会话隔离_别的会话看不到属主_收不到SelectionClear_也读不到另一个会话里的复制()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        (XTestClient a, uint windowA, XTestClient b, uint windowB) = await TwoSessionsAsync(server, host);
+        await using XTestClient disposeA = a;
+        await using XTestClient disposeB = b;
+        uint clipboard = await InternAsync(a, "CLIPBOARD");
+        uint utf8 = await InternAsync(a, "UTF8_STRING");
+
+        server.FocusTopLevel(host.Mapped[windowA]);   // 用户在会话 A 里复制
+        await CopyAsync(a, windowA, clipboard, utf8, "会话 A 的口令");
+        await host.WaitForAsync(() => host.Clipboard == "会话 A 的口令");
+
+        // 会话 B 不在焦点:它眼里 CLIPBOARD 没有属主(原先看得到 A 的窗口,还能直接向 A 要内容)。
+        Assert.AreEqual(0u, (await b.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8), "B 看不到 A 的属主");
+        uint requestor = await CreateWindowAsync(b);
+        uint pasted = await InternAsync(b, "PASTED");
+        await b.SendAsync(24, 0, w => w.U32(requestor).U32(clipboard).U32(utf8).U32(pasted).U32(0));
+        Assert.AreEqual(0u, (await b.NextEventAsync(SelectionNotify)).U32(20), "B 读不到 A 里的复制");
+        await Assert.ThrowsAsync<OperationCanceledException>(() => a.NextEventAsync(SelectionRequest, timeoutMs: 200),
+            "A 的属主根本没收到 B 的请求");
+
+        // B 在后台占 CLIPBOARD:只改 B 那一份。A 收不到 SelectionClear,A 眼里属主仍是自己。
+        await b.SendAsync(22, 0, w => w.U32(windowB).U32(clipboard).U32(0));
+        await b.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => a.NextEventAsync(SelectionClear, timeoutMs: 200),
+            "原先 A 收到 SelectionClear,从而知道别的会话在动剪贴板");
+        Assert.AreEqual(windowA, (await a.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8));
+        Assert.AreEqual(windowB, (await b.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8));
+
+        // 宿主在 A 拿着焦点时有了新文本:只在 A 里接管,B 那一份不动、也不收 SelectionClear。
+        server.SetClipboardText("本机复制的");
+        await a.NextEventAsync(SelectionClear);
+        await Assert.ThrowsAsync<OperationCanceledException>(() => b.NextEventAsync(SelectionClear, timeoutMs: 200));
+        Assert.AreEqual(windowB, (await b.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8), "B 看不出宿主何时有了新内容");
+    }
+
+    [TestMethod]
+    public async Task 跨会话的复制粘贴经宿主的剪贴板中转_切到哪个会话就在那里占有最新的文本()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        (XTestClient a, uint windowA, XTestClient b, uint windowB) = await TwoSessionsAsync(server, host);
+        await using XTestClient disposeA = a;
+        await using XTestClient disposeB = b;
+        uint clipboard = await InternAsync(a, "CLIPBOARD");
+        uint utf8 = await InternAsync(a, "UTF8_STRING");
+
+        server.FocusTopLevel(host.Mapped[windowA]);
+        await CopyAsync(a, windowA, clipboard, utf8, "从 A 复制,到 B 粘贴");
+        await host.WaitForAsync(() => host.Clipboard == "从 A 复制,到 B 粘贴");
+
+        server.FocusTopLevel(host.Mapped[windowB]);   // 用户切到会话 B
+        uint owner = 0;
+        for (int i = 0; i < 50 && owner == 0; i++)
+        {
+            owner = (await b.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8);
+        }
+        Assert.AreNotEqual(0u, owner, "服务端替宿主在 B 里占有了最新的文本");
+        Assert.AreNotEqual(windowA, owner);
+        uint requestor = await CreateWindowAsync(b);
+        uint pasted = await InternAsync(b, "PASTED");
+        await b.SendAsync(24, 0, w => w.U32(requestor).U32(clipboard).U32(utf8).U32(pasted).U32(0));
+        Assert.AreEqual(pasted, (await b.NextEventAsync(SelectionNotify)).U32(20));
+        XMessage value = await b.RequestAsync(20, 1, w => w.U32(requestor).U32(pasted).U32(0).U32(0).U32(1000));
+        Assert.AreEqual("从 A 复制,到 B 粘贴", Encoding.UTF8.GetString(value.Bytes, 32, (int)value.U32(16)));
+
+        // A 那一份不受影响:属主仍是 A 自己的窗口,也没收到 SelectionClear。
+        Assert.AreEqual(windowA, (await a.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => a.NextEventAsync(SelectionClear, timeoutMs: 200));
+
+        // B 在后台之后自己又复制了别的:切回 B 时不被宿主的旧文本盖掉(最近一次复制赢)。
+        server.FocusTopLevel(host.Mapped[windowA]);
+        await b.SendAsync(22, 0, w => w.U32(windowB).U32(clipboard).U32(0));
+        await b.SyncAsync();
+        server.FocusTopLevel(host.Mapped[windowB]);
+        await b.SyncAsync();
+        Assert.AreEqual(windowB, (await b.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8));
+    }
+
     [TestMethod]
     public async Task SetSelectionOwner的时间戳规则与当前有没有属主无关_未来的时间戳锁不住选区()
     {

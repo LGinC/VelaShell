@@ -33,13 +33,19 @@ public sealed partial class X11Server
     private readonly Dictionary<string, uint> _atomsByName = [with(StringComparer.Ordinal)];
     private readonly List<string> _atomNames = [];
     private long _atomNameBytes;
-    private readonly Dictionary<uint, (XWindow Window, XClient? Client, uint Time)> _selections = [];
+    /// <summary>
+    /// 选区表的键:选区原子与它的作用域。作用域为 null 的是全显示共享的选区(协议的本义);开着
+    /// <see cref="X11ServerOptions.ClipboardFollowsFocus" /> 时 PRIMARY、SECONDARY、CLIPBOARD 按会话各存一份(作用域是会话,见 <c>SessionOf</c>)。
+    /// </summary>
+    private readonly record struct SelectionSlot(uint Atom, string? Scope);
+
+    private readonly Dictionary<SelectionSlot, (XWindow Window, XClient? Client, uint Time)> _selections = [];
 
     /// <summary>
     /// 每个选区最后一次换属主的时间(协议「SetSelectionOwner」的 last-change time)。属主窗口销毁、属主断开、属主放弃时记录整条删掉,
     /// 这个时间却不随之消失 —— 否则先放弃再带一个未来的时间戳去占,之后所有人带真实事件时间去占都被当成「早于当前属主」静默忽略。
     /// </summary>
-    private readonly Dictionary<uint, uint> _selectionLastChange = [];
+    private readonly Dictionary<SelectionSlot, uint> _selectionLastChange = [];
 
     private void InitAtoms()
     {
@@ -358,14 +364,15 @@ public sealed partial class X11Server
         {
             time = now;
         }
+        SelectionSlot slot = SlotOf(selection, c);   // 按会话隔离的选区:只动这个客户端所在会话的那一份
         // 时间早于最后一次换属主的时间,或晚于服务端当前时间:忽略(协议规定)。两条都与当前有没有属主无关。
         if (unchecked((int)(time - now)) > 0
-            || (_selectionLastChange.TryGetValue(selection, out uint lastChange) && unchecked((int)(time - lastChange)) < 0))
+            || (_selectionLastChange.TryGetValue(slot, out uint lastChange) && unchecked((int)(time - lastChange)) < 0))
         {
             return;
         }
-        _selectionLastChange[selection] = time;
-        if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) current))
+        _selectionLastChange[slot] = time;
+        if (_selections.TryGetValue(slot, out (XWindow Window, XClient? Client, uint Time) current))
         {
             if (!ReferenceEquals(current.Client, c) || owner is null)
             {
@@ -375,20 +382,21 @@ public sealed partial class X11Server
         }
         if (owner is null)
         {
-            _selections.Remove(selection);
+            _selections.Remove(slot);
         }
         else
         {
-            _selections[selection] = (owner, c, time);
+            _selections[slot] = (owner, c, time);
+            NoteClientSelection(slot);
         }
-        NotifySelectionChange(selection, 0, ownerId, time);
+        NotifySelectionChange(selection, 0, ownerId, time, client => InScope(client, slot));
         if (owner is null)
         {
-            OnSelectionOwnerLost(selection);
+            OnSelectionOwnerLost(slot);
         }
-        if (owner is not null)
+        else
         {
-            OnClientTookSelection(c, owner, selection, time);
+            OnClientTookSelection(c, owner, slot, time);
         }
     }
 
@@ -396,7 +404,7 @@ public sealed partial class X11Server
     {
         uint selection = r.U32();
         CheckAtom(selection);
-        uint owner = _selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) s) ? s.Window.Id : 0;
+        uint owner = _selections.TryGetValue(SlotOf(selection, c), out (XWindow Window, XClient? Client, uint Time) s) ? s.Window.Id : 0;
         c.Reply(0, w => w.U32(owner).Zero(20));
     }
 
@@ -415,7 +423,7 @@ public sealed partial class X11Server
             // 拿它当属性名写到请求方给的窗口上(可以是根窗口),之后 xprop -root 之类列属性的都收到 BadAtom。
             CheckAtom(property);
         }
-        if (_selections.TryGetValue(selection, out (XWindow Window, XClient? Client, uint Time) owner))
+        if (_selections.TryGetValue(SlotOf(selection, c), out (XWindow Window, XClient? Client, uint Time) owner))
         {
             if (owner.Client is null)
             {

@@ -822,13 +822,13 @@ public sealed partial class X11Server
 
     private void ReleaseSelectionsAndGrabs(XClient client)
     {
-        foreach ((uint atom, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
+        foreach ((SelectionSlot slot, (XWindow Window, XClient? Client, uint Time) owner) in _selections.ToArray())
         {
             if (ReferenceEquals(owner.Client, client))
             {
-                _selections.Remove(atom);
-                NotifySelectionChange(atom, 2, 0, owner.Time);
-                OnSelectionOwnerLost(atom);
+                _selections.Remove(slot);
+                NotifySelectionChange(slot.Atom, 2, 0, owner.Time, client => InScope(client, slot));
+                OnSelectionOwnerLost(slot);
             }
         }
         DropOrphanedFetches();   // 正在取的选区,属主走了

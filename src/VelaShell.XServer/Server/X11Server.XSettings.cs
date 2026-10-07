@@ -28,7 +28,7 @@ public sealed partial class X11Server
     {
         _dpi = _options.Dpi;
         _scale = _options.ScaleFactor;
-        _selections[Intern("_XSETTINGS_S0")] = (SelectionWindow, null, 0);
+        _selections[new SelectionSlot(Intern("_XSETTINGS_S0"), null)] = (SelectionWindow, null, 0);
         PublishDisplaySettings();
     }
 

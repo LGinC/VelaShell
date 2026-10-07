@@ -123,7 +123,7 @@ public sealed partial class X11Server
         check.Properties[Intern("_NET_WM_NAME")] = new XProperty(Intern("UTF8_STRING"), 8, Encoding.UTF8.GetBytes(_options.WindowManagerName));
         // ICCCM §2.8:窗口管理器占有 WM_S0(屏幕 0 的管理器选区)。与根窗口的 SubstructureRedirect 一起,远端误跑的窗口管理器
         // 一看就知道已经有窗口管理器了(真实桌面上就是这样)。
-        _selections[Intern("WM_S0")] = (check, null, 0);
+        _selections[new SelectionSlot(Intern("WM_S0"), null)] = (check, null, 0);
         SetProperty(Root, Intern("_NET_NUMBER_OF_DESKTOPS"), cardinal, [1]);
         SetProperty(Root, Intern("_NET_CURRENT_DESKTOP"), cardinal, [0]);
         SetProperty(Root, Intern("_NET_DESKTOP_VIEWPORT"), cardinal, [0, 0]);
