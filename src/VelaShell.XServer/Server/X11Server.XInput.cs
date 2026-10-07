@@ -394,18 +394,10 @@ public sealed partial class X11Server
             case 60:  // XIGetSelectedEvents
                 {
                     XWindow window = Window(r.U32());
-                    List<(ushort Device, ulong Mask)> masks = [];
-                    if (window.Xi2Selections.TryGetValue(c, out (ulong Master, ulong Slave) selected))
-                    {
-                        if (selected.Master != 0)
-                        {
-                            masks.Add((1, selected.Master));
-                        }
-                        if (selected.Slave != 0)
-                        {
-                            masks.Add((0, selected.Slave));
-                        }
-                    }
+                    // 按设备回当初选的那几份(原先只记了合起来的主 / 从两个,回的设备号对不上)。
+                    List<(ushort Device, ulong Mask)> masks = window.Xi2Selections.TryGetValue(c, out XiSelection? selected)
+                        ? [.. selected.ByDevice.Select(p => (p.Key, p.Value))]
+                        : [];
                     c.Reply(minor, w =>
                     {
                         w.U16((ushort)masks.Count).Zero(22);
@@ -648,38 +640,96 @@ public sealed partial class X11Server
         XWindow window = Window(r.U32());
         ushort count = r.U16();
         r.Skip(2);
-        (ulong master, ulong slave) = window.Xi2Selections.GetValueOrDefault(c);
+        // 先读完、核对完再改(出错的请求不产生效果);同一个设备出现多次时后一份为准。
+        List<(ushort Device, ulong Mask)> masks = [with(count)];
         for (int i = 0; i < count; i++)
         {
             ushort device = r.U16();
             ushort units = r.U16();
             ulong mask = ReadXiMask(r, units);
+            if (device > 1 && !IsKnownDevice(device))
+            {
+                throw BadDevice(device);
+            }
+            masks.Add((device, mask));
+        }
+        XiSelection selection = window.Xi2Selections.GetValueOrDefault(c) ?? new XiSelection();
+        foreach ((ushort device, ulong mask) in masks)
+        {
+            if (mask == 0)
+            {
+                selection.ByDevice.Remove(device);
+            }
+            else
+            {
+                selection.ByDevice[device] = mask;
+            }
+        }
+        UpdateXiSelection(window, c, selection);
+    }
+
+    /// <summary>只由键盘产生的 evtype:KeyPress、KeyRelease、FocusIn、FocusOut、RawKeyPress、RawKeyRelease。</summary>
+    private const ulong XiKeyboardEvents = (1UL << 2) | (1UL << 3) | (1UL << XiFocusIn) | (1UL << XiFocusOut) | (1UL << XiRawKeyPress) | (1UL << XiRawKeyRelease);
+
+    /// <summary>两类设备都会产生的 evtype:DeviceChanged、HierarchyChanged、PropertyEvent。其余的只由指针产生。</summary>
+    private const ulong XiAnyDeviceEvents = (1UL << 1) | (1UL << XiHierarchyChanged) | (1UL << 12);
+
+    /// <summary>
+    /// 按当前的设备层级把按设备存的掩码合成主 / 从两个,存回去(全空就摘掉)。具体设备那一份只取这类设备产生得了的事件 ——
+    /// 给主指针选的 KeyPress 不会让主键盘的按键也报过来。已经删掉的设备那一份丢掉。
+    /// </summary>
+    private void UpdateXiSelection(XWindow window, XClient client, XiSelection selection)
+    {
+        ulong master = 0, slave = 0;
+        foreach ((ushort device, ulong mask) in selection.ByDevice.ToArray())
+        {
             switch (device)
             {
                 case 0:   // XIAllDevices
-                    master = mask;
-                    slave = mask;
+                    master |= mask;
+                    slave |= mask;
                     break;
                 case 1:   // XIAllMasterDevices
-                    master = mask;
-                    break;
-                case var id when IsMasterDevice(id):
-                    master = mask;
-                    break;
-                case var id when IsKnownDevice(id):
-                    slave = mask;
+                    master |= mask;
                     break;
                 default:
-                    throw BadDevice(device);
+                    if (!_xiDevices.TryGetValue(device, out XiDevice? d))
+                    {
+                        selection.ByDevice.Remove(device);
+                        break;
+                    }
+                    ulong own = mask & (d.Pointer ? ~XiKeyboardEvents : XiKeyboardEvents | XiAnyDeviceEvents);
+                    if (d.Master)
+                    {
+                        master |= own;
+                    }
+                    else
+                    {
+                        slave |= own;
+                    }
+                    break;
             }
         }
-        if (master == 0 && slave == 0)
+        (selection.Master, selection.Slave) = (master, slave);
+        if (selection.ByDevice.Count == 0)
         {
-            window.Xi2Selections.Remove(c);
+            window.Xi2Selections.Remove(client);
         }
         else
         {
-            window.Xi2Selections[c] = (master, slave);
+            window.Xi2Selections[client] = selection;
+        }
+    }
+
+    /// <summary>设备层级变了(加删主设备、挂上 / 摘下从设备):各窗口上的 XI2 选择按新的层级重算。</summary>
+    private void RecomputeXiSelections()
+    {
+        foreach (XWindow window in _resources.Values.OfType<XWindow>().Append(Root).Distinct())
+        {
+            foreach ((XClient client, XiSelection selection) in window.Xi2Selections.ToArray())
+            {
+                UpdateXiSelection(window, client, selection);
+            }
         }
     }
 

@@ -12,6 +12,26 @@ using VelaShell.XServer.Server;
 
 namespace VelaShell.XServer.Windowing;
 
+/// <summary>
+/// 一个客户端在一个窗口上的 XI2 事件选择。按 deviceid 分开存(XI2 协议「XISelectEvents」:每个设备一份掩码,再选同一个设备只换它那一份,
+/// 掩码长度为 0 清掉它;0 = XIAllDevices、1 = XIAllMasterDevices),投递时看按设备种类合起来的 <see cref="Master" /> / <see cref="Slave" />
+/// (由服务端按当前的设备层级算)。原先每窗口每客户端只记主、从两个掩码:先给 XIAllMasterDevices 选原始事件、再给 XIAllDevices 选
+/// HierarchyChanged,前一份就被盖掉;一次请求里给设备 2 选指针事件、给设备 3 选按键,指针事件也全丢。
+/// </summary>
+internal sealed class XiSelection
+{
+    /// <summary>deviceid → 掩码(按 evtype 的位)。</summary>
+    public SortedDictionary<ushort, ulong> ByDevice { get; } = [];
+
+    /// <summary>主设备的事件看的掩码:XIAllDevices、XIAllMasterDevices 与各主设备那一份的并集。</summary>
+    public ulong Master { get; set; }
+
+    /// <summary>从设备的事件看的掩码:XIAllDevices 与各从设备那一份的并集。</summary>
+    public ulong Slave { get; set; }
+
+    public void Deconstruct(out ulong master, out ulong slave) => (master, slave) = (Master, Slave);
+}
+
 /// <summary>窗口上的一个属性(ChangeProperty 存进来的东西)。</summary>
 /// <remarks>
 /// 不可变:改一个属性就换一个新对象(快照、图标缓存按引用判断变没变)。追加(ChangeProperty 的 Append)与上一版共用一块
@@ -159,12 +179,12 @@ internal sealed class XWindow : XResource
     /// <summary>可见区域缓存(ClipByChildren / VisibleInner),按服务端的可见性代号与顶层缓冲尺寸失效。只读共享,用的人自己 Clone。</summary>
     internal (int Generation, int BufferWidth, int BufferHeight, Region? ClipByChildren, Region? VisibleInner) VisibilityCache { get; set; }
 
-    /// <summary>XInput2 的事件选择:客户端 → 按 evtype 的位掩码(选主设备的、选从设备的分开记)。</summary>
-    public Dictionary<XClient, (ulong Master, ulong Slave)> Xi2Selections { get; } = [];
+    /// <summary>XInput2 的事件选择:客户端 → 它在这个窗口上按设备选的掩码(见 <see cref="XiSelection" />)。</summary>
+    public Dictionary<XClient, XiSelection> Xi2Selections { get; } = [];
 
     /// <summary>这个客户端在这个窗口上有没有经 XI2 选 <paramref name="evtype" />。</summary>
     public bool Xi2Selects(XClient client, int evtype) =>
-        Xi2Selections.TryGetValue(client, out (ulong Master, ulong Slave) masks) && ((masks.Master | masks.Slave) & (1UL << evtype)) != 0;
+        Xi2Selections.TryGetValue(client, out XiSelection? masks) && ((masks.Master | masks.Slave) & (1UL << evtype)) != 0;
 
     /// <summary>这个窗口上有没有客户端经 XI2 选了 <paramref name="evtype" />。</summary>
     public bool AnyXi2Selects(int evtype)

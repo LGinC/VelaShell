@@ -216,6 +216,7 @@ public sealed partial class X11Server
         {
             if (flags != 0)
             {
+                RecomputeXiSelections();
                 SendHierarchyChanged(flags, changed);
             }
         }

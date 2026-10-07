@@ -360,4 +360,40 @@ public sealed class XInputTests
         XMessage deleted = await NextXiAsync(little, xi, 12);
         Assert.AreEqual(0, deleted.Bytes[20], "PropertyDeleted");
     }
+    [TestMethod]
+    public async Task XISelectEvents按设备分开存_分两次选不互相覆盖_一次请求给两个设备各选各的()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(c);
+        uint window = await MapTopAsync(c, host);
+        XTopLevelWindow handle = host.Mapped[window];
+
+        // 先给 XIAllMasterDevices 选 RawMotion,再给 XIAllDevices 选 HierarchyChanged(原先后一次把前一次的主设备掩码盖掉)。
+        await SelectAsync(c, xi, c.RootWindow, 1, 1u << 17);
+        await SelectAsync(c, xi, c.RootWindow, 0, 1u << 11);
+        await c.SyncAsync();
+        server.InjectPointerMotion(handle, 5, 5);
+        await NextXiAsync(c, xi, 17);
+
+        XMessage selected = await c.RequestAsync(xi, 60, b => b.U32(c.RootWindow));   // XIGetSelectedEvents
+        Assert.AreEqual(2, selected.U16(8), "两份:XIAllDevices 与 XIAllMasterDevices");
+        Assert.AreEqual(0, selected.U16(32));
+        Assert.AreEqual(1u << 11, selected.U32(36));
+        Assert.AreEqual(1, selected.U16(44));
+        Assert.AreEqual(1u << 17, selected.U32(48));
+
+        // 一次请求:主指针(2)选 Motion,主键盘(3)选 KeyPress —— 原先后一个把前一个盖掉,指针事件全丢。
+        await c.SendAsync(xi, 46, b => b.U32(window).U16(2).U16(0)
+            .U16(2).U16(1).U32(1u << 6)
+            .U16(3).U16(1).U32(1u << 2));
+        await c.SyncAsync();
+        server.InjectPointerMotion(handle, 9, 9);
+        XMessage motion = await NextXiAsync(c, xi, 6);
+        Assert.AreEqual(2, motion.U16(10), "deviceid = 主指针");
+        server.FocusTopLevel(handle);
+        server.InjectKey(38, pressed: true);
+        await NextXiAsync(c, xi, 2);
+    }
 }
