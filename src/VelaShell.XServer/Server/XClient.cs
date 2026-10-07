@@ -280,7 +280,7 @@ internal sealed class XClient : IDisposable
     /// <summary>经 <see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" /> 进来的(SSH 转发):<see cref="X11ServerOptions.RestrictForwardedClients" /> 管它。</summary>
     public bool Forwarded { get; set; }
 
-    /// <summary>连接对端的 uid(Linux 上经 SO_PEERCRED 取得);取不到时为 null。MIT-SHM 按它核对段的访问权限。</summary>
+    /// <summary>连接对端的 uid(Linux 上经 SO_PEERCRED、macOS / FreeBSD 上经 getpeereid 取得);取不到时为 null。MIT-SHM 按它核对段的访问权限。</summary>
     public uint? PeerUid { get; set; }
 
     /// <summary>

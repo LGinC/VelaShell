@@ -7,7 +7,7 @@
 //   Xlib / XCB 对 DISPLAY=:N 先试它),与 X.Org 的 Xtrans 行为一致。
 //
 //   本机客户端(DISPLAY=:N)走这里,比 TCP 快,也不必开端口。连进来的一律算本机连接;是不是「运行服务端的这个用户」:
-//   套接字文件在 Listen 之前就改成 0600,连得上的只有属主(与 root);抽象命名空间没有文件权限,按 SO_PEERCRED 的 uid 核对。
+//   套接字文件在 Listen 之前就改成 0600,连得上的只有属主(与 root);抽象命名空间没有文件权限;取得到对端 uid 时一律以 uid 为准(见 IsLocalUser)。
 //   名字被别人占着时整个显示号不用(StartAsync 抛异常),放套接字文件的目录属主不可信时不开套接字文件 —— 见 StartUnixListeners。
 
 using System.Net.Sockets;
@@ -132,8 +132,9 @@ public sealed partial class X11Server
             : $"{directory} is owned by another user (uid {stat.Uid})";
     }
 
-    /// <summary>本进程的有效 uid(Linux 与 macOS);别的平台为 null。</summary>
-    private static readonly uint? EffectiveUid = OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() ? GetEffectiveUid() : null;
+    /// <summary>本进程的有效 uid(Linux、macOS、FreeBSD);别的平台为 null。</summary>
+    private static readonly uint? EffectiveUid =
+        OperatingSystem.IsLinux() || OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD() ? GetEffectiveUid() : null;
 
     /// <summary>
     /// 不跟随符号链接地取路径的属主与 st_mode。查不了(不是 Linux / macOS、libc 没有这个函数、内核或 seccomp 不给 statx)时返回 null;
@@ -281,7 +282,7 @@ public sealed partial class X11Server
     private async Task ServeUnixAsync(Socket connection, bool ownerOnly, CancellationToken cancellationToken)
     {
         uint? peerUid = PeerUidOf(connection);
-        bool localUser = ownerOnly || (peerUid is { } uid && uid == EffectiveUid);
+        bool localUser = IsLocalUser(ownerOnly, peerUid, EffectiveUid);
         await using NetworkStream stream = new(connection, ownsSocket: true);
         if (!localUser && peerUid is not null && _cookie is null)
         {
@@ -299,25 +300,39 @@ public sealed partial class X11Server
     }
 
     /// <summary>
-    /// Linux 上经 SO_PEERCRED 取连接对端的 uid(struct ucred:pid、uid、gid 各 4 字节);别的平台或取不到时为 null。
+    /// 连进来的是不是运行服务端的这个用户:取到对端 uid 时<b>以 uid 为准</b>,取不到才看连的是不是只有属主能连的套接字文件。
+    /// 原先两者取「或」:自定义路径落在 9p / drvfs(WSL 挂进来的 Windows 盘)之类的文件系统上时,chmod 0600 不报错却不生效,
+    /// 谁都连得上,别的用户也被当成了本用户、不要 cookie。
+    /// </summary>
+    internal static bool IsLocalUser(bool ownerOnly, uint? peerUid, uint? self) => peerUid is { } uid ? uid == self : ownerOnly;
+
+    /// <summary>
+    /// 连接对端的 uid:Linux 上经 SO_PEERCRED(struct ucred:pid、uid、gid 各 4 字节),macOS / FreeBSD 上经 getpeereid;
+    /// 别的平台或取不到时为 null。
     /// </summary>
     private static uint? PeerUidOf(Socket connection)
     {
-        if (!OperatingSystem.IsLinux())
-        {
-            return null;
-        }
-        Span<byte> credentials = stackalloc byte[12];
         try
         {
-            int length = connection.GetRawSocketOption(1, 17, credentials);   // SOL_SOCKET、SO_PEERCRED
-            return length >= 8 ? BitConverter.ToUInt32(credentials[4..]) : null;
+            if (OperatingSystem.IsLinux())
+            {
+                Span<byte> credentials = stackalloc byte[12];
+                int length = connection.GetRawSocketOption(1, 17, credentials);   // SOL_SOCKET、SO_PEERCRED
+                return length >= 8 ? BitConverter.ToUInt32(credentials[4..]) : null;
+            }
+            if (OperatingSystem.IsMacOS() || OperatingSystem.IsFreeBSD())
+            {
+                return GetPeerEid((int)connection.Handle, out uint uid, out _) == 0 ? uid : null;
+            }
         }
-        catch (SocketException)
+        catch (Exception ex) when (ex is SocketException or EntryPointNotFoundException or DllNotFoundException)
         {
-            return null;
         }
+        return null;
     }
+
+    [LibraryImport("libc", EntryPoint = "getpeereid")]
+    private static partial int GetPeerEid(int socket, out uint effectiveUid, out uint effectiveGid);
 
     [LibraryImport("libc", EntryPoint = "geteuid")]
     private static partial uint GetEffectiveUid();

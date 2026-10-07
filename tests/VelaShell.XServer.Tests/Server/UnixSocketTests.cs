@@ -198,6 +198,16 @@ public sealed partial class UnixSocketTests
         }
     }
 
+    [TestMethod]
+    public void 取得到对端uid时以uid为准_取不到才看套接字文件的权限()
+    {
+        // 9p / drvfs(WSL 挂进来的 Windows 盘)上 chmod 0600 不报错却不生效:「只有属主连得上」不成立,别的用户也连得进来。
+        Assert.IsFalse(X11Server.IsLocalUser(ownerOnly: true, peerUid: 4242, self: 1000), "原先取「或」:别的用户被当成本用户、不要 cookie");
+        Assert.IsTrue(X11Server.IsLocalUser(ownerOnly: false, peerUid: 1000, self: 1000));
+        Assert.IsTrue(X11Server.IsLocalUser(ownerOnly: true, peerUid: null, self: 1000), "取不到 uid(Windows):看套接字文件的权限");
+        Assert.IsFalse(X11Server.IsLocalUser(ownerOnly: false, peerUid: null, self: null));
+    }
+
     /// <summary>6000 + N 此刻没人占着的显示号(TCP 监听要用)。</summary>
     private static int FreeDisplayNumber()
     {
