@@ -135,6 +135,12 @@ public sealed record XRaiseRequest(XTopLevelWindow Window) : XWindowManagerReque
 /// </summary>
 public sealed record XFocusRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 
+/// <summary>
+/// 窗口对 <c>_NET_WM_PING</c> 没有回应(用户点了关闭,服务端发 WM_DELETE_WINDOW 的同时 ping 了它,时限内没回):程序多半卡住了。
+/// 宿主可以问用户要不要强制结束(<see cref="X11Server.KillTopLevelClient" />)。只对在 WM_PROTOCOLS 里声明了 <c>_NET_WM_PING</c> 的窗口发。
+/// </summary>
+public sealed record XNotRespondingRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+
 /// <summary>关闭窗口(<c>_NET_CLOSE_WINDOW</c>,一般由任务栏 / 分页器发出)。</summary>
 public sealed record XCloseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 

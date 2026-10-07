@@ -12,6 +12,7 @@
 
 using System.Runtime.InteropServices;
 using VelaShell.XServer.Protocol;
+using VelaShell.XServer.Server;
 using VelaShell.XServer.Windowing;
 
 namespace VelaShell.XServer;
@@ -108,6 +109,8 @@ public sealed partial class X11Server
             OverrideRedirect = top.OverrideRedirect,
             TransientFor = transientFor,
             SupportsDeleteWindow = SupportsProtocol(top, _wmDeleteWindowAtom),
+            ClientId = top.Owner?.Index ?? 0,
+            ClientLabel = top.Owner?.Label,
             HasAlpha = top.Depth == 32,
             Shape = shape,
         };
@@ -277,14 +280,61 @@ public sealed partial class X11Server
         {
             return;   // override-redirect 的弹层不归窗口管理器管(同 FocusTopLevel):关它不会去断开整个客户端
         }
-        if (SupportsProtocol(top, _wmDeleteWindowAtom))
+        if (SupportsProtocol(top, _wmDeleteWindowAtom) && !IsRetained(owner))
         {
             uint time = Now;
             owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmDeleteWindowAtom).U32(time).Zero(12), sent: true);
+            Ping(top, owner, time);
             return;
         }
-        owner.Abort();
-        DisconnectClient(owner);
+        // 没声明 WM_DELETE_WINDOW:断开它(与窗口管理器的 XKillClient 一致)。已经以 Retain 模式断开的客户端消息发不过去、
+        // 也没有连接可断,原先窗口成了关不掉的僵尸 —— 销毁它留下的资源。
+        KillClientOf(owner);
+    }
+
+    /// <summary>_NET_WM_PING 发出去还没回的:顶层 → 发出时的时间戳。</summary>
+    private readonly Dictionary<XWindow, uint> _pendingPings = [];
+
+    /// <summary>ping 等回应的时限,过了还没回就告诉宿主它无响应(测试可以调短)。</summary>
+    internal TimeSpan PingTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// EWMH「_NET_WM_PING」:窗口在 WM_PROTOCOLS 里声明了它,就随关闭请求发一条 ping(ClientMessage,data 依次是 _NET_WM_PING、
+    /// 时间戳、窗口),客户端应当把它原样发回根窗口(见 <see cref="OnPong" />)。<see cref="PingTimeout" /> 之内没回就请宿主处理
+    /// (<see cref="XNotRespondingRequest" />):声明了 WM_DELETE_WINDOW 却卡死的程序,原先用户关不掉,只能停掉整个 X Server。
+    /// </summary>
+    private void Ping(XWindow top, XClient owner, uint time)
+    {
+        uint ping = Intern("_NET_WM_PING");
+        if (!SupportsProtocol(top, ping) || _pendingPings.ContainsKey(top))
+        {
+            return;
+        }
+        _pendingPings[top] = time;
+        owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(ping).U32(time).U32(top.Id).Zero(8), sent: true);
+        _ = DelayThenPostAsync((uint)PingTimeout.TotalMilliseconds, () => PingExpired(top, time), _lifetime.Token);
+    }
+
+    private void PingExpired(XWindow top, uint time)
+    {
+        if (!_pendingPings.TryGetValue(top, out uint sent) || sent != time)
+        {
+            return;   // 回过了
+        }
+        _pendingPings.Remove(top);
+        if (top.Mapped && _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
+        {
+            _host.WindowManagerRequested(new XNotRespondingRequest(handle));
+        }
+    }
+
+    /// <summary>客户端回了 ping:发回根窗口的 ClientMessage,data[1] 是时间戳、data[2] 是它的窗口。</summary>
+    private void OnPong(uint time, uint windowId)
+    {
+        if (Lookup<XWindow>(windowId) is { } window && _pendingPings.TryGetValue(window, out uint sent) && sent == time)
+        {
+            _pendingPings.Remove(window);
+        }
     }
 
     /// <summary>宿主设定的窗口状态写进 _NET_WM_STATE / WM_STATE;Focused 位由服务端按焦点维护,保留现值。</summary>

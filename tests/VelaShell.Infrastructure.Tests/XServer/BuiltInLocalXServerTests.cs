@@ -102,7 +102,7 @@ public class BuiltInLocalXServerTests
 
         Assert.AreEqual("localhost:10.0", resolution.Display);
         Assert.IsNotNull(resolution.Connector);
-        await using Stream stream = await resolution.Connector(CancellationToken.None);
+        await using Stream stream = await resolution.Connector("user@host:22", CancellationToken.None);
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
         byte[] head = new byte[8];
@@ -122,10 +122,10 @@ public class BuiltInLocalXServerTests
         Assert.IsNotNull(resolution.Connector);
 
         await server.StopAsync();
-        await Assert.ThrowsAsync<InvalidOperationException>(async () => await resolution.Connector(CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () => await resolution.Connector("user@host:22", CancellationToken.None));
 
         Assert.IsTrue((await server.StartAsync()).Success);
-        await using Stream stream = await resolution.Connector(CancellationToken.None);
+        await using Stream stream = await resolution.Connector("user@host:22", CancellationToken.None);
         await stream.WriteAsync(new byte[] { (byte)'l', 0, 11, 0, 0, 0, 0, 0, 0, 0, 0, 0 });
         await stream.FlushAsync();
         byte[] head = new byte[8];
@@ -181,7 +181,7 @@ public class BuiltInLocalXServerTests
                 Assert.AreEqual(1, await HandshakeAsync(authorized.GetStream(), entry.Data), "带上 .Xauthority 里的 cookie:Success");
             }
             XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
-            await using (Stream channel = await resolution.Connector!(CancellationToken.None))
+            await using (Stream channel = await resolution.Connector!("user@host:22", CancellationToken.None))
             {
                 Assert.AreEqual(1, await HandshakeAsync(channel), "SSH 的连接器:转发层核对过假 cookie,不再要");
             }

@@ -150,7 +150,7 @@ public sealed partial class X11Server : IAsyncDisposable
     /// <param name="stream">双工流(TCP、Unix 套接字……)。服务端<b>不释放</b>它:任务结束后由调用方释放。</param>
     /// <param name="isLocal">
     /// 对端算不算本机连接,只在<b>没配置</b> cookie 时起作用(那时只接受本机连接)。配置了 cookie 时一律要客户端带上它 ——
-    /// 已经由别的环节验过身份的流(比如 SSH 转发已核对过假 cookie)用 <see cref="ServeAuthenticatedAsync" />。
+    /// 已经由别的环节验过身份的流(比如 SSH 转发已核对过假 cookie)用 <see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />。
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
     public Task ServeAsync(Stream stream, bool isLocal, CancellationToken cancellationToken = default) =>
@@ -165,7 +165,34 @@ public sealed partial class X11Server : IAsyncDisposable
     /// </param>
     /// <param name="cancellationToken">取消令牌。</param>
     public Task ServeAuthenticatedAsync(Stream stream, CancellationToken cancellationToken = default) =>
-        ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: true), cancellationToken);
+        ServeAuthenticatedAsync(stream, label: null, cancellationToken);
+
+    /// <summary>同 <see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />,并给这条连接起个名字(比如 <c>user@host:22</c>)。</summary>
+    /// <param name="stream">见 <see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />。</param>
+    /// <param name="label">
+    /// 连接的来历,进日志与 <see cref="GetClientsAsync" />、<see cref="XTopLevelSnapshot.ClientLabel" /> —— 宿主据此说得出「哪个会话的程序」。
+    /// </param>
+    /// <param name="cancellationToken">取消令牌。</param>
+    public Task ServeAuthenticatedAsync(Stream stream, string? label, CancellationToken cancellationToken = default) =>
+        ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: false, Uid: null, LocalUser: false, Authenticated: true, label), cancellationToken);
+
+    /// <summary>
+    /// 连着的 X 客户端,连同以 Retain 模式断开、资源还留着的:编号、宿主给的名字、资源数、记在账上的内存、映射着的顶层。
+    /// 宿主拿它列「谁连着、来自哪个会话、占多少内存」,停服前说得出「会断开 N 个程序」。
+    /// </summary>
+    public Task<IReadOnlyList<XClientInfo>> GetClientsAsync() => InvokeAsync(SnapshotClients);
+
+    /// <summary>
+    /// 断开编号为 <paramref name="clientId" /> 的客户端(<see cref="XClientInfo.Id" />,KillClient 语义):以 Retain 模式断开过的,
+    /// 销毁它留下的资源。没有这个编号时什么也不做。
+    /// </summary>
+    public void DisconnectClient(int clientId) => Post(null, () =>
+    {
+        if ((_clients.GetValueOrDefault(clientId) ?? _retainedClients.GetValueOrDefault(clientId)) is { } client)
+        {
+            KillClientOf(client);
+        }
+    });
 
     /// <inheritdoc />
     public async ValueTask DisposeAsync()
@@ -319,6 +346,23 @@ public sealed partial class X11Server : IAsyncDisposable
             if (LiveTopLevel(window) is { } top)
             {
                 ApplyClose(top);
+            }
+        });
+    }
+
+    /// <summary>
+    /// 强制结束这个顶层所属的客户端(KillClient 语义):断开它的连接;以 Retain 模式断开过、只剩资源的,把它留下的资源全部销毁。
+    /// 用在客户端卡死的时候 —— 声明了 WM_DELETE_WINDOW 的程序卡住了,<see cref="CloseTopLevel" /> 关不掉它;通常在
+    /// <see cref="XNotRespondingRequest" /> 之后、用户确认了才调。会连同这个客户端的其它窗口一起关掉。
+    /// </summary>
+    public void KillTopLevelClient(XTopLevelWindow window)
+    {
+        CheckHandle(window);
+        Post(null, () =>
+        {
+            if (LiveTopLevel(window) is { Owner: { } owner })
+            {
+                KillClientOf(owner);
             }
         });
     }

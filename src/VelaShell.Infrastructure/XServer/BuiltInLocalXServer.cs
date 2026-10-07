@@ -25,7 +25,7 @@ namespace VelaShell.Infrastructure.XServer;
 /// <b>授权</b>:每次启动生成一个随机的 <c>MIT-MAGIC-COOKIE-1</c>,TCP 连接(包括环回 —— 本机别的进程、别的用户都连得到那个端口)
 /// 必须带上它;cookie 写进用户的 <c>.Xauthority</c>(<see cref="XAuthorityFile" />,停下时撤出),本机 X 程序经 Xlib 自动带上。
 /// Unix 套接字只有同一个用户连得进来,不要 cookie。SSH 的 x11 通道经连接器进来,转发层已经核对过远端的假 cookie,
-/// 走 <see cref="X11Server.ServeAuthenticatedAsync" />。
+/// 走 <see cref="X11Server.ServeAuthenticatedAsync(Stream, string?, CancellationToken)" />。
 /// </para>
 /// <para>
 /// 状态变化(<see cref="StateChanged" />)在调用启动 / 停止的那个线程上触发,界面侧自己切回 UI 线程。
@@ -308,7 +308,7 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
     /// 每条通道都接进一个已释放的服务端,远端只看到 <c>Failed to open display</c>。
     /// 此刻没在运行就抛 <see cref="InvalidOperationException" />,转发层按「本机显示连不上」处理。
     /// </remarks>
-    private ValueTask<Stream> ConnectAsync(CancellationToken cancellationToken)
+    private ValueTask<Stream> ConnectAsync(string? label, CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         X11Server? server;
@@ -322,17 +322,17 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
             throw new InvalidOperationException("The built-in X server is not running.");
         }
         (InMemoryDuplexStream serverSide, InMemoryDuplexStream clientSide) = InMemoryTransport.CreatePair();
-        _ = ServeAsync(server, serverSide);
+        _ = ServeAsync(server, serverSide, label);
         return ValueTask.FromResult<Stream>(clientSide);
     }
 
-    private static async Task ServeAsync(X11Server server, InMemoryDuplexStream stream)
+    private static async Task ServeAsync(X11Server server, InMemoryDuplexStream stream, string? label)
     {
         try
         {
             // 服务端不拥有流:连接结束(客户端断开、服务端停下)后在这里释放,SSH 那一端随之读到 EOF。
             // SSH 转发层已经核对过远端给的假 cookie:这条流不再查授权(服务端的 cookie 只给 TCP 上的本机程序)。
-            await server.ServeAuthenticatedAsync(stream).ConfigureAwait(false);
+            await server.ServeAuthenticatedAsync(stream, label).ConfigureAwait(false);
         }
         catch (Exception ex) when (ex is ObjectDisposedException or IOException or OperationCanceledException)
         {

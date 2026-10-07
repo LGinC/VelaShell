@@ -6234,6 +6234,15 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 執行中({0}),點擊停止</value>
   </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>程式沒有回應</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>「{0}」沒有回應。要強制結束這個 X 程式嗎？它的其他視窗也會一起關閉，未儲存的內容會遺失。</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>強制結束</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>啟動 / 停止 X Server</value>
   </data>

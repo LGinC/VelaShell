@@ -6234,6 +6234,15 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 运行中({0}),点击停止</value>
   </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>程序无响应</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>“{0}”没有响应。要强制结束这个 X 程序吗？它的其他窗口也会一起关闭，未保存的内容会丢失。</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>强制结束</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>启动 / 停止 X Server</value>
   </data>

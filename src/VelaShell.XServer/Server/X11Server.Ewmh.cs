@@ -101,7 +101,7 @@ public sealed partial class X11Server
             "_NET_NUMBER_OF_DESKTOPS", "_NET_DESKTOP_GEOMETRY", "_NET_DESKTOP_VIEWPORT", "_NET_CURRENT_DESKTOP",
             "_NET_ACTIVE_WINDOW", "_NET_WORKAREA", "_NET_CLOSE_WINDOW", "_NET_MOVERESIZE_WINDOW", "_NET_WM_MOVERESIZE",
             "_NET_REQUEST_FRAME_EXTENTS", "_NET_FRAME_EXTENTS", "_NET_WM_NAME", "_NET_WM_DESKTOP", "_NET_WM_WINDOW_TYPE",
-            "_NET_WM_STATE", "_NET_WM_ICON", "_NET_WM_PID", "_NET_WM_WINDOW_OPACITY",
+            "_NET_WM_STATE", "_NET_WM_ICON", "_NET_WM_PID", "_NET_WM_WINDOW_OPACITY", "_NET_WM_PING",
         ];
         supported.AddRange(NetWmStates.Select(s => s.Atom));
         supported.AddRange(NetWmTypes.Select(t => t.Atom));
@@ -296,6 +296,11 @@ public sealed partial class X11Server
         uint Read(int offset) => be ? BinaryPrimitives.ReadUInt32BigEndian(raw.AsSpan(offset)) : BinaryPrimitives.ReadUInt32LittleEndian(raw.AsSpan(offset));
         uint windowId = Read(4), type = Read(8);
         uint[] data = [Read(12), Read(16), Read(20), Read(24), Read(28)];
+        if (type == _wmProtocolsAtom && data[0] == Intern("_NET_WM_PING"))
+        {
+            OnPong(data[1], data[2]);   // ping 的回应:窗口字段是根窗口,data[2] 才是它自己的窗口
+            return;
+        }
         if (Lookup<XWindow>(windowId) is not { IsTopLevel: true } top)
         {
             return;

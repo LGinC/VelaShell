@@ -616,12 +616,6 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Value, id);
         }
-        if (IsRetained(owner))
-        {
-            DestroyRetainedClient(owner);   // 已经以 Retain 模式断开:销毁它留下的全部资源
-            return;
-        }
-        owner.Abort();
-        DisconnectClient(owner);
+        KillClientOf(owner);   // 已经以 Retain 模式断开的:销毁它留下的全部资源
     }
 }

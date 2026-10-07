@@ -279,6 +279,70 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 关闭时对声明了NET_WM_PING的窗口发ping_回了不打扰宿主_不回就报无响应_宿主可以强制结束()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        server.PingTimeout = TimeSpan.FromMilliseconds(200);
+        await using XTestClient c = await XTestClient.ConnectAsync(server, label: "joe@build:22");
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0);
+        Assert.AreEqual("joe@build:22", handle.Snapshot.ClientLabel);
+
+        uint protocols = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_PROTOCOLS")))).U32(8);
+        uint delete = (await c.RequestAsync(16, 0, b => b.U16(16).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_DELETE_WINDOW")))).U32(8);
+        uint ping = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("_NET_WM_PING")))).U32(8);
+        await c.SendAsync(18, 0, b => b.U32(win).U32(protocols).U32(4).U8(32).U8(0).U8(0).U8(0).U32(2).U32(delete).U32(ping));
+        await c.SyncAsync();
+
+        // 第一次:回了 ping(原样发回根窗口,窗口字段是根)—— 宿主收不到无响应。
+        server.CloseTopLevel(handle);
+        await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 33 && m.U32(12) == delete);
+        XMessage request = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 33 && m.U32(12) == ping);
+        Assert.AreEqual(win, request.U32(20), "data[2] 是窗口");
+        await c.SendAsync(25, 0, b => b.U32(c.RootWindow).U32(0x180000)
+            .U8(33).U8(32).U16(0).U32(c.RootWindow).U32(protocols).U32(ping).U32(request.U32(16)).U32(win).U32(0).U32(0));
+        await Task.Delay(400);
+        Assert.IsFalse(host.Requests.OfType<XNotRespondingRequest>().Any(), "回了 ping 就不报");
+
+        // 第二次:程序卡住了,不回 —— 时限一过请宿主处理。
+        server.CloseTopLevel(handle);
+        await host.WaitForAsync(() => host.Requests.OfType<XNotRespondingRequest>().Any(r => r.Window == handle));
+
+        IReadOnlyList<XClientInfo> clients = await server.GetClientsAsync();
+        XClientInfo info = clients.Single(i => i.Label == "joe@build:22");
+        Assert.AreEqual(handle.Snapshot.ClientId, info.Id);
+        Assert.Contains(handle, info.TopLevels);
+        Assert.IsGreaterThan(0, info.ResourceCount);
+
+        server.KillTopLevelClient(handle);   // 用户确认强制结束
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(win));
+        Assert.IsFalse((await server.GetClientsAsync()).Any(i => i.Label == "joe@build:22"));
+    }
+
+    [TestMethod]
+    public async Task 以Retain模式断开的客户端_关闭它的窗口与DisconnectClient都销毁它留下的资源()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0);
+        uint protocols = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_PROTOCOLS")))).U32(8);
+        uint delete = (await c.RequestAsync(16, 0, b => b.U16(16).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_DELETE_WINDOW")))).U32(8);
+        await c.SendAsync(18, 0, b => b.U32(win).U32(protocols).U32(4).U8(32).U8(0).U8(0).U8(0).U32(1).U32(delete));
+        await c.SendAsync(112, 1, _ => { });   // SetCloseDownMode(RetainPermanent)
+        await c.SyncAsync();
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsTrue((await server.GetClientsAsync()).Single().Retained);
+
+        // 原先:WM_DELETE_WINDOW 发给已经关掉的连接被丢弃,窗口成了关不掉的僵尸。
+        server.CloseTopLevel(handle);
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(win));
+        Assert.IsEmpty(await server.GetClientsAsync());
+    }
+
+    [TestMethod]
     public async Task 标题变化通知宿主()
     {
         using RecordingHost host = new();

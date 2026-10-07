@@ -115,10 +115,10 @@ internal sealed class XTestClient : IAsyncDisposable
 
     /// <summary>连上服务端(内存双工),走完连接建立。建立失败时返回的 SetupReply[0] 为 0。</summary>
     public static async Task<XTestClient> ConnectAsync(X11Server server, bool bigEndian = false, bool isLocal = true,
-        string authName = "", byte[]? authData = null, bool authenticated = false)
+        string authName = "", byte[]? authData = null, bool authenticated = false, string? label = null)
     {
         (Stream serverSide, Stream clientSide) = DuplexPair.Create();
-        Task serverTask = authenticated ? server.ServeAuthenticatedAsync(serverSide) : server.ServeAsync(serverSide, isLocal);
+        Task serverTask = authenticated || label is not null ? server.ServeAuthenticatedAsync(serverSide, label) : server.ServeAsync(serverSide, isLocal);
         return await HandshakeAsync(clientSide, serverTask, bigEndian, authName, authData);
     }
 

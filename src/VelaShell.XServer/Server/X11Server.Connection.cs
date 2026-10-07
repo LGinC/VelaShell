@@ -123,8 +123,9 @@ public sealed partial class X11Server
     /// <param name="SameHost">经 Unix 套接字连进来的:MIT-SHM 对它可见。</param>
     /// <param name="Uid">对端的 uid(Linux 上经 SO_PEERCRED);取不到为 null。</param>
     /// <param name="LocalUser">能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 uid 与本进程相同)。</param>
-    /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync" />),不再查授权。</param>
-    internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated);
+    /// <param name="Authenticated">调用方已经验过身份(<see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />),不再查授权。</param>
+    /// <param name="Label">宿主给这条连接起的名字(比如它来自哪个 SSH 会话);进日志与 <see cref="XClientInfo" />。</param>
+    internal readonly record struct Peer(bool IsLocal, bool SameHost, uint? Uid, bool LocalUser, bool Authenticated, string? Label = null);
 
     /// <summary>
     /// 连接建立的时限:读连接建立报文(12 字节的头与授权名 / 数据)、回失败,都要在这之内做完。
@@ -184,7 +185,7 @@ public sealed partial class X11Server
             }
 
             setup.CancelAfter(Timeout.InfiniteTimeSpan);   // 报文收齐了:下面等执行线程登记,不计时
-            client = await InvokeAsync(() => RegisterClient(bigEndian)).WaitAsync(ct).ConfigureAwait(false);
+            client = await InvokeAsync(() => RegisterClient(bigEndian, peer.Label)).WaitAsync(ct).ConfigureAwait(false);
             if (client is null)
             {
                 setup.CancelAfter(SetupTimeout);
@@ -246,7 +247,7 @@ public sealed partial class X11Server
 
     /// <summary>
     /// 授权检查;通过返回 null,否则返回给客户端看的原因。依次:
-    /// ① 调用方已经验过身份的流(<see cref="ServeAuthenticatedAsync" />)放行;
+    /// ① 调用方已经验过身份的流(<see cref="ServeAuthenticatedAsync(Stream, CancellationToken)" />)放行;
     /// ② 带了对的 MIT-MAGIC-COOKIE-1 放行;
     /// ③ 能确定对端就是运行服务端的这个用户(权限 0600 的套接字文件,或 SO_PEERCRED 的 uid 相同)放行;
     /// ④ 知道对端 uid 而它是别的用户:拒 —— Linux 抽象命名空间里的套接字没有文件权限可言,不看 uid 的话
@@ -296,7 +297,7 @@ public sealed partial class X11Server
     internal const int MaxClients = 255;
 
     /// <summary>分一个空闲的客户端编号并发出连接建立回复;编号用完了返回 null。</summary>
-    private XClient? RegisterClient(bool bigEndian)
+    private XClient? RegisterClient(bool bigEndian, string? label)
     {
         int index = _nextClientIndex;
         for (int tried = 0; tried < MaxClients; tried++, index = index >= MaxClients ? 1 : index + 1)
@@ -306,7 +307,7 @@ public sealed partial class X11Server
                 continue;
             }
             _nextClientIndex = index >= MaxClients ? 1 : index + 1;
-            XClient client = new(index, bigEndian);
+            XClient client = new(index, bigEndian) { Label = label };
             _clients[index] = client;
             client.Send(BuildSetupReply(client));
             if (ShouldLogFrequent())
@@ -536,6 +537,40 @@ public sealed partial class X11Server
 
     /// <summary>这个客户端已经以 Retain 模式断开、资源还留着。</summary>
     private bool IsRetained(XClient client) => _retainedClients.TryGetValue(client.Index, out XClient? retained) && ReferenceEquals(retained, client);
+
+    /// <summary>KillClient 语义:还连着的断开;已经以 Retain 模式断开的,销毁它留下的全部资源。</summary>
+    private void KillClientOf(XClient client)
+    {
+        if (IsRetained(client))
+        {
+            DestroyRetainedClient(client);
+            return;
+        }
+        client.Abort();
+        DisconnectClient(client);
+    }
+
+    /// <summary>见 <see cref="GetClientsAsync" />。</summary>
+    private IReadOnlyList<XClientInfo> SnapshotClients()
+    {
+        Dictionary<XClient, int> resources = [];
+        foreach (XResource resource in _resources.Values)
+        {
+            if (resource.Owner is { } owner)
+            {
+                resources[owner] = resources.GetValueOrDefault(owner) + 1;
+            }
+        }
+        return
+        [
+            .. _clients.Values.Select(c => (Client: c, Retained: false))
+                .Concat(_retainedClients.Values.Select(c => (Client: c, Retained: true)))
+                .OrderBy(e => e.Client.Index)
+                .Select(e => new XClientInfo(e.Client.Index, e.Client.Label, e.Retained, resources.GetValueOrDefault(e.Client),
+                    e.Client.MemoryInUse,
+                    [.. _topLevelHandles.Where(p => ReferenceEquals(p.Key.Owner, e.Client)).Select(p => p.Value)])),
+        ];
+    }
 
     /// <summary>连接收尾时与资源无关的那一半:选区、抓取、别人窗口上的事件选择与被动抓取、各扩展的每连接状态。</summary>
     private void ReleaseConnectionState(XClient client)

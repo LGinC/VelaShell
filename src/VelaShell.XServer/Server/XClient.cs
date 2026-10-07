@@ -50,6 +50,9 @@ internal sealed class XClient : IDisposable
 
     public int Index { get; }
 
+    /// <summary>宿主给这条连接起的名字(<see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" />);没给为 null。</summary>
+    public string? Label { get; init; }
+
     public uint ResourceBase { get; }
 
     public bool BigEndian { get; }
@@ -290,5 +293,5 @@ internal sealed class XClient : IDisposable
         Send(Finish(w, 32));
     }
 
-    public override string ToString() => $"client#{Index}";
+    public override string ToString() => Label is null ? $"client#{Index}" : $"client#{Index} ({Label})";
 }

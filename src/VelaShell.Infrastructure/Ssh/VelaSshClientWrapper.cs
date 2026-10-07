@@ -165,7 +165,9 @@ public sealed class VelaSshClientWrapper : ISshClientWrapper
             // 服务端认证时发来的横幅排在最前面(法律声明、「密码将于 3 天后过期」);只在第一个 shell 上显示一次。
             List<ShellStreamNotice> notices = [.. _banners?.TakeNotices() ?? []];
             XServerDisplayResolution? localServer = await ResolveLocalXServerAsync(notices, cancellationToken).ConfigureAwait(false);
-            X11ForwardOptions? x11 = SshForwardingOptions.X11(_features, notices, localServer?.Display, localServer?.Connector);
+            // 连接器带上这个会话的来历(user@host:port):内置 X 服务端的日志与客户端清单据此说得出是哪个会话的程序。
+            Func<CancellationToken, ValueTask<Stream>>? connector = localServer?.Connector is { } connect ? ct => connect(_target, ct) : null;
+            X11ForwardOptions? x11 = SshForwardingOptions.X11(_features, notices, localServer?.Display, connector);
             // agent 的端点交给库的默认值(Windows 上指向命名管道的 SSH_AUTH_SOCK 也认),与认证时连 agent 是同一个。
             AgentForwardOptions? agent = SshForwardingOptions.Agent(_features, notices, _agentPrompt, _target, hostKeys: _hostKeys);
 

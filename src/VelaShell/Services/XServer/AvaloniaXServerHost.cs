@@ -6,7 +6,9 @@ using Avalonia.Input.Platform;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using VelaShell.Core.Resources;
 using VelaShell.Infrastructure.XServer;
+using VelaShell.Views;
 using VelaShell.Views.XServer;
 using VelaShell.XServer;
 
@@ -388,8 +390,31 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             case XCloseRequest:
                 _server?.CloseTopLevel(request.Window);
                 break;
+            case XNotRespondingRequest:
+                FireAndForget.Run(() => ConfirmKillAsync(native, request.Window));
+                break;
         }
     });
+
+    /// <summary>
+    /// 用户点了关闭,窗口却对 <c>_NET_WM_PING</c> 没有回应(程序卡住了):问用户要不要强制结束这个 X 程序 ——
+    /// 原先声明了 WM_DELETE_WINDOW 却卡死的程序关不掉,只能停掉整个 X Server,所有会话的程序一起断。
+    /// </summary>
+    private async Task ConfirmKillAsync(XNativeWindow native, XTopLevelWindow handle)
+    {
+        XTopLevelSnapshot snapshot = handle.Snapshot;
+        string name = snapshot.Title.Length > 0 ? snapshot.Title : snapshot.ClassName;
+        bool kill = await MessageDialog.ConfirmAsync(native,
+            Strings.Get("XServer_NotRespondingTitle"),
+            Strings.Format("XServer_NotRespondingMessage", name),
+            Strings.Get("XServer_ForceQuit"),
+            kind: MessageDialogKind.Warning,
+            danger: true);
+        if (kill)
+        {
+            _server?.KillTopLevelClient(handle);
+        }
+    }
 
     // ================================================================== UI 线程
 

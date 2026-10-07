@@ -5775,6 +5775,15 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 실행 중({0}) — 클릭하여 중지</value>
   </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>응답 없음</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>「{0}」이(가) 응답하지 않습니다. 이 X 프로그램을 강제로 종료할까요? 다른 창도 함께 닫히고 저장하지 않은 내용은 사라집니다.</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>강제 종료</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>X Server 시작 / 중지</value>
   </data>

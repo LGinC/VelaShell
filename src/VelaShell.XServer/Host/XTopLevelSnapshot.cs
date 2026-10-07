@@ -43,6 +43,12 @@ public sealed record XTopLevelSnapshot
     /// <summary>客户端支持 <c>WM_DELETE_WINDOW</c>(点关闭时应当礼貌地请它退出,而不是直接断开)。</summary>
     public bool SupportsDeleteWindow { get; init; }
 
+    /// <summary>所属客户端的编号(<see cref="XClientInfo.Id" />)。</summary>
+    public int ClientId { get; init; }
+
+    /// <summary>所属客户端的连接名(宿主在 <see cref="X11Server.ServeAuthenticatedAsync(System.IO.Stream, string?, System.Threading.CancellationToken)" /> 时给的);没给为 null。</summary>
+    public string? ClientLabel { get; init; }
+
     /// <summary>
     /// 窗口是 32 位 ARGB 视觉:<see cref="XTopLevelWindow.ReadPixels" /> 给出的像素高 8 位是(预乘的)alpha,宿主应当按透明窗口合成;
     /// 否则高 8 位无意义,窗口不透明。

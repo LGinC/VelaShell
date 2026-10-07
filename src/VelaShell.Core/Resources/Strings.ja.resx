@@ -5775,6 +5775,15 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server 実行中({0})— クリックで停止</value>
   </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>応答なし</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>「{0}」は応答していません。この X プログラムを強制終了しますか?ほかのウィンドウも閉じられ、保存していない内容は失われます。</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>強制終了</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>X Server を起動 / 停止</value>
   </data>

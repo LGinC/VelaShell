@@ -5780,6 +5780,15 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
   <data name="XServer_TipStop" xml:space="preserve">
     <value>X Server running on {0} — click to stop</value>
   </data>
+  <data name="XServer_NotRespondingTitle" xml:space="preserve">
+    <value>Not Responding</value>
+  </data>
+  <data name="XServer_NotRespondingMessage" xml:space="preserve">
+    <value>“{0}” is not responding. Force quit this X program? Its other windows will close too, and unsaved work will be lost.</value>
+  </data>
+  <data name="XServer_ForceQuit" xml:space="preserve">
+    <value>Force Quit</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>Start / Stop X Server</value>
   </data>

@@ -33,10 +33,11 @@ public sealed record XServerStartResult(bool Success, string? Error = null)
 /// <param name="Error">自动启动失败的原因(已本地化);没有尝试启动或启动成功时为 <see langword="null" />。</param>
 /// <param name="Connector">
 /// 内置 X 服务端给的本机连接器:调一次得到一条直接接进服务端的双工流,SSH 的 x11 通道不必再去连本机端口。
+/// 第一个参数是这条连接的来历(比如 <c>user@host:22</c>),服务端记进日志与客户端清单,说得出是哪个会话的程序。
 /// <see langword="null" /> = 按 <paramref name="Display" /> 走套接字(VcXsrv 等外部 X 服务端)。
 /// </param>
 public sealed record XServerDisplayResolution(
-    string? Display, string? Error = null, Func<CancellationToken, ValueTask<Stream>>? Connector = null)
+    string? Display, string? Error = null, Func<string?, CancellationToken, ValueTask<Stream>>? Connector = null)
 {
     /// <summary>不接管。</summary>
     public static XServerDisplayResolution None { get; } = new(Display: null);
