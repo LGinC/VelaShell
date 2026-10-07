@@ -147,7 +147,10 @@ public sealed class XNativeWindow : Window
     {
         if (WindowState is WindowState.Maximized or WindowState.FullScreen)
         {
-            return;   // 最大化 / 全屏时尺寸由系统定,再按旧几何摆会把它拉回去
+            // 最大化 / 全屏时尺寸与位置由系统定,再按旧几何摆会把它拉回去。客户端自己改了尺寸(XResizeWindow、gtk_window_resize)
+            // 就把原生窗口此刻的尺寸推回给它 —— 原先直接返回,X 缓冲从此与原生窗口对不上(多出来的地方是空的,或者内容被裁)。
+            PushNativeGeometry();
+            return;
         }
         double scale = Scale;
         _applying = true;
@@ -187,6 +190,23 @@ public sealed class XNativeWindow : Window
         {
             _applying = false;
         }
+    }
+
+    /// <summary>原生窗口此刻的内容区尺寸与位置报给服务端(与快照不同时):系统定几何(最大化 / 全屏)时客户端改不动它。</summary>
+    private void PushNativeGeometry()
+    {
+        if (!_opened || Server is not { } server)
+        {
+            return;
+        }
+        XTopLevelSnapshot s = Handle.Snapshot;
+        int width = Math.Clamp((int)Math.Round(ClientSize.Width * Scale), 1, X11ServerOptions.MaxScreenSize);
+        int height = Math.Clamp((int)Math.Round(ClientSize.Height * Scale), 1, X11ServerOptions.MaxScreenSize);
+        if (width != s.Width || height != s.Height)
+        {
+            server.ResizeTopLevel(Handle, width, height);
+        }
+        OnMovedByUser();
     }
 
     /// <summary>有内容画进来了(顶层内区坐标的矩形):下一帧取这几块像素。</summary>

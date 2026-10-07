@@ -458,6 +458,35 @@ public sealed class AvaloniaXServerHostUiTests
     });
 
     /// <summary>
+    /// 最大化 / 全屏时尺寸由系统定:客户端自己改了尺寸,把原生窗口的尺寸推回给它 —— 原先不理,X 缓冲从此与原生窗口对不上。
+    /// </summary>
+    [TestMethod]
+    public async Task ClientResizeWhileMaximized_IsPushedBackToTheNativeSize() => await _session.RunOnUiAsync(async () =>
+    {
+        AvaloniaXServerHost host = new();
+        await using X11Server server = new(new X11ServerOptions { ListenTcp = false, UnixSocketPath = "" }, host);
+        await host.AttachAsync(server, CancellationToken.None);
+        (InMemoryDuplexStream serverSide, InMemoryDuplexStream client) = InMemoryTransport.CreatePair();
+        _ = server.ServeAsync(serverSide, isLocal: true);
+        System.Collections.Concurrent.ConcurrentQueue<byte[]> replies = new();
+        (uint idBase, uint root) = await HandshakeAsync(client, replies: replies);
+        uint window = idBase | 1;
+        await SendAsync(client, 1, 24, w => w.U32(window).U32(root).I16(10).I16(10).U16(60).U16(40).U16(0).U16(1).U32(0).U32(0));
+        await SendAsync(client, 8, 0, w => w.U32(window));
+        XNativeWindow native = await WaitForAsync(() => host.Windows.FirstOrDefault(w => !w.Handle.Snapshot.NeedsPlacement));
+        native.WindowState = Avalonia.Controls.WindowState.Maximized;
+        Dispatcher.UIThread.RunJobs();
+        Assert.AreEqual(Avalonia.Controls.WindowState.Maximized, native.WindowState);
+        (int width, int height) = ((int)native.ClientSize.Width, (int)native.ClientSize.Height);
+
+        // 客户端自己改尺寸;随后一个有回复的请求回来了,服务端就已经照办了(快照此刻是客户端要的尺寸)。
+        await SendAsync(client, 12, 0, w => w.U32(window).U16(0x4 | 0x8).U16(0).U32((uint)width + 37).U32((uint)height + 21));
+        await InternAsync(client, replies, "WM_STATE");
+        await WaitForAsync(() => native.Handle.Snapshot is { } s && s.Width == width && s.Height == height ? native : null);
+        host.Detach();
+    });
+
+    /// <summary>
     /// 桌面类窗口(xfdesktop 一类,<c>_NET_WM_WINDOW_TYPE_DESKTOP</c>)不给原生窗口 —— 原先它是一个铺满虚拟桌面的无边框窗口,
     /// 一激活就挡住本机所有程序;映射之后才改成桌面类型的收掉,改回来的重新显示。
     /// </summary>
