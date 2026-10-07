@@ -17,6 +17,7 @@
 //   程序第一次用到选择 / 反馈模式或求值器时 GLX 记一行日志(见 TakeUnreportedFeatures),拾取落空不再无迹可查。
 
 using System.Numerics;
+using System.Runtime.InteropServices;
 using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
@@ -625,8 +626,9 @@ internal sealed partial class GlContext
         _callDepth++;
         try
         {
-            // 执行期间列表可能被重新定义(不会,编译时不执行 NewList):照当时的快照执行。
-            foreach (GlCommand command in commands.ToArray())
+            // 直接遍历列表本身,不复制:能改动列表的 NewList / EndList / DeleteLists / UseXFont 都是单独的 GLX 请求,
+            // 不可能在一个列表执行到一半时插进来(原先每次调用都 ToArray 一份)。
+            foreach (GlCommand command in CollectionsMarshal.AsSpan(commands))
             {
                 if (!Spend())
                 {
@@ -835,7 +837,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.STACK_OVERFLOW);
             return;
         }
-        _attribStack.Push((State.Clone(), mask));
+        _attribStack.Push((State.Snapshot(mask), mask));
     }
 
     private void PopAttrib()

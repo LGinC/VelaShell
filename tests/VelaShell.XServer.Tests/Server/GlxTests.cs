@@ -1400,6 +1400,45 @@ public sealed class GlxTests
         Assert.AreEqual(255, pixel.Bytes[32], "对角线上画上了");
     }
 
+    [TestMethod]
+    public void CallList不复制列表_PushAttrib只深拷选中的属性组()
+    {
+        (Gl.GlContext gl, _) = DirectContext();
+        byte[] color = F(new XTestClient.Body(bigEndian: false), 0.1f, 0.2f, 0.3f).ToArray();
+        gl.NewList(1, Compile);
+        for (int i = 0; i < 1000; i++)
+        {
+            gl.ExecuteOrCompile(8, color, bigEndian: false);
+        }
+        gl.EndList();
+        byte[] callList = BitConverter.GetBytes(1u);
+        gl.ExecuteOrCompile(1, callList, bigEndian: false);
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 100; i++)
+        {
+            gl.ExecuteOrCompile(1, callList, bigEndian: false);
+        }
+        long callListBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.IsLessThan(64 * 1024, callListBytes, $"原先每次 CallList 都 ToArray 一份(一千条约 24 KB,一百次 2.4 MB);这次 {callListBytes} 字节");
+
+        byte[] currentBit = BitConverter.GetBytes(1u);
+        before = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++)
+        {
+            gl.ExecuteOrCompile(142, currentBit, bigEndian: false);   // PushAttrib(CURRENT_BIT)
+            gl.ExecuteOrCompile(141, [], bigEndian: false);           // PopAttrib
+        }
+        long attribBytes = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.IsLessThan(1024 * 1024, attribBytes, $"原先不看 mask 整份深拷(八个光源、两份材质……),一千次约 2 MB 多;这次 {attribBytes} 字节");
+        Assert.AreEqual(0u, gl.GetError());
+
+        // 选中的组照样恢复:PushAttrib(LIGHTING_BIT) 之后改光源,PopAttrib 改回来。
+        Run(gl, 142, b => b.U32(0x40));
+        Run(gl, 87, b => F(b.U32(0x4000).U32(0x1201), 0.25f, 0.5f, 0.75f, 1));   // Lightfv(LIGHT0, DIFFUSE)
+        Run(gl, 141);
+        Assert.AreEqual(1.0, gl.GetLight(0x4000, 0x1201)!.Value.Values[0], "LIGHT0 的漫反射恢复成初值 1");
+    }
+
     /// <summary>CreateContextAttribsARB 的参数:context、fbconfig、screen、share_list、isdirect、保留、num_attribs,再跟属性对。</summary>
     private static Action<XTestClient.Body> ContextAttribs(uint context, bool direct, params uint[] attributes) => b =>
     {

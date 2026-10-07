@@ -226,34 +226,63 @@ internal sealed class GlState
     // LIST_BIT
     public uint ListBase;
 
-    public GlState Clone()
+    // PushAttrib / PopAttrib 的属性组位(§6.1.14)。
+    private const uint CurrentBit = 0x1, PointBit = 0x2, LineBit = 0x4, PolygonBit = 0x8, PixelModeBit = 0x20, LightingBit = 0x40,
+        FogBit = 0x80, DepthBit = 0x100, StencilBit = 0x400, ViewportBit = 0x800, TransformBit = 0x1000, EnableBit = 0x2000,
+        ColorBufferBit = 0x4000, EvalBit = 0x10000, ListBit = 0x20000, TextureBit = 0x40000, ScissorBit = 0x80000;
+
+    /// <summary>
+    /// 给 PushAttrib / CopyContext 存一份:值类型的状态整块照抄(一次 MemberwiseClone),引用类型的(光源与材质、颜色掩码、
+    /// 裁剪面、TexGen 的数组)只有 <paramref name="mask" /> 选中的组才深拷。<see cref="Restore" /> 只从存档里读选中的组,
+    /// 没选中的组与当前状态共用对象也读不到 —— 原先不看 mask 整份深拷(八个光源、两份材质、几个数组),每次两 KB 多。
+    /// </summary>
+    public GlState Snapshot(uint mask)
     {
         var copy = (GlState)MemberwiseClone();
-        copy.ColorMask = (bool[])ColorMask.Clone();
-        copy.Lights = [.. Lights.Select(l => l.Clone())];
-        copy.FrontMaterial = FrontMaterial.Clone();
-        copy.BackMaterial = BackMaterial.Clone();
-        copy.ClipPlanes = (Vector4[])ClipPlanes.Clone();
-        copy.TexGenMode = (uint[])TexGenMode.Clone();
-        copy.TexGenObjectPlane = (Vector4[])TexGenObjectPlane.Clone();
-        copy.TexGenEyePlane = (Vector4[])TexGenEyePlane.Clone();
+        if ((mask & ColorBufferBit) != 0)
+        {
+            copy.ColorMask = (bool[])ColorMask.Clone();
+        }
+        if ((mask & LightingBit) != 0)
+        {
+            copy.Lights = CloneLights(Lights);
+            copy.FrontMaterial = FrontMaterial.Clone();
+            copy.BackMaterial = BackMaterial.Clone();
+        }
+        if ((mask & TransformBit) != 0)
+        {
+            copy.ClipPlanes = (Vector4[])ClipPlanes.Clone();
+        }
+        if ((mask & TextureBit) != 0)
+        {
+            copy.TexGenMode = (uint[])TexGenMode.Clone();
+            copy.TexGenObjectPlane = (Vector4[])TexGenObjectPlane.Clone();
+            copy.TexGenEyePlane = (Vector4[])TexGenEyePlane.Clone();
+        }
+        return copy;
+    }
+
+    private static GlLight[] CloneLights(GlLight[] lights)
+    {
+        var copy = new GlLight[lights.Length];
+        for (int i = 0; i < lights.Length; i++)
+        {
+            copy[i] = lights[i].Clone();
+        }
         return copy;
     }
 
     /// <summary>PopAttrib:把 <paramref name="saved" /> 里 <paramref name="mask" /> 选中的属性组写回本对象。</summary>
     public void Restore(GlState saved, uint mask)
     {
-        const uint current = 0x1, point = 0x2, line = 0x4, polygon = 0x8, pixelMode = 0x20, lighting = 0x40,
-            fog = 0x80, depth = 0x100, stencil = 0x400, viewport = 0x800, transform = 0x1000, enable = 0x2000,
-            colorBuffer = 0x4000, eval = 0x10000, list = 0x20000, texture = 0x40000, scissor = 0x80000;
 
-        if ((mask & current) != 0)
+        if ((mask & CurrentBit) != 0)
         {
             (Color, SecondaryColor, Normal, TexCoord, EdgeFlag) = (saved.Color, saved.SecondaryColor, saved.Normal, saved.TexCoord, saved.EdgeFlag);
             (RasterPos, RasterValid, RasterColor, RasterTexCoord, RasterDistance) =
                 (saved.RasterPos, saved.RasterValid, saved.RasterColor, saved.RasterTexCoord, saved.RasterDistance);
         }
-        if ((mask & enable) != 0)
+        if ((mask & EnableBit) != 0)
         {
             Enabled = saved.Enabled;
         }
@@ -261,90 +290,90 @@ internal sealed class GlState
         {
             // 各组自己的开关随组恢复。
             ulong caps = 0;
-            caps |= (mask & point) != 0 ? PointCaps : 0;
-            caps |= (mask & line) != 0 ? LineCaps : 0;
-            caps |= (mask & polygon) != 0 ? PolygonCaps : 0;
-            caps |= (mask & lighting) != 0 ? LightingCaps : 0;
-            caps |= (mask & fog) != 0 ? FogCaps : 0;
-            caps |= (mask & depth) != 0 ? DepthCaps : 0;
-            caps |= (mask & stencil) != 0 ? StencilCaps : 0;
-            caps |= (mask & transform) != 0 ? TransformCaps : 0;
-            caps |= (mask & colorBuffer) != 0 ? ColorBufferCaps : 0;
-            caps |= (mask & texture) != 0 ? TextureCaps : 0;
-            caps |= (mask & scissor) != 0 ? ScissorCaps : 0;
-            caps |= (mask & eval) != 0 ? EvalCaps : 0;
+            caps |= (mask & PointBit) != 0 ? PointCaps : 0;
+            caps |= (mask & LineBit) != 0 ? LineCaps : 0;
+            caps |= (mask & PolygonBit) != 0 ? PolygonCaps : 0;
+            caps |= (mask & LightingBit) != 0 ? LightingCaps : 0;
+            caps |= (mask & FogBit) != 0 ? FogCaps : 0;
+            caps |= (mask & DepthBit) != 0 ? DepthCaps : 0;
+            caps |= (mask & StencilBit) != 0 ? StencilCaps : 0;
+            caps |= (mask & TransformBit) != 0 ? TransformCaps : 0;
+            caps |= (mask & ColorBufferBit) != 0 ? ColorBufferCaps : 0;
+            caps |= (mask & TextureBit) != 0 ? TextureCaps : 0;
+            caps |= (mask & ScissorBit) != 0 ? ScissorCaps : 0;
+            caps |= (mask & EvalBit) != 0 ? EvalCaps : 0;
             Enabled.Bits = (Enabled.Bits & ~caps) | (saved.Enabled.Bits & caps);
         }
-        if ((mask & point) != 0)
+        if ((mask & PointBit) != 0)
         {
             PointSize = saved.PointSize;
         }
-        if ((mask & line) != 0)
+        if ((mask & LineBit) != 0)
         {
             LineWidth = saved.LineWidth;
         }
-        if ((mask & polygon) != 0)
+        if ((mask & PolygonBit) != 0)
         {
             (CullFaceMode, FrontFace, PolygonModeFront, PolygonModeBack, PolygonOffsetFactor, PolygonOffsetUnits) =
                 (saved.CullFaceMode, saved.FrontFace, saved.PolygonModeFront, saved.PolygonModeBack, saved.PolygonOffsetFactor, saved.PolygonOffsetUnits);
         }
-        if ((mask & pixelMode) != 0)
+        if ((mask & PixelModeBit) != 0)
         {
             (ReadBuffer, ZoomX, ZoomY) = (saved.ReadBuffer, saved.ZoomX, saved.ZoomY);
         }
-        if ((mask & lighting) != 0)
+        if ((mask & LightingBit) != 0)
         {
             ShadeModel = saved.ShadeModel;
-            Lights = [.. saved.Lights.Select(l => l.Clone())];
+            Lights = CloneLights(saved.Lights);
             FrontMaterial = saved.FrontMaterial.Clone();
             BackMaterial = saved.BackMaterial.Clone();
             (LightModelAmbient, LightModelLocalViewer, LightModelTwoSide, LightModelColorControl) =
                 (saved.LightModelAmbient, saved.LightModelLocalViewer, saved.LightModelTwoSide, saved.LightModelColorControl);
             (ColorMaterialFace, ColorMaterialMode) = (saved.ColorMaterialFace, saved.ColorMaterialMode);
         }
-        if ((mask & fog) != 0)
+        if ((mask & FogBit) != 0)
         {
             (FogMode, FogDensity, FogStart, FogEnd, FogColor) = (saved.FogMode, saved.FogDensity, saved.FogStart, saved.FogEnd, saved.FogColor);
         }
-        if ((mask & depth) != 0)
+        if ((mask & DepthBit) != 0)
         {
             (DepthFunc, DepthMask, ClearDepth) = (saved.DepthFunc, saved.DepthMask, saved.ClearDepth);
         }
-        if ((mask & stencil) != 0)
+        if ((mask & StencilBit) != 0)
         {
             (StencilFunc, StencilRef, StencilValueMask, StencilWriteMask, ClearStencil) =
                 (saved.StencilFunc, saved.StencilRef, saved.StencilValueMask, saved.StencilWriteMask, saved.ClearStencil);
             (StencilFail, StencilDepthFail, StencilDepthPass) = (saved.StencilFail, saved.StencilDepthFail, saved.StencilDepthPass);
         }
-        if ((mask & viewport) != 0)
+        if ((mask & ViewportBit) != 0)
         {
             (ViewportX, ViewportY, ViewportWidth, ViewportHeight, DepthNear, DepthFar) =
                 (saved.ViewportX, saved.ViewportY, saved.ViewportWidth, saved.ViewportHeight, saved.DepthNear, saved.DepthFar);
         }
-        if ((mask & transform) != 0)
+        if ((mask & TransformBit) != 0)
         {
             MatrixMode = saved.MatrixMode;
             ClipPlanes = (Vector4[])saved.ClipPlanes.Clone();
         }
-        if ((mask & colorBuffer) != 0)
+        if ((mask & ColorBufferBit) != 0)
         {
             (ClearColor, ColorMask, AlphaFunc, AlphaRef) = (saved.ClearColor, (bool[])saved.ColorMask.Clone(), saved.AlphaFunc, saved.AlphaRef);
             (BlendSrcRgb, BlendDstRgb, BlendSrcAlpha, BlendDstAlpha, BlendEquation, BlendColor) =
                 (saved.BlendSrcRgb, saved.BlendDstRgb, saved.BlendSrcAlpha, saved.BlendDstAlpha, saved.BlendEquation, saved.BlendColor);
             (LogicOp, DrawBuffer) = (saved.LogicOp, saved.DrawBuffer);
         }
-        if ((mask & list) != 0)
+        if ((mask & ListBit) != 0)
         {
             ListBase = saved.ListBase;
         }
-        if ((mask & texture) != 0)
+        if ((mask & TextureBit) != 0)
         {
             (Texture1D, Texture2D, TexEnvMode, TexEnvColor) = (saved.Texture1D, saved.Texture2D, saved.TexEnvMode, saved.TexEnvColor);
             TexGenMode = (uint[])saved.TexGenMode.Clone();
             TexGenObjectPlane = (Vector4[])saved.TexGenObjectPlane.Clone();
             TexGenEyePlane = (Vector4[])saved.TexGenEyePlane.Clone();
         }
-        if ((mask & scissor) != 0)
+        if ((mask & ScissorBit) != 0)
         {
             (ScissorX, ScissorY, ScissorWidth, ScissorHeight) = (saved.ScissorX, saved.ScissorY, saved.ScissorWidth, saved.ScissorHeight);
         }

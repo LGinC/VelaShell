@@ -265,7 +265,7 @@ internal sealed class GlxExtension(X11Server server)
                     {
                         throw new XProtocolError(XErrorCode.Match);   // 直接上下文的状态不在服务端
                     }
-                    dst.Gl.State.Restore(src.Gl.State.Clone(), mask);
+                    dst.Gl.State.Restore(src.Gl.State.Snapshot(mask), mask);
                     break;
                 }
             case 11:   // SwapBuffers
