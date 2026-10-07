@@ -5655,13 +5655,13 @@ Choose how much to clean up. Every option rebuilds the store so the space is gen
     <value>Enable clipboard</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>Share the X CLIPBOARD selection with the system clipboard (VcXsrv: -clipboard).</value>
+    <value>Share the X CLIPBOARD selection with the system clipboard (VcXsrv: -clipboard). With the built-in X Server, only the session whose window has the keyboard focus can read what you copy on this computer, and only copies made in that session reach the system clipboard.</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>Copy on selection</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>Also map the PRIMARY selection, so text selected in an X program is copied to the system clipboard right away (VcXsrv: -primary).</value>
+    <value>Also map the PRIMARY selection, so text selected in an X program is copied to the system clipboard right away (VcXsrv: -primary). Off by default: when on, whatever you copy on this computer can be pasted into X programs with a middle click.</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>Keyboard</value>

@@ -6109,13 +6109,13 @@ Windows 填 exe 完整路徑或命令名稱(如 notepad);Linux 填命令名稱(�
     <value>啟用剪貼簿</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>讓 X 的 CLIPBOARD 選取區與系統剪貼簿互通(VcXsrv:-clipboard)。</value>
+    <value>讓 X 的 CLIPBOARD 選取區與系統剪貼簿互通(VcXsrv:-clipboard)。內建 X Server 只讓鍵盤焦點所在的那個工作階段讀到本機複製的內容,也只把那個工作階段裡的複製寫進系統剪貼簿。</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>選取即複製</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>把 PRIMARY 選取區也對應過去:在 X 程式裡選取文字就直接進入系統剪貼簿(VcXsrv:-primary)。</value>
+    <value>把 PRIMARY 選取區也對應過去:在 X 程式裡選取文字就直接進入系統剪貼簿(VcXsrv:-primary)。預設關閉:開啟後,本機複製的內容在 X 程式裡按一下滑鼠中鍵就能貼出來。</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>鍵盤</value>

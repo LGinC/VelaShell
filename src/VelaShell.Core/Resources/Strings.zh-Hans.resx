@@ -6109,13 +6109,13 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
     <value>启用剪贴板</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>让 X 的 CLIPBOARD 选区与系统剪贴板互通(VcXsrv:-clipboard)。</value>
+    <value>让 X 的 CLIPBOARD 选区与系统剪贴板互通(VcXsrv:-clipboard)。内置 X Server 只让键盘焦点所在的那个会话读到本机复制的内容,也只把那个会话里的复制写进系统剪贴板。</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>选中即复制</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>把 PRIMARY 选区也映射过去:在 X 程序里选中文字就直接进入系统剪贴板(VcXsrv:-primary)。</value>
+    <value>把 PRIMARY 选区也映射过去:在 X 程序里选中文字就直接进入系统剪贴板(VcXsrv:-primary)。默认关闭:打开后,本机复制的内容在 X 程序里点一下鼠标中键就能粘出来。</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>键盘</value>

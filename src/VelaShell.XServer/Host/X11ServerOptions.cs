@@ -72,6 +72,14 @@ public sealed class X11ServerOptions
     public bool SyncPrimary { get; init; }
 
     /// <summary>
+    /// 剪贴板跟着键盘焦点走:宿主的文本只给焦点所在的那个会话读 —— 焦点窗口的客户端,以及与它连接名相同的客户端(同一个 SSH 会话里的
+    /// <c>xclip</c> / <c>xsel</c>,见 <see cref="X11Server.ServeAuthenticatedAsync(Stream, string?, CancellationToken)" />);X 这边的复制也只收那个会话的。
+    /// 默认开:否则本机复制的密码在用户点一下任意 X 窗口后对所有会话可读,后台会话里的程序也能反复改写本机剪贴板(pastejacking)。
+    /// 没有 X 窗口有焦点时谁都读不到。只有一个受信客户端的嵌入场景可以关掉。
+    /// </summary>
+    public bool ClipboardFollowsFocus { get; init; } = true;
+
+    /// <summary>
     /// 告诉客户端「窗口管理器支持客户端自绘阴影」(在 <c>_NET_SUPPORTED</c> 里列出 <c>_GTK_FRAME_EXTENTS</c>)。
     /// 打开后 GTK 的自绘标题栏窗口会在四周画半透明阴影,宿主必须能显示带 alpha 的窗口并按
     /// <see cref="XTopLevelSnapshot.ClientFrameExtents" /> 处理;默认关,GTK 于是画无阴影的窗口。

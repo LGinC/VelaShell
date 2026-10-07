@@ -116,6 +116,21 @@ public sealed partial class X11Server
     private bool IsSyncedSelection(uint selection) =>
         _options.SyncClipboard && (selection == Intern("CLIPBOARD") || (_options.SyncPrimary && selection == XAtom.Primary));
 
+    /// <summary>
+    /// 这个客户端此刻能不能与宿主的剪贴板来往(<see cref="X11ServerOptions.ClipboardFollowsFocus" />):它是键盘焦点所在顶层的客户端
+    /// (焦点是 PointerRoot 时看指针所在的顶层),或与那个客户端的连接名相同(同一个会话)。
+    /// </summary>
+    private bool InFocusedSession(XClient client)
+    {
+        if (!_options.ClipboardFollowsFocus)
+        {
+            return true;
+        }
+        XWindow? focused = _focus is null ? null : ReferenceEquals(_focus, Root) ? _pointerWindow : _focus;
+        return focused?.TopLevel?.Owner is { } peer
+               && (ReferenceEquals(peer, client) || (peer.Label is { } label && label == client.Label));
+    }
+
     // ------------------------------------------------------------------ 服务端当属主
 
     /// <summary>服务端占有的选区被 ConvertSelection 了:按目标写属性,再发 SelectionNotify(ICCCM §2.2)。</summary>
@@ -135,6 +150,10 @@ public sealed partial class X11Server
         if (selection != Intern("CLIPBOARD") && selection != XAtom.Primary)
         {
             // 服务端占有的其它选区(_XSETTINGS_S0 这类管理器选区)没有可转换的内容。
+        }
+        else if (!InFocusedSession(c))
+        {
+            // 宿主的文本只给键盘焦点所在的会话:原先本机复制的密码在用户点一下任意 X 窗口后,所有会话的所有客户端都读得到。
         }
         else if (target == targets)
         {
@@ -179,9 +198,9 @@ public sealed partial class X11Server
     /// <summary>X 客户端占有了同步的选区:向它要 UTF8_STRING(不给再退回 STRING)。</summary>
     private void OnClientTookSelection(XClient owner, XWindow ownerWindow, uint selection, uint time)
     {
-        if (!IsSyncedSelection(selection))
+        if (!IsSyncedSelection(selection) || !InFocusedSession(owner))
         {
-            return;
+            return;   // 后台会话的复制不进系统剪贴板:否则远端程序可以反复改写本机剪贴板,用户往别处粘贴时中招
         }
         _fetch = new SelectionFetch(selection, Intern("UTF8_STRING"), time);
         RequestFetch(owner, ownerWindow);

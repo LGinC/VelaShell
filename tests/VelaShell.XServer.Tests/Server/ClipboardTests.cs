@@ -35,7 +35,7 @@ public sealed class ClipboardTests
     [TestMethod]
     public async Task 宿主的文本X客户端能以UTF8与TARGETS取到()
     {
-        await using X11Server server = new();
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false });   // 这里只看传输;跟着焦点走见下面单独的用例
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         uint clipboard = await InternAsync(c, "CLIPBOARD");
         uint utf8 = await InternAsync(c, "UTF8_STRING");
@@ -70,7 +70,7 @@ public sealed class ClipboardTests
     public async Task X客户端复制的文本交给宿主_写回来不抢选区()
     {
         using RecordingHost host = new();
-        await using X11Server server = new(host: host);
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false }, host);
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         uint clipboard = await InternAsync(c, "CLIPBOARD");
         uint utf8 = await InternAsync(c, "UTF8_STRING");
@@ -99,7 +99,7 @@ public sealed class ClipboardTests
     public async Task X端复制之后属主退出_服务端替宿主接管_别的X程序照样粘贴得到()
     {
         using RecordingHost host = new();
-        await using X11Server server = new(host: host);
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false }, host);
         XTestClient copier = await XTestClient.ConnectAsync(server);
         await using XTestClient paster = await XTestClient.ConnectAsync(server);
         uint clipboard = await InternAsync(copier, "CLIPBOARD");
@@ -136,7 +136,7 @@ public sealed class ClipboardTests
     public async Task 大文本走INCR分块()
     {
         using RecordingHost host = new();
-        await using X11Server server = new(host: host);
+        await using X11Server server = new(new X11ServerOptions { ClipboardFollowsFocus = false }, host);
         await using XTestClient c = await XTestClient.ConnectAsync(server);
         uint clipboard = await InternAsync(c, "CLIPBOARD");
         uint utf8 = await InternAsync(c, "UTF8_STRING");
@@ -203,5 +203,55 @@ public sealed class ClipboardTests
         await c.SyncAsync();
         await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextEventAsync(SelectionRequest, timeoutMs: 200));
         Assert.IsNull(host.Clipboard);
+    }
+    [TestMethod]
+    public async Task 剪贴板跟着键盘焦点走_别的会话读不到宿主的文本_后台会话的复制不进系统剪贴板()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server, label: "joe@a:22");
+        await using XTestClient xclip = await XTestClient.ConnectAsync(server, label: "joe@a:22");   // 同一个 SSH 会话里的 xclip
+        await using XTestClient b = await XTestClient.ConnectAsync(server, label: "joe@b:22");
+        uint clipboard = await InternAsync(a, "CLIPBOARD");
+        uint utf8 = await InternAsync(a, "UTF8_STRING");
+
+        async Task<uint> MapAsync(XTestClient c)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, w => w.U32(id).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0));
+            await c.SendAsync(8, 0, w => w.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        uint windowA = await MapAsync(a);
+        uint windowB = await MapAsync(b);
+        server.FocusTopLevel(host.Mapped[windowA]);   // 用户在用会话 A 的程序
+
+        server.SetClipboardText("本机复制的密码");
+        while ((await a.RequestAsync(23, 0, w => w.U32(clipboard))).U32(8) == 0)
+        {
+        }
+
+        async Task<uint> ConvertAsync(XTestClient c)
+        {
+            uint requestor = await CreateWindowAsync(c);
+            uint property = await InternAsync(c, "PASTED");
+            await c.SendAsync(24, 0, w => w.U32(requestor).U32(clipboard).U32(utf8).U32(property).U32(0));
+            return (await c.NextEventAsync(SelectionNotify)).U32(20);
+        }
+        Assert.AreNotEqual(0u, await ConvertAsync(xclip), "同一个会话(连接名相同)读得到");
+        Assert.AreEqual(0u, await ConvertAsync(b), "别的会话读不到:原先点一下任意 X 窗口,所有会话都读得到");
+
+        // 后台会话 B 抢 CLIPBOARD:不去取它的内容,系统剪贴板不被改写。
+        await b.SendAsync(22, 0, w => w.U32(windowB).U32(clipboard).U32(0));
+        await Assert.ThrowsAsync<OperationCanceledException>(() => b.NextEventAsync(SelectionRequest, timeoutMs: 200));
+        Assert.IsNull(host.Clipboard);
+
+        // 焦点所在的会话 A 复制:照常交给宿主。
+        await a.SendAsync(22, 0, w => w.U32(windowA).U32(clipboard).U32(0));
+        XMessage request = await a.NextEventAsync(SelectionRequest);
+        await ChangePropertyAsync(a, request.U32(12), request.U32(24), utf8, Encoding.UTF8.GetBytes("从 A 复制"));
+        await SendSelectionNotifyAsync(a, request, request.U32(24));
+        await host.WaitForAsync(() => host.Clipboard == "从 A 复制");
     }
 }

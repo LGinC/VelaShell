@@ -5650,13 +5650,13 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
     <value>クリップボードを有効にする</value>
   </data>
   <data name="SetXServer_ClipboardDesc" xml:space="preserve">
-    <value>X の CLIPBOARD 選択をシステムのクリップボードと共有します(VcXsrv:-clipboard)。</value>
+    <value>X の CLIPBOARD 選択をシステムのクリップボードと共有します(VcXsrv:-clipboard)。内蔵 X Server では、このコンピューターでコピーした内容を読めるのはキーボードフォーカスのあるセッションだけで、システムのクリップボードに入るのもそのセッションでのコピーだけです。</value>
   </data>
   <data name="SetXServer_CopyOnSelection" xml:space="preserve">
     <value>選択時にコピー</value>
   </data>
   <data name="SetXServer_CopyOnSelectionDesc" xml:space="preserve">
-    <value>PRIMARY 選択も対応付け、X プログラムで選択したテキストをすぐシステムのクリップボードへ入れます(VcXsrv:-primary)。</value>
+    <value>PRIMARY 選択も対応付け、X プログラムで選択したテキストをすぐシステムのクリップボードへ入れます(VcXsrv:-primary)。既定ではオフです。オンにすると、このコンピューターでコピーした内容を X プログラムでマウスの中ボタンをクリックするだけで貼り付けられます。</value>
   </data>
   <data name="SetXServer_SectionKeyboard" xml:space="preserve">
     <value>キーボード</value>
