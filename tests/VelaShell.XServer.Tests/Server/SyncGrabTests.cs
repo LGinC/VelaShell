@@ -387,6 +387,7 @@ public sealed class SyncGrabTests
         await a.SendAsync(35, 0, w => w.U32(1));   // AllowEvents AsyncPointer,时间戳 1
         Assert.IsEmpty(await DrainAsync(a, MotionNotify), "过期的 AllowEvents 不放行");
         await a.SendAsync(27, 0, w => w.U32(1));   // UngrabPointer,时间戳 1
+        await a.SyncAsync();
         XMessage still = await b.RequestAsync(26, 0, w => w.U32(top).U16(0x40).U8(Asynchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
         Assert.AreEqual(1, still.Bytes[1], "A 的抓取还在:AlreadyGrabbed");
 
@@ -394,6 +395,7 @@ public sealed class SyncGrabTests
         await a.NextEventAsync(MotionNotify);   // 当前时间的 AllowEvents 照常放行(排着的事件由后续工作项回放,等它到,不按 80 毫秒的窗口数)
         Assert.IsEmpty(await DrainAsync(a, MotionNotify), "只排着一个移动");
         await a.SendAsync(27, 0, w => w.U32(0));
+        await a.SyncAsync();   // A 与 B 是两条连接:先确认 A 的 UngrabPointer 执行过,B 的请求才不会抢在它前面
         XMessage after = await b.RequestAsync(26, 0, w => w.U32(top).U16(0x40).U8(Asynchronous).U8(Asynchronous).U32(0).U32(0).U32(0));
         Assert.AreEqual(0, after.Bytes[1], "当前时间的 UngrabPointer 照常解除");
     }
