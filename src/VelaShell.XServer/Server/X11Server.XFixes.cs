@@ -20,8 +20,18 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
-    /// <summary>SelectSelectionInput 的登记:(客户端, 窗口, 选区) → 掩码。</summary>
-    private readonly Dictionary<(XClient Client, XWindow Window, uint Selection), uint> _selectionInputs = [];
+    /// <summary>
+    /// 每个客户端 SelectSelectionInput 登记的上限。真实的用法(剪贴板管理器、XEmbed、托盘)盯的是少数几个选区;
+    /// 原先没有上限,一个客户端能登记几百万条,之后每次换属主都要整表扫一遍(xs_plan WN-S9)。超出回 BadAlloc。
+    /// </summary>
+    internal const int MaxSelectionInputsPerClient = 1024;
+
+    /// <summary>SelectSelectionInput 的登记,按选区分开:选区 → (客户端, 窗口) → 掩码。换属主时只看那一个选区的。</summary>
+    private readonly Dictionary<uint, Dictionary<(XClient Client, XWindow Window), uint>> _selectionInputs = [];
+
+    /// <summary>每个客户端、每个窗口名下各有几条选区登记 —— 计上限,收尾时没有登记的就不用扫。</summary>
+    private readonly Dictionary<XClient, int> _selectionInputsByClient = [];
+    private readonly Dictionary<XWindow, int> _selectionInputsByWindow = [];
 
     /// <summary>SelectCursorInput 的登记:(客户端, 窗口) → 掩码。</summary>
     private readonly Dictionary<(XClient Client, XWindow Window), uint> _cursorInputs = [];
@@ -76,14 +86,7 @@ public sealed partial class X11Server
                     uint selection = r.U32();
                     uint mask = r.U32();
                     CheckAtom(selection);
-                    if (mask == 0)
-                    {
-                        _selectionInputs.Remove((c, window, selection));
-                    }
-                    else
-                    {
-                        _selectionInputs[(c, window, selection)] = mask;
-                    }
+                    SelectSelectionInput(c, window, selection, mask);
                     break;
                 }
             case 3:   // SelectCursorInput
@@ -352,6 +355,62 @@ public sealed partial class X11Server
         return false;
     }
 
+    /// <summary>登记 / 改 / 撤一条 SelectSelectionInput(掩码为 0 是撤)。新登记超过 <see cref="MaxSelectionInputsPerClient" /> 回 BadAlloc。</summary>
+    private void SelectSelectionInput(XClient c, XWindow window, uint selection, uint mask)
+    {
+        _selectionInputs.TryGetValue(selection, out Dictionary<(XClient Client, XWindow Window), uint>? watchers);
+        bool exists = watchers?.ContainsKey((c, window)) == true;
+        if (mask == 0)
+        {
+            if (exists)
+            {
+                RemoveSelectionInput(selection, watchers!, (c, window));
+            }
+            return;
+        }
+        if (!exists)
+        {
+            if (_selectionInputsByClient.GetValueOrDefault(c) >= MaxSelectionInputsPerClient)
+            {
+                throw new XProtocolError(XErrorCode.Alloc);
+            }
+            if (watchers is null)
+            {
+                watchers = [];
+                _selectionInputs[selection] = watchers;
+            }
+            _selectionInputsByClient[c] = _selectionInputsByClient.GetValueOrDefault(c) + 1;
+            _selectionInputsByWindow[window] = _selectionInputsByWindow.GetValueOrDefault(window) + 1;
+        }
+        watchers![(c, window)] = mask;
+    }
+
+    private void RemoveSelectionInput(uint selection, Dictionary<(XClient Client, XWindow Window), uint> watchers, (XClient Client, XWindow Window) key)
+    {
+        if (!watchers.Remove(key))
+        {
+            return;
+        }
+        if (watchers.Count == 0)
+        {
+            _selectionInputs.Remove(selection);
+        }
+        Decrement(_selectionInputsByClient, key.Client);
+        Decrement(_selectionInputsByWindow, key.Window);
+
+        static void Decrement<T>(Dictionary<T, int> counts, T key) where T : notnull
+        {
+            if (counts.TryGetValue(key, out int n) && n > 1)
+            {
+                counts[key] = n - 1;
+            }
+            else
+            {
+                counts.Remove(key);
+            }
+        }
+    }
+
     /// <summary>
     /// 选区属主变了:给 SelectSelectionInput 登记过的客户端发 XFixesSelectionNotify。
     /// </summary>
@@ -359,17 +418,18 @@ public sealed partial class X11Server
     /// <param name="subtype">0 SetSelectionOwner,1 SelectionWindowDestroy,2 SelectionClientClose。</param>
     /// <param name="owner">新属主窗口;没有为 0。</param>
     /// <param name="selectionTime">属主获取选区的时间。</param>
-    private void NotifySelectionChange(uint selection, byte subtype, uint owner, uint selectionTime)
+    /// <param name="visibleTo">只发给它认可的客户端;null = 都发。</param>
+    private void NotifySelectionChange(uint selection, byte subtype, uint owner, uint selectionTime, Func<XClient, bool>? visibleTo = null)
     {
-        if (_selectionInputs.Count == 0)
+        if (!_selectionInputs.TryGetValue(selection, out Dictionary<(XClient Client, XWindow Window), uint>? watchers))
         {
             return;
         }
         uint bit = 1u << subtype;
         uint time = Now;
-        foreach (((XClient client, XWindow window, uint sel), uint mask) in _selectionInputs)
+        foreach (((XClient client, XWindow window), uint mask) in watchers)
         {
-            if (sel == selection && (mask & bit) != 0 && !client.Closed)
+            if ((mask & bit) != 0 && !client.Closed && (visibleTo is null || visibleTo(client)))
             {
                 client.Event(XFixesEventBase, subtype, w => w
                     .U32(window.Id).U32(owner).U32(selection).U32(time).U32(selectionTime));
@@ -398,16 +458,26 @@ public sealed partial class X11Server
     private XCursorResource CursorRes(uint id) => Lookup<XCursorResource>(id) ?? throw new XProtocolError(XErrorCode.Cursor, id);
 
     /// <summary>客户端断开:清掉它的 XFIXES 登记。</summary>
-    private void CleanupXFixes(XClient client) => RemoveXFixesEntries((c, _) => ReferenceEquals(c, client));
+    private void CleanupXFixes(XClient client) =>
+        RemoveXFixesEntries((c, _) => ReferenceEquals(c, client), _selectionInputsByClient.ContainsKey(client));
 
     /// <summary>窗口销毁:清掉登记在它上面的 XFIXES 登记。</summary>
-    private void CleanupXFixes(XWindow window) => RemoveXFixesEntries((_, w) => ReferenceEquals(w, window));
+    private void CleanupXFixes(XWindow window) =>
+        RemoveXFixesEntries((_, w) => ReferenceEquals(w, window), _selectionInputsByWindow.ContainsKey(window));
 
-    private void RemoveXFixesEntries(Func<XClient, XWindow, bool> match)
+    /// <param name="match">要清掉的登记。</param>
+    /// <param name="anySelectionInputs">它名下有没有选区登记 —— 没有就不扫(一棵窗口树销毁时每个窗口都来一次)。</param>
+    private void RemoveXFixesEntries(Func<XClient, XWindow, bool> match, bool anySelectionInputs)
     {
-        foreach ((XClient Client, XWindow Window, uint Selection) key in _selectionInputs.Keys.Where(k => match(k.Client, k.Window)).ToArray())
+        if (anySelectionInputs)
         {
-            _selectionInputs.Remove(key);
+            foreach ((uint selection, Dictionary<(XClient Client, XWindow Window), uint> watchers) in _selectionInputs.ToArray())
+            {
+                foreach ((XClient Client, XWindow Window) key in watchers.Keys.Where(k => match(k.Client, k.Window)).ToArray())
+                {
+                    RemoveSelectionInput(selection, watchers, key);
+                }
+            }
         }
         foreach ((XClient Client, XWindow Window) key in _cursorInputs.Keys.Where(k => match(k.Client, k.Window)).ToArray())
         {

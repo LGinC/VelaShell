@@ -101,6 +101,47 @@ public sealed class XFixesTests
     }
 
     [TestMethod]
+    public async Task 选区监听每个客户端有上限_超出回BadAlloc_撤掉之后又能登记_窗口销毁时登记跟着清掉()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        int limit = X11Server.MaxSelectionInputsPerClient;
+        uint[] windows = [.. Enumerable.Range(0, limit + 1).Select(_ => c.NewId())];
+        await c.SendManyAsync(windows.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(w =>
+            (1, 0, b => b.U32(w).U32(c.RootWindow).I16(0).I16(0).U16(1).U16(1).U16(0).U16(2).U32(0).U32(0))));
+        ushort last = await c.SendManyAsync(windows.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(w =>
+            (major, 2, b => b.U32(w).U32(Primary).U32(0x7))));
+        await c.SyncAsync();
+        XMessage error = await c.NextAsync(m => m.IsError, timeoutMs: 1000);
+        Assert.AreEqual(11, error.Detail, "BadAlloc:原先没有上限,换属主时还要整表扫一遍");
+        Assert.AreEqual(last, error.Sequence, "前面的都登记上了,只有超出的那一条失败");
+
+        // 改已有登记的掩码不算新登记;撤掉一条(掩码 0)、或销毁一个登记过的窗口之后,又能登记新的。
+        await c.SendAsync(major, 2, b => b.U32(windows[0]).U32(Primary).U32(0x1));
+        await c.SendAsync(major, 2, b => b.U32(windows[1]).U32(Primary).U32(0));
+        await c.SendAsync(4, 0, b => b.U32(windows[2]));   // DestroyWindow
+        await c.SendAsync(major, 2, b => b.U32(windows[limit]).U32(Primary).U32(0x7));
+        await c.SendAsync(major, 2, b => b.U32(c.RootWindow).U32(Primary).U32(0x7));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError, timeoutMs: 200));
+
+        // 登记照常生效:换属主时登记了的窗口都收到,撤掉的与销毁了的收不到。
+        await c.SendAsync(22, 0, b => b.U32(windows[3]).U32(Primary).U32(0));
+        await c.SyncAsync();
+        HashSet<uint> notified = [];
+        while (notified.Count < limit)
+        {
+            XMessage notify = await c.NextEventAsync(65);
+            Assert.AreEqual(0, notify.Bytes[1], "subtype = SetSelectionOwner");
+            notified.Add(notify.U32(4));
+        }
+        Assert.DoesNotContain(windows[1], notified);
+        Assert.DoesNotContain(windows[2], notified);
+        Assert.Contains(c.RootWindow, notified);
+    }
+
+    [TestMethod]
     public async Task HideCursor让宿主隐藏光标_ShowCursor恢复()
     {
         using RecordingHost host = new();
