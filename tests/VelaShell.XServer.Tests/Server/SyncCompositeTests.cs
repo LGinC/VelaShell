@@ -510,6 +510,51 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task 窗口挪到另一个顶层之后它的Damage照常报_同一可绘对象上的Damage有上限()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte damage, byte damageEvent, _) = await ExtAsync(c, "DAMAGE");
+        await c.RequestAsync(damage, 0, b => b.U32(1).U32(1));
+        uint first = await MapTopAsync(c, host), second = await MapTopAsync(c, host);
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(first).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(8, 0, b => b.U32(child));
+        await c.SendAsync(damage, 1, b => b.U32(c.NewId()).U32(child).U8(0).U8(0).U8(0).U8(0));   // Raw
+        uint gc = await GcAsync(c, first, 0xFF0000);
+        await FillAsync(c, child, gc, 1, 1, 2, 2);
+        Assert.AreEqual(child, (await c.NextEventAsync(damageEvent)).U32(4));
+
+        // 挪进另一个顶层(按顶层建的索引要跟着变),再画。
+        await c.SendAsync(7, 0, b => b.U32(child).U32(second).I16(5).I16(5));   // ReparentWindow
+        await c.SendAsync(8, 0, b => b.U32(child));
+        await c.SyncAsync();
+        while (await DrainAsync(c, damageEvent)) { }
+        await FillAsync(c, child, gc, 3, 3, 2, 2);
+        XMessage moved = await c.NextEventAsync(damageEvent);
+        Assert.AreEqual(child, moved.U32(4));
+        Assert.AreEqual(3, moved.I16(16));
+
+        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxDamagePerDrawable).Select<int, (byte, byte, Action<XTestClient.Body>?)>(_ =>
+            (damage, 1, b => b.U32(c.NewId()).U32(child).U8(3).U8(0).U8(0).U8(0))));
+        Assert.AreEqual(11, (await c.NextAsync(m => m.IsError && m.Sequence == last)).Detail, "第 257 个:BadAlloc");
+
+        static async Task<bool> DrainAsync(XTestClient c, byte code)
+        {
+            try
+            {
+                await c.NextEventAsync(code, timeoutMs: 100);
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+        }
+    }
+
+    [TestMethod]
     public async Task DamageSubtract之后按级别逐块重报剩下的损伤()
     {
         await using X11Server server = new();
