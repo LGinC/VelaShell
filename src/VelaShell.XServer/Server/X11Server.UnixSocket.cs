@@ -410,7 +410,7 @@ public sealed partial class X11Server
     /// </summary>
     private void ClaimDisplayLock()
     {
-        if (OperatingSystem.IsWindows() || !(_options.ListenTcp || _options.UnixSocketPath is null))
+        if (OperatingSystem.IsWindows() || !(ListensOnTcp || _options.UnixSocketPath is null))
         {
             return;
         }

@@ -59,8 +59,16 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ TCP
 
+    /// <summary>这次要不要听 TCP:<see cref="X11ServerOptions.ListenTcp" /> 没给时看配没配 cookie(零值取安全值)。</summary>
+    private bool ListensOnTcp => _options.ListenTcp ?? _cookie is not null;
+
     private void StartTcpListener()
     {
+        if (_cookie is null)
+        {
+            Log($"listening on TCP {_options.ListenAddress}:{6000 + _options.DisplayNumber} without a cookie: "
+                + "any local user can connect, read windows and inject input");
+        }
         TcpListener listener = new(_options.ListenAddress, 6000 + _options.DisplayNumber);
         if (OperatingSystem.IsWindows())
         {

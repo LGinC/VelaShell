@@ -20,8 +20,13 @@ public sealed class X11ServerOptions
     /// <summary>监听地址。<b>默认只听本机</b>:SSH X11 转发过来的连接在本机看来就是 127.0.0.1。</summary>
     public IPAddress ListenAddress { get; init; } = IPAddress.Loopback;
 
-    /// <summary><see cref="X11Server.StartAsync" /> 是否监听 TCP 6000 + N。只用 Unix 套接字或 <see cref="X11Server.ServeAsync" /> 喂流的宿主可以关掉。</summary>
-    public bool ListenTcp { get; init; } = true;
+    /// <summary>
+    /// <see cref="X11Server.StartAsync" /> 是否监听 TCP 6000 + N。null(默认)= 配了 <see cref="AuthorizationCookie" /> 才听;
+    /// true = 总是听;false = 不听(只用 Unix 套接字或 <see cref="X11Server.ServeAsync" /> 喂流)。
+    /// 原先默认就听、又不要 cookie:<c>new X11Server()</c> + <c>StartAsync()</c> 的结果是本机任何用户都能经环回 TCP 连进来,
+    /// 读窗口、记键盘、注入输入(TCP 上分不出对端是哪个用户)。显式设 true 而不配 cookie 时启动会记一行提醒。
+    /// </summary>
+    public bool? ListenTcp { get; init; }
 
     /// <summary>
     /// Unix 套接字路径:null = Windows 以外默认 <c>/tmp/.X11-unix/X{DisplayNumber}</c>(Linux 另在抽象命名空间里监听同名套接字);
@@ -55,7 +60,7 @@ public sealed class X11ServerOptions
 
     /// <summary>
     /// <c>MIT-MAGIC-COOKIE-1</c> 授权 cookie。配置了就要求 TCP 连接(<b>包括环回</b>:本机别的进程、别的用户都连得到那个端口)
-    /// 与没法确认是同一个用户的 Unix 套接字连接带上它;null = 不要求 cookie、只接受来自本机的连接
+    /// 与没法确认是同一个用户的 Unix 套接字连接带上它;null = 不要求 cookie、只接受来自本机的连接,TCP 默认也不开(见 <see cref="ListenTcp" />)
     /// (与 X.Org 的主机访问控制行为一致)。不论配没配:Unix 套接字文件只有属主能连,Linux 抽象命名空间里的连接按 uid 只放行同一个用户;
     /// 宿主经 <see cref="X11Server.ServeAuthenticatedAsync(Stream, CancellationToken)" /> 喂进来的流不查授权。
     /// 长度 <see cref="MinAuthorizationCookieLength" /> – <see cref="MaxAuthorizationCookieLength" /> 字节(空数组曾让任何带空数据的

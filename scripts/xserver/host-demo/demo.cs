@@ -47,7 +47,7 @@ sealed class DemoApp : Application
     private static async Task StartAsync(Window main)
     {
         AvaloniaXServerHost host = new();
-        X11Server server = new(new X11ServerOptions { DisplayNumber = Display, Log = line => Console.WriteLine($"[x] {line}") }, host);
+        X11Server server = new(new X11ServerOptions { DisplayNumber = Display, ListenTcp = true, Log = line => Console.WriteLine($"[x] {line}") }, host);
         await host.AttachAsync(server, CancellationToken.None);
         await server.StartAsync();
         _ = RelayAsync(7000 + Display, 6000 + Display);

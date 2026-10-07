@@ -149,12 +149,12 @@ public sealed partial class X11Server : IAsyncDisposable
         try
         {
             ClaimDisplayLock();
-            if (_options.ListenTcp)
+            if (ListensOnTcp)
             {
                 StartTcpListener();
             }
             StartUnixListeners(_lifetime.Token);
-            if (_listener is null && _unixListeners.Count == 0 && (_options.ListenTcp || UnixSocketPath is not null))
+            if (_listener is null && _unixListeners.Count == 0 && (ListensOnTcp || UnixSocketPath is not null))
             {
                 throw new IOException("没有一种传输监听起来(Unix 套接字建不起来的原因见日志)。");
             }

@@ -52,6 +52,40 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 零值配置不在TCP上听_配了cookie或显式打开才听()
+    {
+        // 原先 ListenTcp 默认 true、又不要 cookie:new X11Server() + StartAsync() 就是本机任何用户都能经环回 TCP 连进来记键盘、注入输入。
+        int display = 0;
+        for (int n = Random.Shared.Next(1000, 9000); display == 0; n++)
+        {
+            try
+            {
+                using System.Net.Sockets.TcpListener probe = new(System.Net.IPAddress.Loopback, 6000 + n);
+                probe.Start();
+                display = n;
+            }
+            catch (System.Net.Sockets.SocketException)
+            {
+            }
+        }
+        List<string> lines = [];
+        await using (X11Server bare = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "" }))
+        {
+            await bare.StartAsync();
+            Assert.AreEqual(0, bare.Port, "没配 cookie:默认不听 TCP");
+        }
+        await using (X11Server withCookie = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "", AuthorizationCookie = new byte[16] }))
+        {
+            await withCookie.StartAsync();
+            Assert.AreEqual(6000 + display, withCookie.Port, "配了 cookie:默认就听");
+        }
+        await using X11Server optIn = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "", ListenTcp = true, Log = lines.Add });
+        await optIn.StartAsync();
+        Assert.AreEqual(6000 + display, optIn.Port, "显式打开照样听");
+        Assert.Contains(l => l.Contains("without a cookie", StringComparison.Ordinal), lines, "不配 cookie 听 TCP 时记一行提醒");
+    }
+
+    [TestMethod]
     public async Task Windows上TCP监听独占端口_别的进程用SO_REUSEADDR抢不走()
     {
         if (!OperatingSystem.IsWindows())
@@ -72,7 +106,7 @@ public sealed class RobustnessTests
             {
             }
         }
-        await using X11Server server = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "" });
+        await using X11Server server = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = true, UnixSocketPath = "" });
         await server.StartAsync();
 
         // 没设独占时,同一个用户的别的进程(比如低完整性的)用 SO_REUSEADDR 绑更具体的地址照样绑得上:听 0.0.0.0 的话,

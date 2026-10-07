@@ -115,7 +115,7 @@ public sealed partial class UnixSocketTests
         try
         {
             int display = FreeDisplayNumber();
-            await using (X11Server server = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = path }))
+            await using (X11Server server = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = true, UnixSocketPath = path }))
             {
                 SocketException taken = await Assert.ThrowsExactlyAsync<SocketException>(() => server.StartAsync());
                 Assert.AreEqual(SocketError.AddressAlreadyInUse, taken.SocketErrorCode);
@@ -328,7 +328,7 @@ public sealed partial class UnixSocketTests
     {
         // 原先 _started 已经置 1:失败之后再调报「已经在监听了」,这个实例再也开不起来。
         int display = FreeDisplayNumber();
-        await using (X11Server server = new(new X11ServerOptions { DisplayNumber = display, UnixSocketPath = "" }))
+        await using (X11Server server = new(new X11ServerOptions { DisplayNumber = display, ListenTcp = true, UnixSocketPath = "" }))
         {
             using (TcpListener squatter = new(System.Net.IPAddress.Loopback, 6000 + display))
             {
