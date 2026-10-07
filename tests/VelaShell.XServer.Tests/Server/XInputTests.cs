@@ -407,4 +407,40 @@ public sealed class XInputTests
         server.InjectKey(38, pressed: true);
         await NextXiAsync(c, xi, 2);
     }
+    [TestMethod]
+    public async Task BreakGrabs解除抓取与冻结_放开GrabServer_把浮动的从设备挂回去()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient a = await XTestClient.ConnectAsync(server);
+        await using XTestClient b = await XTestClient.ConnectAsync(server);
+        byte xi = await XiAsync(a);
+
+        async Task<uint> MapAtAsync(XTestClient c, short x)
+        {
+            uint id = c.NewId();
+            await c.SendAsync(1, 0, w => w.U32(id).U32(c.RootWindow).I16(x).I16(0).U16(100).U16(80).U16(0).U16(1).U32(0).U32(0x800).U32(0x4));   // ButtonPress
+            await c.SendAsync(8, 0, w => w.U32(id));
+            await host.WaitForAsync(() => host.Mapped.ContainsKey(id));
+            return id;
+        }
+        uint t = await MapAtAsync(a, 0), u = await MapAtAsync(b, 300);
+
+        // 卡住的样子:A 同步抓着指针(设备冻结)、抓着服务器,还把从指针浮动了;之后 A 再也不说话(远端进程被 SIGSTOP)。
+        await a.SendAsync(xi, 43, w => w.U8(1).U8(0).U8(0).U8(0).U16(4).U16(2).U16(4).U16(0));   // DetachSlave 4
+        await a.RequestAsync(26, 0, w => w.U32(t).U16(0x4).U8(0).U8(1).U32(0).U32(0).U32(0));    // GrabPointer,pointer_mode = Synchronous
+        await a.SendAsync(36, 0);                                                                   // GrabServer
+        await a.SyncAsync();
+        ushort pending = await b.SendAsync(43, 0);                                                  // B 的请求被 GrabServer 挂住
+
+        server.BreakGrabs();
+        XMessage reply = await b.NextAsync(m => m.IsReply && m.Sequence == pending);
+        Assert.IsTrue(reply.IsReply, "GrabServer 放开了");
+        XMessage slave = await b.RequestAsync(xi, 48, w => w.U16(4).U16(0));                       // XIQueryDevice 4
+        Assert.AreEqual(2, slave.U16(36), "从指针挂回虚拟核心指针");
+
+        server.InjectPointerButton(host.Mapped[u], 5, 5, 1, pressed: true);
+        XMessage press = await b.NextEventAsync(4);
+        Assert.AreEqual(u, press.U32(12), "抓取与冻结都解除了,按下照常报给 B 的窗口");
+    }
 }

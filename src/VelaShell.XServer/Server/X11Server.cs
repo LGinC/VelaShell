@@ -324,6 +324,14 @@ public sealed partial class X11Server : IAsyncDisposable
     }
 
     /// <summary>
+    /// 卡住时的恢复手段:解除一切指针 / 键盘抓取(核心、XI2、被动抓取激活的)并解冻设备,放开 GrabServer,把浮动的从设备挂回虚拟核心设备。
+    /// 远端程序的菜单开着时 SSH 断网、笔记本睡眠或远端进程被 SIGSTOP —— 连接没断,抓取就一直在,所有会话的所有 X 窗口点不动、打不了字,
+    /// 直到 SSH 保活超时;任何客户端执行一次 <c>xinput float</c>,核心鼠标在所有 X 程序里失效,断开也不恢复。
+    /// 客户端照常收到 mode 为 Ungrab 的 crossing / 焦点事件与 HierarchyChanged,就像抓取自己解除了一样;被动抓取的登记不动。
+    /// </summary>
+    public void BreakGrabs() => Post(null, ApplyBreakGrabs);
+
+    /// <summary>
     /// 宿主(窗口管理器)设定了窗口状态 —— 通常是照办了一个 <see cref="XStateChangeRequest" />,或用户点了原生窗口的最大化按钮。
     /// 服务端写 <c>_NET_WM_STATE</c> 与 <c>WM_STATE</c>,客户端据此更新外观。<see cref="XWindowStates.Focused" /> 由服务端按焦点维护,这里给的会被忽略。
     /// </summary>

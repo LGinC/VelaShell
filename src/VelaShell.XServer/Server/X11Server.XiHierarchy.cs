@@ -242,6 +242,25 @@ public sealed partial class X11Server
     }
 
     /// <summary>HierarchyEvent:发给在根窗口上选了它的客户端,带全部设备(被删掉的也带一条,flags 说明发生了什么)。</summary>
+    /// <summary>浮动的从设备挂回同类的虚拟核心设备(它们不能被删除),发 HierarchyChanged(SlaveAttached)。</summary>
+    private void ReattachFloatingSlaves()
+    {
+        Dictionary<ushort, uint> changed = [];
+        foreach (XiDevice device in _xiDevices.Values)
+        {
+            if (!device.Master && device.Attachment == 0)
+            {
+                device.Attachment = device.Pointer ? XiMasterPointer : XiMasterKeyboard;
+                changed[device.Id] = 16;   // SlaveAttached
+            }
+        }
+        if (changed.Count > 0)
+        {
+            RecomputeXiSelections();
+            SendHierarchyChanged(16, changed);
+        }
+    }
+
     private void SendHierarchyChanged(uint flags, Dictionary<ushort, uint> changed)
     {
         if (!Root.AnyXi2Selects(XiHierarchyChanged))

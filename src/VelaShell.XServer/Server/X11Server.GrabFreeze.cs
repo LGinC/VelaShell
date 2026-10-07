@@ -394,4 +394,18 @@ public sealed partial class X11Server
         (5, _) => 7,      // SyncPair
         _ => byte.MaxValue,
     };
+
+    /// <summary>见 <see cref="BreakGrabs" />。</summary>
+    private void ApplyBreakGrabs()
+    {
+        // 抓取的 setter 负责解冻(排着的事件随之回放)与 Ungrab 模式的 crossing / 焦点事件。
+        PointerGrab = null;
+        KeyboardGrab = null;
+        UpdateCursor();
+        if (_serverGrabber is not null)
+        {
+            ReleaseServerGrab();
+        }
+        ReattachFloatingSlaves();
+    }
 }
