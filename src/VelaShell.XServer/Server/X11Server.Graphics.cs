@@ -324,7 +324,10 @@ public sealed partial class X11Server
         bool relative = r.Data == 1;
         uint drawable = r.U32(), gc = r.U32();
         List<(int X, int Y)> points = ReadPoints(r, relative);
-        Draw(drawable, gc, raster => raster.PolyLine(points));
+        // 协议:首尾两点重合时,第一段与最后一段也要「join correctly」—— 当闭合路径画:宽线在那里加接头而不是两个端帽,
+        // 细线不再把起点画第二遍(GXxor 下会抵消)。只有两个点时是端点重合的一条线,按端帽的规则画。
+        bool closed = points.Count > 2 && points[0] == points[^1];
+        Draw(drawable, gc, raster => raster.PolyLine(points, closed));
     }
 
     private void PolySegment(XRequestReader r)
