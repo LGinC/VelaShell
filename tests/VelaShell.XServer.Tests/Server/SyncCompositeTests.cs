@@ -482,6 +482,63 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task Await列表为空回BadValue_AwaitFence列表为空与counter为None时不挂住_栅栏销毁时放行()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        await using XTestClient other = await XTestClient.ConnectAsync(server);
+        (byte sync, _, _) = await ExtAsync(c, "SYNC");
+
+        ushort empty = await c.SendAsync(sync, 7);
+        Assert.AreEqual(2, (await c.NextAsync(m => m.IsError && m.Sequence == empty)).Detail, "Await 的 wait-list 为空:BadValue");
+        await c.SendAsync(sync, 19);   // AwaitFence,空列表
+        await c.SyncAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        // counter 为 None 的触发器永远为真(规范 TRIGGER)。
+        await c.SendAsync(sync, 7, b => Condition(b, 0, 0, 2, 0));
+        await c.SyncAsync().WaitAsync(TimeSpan.FromSeconds(2));
+
+        // 别的客户端等着的栅栏被销毁:放行(规范 DestroyFence)。
+        uint fence = c.NewId();
+        await c.SendAsync(sync, 14, b => b.U32(c.RootWindow).U32(fence).U8(0).U8(0).U8(0).U8(0));
+        await c.SyncAsync();
+        await other.SendAsync(sync, 19, b => b.U32(fence));
+        Task<XMessage> blocked = other.RequestAsync(43, 0);
+        await Task.Delay(100);
+        Assert.IsFalse(blocked.IsCompleted, "栅栏没触发时挡住");
+        await c.SendAsync(sync, 17, b => b.U32(fence));   // DestroyFence
+        await blocked.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [TestMethod]
+    public async Task DamageSubtract之后按级别逐块重报剩下的损伤()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte damage, byte damageEvent, _) = await ExtAsync(c, "DAMAGE");
+        (byte xfixes, _, _) = await ExtAsync(c, "XFIXES");
+        await c.RequestAsync(damage, 0, b => b.U32(1).U32(1));
+        await c.RequestAsync(xfixes, 0, b => b.U32(5).U32(0));
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(50).U16(50));
+        uint gc = await GcAsync(c, pixmap, 0xFF0000);
+        uint id = c.NewId();
+        await c.SendAsync(damage, 1, b => b.U32(id).U32(pixmap).U8(1).U8(0).U8(0).U8(0));   // DeltaRectangles
+        await FillAsync(c, pixmap, gc, 0, 0, 2, 2);
+        await FillAsync(c, pixmap, gc, 10, 10, 2, 2);
+        await c.NextEventAsync(damageEvent);
+        await c.NextEventAsync(damageEvent);
+
+        // repair 与两块都不相交:剩下的两块应当各报一条(more 串起来),原先只报一条外接矩形 (0,0) 12×12。
+        uint repair = c.NewId();
+        await c.SendAsync(xfixes, 5, b => b.U32(repair).I16(30).I16(30).U16(1).U16(1));
+        await c.SendAsync(damage, 3, b => b.U32(id).U32(repair).U32(0));
+        XMessage first = await c.NextEventAsync(damageEvent);
+        XMessage second = await c.NextEventAsync(damageEvent);
+        Assert.AreEqual("0,0 2×2 more", $"{first.I16(16)},{first.I16(18)} {first.U16(20)}×{first.U16(22)} {((first.Bytes[1] & 0x80) != 0 ? "more" : "last")}");
+        Assert.AreEqual("10,10 2×2 last", $"{second.I16(16)},{second.I16(18)} {second.U16(20)}×{second.U16(22)} {((second.Bytes[1] & 0x80) != 0 ? "more" : "last")}");
+    }
+
+    [TestMethod]
     public async Task SYNC的IDLETIME报警器到点触发()
     {
         await using X11Server server = new();

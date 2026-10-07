@@ -165,6 +165,10 @@ public sealed partial class X11Server
                         long threshold = ReadInt64(r);
                         wait.Conditions.Add((trigger, threshold));
                     }
+                    if (wait.Conditions.Count == 0)
+                    {
+                        throw new XProtocolError(XErrorCode.Value);   // 规范 Await:wait-list 为空回 Value(原先客户端从此挂住)
+                    }
                     BeginWait(c, wait);
                     break;
                 }
@@ -240,6 +244,7 @@ public sealed partial class X11Server
                 {
                     XSyncFence fence = Fence(r.U32());
                     RemoveResource(fence.Id);
+                    FenceGone(fence);
                     RunReadyPresents();   // 等它的 PresentPixmap 不再等(Present 规范)
                     break;
                 }
@@ -255,6 +260,10 @@ public sealed partial class X11Server
                     while (r.Remaining >= 4)
                     {
                         wait.Fences.Add(Fence(r.U32()));
+                    }
+                    if (wait.Fences.Count == 0)
+                    {
+                        break;   // 没有栅栏可等:规范没给这种情形的错误,按「没什么要等的」立即放行,而不是永远挂住
                     }
                     BeginWait(c, wait);
                     break;
@@ -438,12 +447,25 @@ public sealed partial class X11Server
         }
         foreach ((XSyncTrigger trigger, _) in wait.Conditions)
         {
-            if (trigger.Counter is { } counter && trigger.Satisfied(CounterValue(counter)))
+            // 规范 TRIGGER:「A trigger with a counter value of None and a valid test-type is always TRUE」(原先永远不成立,客户端挂住)。
+            if (trigger.Counter is not { } counter || trigger.Satisfied(CounterValue(counter)))
             {
                 return true;
             }
         }
         return false;
+    }
+
+    /// <summary>栅栏被销毁(DestroyFence,或创建它的客户端断开):等它的 AwaitFence 一律放行(规范 DestroyFence)。原先它们永远挂着。</summary>
+    private void FenceGone(XSyncFence fence)
+    {
+        foreach ((XClient client, SyncWait wait) in _syncWaits.ToArray())
+        {
+            if (_syncWaits.ContainsKey(client) && wait.Fences.Contains(fence))
+            {
+                EndWait(client);
+            }
+        }
     }
 
     private void EndWait(XClient client)
@@ -781,5 +803,13 @@ public sealed partial class X11Server
             }
         }
         CounterGone(k => k.SystemName is null && !ReferenceEquals(Lookup<XSyncCounter>(k.Id), k));
+        // 它的栅栏随它没了:等这些栅栏的 AwaitFence 放行。
+        foreach ((XClient waiter, SyncWait wait) in _syncWaits.ToArray())
+        {
+            if (_syncWaits.ContainsKey(waiter) && wait.Fences.Any(f => !ReferenceEquals(Lookup<XSyncFence>(f.Id), f)))
+            {
+                EndWait(waiter);
+            }
+        }
     }
 }

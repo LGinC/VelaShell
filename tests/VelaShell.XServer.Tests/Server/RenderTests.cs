@@ -152,6 +152,23 @@ public sealed class RenderTests
     }
 
     [TestMethod]
+    public async Task CreateCursor的热点落在图外回BadMatch()
+    {
+        await using Setup s = await SetupAsync();
+        XTestClient c = s.Client;
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 32, b => b.U32(pixmap).U32(s.Window).U16(16).U16(16));
+        uint picture = c.NewId();
+        await c.SendAsync(s.Major, 4, b => b.U32(picture).U32(pixmap).U32(s.Formats.Argb32).U32(0));
+        XMessage outside = await c.RequestAsync(s.Major, 27, b => b.U32(c.NewId()).U32(picture).U16(16).U16(3));
+        Assert.IsTrue(outside.IsError);
+        Assert.AreEqual(8, outside.Detail, "BadMatch");
+        ushort inside = await c.SendAsync(s.Major, 27, b => b.U32(c.NewId()).U32(picture).U16(15).U16(15));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError && m.Sequence == inside, 100));
+    }
+
+    [TestMethod]
     public async Task FreeGlyphs里有一个不存在时哪个都不释放()
     {
         await using Setup s = await SetupAsync();

@@ -76,10 +76,22 @@ public sealed partial class X11Server
                         Region repair = RegionRes(repairId).Region;
                         parts = damage.Accumulated.Clone().Intersect(repair);
                         damage.Accumulated.Subtract(repair);
-                        // 还剩损伤时,按级别重新报一次(规范:Subtract 之后若区域非空,生成一个新的 DamageNotify)。
+                        // 还剩损伤时按级别重新报(规范 DamageSubtract:「Generate DamageNotify for remaining damage areas」)——
+                        // Raw / Delta 逐块报剩下的区域(more 位串起来),BoundingBox 与 NonEmpty 报外接矩形。原先一律只报外接矩形。
                         if (!damage.Accumulated.IsEmpty)
                         {
-                            SendDamageNotify(damage, damage.Accumulated.Bounds, more: false);
+                            if (damage.Level is XDamage.Raw or XDamage.Delta)
+                            {
+                                IReadOnlyList<XRect> rects = damage.Accumulated.Rects;
+                                for (int i = 0; i < rects.Count; i++)
+                                {
+                                    SendDamageNotify(damage, rects[i], more: i < rects.Count - 1);
+                                }
+                            }
+                            else
+                            {
+                                SendDamageNotify(damage, damage.Accumulated.Bounds, more: false);
+                            }
                         }
                     }
                     if (partsId != 0)

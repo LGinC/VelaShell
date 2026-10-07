@@ -120,6 +120,16 @@ public sealed partial class X11Server
             throw new XProtocolError(XErrorCode.Match);
         }
         int x = r.U16(), y = r.U16();
+        (int width, int height) = src.Drawable switch
+        {
+            XPixmap p => (p.Width, p.Height),
+            XWindow w => (w.Width, w.Height),
+            _ => (0, 0),
+        };
+        if (x >= width || y >= height)
+        {
+            throw new XProtocolError(XErrorCode.Match);   // 热点必须落在图里(RENDER 规范 CreateCursor)
+        }
         AddResource(c, new XCursorResource(id, c) { Image = PictureCursorImage(src, x, y) });
     }
 
