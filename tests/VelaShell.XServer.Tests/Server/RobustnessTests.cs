@@ -25,6 +25,33 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 正在握手的连接有上限_超了的当场关掉_授权字段过长直接拒绝()
+    {
+        await using X11Server server = new();
+        List<(Stream Client, Task Serving)> hanging = [];
+        for (int i = 0; i < X11Server.MaxPendingSetups; i++)
+        {
+            (Stream serverSide, Stream clientSide) = DuplexPair.Create();
+            hanging.Add((clientSide, server.ServeAsync(serverSide, isLocal: true)));   // 连上就不说话
+        }
+        (Stream extraServer, Stream extraClient) = DuplexPair.Create();
+        await server.ServeAsync(extraServer, isLocal: true).WaitAsync(TimeSpan.FromSeconds(5));   // 第 33 条当场结束
+        Assert.IsTrue(hanging.All(h => !h.Serving.IsCompleted), "前面的还在等握手");
+        foreach ((Stream client, Task serving) in hanging)
+        {
+            await client.DisposeAsync();
+            await serving.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        await extraClient.DisposeAsync();
+
+        // 名额放回来了;授权数据 300 字节(MIT-MAGIC-COOKIE-1 只要 16):回连接失败,不按它给的长度分配。
+        await using XTestClient tooLong = await XTestClient.ConnectAsync(server, authName: "MIT-MAGIC-COOKIE-1", authData: new byte[300]);
+        Assert.AreEqual(0, tooLong.SetupReply[0], "Failed");
+        await using XTestClient ok = await XTestClient.ConnectAsync(server);
+        Assert.IsTrue((await ok.RequestAsync(43, 0)).IsReply);
+    }
+
+    [TestMethod]
     public async Task KillClient之后被杀的客户端连接立即结束()
     {
         await using X11Server server = new();

@@ -146,6 +146,10 @@ public sealed partial class X11Server
         uint? peerUid = PeerUidOf(connection);
         bool localUser = ownerOnly || (peerUid is { } uid && uid == ProcessUid);
         await using NetworkStream stream = new(connection, ownsSocket: true);
+        if (!localUser && peerUid is not null && _options.AuthorizationCookie is null)
+        {
+            return;   // 别的用户、又没配 cookie:授权必然失败,accept 时就关掉,不让它占握手的名额
+        }
         try
         {
             await ServeCoreAsync(stream, new Peer(IsLocal: true, SameHost: true, peerUid, localUser, Authenticated: false),

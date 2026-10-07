@@ -132,7 +132,18 @@ public sealed partial class X11Server
     /// 对端连上来却迟迟不发完(卡住的,或者故意占着不放的),到点就断开 —— 否则每个这样的连接都一直占着一个套接字和一个任务,
     /// 而 <see cref="MaxClients" /> 只数已经建立的客户端,拦不住它们。握手只是一个往返,走 SSH 转发的慢链路也绰绰有余。
     /// </summary>
-    internal TimeSpan SetupTimeout { get; set; } = TimeSpan.FromSeconds(30);
+    internal TimeSpan SetupTimeout { get; set; } = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// 同时处在连接建立阶段(还没登记成客户端)的连接上限,超了新来的当场关掉。<see cref="MaxClients" /> 只数已经建立的客户端:
+    /// 本机任何用户不带 cookie 开几万条连接、每条只发个头就挂着,每条占一个套接字、一个任务和缓冲,原先没有任何上限。
+    /// </summary>
+    internal const int MaxPendingSetups = 32;
+
+    /// <summary>授权名与授权数据各自的长度上限(与 SSH 侧转发的 X11SetupMessage 一致;MIT-MAGIC-COOKIE-1 只要 16 字节)。</summary>
+    internal const int MaxAuthFieldLength = 256;
+
+    private int _pendingSetups;
 
     private async Task ServeCoreAsync(Stream stream, Peer peer, CancellationToken cancellationToken)
     {
@@ -143,6 +154,20 @@ public sealed partial class X11Server
         CancellationTokenSource? connection = null;
         // 连接建立阶段的读写用它:到了 SetupTimeout 还没发完就取消。等执行线程登记客户端那一步不计在内 ——
         // 那一步半途取消的话,执行线程照样登记了,却没人再用这个客户端。
+        if (Interlocked.Increment(ref _pendingSetups) > MaxPendingSetups)
+        {
+            Interlocked.Decrement(ref _pendingSetups);
+            return;   // 正在握手的连接太多:当场关掉(流由调用方释放)
+        }
+        bool pending = true;
+        void SetupDone()
+        {
+            if (pending)
+            {
+                pending = false;
+                Interlocked.Decrement(ref _pendingSetups);
+            }
+        }
         using var setup = CancellationTokenSource.CreateLinkedTokenSource(ct);
         setup.CancelAfter(SetupTimeout);
 
@@ -161,6 +186,12 @@ public sealed partial class X11Server
             ushort major = Read16(head.AsSpan(2), bigEndian);
             int nameLength = Read16(head.AsSpan(6), bigEndian);
             int dataLength = Read16(head.AsSpan(8), bigEndian);
+            if (nameLength > MaxAuthFieldLength || dataLength > MaxAuthFieldLength)
+            {
+                // 先按客户端给的长度分配的话,每条连接各 128 KB(进大对象堆);真实的授权数据只有几十字节。
+                await SendSetupFailureAsync(stream, bigEndian, "Authorization data too long", setup.Token).ConfigureAwait(false);
+                return;
+            }
             byte[] rest = new byte[XWire.Pad(nameLength) + XWire.Pad(dataLength)];
             await stream.ReadExactlyAsync(rest, setup.Token).ConfigureAwait(false);
             string authName = XWire.Latin1.GetString(rest, 0, nameLength);
@@ -195,6 +226,7 @@ public sealed partial class X11Server
             client.SameHost = peer.SameHost;
             client.Forwarded = peer.Authenticated;
             client.PeerUid = peer.Uid;
+            SetupDone();   // 登记成了客户端:不再占「正在握手」的名额
             // 连接的读写还要跟着「服务端主动断开这个客户端」一起停。
             connection = CancellationTokenSource.CreateLinkedTokenSource(ct, client.Aborted);
             ct = connection.Token;
@@ -222,6 +254,7 @@ public sealed partial class X11Server
         }
         finally
         {
+            SetupDone();
             if (client is not null)
             {
                 XClient gone = client;
