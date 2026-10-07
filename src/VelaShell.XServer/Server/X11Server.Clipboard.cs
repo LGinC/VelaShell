@@ -398,7 +398,7 @@ public sealed partial class X11Server
         }
     }
 
-    private static bool IsLatin1(string text) => !text.AsSpan().ContainsAnyExceptInRange('\0', 'ÿ');
+    private static bool IsLatin1(string text) => !text.AsSpan().ContainsAnyExceptInRange('\0', '\u00FF');
 
     private void DeleteSelectionProperty(uint property)
     {

@@ -228,7 +228,7 @@ public sealed class EwmhTests
             0x1B, (byte)'%', (byte)'@', (byte)' ', 0x1B, (byte)'$', (byte)')', (byte)'A', 0xD6, 0xD0, 0xCE, 0xC4];
         await SetNameAsync(compound, text);
         await host.WaitForAsync(() => host.Mapped[top].Snapshot.Title.StartsWith("caf", StringComparison.Ordinal));
-        Assert.AreEqual("café 文件 ��", host.Mapped[top].Snapshot.Title, "原先一律按 Latin-1 解,成了乱码");
+        Assert.AreEqual("café 文件 \uFFFD\uFFFD", host.Mapped[top].Snapshot.Title, "原先一律按 Latin-1 解,成了乱码");
 
         Assert.AreEqual("a é 中文 b", Protocol.XText.DecodeCompoundText(Protocol.XText.EncodeCompoundText("a é 中文 b")), "编码再解码回到原文");
 

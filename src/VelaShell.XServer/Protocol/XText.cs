@@ -91,7 +91,7 @@ internal static class XText
             }
             else
             {
-                text.Append('�');
+                text.Append('\uFFFD');
             }
             i += set.BytesPerChar;
         }
@@ -142,7 +142,7 @@ internal static class XText
                 {
                     // 扩展段:M、L 两个字节给出后面(编码名、STX、数据)的长度。没有码表:整段换成一个 U+FFFD。
                     int length = ((data[i] & 0x7F) * 128) + (data[i + 1] & 0x7F);
-                    text.Append('�');
+                    text.Append('\uFFFD');
                     return Math.Min(data.Length, i + 2 + length);
                 }
         }
