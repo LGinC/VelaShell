@@ -5793,6 +5793,15 @@ Windows는 exe 전체 경로 또는 명령 이름(예: notepad), Linux는 명령
   <data name="XServer_ForceQuit" xml:space="preserve">
     <value>강제 종료</value>
   </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>X Server 중지</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>X Server를 중지하면 X 프로그램 연결 {0}개가 끊기고 그 창이 모두 닫힙니다. 저장하지 않은 내용은 사라집니다.</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>중지</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>X Server 시작 / 중지</value>
   </data>

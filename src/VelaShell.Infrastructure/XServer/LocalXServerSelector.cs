@@ -94,6 +94,9 @@ public sealed class LocalXServerSelector : ILocalXServer
         return resolution with { Connector = (label, token) => ConnectAsync(connector, resolved, label, token) };
     }
 
+    /// <inheritdoc />
+    public Task<int> CountConnectedClientsAsync() => Running?.CountConnectedClientsAsync() ?? Task.FromResult(0);
+
     /// <summary>先走内置引擎的连接器;它此刻没在运行就按显示地址走本机 TCP(见 <see cref="ResolveForwardingDisplayAsync" />)。</summary>
     private async ValueTask<Stream> ConnectAsync(
         Func<string?, CancellationToken, ValueTask<Stream>> connector, string? resolvedDisplay, string? label, CancellationToken cancellationToken)

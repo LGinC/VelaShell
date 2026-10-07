@@ -115,6 +115,23 @@ public class BuiltInLocalXServerTests
         Assert.AreEqual(1, head[0], "Success —— 经连接器来的连接按本机连接放行");
     }
 
+    /// <summary>停之前数得出连着几个 X 程序(标题栏按钮据此确认「会断开 N 个程序」);没在运行时为 0。</summary>
+    [TestMethod]
+    public async Task CountConnectedClients_CountsConnections()
+    {
+        await using BuiltInLocalXServer server = Create(new XServerOptions(), new RecordingHost());
+        Assert.AreEqual(0, await server.CountConnectedClientsAsync(), "没在运行");
+        XServerDisplayResolution resolution = await server.ResolveForwardingDisplayAsync();
+        await using Stream first = await resolution.Connector!("user@host:22", CancellationToken.None);
+        await using Stream second = await resolution.Connector!("user@host:22", CancellationToken.None);
+        Assert.AreEqual(1, await HandshakeAsync(first));
+        Assert.AreEqual(1, await HandshakeAsync(second));
+        Assert.AreEqual(2, await server.CountConnectedClientsAsync());
+
+        await server.StopAsync();
+        Assert.AreEqual(0, await server.CountConnectedClientsAsync());
+    }
+
     /// <summary>
     /// 回归:SSH 会话比服务端活得久。标题栏上停掉再开之后,会话早先拿到的连接器要接进新的服务端 ——
     /// 以前它记住的是旧实例,每条 x11 通道都接进已释放的服务端,远端只看到 Failed to open display。

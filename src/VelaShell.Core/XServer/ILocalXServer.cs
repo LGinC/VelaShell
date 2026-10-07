@@ -97,4 +97,10 @@ public interface ILocalXServer
     /// <see cref="XServerDisplayResolution.Connector" />。
     /// </remarks>
     Task<XServerDisplayResolution> ResolveForwardingDisplayAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// 此刻连着的 X 程序(客户端连接)有几个 —— 停掉之前告诉用户「会断开 N 个程序」。只有内置引擎数得出来;
+    /// 外部 X 服务端(VcXsrv)、没在运行时为 0。
+    /// </summary>
+    Task<int> CountConnectedClientsAsync() => Task.FromResult(0);
 }

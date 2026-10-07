@@ -6252,6 +6252,15 @@ Windows 填 exe 完整路径或命令名(如 notepad);Linux 填命令名(如 ged
   <data name="XServer_ForceQuit" xml:space="preserve">
     <value>强制结束</value>
   </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>停止 X Server</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>停止 X Server 会断开 {0} 个 X 程序的连接，它们的窗口会全部关闭，未保存的内容会丢失。</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>停止</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>启动 / 停止 X Server</value>
   </data>

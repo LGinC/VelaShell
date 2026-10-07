@@ -5793,6 +5793,15 @@ Windows は exe のフルパスまたはコマンド名(例: notepad)、Linux �
   <data name="XServer_ForceQuit" xml:space="preserve">
     <value>強制終了</value>
   </data>
+  <data name="XServer_StopConfirmTitle" xml:space="preserve">
+    <value>X Server を停止</value>
+  </data>
+  <data name="XServer_StopConfirmMessage" xml:space="preserve">
+    <value>X Server を停止すると {0} 個の X プログラムの接続が切断され、そのウィンドウはすべて閉じられます。保存していない内容は失われます。</value>
+  </data>
+  <data name="XServer_Stop" xml:space="preserve">
+    <value>停止</value>
+  </data>
   <data name="Cmd_ToggleXServer" xml:space="preserve">
     <value>X Server を起動 / 停止</value>
   </data>

@@ -351,6 +351,29 @@ public sealed class BuiltInLocalXServer : ILocalXServer, IAsyncDisposable, IDisp
         return result.Success && Current() is { } started ? started : new(Display: null, result.Error);
     }
 
+    /// <inheritdoc />
+    /// <remarks>以 Retain 模式断开、只剩资源的不算:它们已经没有连接了。</remarks>
+    public async Task<int> CountConnectedClientsAsync()
+    {
+        X11Server? server;
+        lock (_stateLock)
+        {
+            server = _state == XServerState.Running ? _server : null;
+        }
+        if (server is null)
+        {
+            return 0;
+        }
+        try
+        {
+            return (await server.GetClientsAsync().ConfigureAwait(false)).Count(c => !c.Retained);
+        }
+        catch (Exception ex) when (ex is ObjectDisposedException or OperationCanceledException)
+        {
+            return 0;   // 刚好停了
+        }
+    }
+
     /// <summary>在运行时给出显示地址与连接器。</summary>
     private XServerDisplayResolution? Current()
     {
