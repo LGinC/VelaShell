@@ -43,6 +43,13 @@ public sealed partial class X11Server
     /// </summary>
     private readonly Dictionary<int, XClient> _retainedClients = [];
 
+    /// <summary>
+    /// 同时以 Retain 模式留着资源的客户端上限,超了的断开时照 Destroy 处理。保留的客户端占着编号:原先不设限,
+    /// 任何已授权的客户端循环「连上 → RetainPermanent → 断开」254 次(不到一秒),之后所有新连接都收到「客户端已满」,
+    /// 连不上就发不了 KillClient,只能重启服务端。真实用途(xsetroot 留下根窗口的像素图、会话管理器)只要一两个。
+    /// </summary>
+    internal const int MaxRetainedClients = 16;
+
     /// <summary>经 TCP / Unix 套接字接进来的连接(收工时等它们结束)。</summary>
     private readonly ConcurrentDictionary<Task, byte> _connections = new();
 
@@ -548,13 +555,17 @@ public sealed partial class X11Server
         }
         try
         {
-            if (client.CloseDownMode is 1 or 2)
+            if (client.CloseDownMode is 1 or 2 && _retainedClients.Count < MaxRetainedClients)
             {
                 ReleaseConnectionState(client);
                 _retainedClients[client.Index] = client;
             }
             else
             {
+                if (client.CloseDownMode is 1 or 2 && ShouldLogFrequent())
+                {
+                    Log($"{client} asked to retain its resources, but {MaxRetainedClients} clients already do: destroying them");
+                }
                 CleanupClient(client);
             }
         }

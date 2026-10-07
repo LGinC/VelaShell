@@ -343,6 +343,43 @@ public sealed class RobustnessTests
     }
 
     [TestMethod]
+    public async Task 保留资源的客户端有上限_超了的照Destroy处理_XRes列得出保留的()
+    {
+        // 原先不设限:循环「连上 → RetainPermanent → 断开」254 次就占满了编号,之后谁都连不上,也就发不了 KillClient。
+        await using X11Server server = new();
+        await using XTestClient observer = await XTestClient.ConnectAsync(server);
+        List<(uint Base, uint Pixmap)> left = [];
+        for (int i = 0; i <= X11Server.MaxRetainedClients; i++)
+        {
+            XTestClient c = await XTestClient.ConnectAsync(server);
+            uint pixmap = c.NewId();
+            await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(8).U16(8));
+            await c.SendAsync(112, 1);   // SetCloseDownMode(RetainPermanent)
+            await c.SyncAsync();
+            Task serving = c.ServerTask;
+            await c.DisposeAsync();
+            await serving.WaitAsync(TimeSpan.FromSeconds(3));
+            left.Add((c.ResourceBase, pixmap));
+        }
+        await observer.SyncAsync();
+        async Task<bool> ExistsAsync(uint id) => (await observer.RequestAsync(14, 0, b => b.U32(id))).IsReply;   // GetGeometry
+
+        Assert.IsTrue(await ExistsAsync(left[X11Server.MaxRetainedClients - 1].Pixmap), "上限之内的照常留着");
+        Assert.IsFalse(await ExistsAsync(left[X11Server.MaxRetainedClients].Pixmap), "超了上限的照 Destroy 处理");
+        IReadOnlyList<XClientInfo> clients = await server.GetClientsAsync();
+        Assert.AreEqual(X11Server.MaxRetainedClients, clients.Count(c => c.Retained));
+
+        // X-Resource 看得见保留的客户端(原先只列连着的),也能按它的 XID 查资源。
+        byte[] name = "X-Resource"u8.ToArray();
+        byte xres = (await observer.RequestAsync(98, 0, b => b.U16((ushort)name.Length).U16(0).Bytes(name).Pad())).Bytes[9];
+        XMessage listed = await observer.RequestAsync(xres, 1);   // QueryClients
+        Assert.AreEqual((uint)(X11Server.MaxRetainedClients + 1), listed.U32(8), "保留的 16 个加上 observer 自己");
+        XMessage resources = await observer.RequestAsync(xres, 2, b => b.U32(left[0].Base));   // QueryClientResources
+        Assert.IsTrue(resources.IsReply, "保留的客户端按 XID 查得到");
+        Assert.AreEqual(1u, resources.U32(8), "一类资源:PIXMAP");
+    }
+
+    [TestMethod]
     public async Task GrabServer期间别人的请求暂存_Ungrab后按原顺序执行()
     {
         await using X11Server server = new();
