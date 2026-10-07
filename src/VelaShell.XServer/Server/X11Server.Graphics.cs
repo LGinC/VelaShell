@@ -1043,33 +1043,50 @@ public sealed partial class X11Server
         else
         {
             // 深度 1 的 ZPixmap 与 XYPixmap 都是位图(XYPixmap 按平面掩码里的平面逐张给出,高位在前)。
+            // 先数出要几个平面,一次分配整块回复数据,逐平面、逐字节直接写进去(原先每个平面一个数组,再 AddRange 进 List<byte>,
+            // 最后再拷一遍成数组)。
             int stride = BitmapStride(width);
-            List<byte> planes = [];
+            int planeBytes = stride * height;
+            int count = 0;
             for (int plane = depth - 1; plane >= 0; plane--)
+            {
+                if (format == 2 || (planeMask & (1u << plane)) != 0)
+                {
+                    count++;
+                }
+                if (format == 2)
+                {
+                    break;
+                }
+            }
+            data = new byte[(long)count * planeBytes];
+            int offset = 0;
+            for (int plane = depth - 1; plane >= 0 && offset < data.Length; plane--)
             {
                 uint bit = 1u << plane;
                 if (format == 1 && (planeMask & bit) == 0)
                 {
                     continue;
                 }
-                byte[] one = new byte[stride * height];
                 for (int yy = 0; yy < height; yy++)
                 {
-                    for (int xx = 0; xx < width; xx++)
+                    ReadOnlySpan<uint> row = pixels.AsSpan(yy * width, width);
+                    Span<byte> to = data.AsSpan(offset + (yy * stride), stride);
+                    for (int xx = 0; xx < width; xx += 8)
                     {
-                        if ((pixels[(yy * width) + xx] & bit) != 0)
+                        int end = Math.Min(8, width - xx), v = 0;
+                        for (int k = 0; k < end; k++)
                         {
-                            one[(yy * stride) + (xx >> 3)] |= (byte)(1 << (xx & 7));
+                            if ((row[xx + k] & bit) != 0)
+                            {
+                                v |= 1 << k;   // LSBFirst(连接建立时声明的 bitmap-format-bit-order)
+                            }
                         }
+                        to[xx >> 3] = (byte)v;
                     }
                 }
-                planes.AddRange(one);
-                if (format == 2)
-                {
-                    break;
-                }
+                offset += planeBytes;
             }
-            data = [.. planes];
         }
         if (pooled is not null)
         {

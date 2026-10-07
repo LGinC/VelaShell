@@ -180,6 +180,27 @@ public sealed class CoreDrawingTests
 
     private const byte XEventCodeNoExposure = 14;
 
+    [TestMethod]
+    public async Task GetImage的XYPixmap按平面掩码逐平面给出_高位平面在前_LSBFirst()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint window, _) = await MapWindowAsync(c, host);
+        uint pixmap = await PixmapAsync(c, window, 24, 11, 2);
+        // (0,0) 与 (9,1) 是 0x800001(第 23 与第 0 位),其余 0。
+        uint gc = await CreateGcAsync(c, pixmap, (GcForeground, 0x800001));
+        await FillRectAsync(c, pixmap, gc, 0, 0, 1, 1);
+        await FillRectAsync(c, pixmap, gc, 9, 1, 1, 1);
+        // 平面掩码只要第 23 位与第 0 位:两张位图,每行 11 位补齐到 4 字节、两行 —— 每张 8 字节。
+        XMessage image = await c.RequestAsync(73, 1, b => b.U32(pixmap).I16(0).I16(0).U16(11).U16(2).U32(0x800001));
+        Assert.AreEqual(16u * 1 / 4, image.U32(4), "回复长度 = 16 字节");
+        byte[] data = image.Bytes[32..48];
+        byte[] plane = [0x01, 0, 0, 0, 0x00, 0x02, 0, 0];   // (0,0) 在第 0 行最低位;(9,1) 在第 1 行第 2 个字节的第 1 位
+        CollectionAssert.AreEqual(plane, data[..8], "第 23 位平面(高位在前)");
+        CollectionAssert.AreEqual(plane, data[8..], "第 0 位平面");
+    }
+
     private static async Task<uint> PixmapAsync(XTestClient c, uint drawable, byte depth, ushort width, ushort height)
     {
         uint pixmap = c.NewId();
