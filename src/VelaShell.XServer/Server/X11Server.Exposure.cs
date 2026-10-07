@@ -254,7 +254,14 @@ public sealed partial class X11Server
         }
     }
 
-    private static void PaintBackground(XWindow w, Region area)
+    private static void PaintBackground(XWindow w, Region area) =>
+        PaintBackground(w, w.TopLevel!.Buffer!, w.OffsetInTopLevel(), area);
+
+    /// <summary>
+    /// 用窗口 <paramref name="w" /> 的背景铺 <paramref name="buffer" /> 里的 <paramref name="area" />(缓冲坐标);窗口的原点在缓冲里的
+    /// <paramref name="windowOrigin" /> —— 顶层缓冲里就是它在顶层里的偏移,DBE 的后缓冲里是 (0, 0)。
+    /// </summary>
+    private static void PaintBackground(XWindow w, PixelBuffer buffer, (int X, int Y) windowOrigin, Region area)
     {
         // ParentRelative:沿祖先找到第一个不是 ParentRelative 的背景,平铺原点也跟着那个祖先走。
         XWindow source = w;
@@ -262,11 +269,13 @@ public sealed partial class X11Server
         {
             source = p;
         }
-        PixelBuffer buffer = w.TopLevel!.Buffer!;
         uint mask = buffer.DepthMask;
         if (source.BackgroundTile is { } tile)
         {
-            (int tx, int ty) = source.OffsetInTopLevel();
+            // 平铺原点:提供背景的那个祖先的原点,换到这块缓冲的坐标里。
+            (int sx, int sy) = source.OffsetInTopLevel();
+            (int wx, int wy) = w.OffsetInTopLevel();
+            (int tx, int ty) = (sx - wx + windowOrigin.X, sy - wy + windowOrigin.Y);
             foreach (XRect r in area.Rects)
             {
                 for (int y = r.Y; y < r.Bottom; y++)

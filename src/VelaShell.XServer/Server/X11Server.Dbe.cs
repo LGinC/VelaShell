@@ -72,6 +72,7 @@ public sealed partial class X11Server
                 {
                     uint count = r.U32();
                     List<(XWindow Window, byte Action)> swaps = [];
+                    HashSet<XWindow> listed = [];
                     for (uint i = 0; i < count; i++)
                     {
                         XWindow window = Window(r.U32());
@@ -81,7 +82,8 @@ public sealed partial class X11Server
                         {
                             throw new XProtocolError(XErrorCode.Value, action);
                         }
-                        if (!_backBuffers.ContainsKey(window))
+                        // 不是双缓冲的窗口、或者同一个窗口列了两次:BadMatch,哪个窗口都不交换(规范 DBESwapBuffers)。
+                        if (!_backBuffers.ContainsKey(window) || !listed.Add(window))
                         {
                             throw new XProtocolError(XErrorCode.Match);
                         }
@@ -162,8 +164,8 @@ public sealed partial class X11Server
         }
         switch (action)
         {
-            case 1:   // Background
-                Array.Fill(back.Pixels, window.BackgroundPixel ?? 0);
+            case 1:   // Background:新的后缓冲按窗口背景铺 —— 背景像素图照原点平铺、ParentRelative 沿祖先找、按深度掩码,None 不动
+                PaintBackground(window, back, (0, 0), new Region(back.Bounds));
                 break;
             case 2 when saved is not null:
                 Array.Copy(saved.Pixels, back.Pixels, Math.Min(saved.Pixels.Length, back.Pixels.Length));

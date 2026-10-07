@@ -163,6 +163,43 @@ public sealed class SyncCompositeTests
     }
 
     [TestMethod]
+    public async Task DBE的Background交换按背景像素图与ParentRelative铺_同一窗口列两次回BadMatch()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        (byte dbe, _, _) = await ExtAsync(c, "DOUBLE-BUFFER");
+
+        // 背景是 2×1 的像素图(红、蓝)的顶层,里面一个背景 ParentRelative 的子窗口。
+        uint tile = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(tile).U32(c.RootWindow).U16(2).U16(1));
+        await FillAsync(c, tile, await GcAsync(c, tile, 0xFF0000), 0, 0, 1, 1);
+        await FillAsync(c, tile, await GcAsync(c, tile, 0x0000FF), 1, 0, 1, 1);
+        uint top = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(top).U32(c.RootWindow).I16(0).I16(0).U16(40).U16(30).U16(0).U16(1).U32(0).U32(0x1).U32(tile));
+        await c.SendAsync(8, 0, b => b.U32(top));
+        await host.WaitForAsync(() => host.Mapped.ContainsKey(top));
+        uint child = c.NewId();
+        await c.SendAsync(1, 0, b => b.U32(child).U32(top).I16(5).I16(3).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0x1).U32(1));   // ParentRelative
+        await c.SendAsync(8, 0, b => b.U32(child));
+
+        uint topBack = c.NewId(), childBack = c.NewId();
+        await c.SendAsync(dbe, 1, b => b.U32(top).U32(topBack).U8(1).U8(0).U8(0).U8(0));
+        await c.SendAsync(dbe, 1, b => b.U32(child).U32(childBack).U8(1).U8(0).U8(0).U8(0));
+        await c.SendAsync(dbe, 3, b => b.U32(2).U32(top).U8(1).U8(0).U8(0).U8(0).U32(child).U8(1).U8(0).U8(0).U8(0));   // 两个都 Background
+
+        XMessage topImage = await c.RequestAsync(73, 2, b => b.U32(topBack).I16(0).I16(0).U16(2).U16(1).U32(0xFFFFFFFF));
+        Assert.AreEqual((0xFF0000u, 0x0000FFu), (topImage.U32(32) & 0xFFFFFF, topImage.U32(36) & 0xFFFFFF), "按背景像素图平铺");
+        // 子窗口在 (5,3):它的 (0,0) 对着顶层的 x = 5,平铺原点跟着顶层走 —— 是蓝的。
+        XMessage childImage = await c.RequestAsync(73, 2, b => b.U32(childBack).I16(0).I16(0).U16(2).U16(1).U32(0xFFFFFFFF));
+        Assert.AreEqual((0x0000FFu, 0xFF0000u), (childImage.U32(32) & 0xFFFFFF, childImage.U32(36) & 0xFFFFFF), "ParentRelative 用父窗口的背景");
+
+        ushort twice = await c.SendAsync(dbe, 3, b => b.U32(2).U32(top).U8(1).U8(0).U8(0).U8(0).U32(top).U8(0).U8(0).U8(0).U8(0));
+        XMessage error = await c.NextAsync(m => m.IsError && m.Sequence == twice);
+        Assert.AreEqual(8, error.Detail, "同一窗口列两次:BadMatch");
+    }
+
+    [TestMethod]
     public async Task SYNC的Await挡住后续请求_计数器变了才放行()
     {
         await using X11Server server = new();
