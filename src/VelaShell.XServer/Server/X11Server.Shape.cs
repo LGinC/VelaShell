@@ -70,10 +70,10 @@ public sealed partial class X11Server
                     XWindow window = Window(r.U32());
                     short dx = r.I16(), dy = r.I16();
                     XWindow source = Window(r.U32());
-                    // 源窗口的形状换到目标窗口的坐标系:两者内区原点之差。
-                    (int sx, int sy) = source.AbsoluteInner();
-                    (int tx, int ty) = window.AbsoluteInner();
-                    Region region = EffectiveShape(source, sourceKind).Translate(sx - tx + dx, sy - ty + dy);
+                    // SHAPE 规范「ShapeCombine」:源窗口的形状(相对源窗口的原点)「offset from the window origin by xOff and yOff」——
+                    // 只按客户端给的偏移放进目标窗口的坐标系。原先另外加上两个窗口内区原点之差,常见的用法(把子窗口的形状并进父窗口、
+                    // 偏移给子窗口的位置)偏了两倍。
+                    Region region = EffectiveShape(source, sourceKind).Translate(dx, dy);
                     ApplyShape(window, op, kind, region);
                     break;
                 }

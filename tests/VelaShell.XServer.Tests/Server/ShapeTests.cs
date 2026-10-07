@@ -64,6 +64,24 @@ public sealed class ShapeTests
     }
 
     [TestMethod]
+    public async Task ShapeCombine只按客户端给的偏移放源形状_子窗口在10_10时并进父窗口不偏两倍()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        uint parent = c.NewId(), child = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(parent).U32(c.RootWindow).I16(50).I16(50).U16(100).U16(100).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(1, 24, b => b.U32(child).U32(parent).I16(10).I16(10).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(child).I16(0).I16(0).I16(0).I16(0).U16(5).U16(5));   // 子窗口:左上 5×5
+        // Xt / Motif 的写法:把子窗口的形状并进父窗口,偏移给子窗口在父窗口里的位置。
+        await c.SendAsync(major, 3, b => b.U8(0).U8(0).U8(0).U8(0).U32(parent).I16(10).I16(10).U32(child));   // Combine:Set、Bounding ← Bounding
+        XMessage rects = await c.RequestAsync(major, 8, b => b.U32(parent).U8(0).Pad());                       // GetRectangles
+        Assert.AreEqual(1u, rects.U32(8), "一块");
+        Assert.AreEqual((10, 10, 5, 5), (rects.I16(32), rects.I16(34), rects.U16(36), rects.U16(38)),
+            "原先另外加了两个窗口内区原点之差,落在 (20, 20)");
+    }
+
+    [TestMethod]
     public async Task 设形状发ShapeNotify且宿主拿到顶层形状()
     {
         using RecordingHost host = new();
