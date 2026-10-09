@@ -22,6 +22,9 @@ internal abstract class XResource(uint id, XClient? owner)
     /// 创建者。客户端断开时它创建的资源一律释放(CloseDownMode = Destroy,默认)。
     /// </summary>
     public XClient? Owner { get; } = owner;
+
+    /// <summary>进资源表时记在 <see cref="Owner" /> 名下的字节数(见 <c>X11Server.ChargeMemory</c>);离开资源表时如数退还。</summary>
+    public long Charged { get; set; }
 }
 
 /// <summary>像素图:一块离屏帧缓冲。</summary>
@@ -31,9 +34,10 @@ internal abstract class XResource(uint id, XClient? owner)
 internal sealed class XPixmap(uint id, XClient? owner, PixelBuffer buffer) : XResource(id, owner)
 {
     public XPixmap(uint id, XClient? owner, int width, int height, byte depth)
-        : this(id, owner, new PixelBuffer(width, height, depth))
-    {
-    }
+        : this(id, owner, new PixelBuffer(width, height, depth)) => OwnsBuffer = true;
+
+    /// <summary>缓冲是它自己的(而不是包住顶层窗口或后缓冲的那一块):只有这样才按像素记账。</summary>
+    public bool OwnsBuffer { get; }
 
     public PixelBuffer Buffer { get; } = buffer;
 
@@ -60,15 +64,18 @@ internal sealed class XColormap(uint id, XClient? owner, uint visual) : XResourc
 internal sealed class XCursorResource(uint id, XClient? owner) : XResource(id, owner)
 {
     /// <summary>cursor 字体的字形号(如 68 = left_ptr、152 = xterm);位图 / ARGB 光标为 -1。</summary>
-    public int Glyph { get; init; } = -1;
+    public int Glyph { get; set; } = -1;
 
     /// <summary>位图 / ARGB 光标的图像(预乘的 ARGB 与热点);cursor 字体的光标为 null。</summary>
-    public XCursorImage? Image { get; init; }
+    public XCursorImage? Image { get; set; }
+
+    /// <summary>一个像素也不显示的光标(xterm 拿 nil2 字体的空白字形做的隐形指针):交给宿主时是 Hidden。</summary>
+    public bool Blank { get; set; }
 
     /// <summary>客户端经 XFIXES SetCursorName 起的名字(光标主题里的名字,如 <c>text</c>、<c>pointer</c>);没起为 null。</summary>
     public string? Name { get; set; }
 
-    /// <summary>交给宿主的样子(第一次用到时推出,改名后作废)。</summary>
+    /// <summary>交给宿主的样子(第一次用到时推出,改名、被 XFIXES ChangeCursor 换掉样子后作废)。</summary>
     public XCursor? Appearance { get; set; }
 }
 

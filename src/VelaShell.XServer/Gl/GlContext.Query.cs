@@ -35,7 +35,16 @@ internal sealed partial class GlContext
         _ => null,
     };
 
-    public bool IsEnabled(uint cap) => State.Enabled.Contains(cap);
+    /// <summary>IsEnabled(§6.1.1):不认识的开关记 INVALID_ENUM、回 False。</summary>
+    public bool IsEnabled(uint cap)
+    {
+        if (!IsKnownCap(cap))
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return false;
+        }
+        return State.Enabled.Has(cap);
+    }
 
     /// <summary>Get{Boolean,Integer,Float,Double}v 的值;不认识的 pname 记 INVALID_ENUM 并返回 null。</summary>
     public GlValue? Query(uint pname)
@@ -66,7 +75,7 @@ internal sealed partial class GlContext
                 or GlEnum.AUTO_NORMAL or GlEnum.POLYGON_OFFSET_FILL or GlEnum.POLYGON_OFFSET_LINE or GlEnum.POLYGON_OFFSET_POINT
                 or GlEnum.RESCALE_NORMAL or GlEnum.MULTISAMPLE
                 or (>= GlEnum.CLIP_PLANE0 and < GlEnum.CLIP_PLANE0 + MaxClipPlanes)
-                or (>= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights) => Bool(State.Enabled.Contains(pname)),
+                or (>= GlEnum.LIGHT0 and < GlEnum.LIGHT0 + MaxLights) => Bool(State.Enabled.Has(pname)),
 
             // 当前值
             0x0B00 => Color(State.Color),                                                   // CURRENT_COLOR
@@ -93,6 +102,7 @@ internal sealed partial class GlContext
             0x0B46 => One(State.FrontFace),                   // FRONT_FACE
             0x8038 => One(State.PolygonOffsetFactor),         // POLYGON_OFFSET_FACTOR
             0x2A00 => One(State.PolygonOffsetUnits),          // POLYGON_OFFSET_UNITS
+            0x8039 => One(State.PolygonOffsetUnits / DepthResolutionSteps),   // POLYGON_OFFSET_BIAS_EXT:深度范围单位
 
             // 列表
             0x0B30 => One(ListMode),                          // LIST_MODE
@@ -170,8 +180,8 @@ internal sealed partial class GlContext
 
             // 纹理
             0x2200 => One(State.TexEnvMode),
-            0x8068 => One(State.Texture1D),                   // TEXTURE_BINDING_1D
-            0x8069 => One(State.Texture2D),                   // TEXTURE_BINDING_2D
+            0x8068 => One(TextureBinding(GlEnum.TEXTURE_1D)),  // TEXTURE_BINDING_1D
+            0x8069 => One(TextureBinding(GlEnum.TEXTURE_2D)),  // TEXTURE_BINDING_2D
             0x84E0 => One(GlEnum.TEXTURE0),                   // ACTIVE_TEXTURE
             0x84E1 => One(GlEnum.TEXTURE0),                   // CLIENT_ACTIVE_TEXTURE
 

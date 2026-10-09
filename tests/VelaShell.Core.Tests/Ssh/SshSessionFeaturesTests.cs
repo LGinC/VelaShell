@@ -129,7 +129,10 @@ public class SshSessionFeaturesTests
             new SshSessionOptions { X11Forwarding = true, X11Trusted = true, X11Display = "localhost:3" }, notices, "localhost:10.0", connector);
 
         Assert.AreSame(connector, trusted?.LocalConnector);
-        Assert.IsNull(untrusted?.LocalConnector);
+        Assert.IsNull(untrusted, "内置引擎没有 SECURITY 扩展,签不出受限 cookie:非受信不开转发");
+        Assert.HasCount(1, notices);
+        Assert.IsTrue(notices[0].IsWarning);
+        StringAssert.Contains(notices[0].Text, Strings.Get("Ssh_X11UntrustedBuiltIn"), "直说原因,而不是让 xauth 报错");
         Assert.IsNull(explicitDisplay?.LocalConnector, "用户指定的显示与本机 X Server 无关");
         Assert.AreEqual(3, explicitDisplay?.Display?.Number);
     }

@@ -35,6 +35,9 @@ public sealed partial class X11Server
     /// <summary>当前计时器到点的时刻(<see cref="Now" /> 的刻度);没有计时器时为 long.MaxValue。</summary>
     private long _syncDeadline = long.MaxValue;
 
+    /// <summary>系统计数器的计时器是否排着(测试用)。</summary>
+    internal bool SyncTimerPending => _syncTimer is not null;
+
     /// <summary>求值进行中(EndWait 会就地执行暂存的请求,那些请求可能再次改计数器)。</summary>
     private bool _evaluatingSync;
 
@@ -162,6 +165,10 @@ public sealed partial class X11Server
                         long threshold = ReadInt64(r);
                         wait.Conditions.Add((trigger, threshold));
                     }
+                    if (wait.Conditions.Count == 0)
+                    {
+                        throw new XProtocolError(XErrorCode.Value);   // 规范 Await:wait-list 为空回 Value(原先客户端从此挂住)
+                    }
                     BeginWait(c, wait);
                     break;
                 }
@@ -237,6 +244,8 @@ public sealed partial class X11Server
                 {
                     XSyncFence fence = Fence(r.U32());
                     RemoveResource(fence.Id);
+                    FenceGone(fence);
+                    RunReadyPresents();   // 等它的 PresentPixmap 不再等(Present 规范)
                     break;
                 }
             case 18:  // QueryFence
@@ -251,6 +260,10 @@ public sealed partial class X11Server
                     while (r.Remaining >= 4)
                     {
                         wait.Fences.Add(Fence(r.U32()));
+                    }
+                    if (wait.Fences.Count == 0)
+                    {
+                        break;   // 没有栅栏可等:规范没给这种情形的错误,按「没什么要等的」立即放行,而不是永远挂住
                     }
                     BeginWait(c, wait);
                     break;
@@ -289,16 +302,25 @@ public sealed partial class X11Server
                 throw new XProtocolError(XErrorCode.Value, t.TestType);
             }
         }
-        if (t.Counter is { } counter)
+        // 初始化:按 value-type 与 wait-value 算出测试值(规范 TRIGGER)。value-type 与 wait-value 本身照原样留着 ——
+        // QueryAlarm 报的是它们,只改 value 的 ChangeAlarm 重新初始化时也要按原来的 value-type 解释(原先换算之后改回了 Absolute)。
+        if (t.Counter is not { } counter)
         {
-            long now = CounterValue(counter);
-            if (t.ValueType == 1)
+            if (t.ValueType == XSyncTrigger.Relative)
             {
-                t.WaitValue = unchecked(now + t.WaitValue);   // Relative → Absolute(规范:在设置时换算)
-                t.ValueType = 0;
+                throw new XProtocolError(XErrorCode.Match);   // counter 为 None 时没有「相对于谁」
             }
-            t.LastValue = now;
+            t.TestValue = t.WaitValue;
+            return t;
         }
+        long now = CounterValue(counter);
+        Int128 test = t.ValueType == XSyncTrigger.Relative ? (Int128)now + t.WaitValue : t.WaitValue;
+        if (test > long.MaxValue || test < long.MinValue)
+        {
+            throw new XProtocolError(XErrorCode.Value);   // 测试值超出 INT64
+        }
+        t.TestValue = (long)test;
+        t.LastValue = now;
         return t;
     }
 
@@ -333,67 +355,117 @@ public sealed partial class X11Server
     {
         fence.Triggered = true;
         EvaluateSync();
+        RunReadyPresents();   // 以它为 wait-fence 的 PresentPixmap
     }
 
     private void DestroyCounter(XSyncCounter counter)
     {
         RemoveResource(counter.Id);
-        // 挂着它的报警器进入 Inactive;等它的 Await 以 destroyed = True 的 CounterNotify 结束(规范 DestroyCounter)。
-        // 报警器先改:结束等待会就地执行那个客户端暂存的请求,那些请求可能增删报警器。
+        CounterGone(c => ReferenceEquals(c, counter));
+    }
+
+    /// <summary>
+    /// 计数器没了(DestroyCounter,或者创建它的客户端断开):挂着它的报警器的 counter 置为 None、进入 Inactive,并发一条
+    /// state = Inactive 的 AlarmNotify;等它的 Await 结束,destroyed = True 的 CounterNotify 不论阈值一定发(规范 DestroyCounter)。
+    /// 报警器先改,再结束等待(暂存的请求放回执行循环,之后才执行)。
+    /// </summary>
+    private void CounterGone(Func<XSyncCounter, bool> gone)
+    {
         foreach (XSyncAlarm alarm in _alarms)
         {
-            if (ReferenceEquals(alarm.Trigger.Counter, counter))
+            if (alarm.State != XSyncAlarm.Destroyed && alarm.Trigger.Counter is { } counter && gone(counter))
             {
                 alarm.Trigger.Counter = null;
                 alarm.State = XSyncAlarm.Inactive;
+                SendAlarmNotify(alarm, counter.Value, alarm.Trigger.TestValue);
             }
         }
         foreach ((XClient client, SyncWait wait) in _syncWaits.ToArray())
         {
-            if (_syncWaits.ContainsKey(client) && wait.Conditions.Any(cond => ReferenceEquals(cond.Trigger.Counter, counter)))
+            if (_syncWaits.ContainsKey(client) && wait.Conditions.Any(cond => cond.Trigger.Counter is { } k && gone(k)))
             {
-                SendCounterNotify(client, wait, counter, destroyed: true);
+                SendCounterNotifies(client, wait, gone);
+                foreach ((XSyncTrigger trigger, _) in wait.Conditions)
+                {
+                    if (trigger.Counter is { } k && gone(k))
+                    {
+                        trigger.Counter = null;
+                    }
+                }
                 EndWait(client);
             }
         }
     }
 
+    /// <summary>
+    /// 报警器不再参与求值:标成 Destroyed,列表里攒够一半死项才压缩一次 —— 原先每次 List.Remove(O(n)),
+    /// 求值时每个报警器又 List.Contains 一遍(O(n)),几千个报警器一轮求值就是几千万次比较。
+    /// </summary>
+    private void ForgetAlarm(XSyncAlarm alarm)
+    {
+        if (alarm.State == XSyncAlarm.Destroyed)
+        {
+            return;
+        }
+        alarm.State = XSyncAlarm.Destroyed;
+        if (++_destroyedAlarms > _alarms.Count / 2)
+        {
+            _alarms.RemoveAll(a => a.State == XSyncAlarm.Destroyed);
+            _destroyedAlarms = 0;
+        }
+    }
+
+    /// <summary>列表里还留着的已销毁报警器个数(见 <see cref="ForgetAlarm" />)。</summary>
+    private int _destroyedAlarms;
+
     private void DestroyAlarm(XSyncAlarm alarm)
     {
         RemoveResource(alarm.Id);
-        _alarms.Remove(alarm);
-        alarm.State = XSyncAlarm.Destroyed;
-        SendAlarmNotify(alarm, CounterValue(alarm.Trigger.Counter ?? _serverTimeCounter!));
+        ForgetAlarm(alarm);
+        SendAlarmNotify(alarm, CounterValue(alarm.Trigger.Counter ?? _serverTimeCounter!), alarm.Trigger.TestValue);
     }
 
     // ------------------------------------------------------------------ Await
 
     private void BeginWait(XClient c, SyncWait wait)
     {
-        if (WaitSatisfied(wait, out _))
+        if (WaitSatisfied(wait))
         {
-            return;   // 条件已经成立:不用停
+            // 条件已经成立:不用停。CounterNotify 照样按阈值检查(规范 Await:「即使请求执行时就有触发器成立」)。
+            SendCounterNotifies(c, wait, null);
+            return;
         }
         _syncWaits[c] = wait;
         ScheduleSyncTimer();
     }
 
-    private bool WaitSatisfied(SyncWait wait, out XSyncCounter? firing)
+    private bool WaitSatisfied(SyncWait wait)
     {
-        firing = null;
         if (wait.Fences.Any(f => f.Triggered))
         {
             return true;
         }
         foreach ((XSyncTrigger trigger, _) in wait.Conditions)
         {
-            if (trigger.Counter is { } counter && trigger.Satisfied(CounterValue(counter)))
+            // 规范 TRIGGER:「A trigger with a counter value of None and a valid test-type is always TRUE」(原先永远不成立,客户端挂住)。
+            if (trigger.Counter is not { } counter || trigger.Satisfied(CounterValue(counter)))
             {
-                firing = counter;
                 return true;
             }
         }
         return false;
+    }
+
+    /// <summary>栅栏被销毁(DestroyFence,或创建它的客户端断开):等它的 AwaitFence 一律放行(规范 DestroyFence)。原先它们永远挂着。</summary>
+    private void FenceGone(XSyncFence fence)
+    {
+        foreach ((XClient client, SyncWait wait) in _syncWaits.ToArray())
+        {
+            if (_syncWaits.ContainsKey(client) && wait.Fences.Contains(fence))
+            {
+                EndWait(client);
+            }
+        }
     }
 
     private void EndWait(XClient client)
@@ -402,10 +474,7 @@ public sealed partial class X11Server
         {
             return;
         }
-        foreach (WorkItem item in wait.Deferred)
-        {
-            RunItem(item);
-        }
+        Requeue(wait.Deferred);
     }
 
     /// <summary>执行循环在跑一项工作之前问一句:这个客户端是不是在 Await 里?是就把请求暂存。</summary>
@@ -492,12 +561,9 @@ public sealed partial class X11Server
             {
                 continue;   // 前面某个客户端的暂存请求把它的等待结束了(比如销毁了它等的计数器)
             }
-            if (WaitSatisfied(wait, out XSyncCounter? firing))
+            if (WaitSatisfied(wait))
             {
-                if (firing is not null)
-                {
-                    SendCounterNotify(client, wait, firing, destroyed: false);
-                }
+                SendCounterNotifies(client, wait, null);
                 EndWait(client);
             }
             else
@@ -513,7 +579,7 @@ public sealed partial class X11Server
         }
         foreach (XSyncAlarm alarm in _alarms.ToArray())
         {
-            if (alarm.State != XSyncAlarm.Active || alarm.Trigger.Counter is not { } counter || !_alarms.Contains(alarm))
+            if (alarm.State != XSyncAlarm.Active || alarm.Trigger.Counter is not { } counter)
             {
                 continue;
             }
@@ -524,46 +590,71 @@ public sealed partial class X11Server
                 t.LastValue = value;
                 continue;
             }
-            SendAlarmNotify(alarm, value);
-            // 触发之后按 delta 推进等待值;比较型测试 delta 为 0、或推进会溢出时报警器停用。
-            if (alarm.Delta == 0 && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison)
+            // 触发之后按 delta 推进等待值;比较型测试 delta 为 0、或推进会溢出时报警器停用 —— 规范:状态在发事件「之前」改,
+            // 事件里的 state 是新状态(原先先发后改:delta = 0 的比较型报警器报 Active,随即却是 Inactive),alarm-value 是触发时的测试值。
+            long alarmValue = t.TestValue;
+            if (!AdvanceAlarm(alarm, value))
             {
                 alarm.State = XSyncAlarm.Inactive;
             }
-            else
-            {
-                int guard = 0;
-                do
-                {
-                    long next = unchecked(t.WaitValue + alarm.Delta);
-                    if ((alarm.Delta > 0 && next < t.WaitValue) || (alarm.Delta < 0 && next > t.WaitValue) || ++guard > 1_000_000)
-                    {
-                        alarm.State = XSyncAlarm.Inactive;
-                        break;
-                    }
-                    t.WaitValue = next;
-                }
-                while (alarm.Delta != 0 && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison
-                       && t.Satisfied(value));
-            }
             t.LastValue = value;
+            SendAlarmNotify(alarm, value, alarmValue);
         }
     }
 
     /// <summary>
+    /// 报警器触发之后推进等待值(规范 CreateAlarm:反复加 delta 并重新初始化,直到触发器为假)。比较型直接算出要加几次:
+    /// PositiveComparison 要 wait + k·delta &gt; 计数器,NegativeComparison 要 wait + k·delta &lt; 计数器 —— 原先一次一次地加,
+    /// 超过一百万次就把报警器停用,而规范只在溢出时停用(delta = 1、计数器一下跳到几百万的报警器就此失效)。
+    /// 跨越型重新初始化之后就是假的,只加一次。比较型 delta 为 0、或结果超出 INT64 时不改值,返回假。
+    /// </summary>
+    private static bool AdvanceAlarm(XSyncAlarm alarm, long value)
+    {
+        XSyncTrigger t = alarm.Trigger;
+        long delta = alarm.Delta;
+        bool comparison = t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.NegativeComparison;
+        if (comparison && delta == 0)
+        {
+            return false;
+        }
+        Int128 steps = 1;
+        if (comparison)
+        {
+            Int128 gap = t.TestType == XSyncTrigger.PositiveComparison ? (Int128)value - t.TestValue : (Int128)t.TestValue - value;
+            steps = gap < 0 ? 1 : (gap / Int128.Abs(delta)) + 1;
+        }
+        // 测试值与 wait-value 一同推进(Absolute 时两者相等;Relative 时 wait-value 是客户端给的偏移,同样加上 delta)。
+        Int128 next = t.TestValue + (steps * delta), nextWait = t.WaitValue + (steps * delta);
+        if (next > long.MaxValue || next < long.MinValue || nextWait > long.MaxValue || nextWait < long.MinValue)
+        {
+            return false;
+        }
+        t.TestValue = (long)next;
+        t.WaitValue = (long)nextWait;
+        return true;
+    }
+
+    /// <summary>
     /// 有触发器挂在系统计数器上时,算出最早可能成立的时刻并定一个计时器。
-    /// SERVERTIME 一毫秒一毫秒地涨;IDLETIME 在没有输入时同样一毫秒一毫秒地涨(有输入时由 NoteUserActivity 触发求值)。
+    /// SERVERTIME 一毫秒一毫秒地涨;IDLETIME 在没有输入时同样一毫秒一毫秒地涨(有输入时由 NoteInputActivity 触发求值)。
     /// </summary>
     private void ScheduleSyncTimer()
     {
         long soonest = long.MaxValue;
         void Consider(XSyncTrigger t)
         {
-            if (t.Counter is { SystemName: not null } counter
-                && t.TestType is XSyncTrigger.PositiveComparison or XSyncTrigger.PositiveTransition)
+            if (t.Counter is not { SystemName: not null } counter
+                || t.TestType is not (XSyncTrigger.PositiveComparison or XSyncTrigger.PositiveTransition))
             {
-                soonest = Math.Min(soonest, Math.Max(1, t.WaitValue - CounterValue(counter)));
+                return;
             }
+            // 正向跨越已经越过了等待值:系统计数器只会往上涨,要先掉回等待值以下才可能再成立 —— 那只会是 IDLETIME 因用户输入归零,
+            // 那时另有一次求值(NoteIdleReset)。原先照样按 Max(1, 等待值 − 当前值) 排计时器,等于每毫秒醒一次、持锁求值。
+            if (t.TestType == XSyncTrigger.PositiveTransition && t.LastValue >= t.TestValue)
+            {
+                return;
+            }
+            soonest = Math.Min(soonest, Math.Max(1, t.TestValue - CounterValue(counter)));
         }
         foreach (SyncWait wait in _syncWaits.Values)
         {
@@ -628,26 +719,59 @@ public sealed partial class X11Server
 
     // ------------------------------------------------------------------ 事件
 
-    private void SendCounterNotify(XClient client, SyncWait wait, XSyncCounter counter, bool destroyed)
+    /// <summary>
+    /// Await 结束时的 CounterNotify(规范 Await):每个触发器各查一次 —— 差值 = 计数器 − 测试值,Positive* 的差值不小于 event-threshold、
+    /// Negative* 的不大于它才发(超出 INT64 不发;为假的触发器也可能发);计数器被销毁的那几个不论阈值一定发,destroyed = True。
+    /// 一次 Await 的事件连着发,count 是后面还有几条。原先读了 event-threshold 却从不用,只给成立的那个计数器发。
+    /// </summary>
+    /// <param name="client">等待的客户端。</param>
+    /// <param name="wait">它的等待条件。</param>
+    /// <param name="destroyed">哪些计数器没了(null = 没有)。</param>
+    private void SendCounterNotifies(XClient client, SyncWait wait, Func<XSyncCounter, bool>? destroyed)
     {
-        long value = counter.SystemName is null && destroyed ? counter.Value : CounterValue(counter);
-        uint time = Now;
-        List<(XSyncTrigger Trigger, long Threshold)> matching = [.. wait.Conditions.Where(cond => ReferenceEquals(cond.Trigger.Counter, counter))];
-        for (int i = 0; i < matching.Count; i++)
+        List<(uint Counter, long WaitValue, long Value, bool Destroyed)> events = [];
+        foreach ((XSyncTrigger trigger, long threshold) in wait.Conditions)
         {
-            (XSyncTrigger trigger, _) = matching[i];
-            int remaining = matching.Count - 1 - i;
+            if (trigger.Counter is not { } counter)
+            {
+                continue;
+            }
+            if (destroyed?.Invoke(counter) == true)
+            {
+                events.Add((counter.Id, trigger.TestValue, counter.Value, true));
+                continue;
+            }
+            long value = CounterValue(counter);
+            Int128 difference = (Int128)value - trigger.TestValue;
+            if (difference > long.MaxValue || difference < long.MinValue)
+            {
+                continue;
+            }
+            bool positive = trigger.TestType is XSyncTrigger.PositiveTransition or XSyncTrigger.PositiveComparison;
+            if (positive ? difference >= threshold : difference <= threshold)
+            {
+                events.Add((counter.Id, trigger.TestValue, value, false));
+            }
+        }
+        uint time = Now;
+        for (int i = 0; i < events.Count; i++)
+        {
+            (uint id, long waitValue, long value, bool gone) = events[i];
+            int remaining = events.Count - 1 - i;
             client.Event(SyncEventBase, 0, w =>
             {
-                w.U32(counter.Id);
-                WriteInt64(w, trigger.WaitValue);
+                w.U32(id);
+                WriteInt64(w, waitValue);
                 WriteInt64(w, value);
-                w.U32(time).U16((ushort)remaining).Bool(destroyed);
+                w.U32(time).U16((ushort)Math.Min(remaining, ushort.MaxValue)).Bool(gone);
             });
         }
     }
 
-    private void SendAlarmNotify(XSyncAlarm alarm, long counterValue)
+    /// <param name="alarm">报警器(状态已经是新的)。</param>
+    /// <param name="counterValue">触发它的计数器值。</param>
+    /// <param name="alarmValue">触发时的测试值。</param>
+    private void SendAlarmNotify(XSyncAlarm alarm, long counterValue, long alarmValue)
     {
         uint time = Now;
         foreach (XClient client in alarm.Listeners)
@@ -660,7 +784,7 @@ public sealed partial class X11Server
             {
                 w.U32(alarm.Id);
                 WriteInt64(w, counterValue);
-                WriteInt64(w, alarm.Trigger.WaitValue);
+                WriteInt64(w, alarmValue);
                 w.U32(time).U8(alarm.State);
             });
         }
@@ -670,21 +794,32 @@ public sealed partial class X11Server
     private void CleanupSync(XClient client)
     {
         _syncWaits.Remove(client);
-        // 别的客户端在等这个客户端的计数器:计数器随它一起没了,按「计数器被销毁」结束那些等待。
-        foreach ((XClient waiter, SyncWait wait) in _syncWaits.ToArray())
-        {
-            if (wait.Conditions.FirstOrDefault(cond => cond.Trigger.Counter is { } k && !_resources.ContainsKey(k.Id)).Trigger?.Counter is { } gone)
-            {
-                SendCounterNotify(waiter, wait, gone, destroyed: true);
-                EndWait(waiter);
-            }
-        }
-        foreach (XSyncAlarm alarm in _alarms.ToArray())
+        foreach (XSyncAlarm alarm in _alarms)
         {
             alarm.Listeners.Remove(client);
+        }
+    }
+
+    /// <summary>
+    /// 客户端的资源销毁了(<see cref="Extension.ClientResourcesDestroyed" />):它的报警器作废;它的计数器没了,按「计数器被销毁」处理别人的
+    /// 报警器与等待;等它的栅栏的 AwaitFence 放行。以 Retain 模式断开时资源还在,这些都不动(报警器照常触发、计数器与栅栏照常可等)。
+    /// </summary>
+    private void CleanupSyncResources(XClient client)
+    {
+        foreach (XSyncAlarm alarm in _alarms.ToArray())
+        {
             if (ReferenceEquals(alarm.Owner, client))
             {
-                _alarms.Remove(alarm);
+                ForgetAlarm(alarm);
+            }
+        }
+        CounterGone(k => k.SystemName is null && !ReferenceEquals(Lookup<XSyncCounter>(k.Id), k));
+        // 它的栅栏随它没了:等这些栅栏的 AwaitFence 放行。
+        foreach ((XClient waiter, SyncWait wait) in _syncWaits.ToArray())
+        {
+            if (_syncWaits.ContainsKey(waiter) && wait.Fences.Any(f => !ReferenceEquals(Lookup<XSyncFence>(f.Id), f)))
+            {
+                EndWait(waiter);
             }
         }
     }

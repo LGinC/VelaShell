@@ -1,6 +1,9 @@
+using System.Net;
+using System.Net.Sockets;
 using VelaShell.Core.Data;
 using VelaShell.Core.Models;
 using VelaShell.Core.XServer;
+using VelaShell.Ssh.Forwarding;
 
 namespace VelaShell.Infrastructure.XServer;
 
@@ -74,10 +77,69 @@ public sealed class LocalXServerSelector : ILocalXServer
     }
 
     /// <inheritdoc />
+    /// <remarks>
+    /// 内置引擎给的连接器包一层:SSH 会话在开 shell 时就绑定了它,会话比 X 服务端活得久。用户之后停掉内置引擎、改用 VcXsrv,
+    /// 老会话里新开的 X 程序原先全被拒(连接器只认内置引擎,远端只看到 <c>Failed to open display</c>)—— 现在内置引擎不在运行时
+    /// 按本机 TCP 连此刻在运行的那个 X 服务端(都没有就连解析时的显示地址)。
+    /// </remarks>
     public async Task<XServerDisplayResolution> ResolveForwardingDisplayAsync(CancellationToken cancellationToken = default)
     {
         ILocalXServer target = Running ?? await ChosenAsync().ConfigureAwait(false);
-        return await target.ResolveForwardingDisplayAsync(cancellationToken).ConfigureAwait(false);
+        XServerDisplayResolution resolution = await target.ResolveForwardingDisplayAsync(cancellationToken).ConfigureAwait(false);
+        if (resolution.Connector is not { } connector)
+        {
+            return resolution;
+        }
+        string? resolved = resolution.Display;
+        return resolution with { Connector = (label, token) => ConnectAsync(connector, resolved, label, token) };
+    }
+
+    /// <inheritdoc />
+    public Task<int> CountConnectedClientsAsync() => Running?.CountConnectedClientsAsync() ?? Task.FromResult(0);
+
+    /// <summary>先走内置引擎的连接器;它此刻没在运行就按显示地址走本机 TCP(见 <see cref="ResolveForwardingDisplayAsync" />)。</summary>
+    private async ValueTask<Stream> ConnectAsync(
+        Func<string?, CancellationToken, ValueTask<Stream>> connector, string? resolvedDisplay, string? label, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await connector(label, cancellationToken).ConfigureAwait(false);
+        }
+        catch (InvalidOperationException) when (_builtIn.State != XServerState.Running)
+        {
+            int? display = _vcXsrv.State == XServerState.Running ? _vcXsrv.DisplayNumber : null;
+            if (display is null && X11Display.TryParse(resolvedDisplay, out X11Display? parsed))
+            {
+                display = parsed.Number;
+            }
+            if (display is not { } number)
+            {
+                throw;
+            }
+            return await ConnectTcpAsync(number, cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>连环回上的 <c>6000+N</c>。连不上抛 <see cref="IOException" />(转发层按「本机显示连不上」处理这条通道)。</summary>
+    internal static async ValueTask<Stream> ConnectTcpAsync(int display, CancellationToken cancellationToken)
+    {
+        Socket socket = new(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(new IPEndPoint(IPAddress.Loopback, XServerCommandLine.TcpPort(display)), cancellationToken)
+                .ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch (SocketException ex)
+        {
+            socket.Dispose();
+            throw new IOException($"Cannot connect to the local X display :{display}: {ex.SocketErrorCode}", ex);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
     }
 
     /// <summary>在运行或正在启动的那个;都没有时为 <see langword="null" />。</summary>

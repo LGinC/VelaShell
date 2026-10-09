@@ -58,6 +58,51 @@ public sealed class UnitTests
         Assert.AreEqual(0u, buffer.Get(12, 12));
     }
 
+    private static PixelBuffer Draw(Action<Rasterizer> draw, Action<XGc>? setup = null)
+    {
+        PixelBuffer buffer = new(24, 24, 24);
+        XGc gc = new(1, null, 24) { Foreground = 7 };
+        setup?.Invoke(gc);
+        draw(new Rasterizer(buffer, 0, 0, new Region(buffer.Bounds), gc));
+        return buffer;
+    }
+
+    private static int[] LitRows(PixelBuffer b) =>
+        [.. Enumerable.Range(0, b.Height).Where(y => Enumerable.Range(0, b.Width).Any(x => b.Get(x, y) == 7))];
+
+    [TestMethod]
+    public void 宽线与多边形在整数坐标采样_整数坐标就是像素中心()
+    {
+        // lw = 1 的水平线 y = 10 画在第 10 行(原先在 row + 0.5 采样,画到了第 9 行)。
+        PixelBuffer one = Draw(r => r.PolyLine([(2, 10), (12, 10)]), gc => gc.LineWidth = 1);
+        CollectionAssert.AreEqual(new[] { 10 }, LitRows(one));
+        Assert.AreEqual(10, one.Pixels.Count(p => p == 7), "CapButt:左闭右开,x = 2..11");
+
+        PixelBuffer three = Draw(r => r.PolyLine([(2, 10), (12, 10)]), gc => gc.LineWidth = 3);
+        CollectionAssert.AreEqual(new[] { 9, 10, 11 }, LitRows(three));
+
+        // 同一个矩形边框,lw = 0 与 lw = 1 画在同一批像素上(原先错开一像素)。
+        (int, int)[] outline = [(5, 5), (10, 5), (10, 10), (5, 10), (5, 5)];
+        PixelBuffer thin = Draw(r => r.PolyLine(outline, closed: true));
+        PixelBuffer wide = Draw(r => r.PolyLine(outline, closed: true), gc => gc.LineWidth = 1);
+        CollectionAssert.AreEqual(thin.Pixels.ToArray(), wide.Pixels.ToArray());
+
+        // 三角形 (0,0)(10,0)(0,10):第 y 行是 x ∈ [0, 10 − y),共 10 + 9 + … + 1 = 55 个像素(原先 45)。
+        PixelBuffer triangle = Draw(r => r.FillPolygons([[(0.0, 0.0), (10.0, 0.0), (0.0, 10.0)]], winding: false));
+        Assert.AreEqual(55, triangle.Pixels.Count(p => p == 7));
+
+        // FillArc (0,0,20,20) 的圆心在像素中心 (10,10):填出来的像素关于 x = 10、y = 10 对称(原先关于 9.5 对称)。
+        PixelBuffer disc = Draw(r => r.FillArc(0, 0, 20, 20, 0, 360 * 64));
+        for (int y = 1; y < 20; y++)
+        {
+            for (int x = 1; x < 20; x++)
+            {
+                Assert.AreEqual(disc.Get(x, y), disc.Get(20 - x, y), $"({x},{y}) 与左右镜像");
+                Assert.AreEqual(disc.Get(x, y), disc.Get(x, 20 - y), $"({x},{y}) 与上下镜像");
+            }
+        }
+    }
+
     [TestMethod]
     public void 裁剪区域之外不画()
     {
@@ -103,6 +148,11 @@ public sealed class UnitTests
     [DataRow("#f00", 0xF000, 0, 0)]
     [DataRow("#336699", 0x3300, 0x6600, 0x9900)]
     [DataRow("rgb:ff/80/0", 0xFFFF, 0x8080, 0)]
+    [DataRow("red3", 0xCDCD, 0, 0)]
+    [DataRow("VioletRed4", 0x8B8B, 0x2222, 0x5252)]
+    [DataRow("dark slate gray", 0x2F2F, 0x4F4F, 0x4F4F)]
+    [DataRow("gray", 0xBEBE, 0xBEBE, 0xBEBE)]
+    [DataRow("Blue1", 0, 0, 0xFFFF)]
     public void 颜色名与数值写法(string spec, int r, int g, int b)
     {
         (ushort R, ushort G, ushort B)? rgb = ColorNames.Lookup(spec);
@@ -129,5 +179,19 @@ public sealed class UnitTests
         Assert.HasCount(0, r.Rest(), "Rest 不含请求之后的字节");
         XProtocolError error = Assert.ThrowsExactly<XProtocolError>(() => r.U32());
         Assert.AreEqual(XErrorCode.Length, error.Code, "读过请求的长度是 BadLength,不会读到后面的旧字节");
+    }
+
+    [TestMethod]
+    public void 属性追加共用留了余量的存储_旧版本看到的值不变()
+    {
+        Windowing.XProperty a = new(31, 8, "ab"u8.ToArray());
+        Windowing.XProperty b = a.Append("cd"u8, null);
+        Windowing.XProperty c = b.Append("ef"u8, null);
+        Windowing.XProperty fork = b.Append("XY"u8, null);   // 从旧版本接着写:不能改到 c
+        CollectionAssert.AreEqual("ab"u8.ToArray(), a.Data.ToArray());
+        CollectionAssert.AreEqual("abcd"u8.ToArray(), b.Data.ToArray());
+        CollectionAssert.AreEqual("abcdef"u8.ToArray(), c.Data.ToArray());
+        CollectionAssert.AreEqual("abcdXY"u8.ToArray(), fork.Data.ToArray());
+        Assert.AreEqual(31u, fork.Type);
     }
 }

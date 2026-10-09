@@ -101,6 +101,47 @@ public sealed class XFixesTests
     }
 
     [TestMethod]
+    public async Task 选区监听每个客户端有上限_超出回BadAlloc_撤掉之后又能登记_窗口销毁时登记跟着清掉()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        int limit = X11Server.MaxSelectionInputsPerClient;
+        uint[] windows = [.. Enumerable.Range(0, limit + 1).Select(_ => c.NewId())];
+        await c.SendManyAsync(windows.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(w =>
+            (1, 0, b => b.U32(w).U32(c.RootWindow).I16(0).I16(0).U16(1).U16(1).U16(0).U16(2).U32(0).U32(0))));
+        ushort last = await c.SendManyAsync(windows.Select<uint, (byte, byte, Action<XTestClient.Body>?)>(w =>
+            (major, 2, b => b.U32(w).U32(Primary).U32(0x7))));
+        await c.SyncAsync();
+        XMessage error = await c.NextAsync(m => m.IsError, timeoutMs: 1000);
+        Assert.AreEqual(11, error.Detail, "BadAlloc:原先没有上限,换属主时还要整表扫一遍");
+        Assert.AreEqual(last, error.Sequence, "前面的都登记上了,只有超出的那一条失败");
+
+        // 改已有登记的掩码不算新登记;撤掉一条(掩码 0)、或销毁一个登记过的窗口之后,又能登记新的。
+        await c.SendAsync(major, 2, b => b.U32(windows[0]).U32(Primary).U32(0x1));
+        await c.SendAsync(major, 2, b => b.U32(windows[1]).U32(Primary).U32(0));
+        await c.SendAsync(4, 0, b => b.U32(windows[2]));   // DestroyWindow
+        await c.SendAsync(major, 2, b => b.U32(windows[limit]).U32(Primary).U32(0x7));
+        await c.SendAsync(major, 2, b => b.U32(c.RootWindow).U32(Primary).U32(0x7));
+        await c.SyncAsync();
+        await Assert.ThrowsAsync<OperationCanceledException>(() => c.NextAsync(m => m.IsError, timeoutMs: 200));
+
+        // 登记照常生效:换属主时登记了的窗口都收到,撤掉的与销毁了的收不到。
+        await c.SendAsync(22, 0, b => b.U32(windows[3]).U32(Primary).U32(0));
+        await c.SyncAsync();
+        HashSet<uint> notified = [];
+        while (notified.Count < limit)
+        {
+            XMessage notify = await c.NextEventAsync(65);
+            Assert.AreEqual(0, notify.Bytes[1], "subtype = SetSelectionOwner");
+            notified.Add(notify.U32(4));
+        }
+        Assert.DoesNotContain(windows[1], notified);
+        Assert.DoesNotContain(windows[2], notified);
+        Assert.Contains(c.RootWindow, notified);
+    }
+
+    [TestMethod]
     public async Task HideCursor让宿主隐藏光标_ShowCursor恢复()
     {
         using RecordingHost host = new();
@@ -194,6 +235,39 @@ public sealed class XFixesTests
         uint region = c.NewId();
         XMessage error = await c.RequestAsync(major, 6, b => b.U32(region).U32(bitmap));   // CreateRegionFromBitmap
         Assert.IsTrue(error.IsError);
+        Assert.AreEqual(11, error.Detail, "BadAlloc");
+    }
+
+    [TestMethod]
+    public async Task SetCursorName把名字建成原子_受与InternAtom同一套上限()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await XFixesMajorAsync(c);
+        await c.RequestAsync(major, 0, b => b.U32(5).U32(0));
+        uint cursor = c.NewId();
+        uint pixmap = c.NewId();
+        await c.SendAsync(53, 1, b => b.U32(pixmap).U32(c.RootWindow).U16(1).U16(1));
+        await c.SendAsync(93, 0, b => b.U32(cursor).U32(pixmap).U32(0).U16(0).U16(0).U16(0).U16(0xFFFF).U16(0xFFFF).U16(0xFFFF).U16(0).U16(0));
+
+        // 名字建成原子:GetCursorName 回的原子就是 InternAtom 查得到的那个。
+        byte[] text = Encoding.Latin1.GetBytes("text");
+        await c.SendAsync(major, 23, b => b.U32(cursor).U16((ushort)text.Length).U16(0).Bytes(text).Pad());
+        XMessage named = await c.RequestAsync(major, 24, b => b.U32(cursor));
+        XMessage interned = await c.RequestAsync(16, 1, b => b.U16((ushort)text.Length).U16(0).Bytes(text).Pad());   // only-if-exists
+        Assert.AreNotEqual(0u, named.U32(8));
+        Assert.AreEqual(interned.U32(8), named.U32(8));
+
+        // 每次一个 6 万多字节的新名字:原子名合计 16 MB 的上限对这条路同样有效(原先 GetCursorName 不设限地建原子)。
+        await c.SendManyAsync(Enumerable.Range(0, 300).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        {
+            byte[] name = new byte[65000];
+            BitConverter.TryWriteBytes(name, i);
+            name[4] = (byte)'x';
+            return (major, 23, b => b.U32(cursor).U16((ushort)name.Length).U16(0).Bytes(name).Pad());
+        }));
+        await c.SyncAsync();
+        XMessage error = await c.NextAsync(m => m.IsError, timeoutMs: 1000);
         Assert.AreEqual(11, error.Detail, "BadAlloc");
     }
 }

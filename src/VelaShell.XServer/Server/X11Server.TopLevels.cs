@@ -11,8 +11,8 @@
 //   以及宿主作为窗口管理器对顶层做的动作(焦点、移动、缩放、关闭、状态、外框)。
 
 using System.Runtime.InteropServices;
-using System.Text;
 using VelaShell.XServer.Protocol;
+using VelaShell.XServer.Server;
 using VelaShell.XServer.Windowing;
 
 namespace VelaShell.XServer;
@@ -25,7 +25,7 @@ public sealed partial class X11Server
     {
         if (!_topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
         {
-            handle = new XTopLevelWindow(top, _pixelGate);
+            handle = new XTopLevelWindow(top, _pixelGate, this);
             _topLevelHandles[top] = handle;
         }
         return handle;
@@ -62,25 +62,37 @@ public sealed partial class X11Server
 
     private static void SetMapped(XTopLevelWindow handle, bool mapped) => handle.Snapshot = handle.Snapshot with { IsMapped = mapped };
 
+    /// <summary>窗口不再是这个句柄的顶层了(销毁、被 reparent 走):快照标成未映射,句柄的 <see cref="XTopLevelWindow.IsAlive" /> 变 false。</summary>
+    private static void RetireHandle(XTopLevelWindow handle)
+    {
+        SetMapped(handle, false);
+        handle.Retire();
+    }
+
     private XTopLevelSnapshot BuildSnapshot(XWindow top, XTopLevelSnapshot previous)
     {
         Dictionary<uint, XProperty> props = top.Properties;
+        // 字符串只取有限的一段、去掉控制字符(见 HostText):属性能有 32 MB,快照每次几何刷新都要重建。
         string title = props.TryGetValue(_netWmNameAtom, out XProperty? utf8) && utf8.Format == 8
-            ? Encoding.UTF8.GetString(utf8.Data)
+            ? HostText(utf8.Data, utf8: true, MaxHostTitleChars)
             : props.TryGetValue(XAtom.WmName, out XProperty? name) && name.Format == 8
-                ? XWire.Latin1.GetString(name.Data)
+                ? HostText(name.Data, TextEncodingOf(name.Type), MaxHostTitleChars)   // WM_NAME 是 TEXT:类型可以是 STRING、UTF8_STRING、COMPOUND_TEXT
                 : "";
 
-        string className = "";
+        string className = "", instanceName = "";
         if (props.TryGetValue(XAtom.WmClass, out XProperty? cls) && cls.Format == 8)
         {
             // WM_CLASS = "instance\0class\0"
-            string[] parts = XWire.Latin1.GetString(cls.Data).Split('\0');
-            className = parts.Length > 1 ? parts[1] : parts[0];
+            ReadOnlySpan<byte> data = cls.Data[..Math.Min(cls.Data.Length, (2 * MaxHostNameChars) + 2)];
+            int split = data.IndexOf((byte)0);
+            ReadOnlySpan<byte> classPart = split < 0 ? data : data[(split + 1)..];
+            int end = classPart.IndexOf((byte)0);
+            className = HostText(end < 0 ? classPart : classPart[..end], utf8: false, MaxHostNameChars);
+            instanceName = split < 0 ? "" : HostText(data[..split], utf8: false, MaxHostNameChars);
         }
 
         uint transientId = props.TryGetValue(XAtom.WmTransientFor, out XProperty? transient) && transient is { Format: 32, Data.Length: >= 4 }
-            ? BitConverter.ToUInt32(transient.Data, 0)
+            ? System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(transient.Data)
             : 0;
         XTopLevelWindow? transientFor = transientId != 0 && Lookup<XWindow>(transientId) is { IsTopLevel: true } parent && !ReferenceEquals(parent, top)
             ? HandleFor(parent)
@@ -93,6 +105,14 @@ public sealed partial class X11Server
         {
             shape = previous.Shape;   // 形状没变就沿用上一份:宿主按引用判断要不要整窗重画
         }
+        // 输入形状:SHAPE 1.1 的有效输入区是输入形状与有效边界形状的交集。原先快照里没有,宿主做不出「形状以外不接收鼠标」。
+        IReadOnlyList<XRect>? inputShape = top.InputShape is { } input
+            ? [.. input.Clone().Intersect(EffectiveShape(top, ShapeBounding)).Intersect(new XRect(0, 0, top.Width, top.Height)).Rects]
+            : null;
+        if (inputShape is not null && previous.InputShape is not null && inputShape.SequenceEqual(previous.InputShape))
+        {
+            inputShape = previous.InputShape;
+        }
 
         XTopLevelSnapshot snapshot = previous with
         {
@@ -100,13 +120,20 @@ public sealed partial class X11Server
             Y = top.Y,
             Width = top.Width,
             Height = top.Height,
+            BorderWidth = top.BorderWidth,
+            NeedsPlacement = top.PositionRequested && !top.OverrideRedirect,
             Title = title,
             ClassName = className,
+            InstanceName = instanceName,
             OverrideRedirect = top.OverrideRedirect,
             TransientFor = transientFor,
             SupportsDeleteWindow = SupportsProtocol(top, _wmDeleteWindowAtom),
+            ClientId = top.Owner?.Index ?? 0,
+            ClientLabel = top.Owner?.Label,
             HasAlpha = top.Depth == 32,
+            InputOnly = top.IsInputOnly,
             Shape = shape,
+            InputShape = inputShape,
         };
         return ReadWindowManagerHints(top, snapshot, hasTransientFor: transientId != 0);
     }
@@ -115,11 +142,12 @@ public sealed partial class X11Server
     private static XTopLevelChanges Diff(XTopLevelSnapshot a, XTopLevelSnapshot b)
     {
         XTopLevelChanges changes = XTopLevelChanges.None;
-        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height)
+        if (a.X != b.X || a.Y != b.Y || a.Width != b.Width || a.Height != b.Height || a.BorderWidth != b.BorderWidth
+            || a.NeedsPlacement != b.NeedsPlacement)
         {
             changes |= XTopLevelChanges.Geometry;
         }
-        if (a.Title != b.Title || a.ClassName != b.ClassName)
+        if (a.Title != b.Title || a.ClassName != b.ClassName || a.InstanceName != b.InstanceName)
         {
             changes |= XTopLevelChanges.Title;
         }
@@ -131,7 +159,7 @@ public sealed partial class X11Server
         {
             changes |= XTopLevelChanges.Icons;
         }
-        if (!ReferenceEquals(a.Shape, b.Shape))
+        if (!ReferenceEquals(a.Shape, b.Shape) || !ReferenceEquals(a.InputShape, b.InputShape))
         {
             changes |= XTopLevelChanges.Shape;
         }
@@ -142,12 +170,16 @@ public sealed partial class X11Server
             Y = b.Y,
             Width = b.Width,
             Height = b.Height,
+            BorderWidth = b.BorderWidth,
+            NeedsPlacement = b.NeedsPlacement,
             IsMapped = b.IsMapped,
             Title = b.Title,
             ClassName = b.ClassName,
+            InstanceName = b.InstanceName,
             States = b.States,
             Icons = b.Icons,
             Shape = b.Shape,
+            InputShape = b.InputShape,
         };
         if (rest != b)
         {
@@ -159,12 +191,12 @@ public sealed partial class X11Server
     /// <summary>客户端在 WM_PROTOCOLS 里声明了这个协议(WM_DELETE_WINDOW、WM_TAKE_FOCUS)。</summary>
     private bool SupportsProtocol(XWindow top, uint protocol) =>
         top.Properties.TryGetValue(_wmProtocolsAtom, out XProperty? p) && p.Format == 32
-        && MemoryMarshal.Cast<byte, uint>(p.Data.AsSpan(0, p.Data.Length & ~3)).Contains(protocol);
+        && MemoryMarshal.Cast<byte, uint>(p.Data[..(p.Data.Length & ~3)]).Contains(protocol);
 
     /// <summary>WM_HINTS 的 input 字段(ICCCM §4.1.2.4);没给(flags 里没有 InputHint)时按 True 算。</summary>
     private static bool AcceptsInputHint(XWindow top)
     {
-        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints));
+        uint[] hints = ReadCard32s(top.Properties.GetValueOrDefault(XAtom.WmHints), 9);
         return hints.Length < 2 || (hints[0] & 1) == 0 || hints[1] != 0;
     }
 
@@ -196,8 +228,12 @@ public sealed partial class X11Server
     /// </summary>
     private void ApplyFocus(XWindow? top)
     {
+        // 宿主换了焦点就是窗口管理器换了焦点:推进 last-focus-change time,早于此刻的客户端 SetInputFocus 随后都不生效
+        // (见 SetFocusFromClient)。WM_TAKE_FOCUS 带的也是这个时间,客户端拿它回 SetInputFocus 照样生效。
+        uint now = Math.Max(1u, Now);
         if (top is null)
         {
+            _lastFocusChangeTime = now;
             SetFocus(null, 0);
             return;
         }
@@ -205,6 +241,8 @@ public sealed partial class X11Server
         {
             return;
         }
+        _lastFocusChangeTime = now;
+        RaiseAboveNormalTopLevels(top);
         if (AcceptsInputHint(top) && (_focus is null || ReferenceEquals(_focus, Root) || !ReferenceEquals(_focus.TopLevel, top)))
         {
             // 与窗口管理器的做法一致:把焦点给顶层,revert-to PointerRoot。客户端之后可以自己把焦点挪到子窗口。
@@ -213,24 +251,52 @@ public sealed partial class X11Server
         if (SupportsProtocol(top, _wmTakeFocusAtom) && top.Owner is { Closed: false } owner)
         {
             // ICCCM §4.2.8:ClientMessage,类型 WM_PROTOCOLS,data[0] = WM_TAKE_FOCUS,data[1] 是一个有效的时间戳(不是 CurrentTime)。
-            uint time = Math.Max(1u, Now);
-            owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(time).Zero(12), sent: true);
+            owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmTakeFocusAtom).U32(now).Zero(12), sent: true);
         }
     }
 
-    /// <summary>原生窗口被用户挪了:改位置,并按 ICCCM §4.1.5 发一条合成的 ConfigureNotify(根坐标)。</summary>
+    /// <summary>
+    /// 宿主激活了这个顶层(用户把它的原生窗口提到了前面):X 这边也把它抬到普通顶层的最上面(override-redirect 的弹层仍在它之上),
+    /// 发 ConfigureNotify、更新 <c>_NET_CLIENT_LIST_STACKING</c> —— 原先 X 的堆叠只随创建先后变,与屏幕上看到的次序对不上。
+    /// </summary>
+    private void RaiseAboveNormalTopLevels(XWindow top)
+    {
+        List<XWindow> siblings = Root.Children;
+        int own = siblings.IndexOf(top);
+        for (int i = siblings.Count - 1; i > own; i--)
+        {
+            if (!siblings[i].OverrideRedirect)
+            {
+                Configure(top, top.X, top.Y, top.Width, top.Height, top.BorderWidth, siblings[i], stackMode: 0);   // Above
+                return;
+            }
+        }
+    }
+
+    /// <summary>
+    /// 原生窗口被用户挪了:像真的移动窗口一样走 <see cref="Configure" /> —— 真实的 ConfigureNotify(窗口上选了 StructureNotify、
+    /// 根窗口上选了 SubstructureNotify 的都收到)、Present 的 ConfigureNotify、重算指针所在的窗口;再按 ICCCM §4.1.5 补一条合成的
+    /// ConfigureNotify(根坐标)。原先只发合成的那条,根窗口上的监听者收不到,指针所在的窗口也不重算。
+    /// 宿主按重力摆好了客户端请求的位置(<see cref="XTopLevelSnapshot.NeedsPlacement" />)也走这里,之后不再要摆。
+    /// </summary>
     private void ApplyMove(XWindow top, int x, int y)
     {
+        bool placed = top.PositionRequested;
+        top.PositionRequested = false;
         if (top.X == x && top.Y == y)
         {
+            if (placed && _topLevelHandles.TryGetValue(top, out XTopLevelWindow? same))
+            {
+                same.Snapshot = same.Snapshot with { NeedsPlacement = false };   // 摆好的位置恰好就是请求的位置
+            }
             return;
         }
-        top.X = x;
-        top.Y = y;
         if (_topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
         {
-            handle.Snapshot = handle.Snapshot with { X = x, Y = y };   // 宿主自己挪的,不再回报
+            // 宿主自己挪的,不再回报(快照先改好,Configure 比不出变化)
+            handle.Snapshot = handle.Snapshot with { X = x, Y = y, NeedsPlacement = false };
         }
+        Configure(top, x, y, top.Width, top.Height, top.BorderWidth, null, -1);
         DeliverToSelectors(top, XEventMask.StructureNotify, c => c.Event(XEventCode.ConfigureNotify, 0, w => w
             .U32(top.Id).U32(top.Id).U32(0).I16(x).I16(y).U16((ushort)top.Width).U16((ushort)top.Height)
             .U16((ushort)top.BorderWidth).Bool(top.OverrideRedirect), sent: true));
@@ -247,18 +313,65 @@ public sealed partial class X11Server
     /// <summary>关闭:声明了 WM_DELETE_WINDOW 就发 ClientMessage 请它自己关(ICCCM §4.2.8),否则断开它的客户端。</summary>
     private void ApplyClose(XWindow top)
     {
-        if (top.Owner is not { } owner)
+        if (top.Owner is not { } owner || top.OverrideRedirect)
         {
-            return;
+            return;   // override-redirect 的弹层不归窗口管理器管(同 FocusTopLevel):关它不会去断开整个客户端
         }
-        if (SupportsProtocol(top, _wmDeleteWindowAtom))
+        if (SupportsProtocol(top, _wmDeleteWindowAtom) && !IsRetained(owner))
         {
             uint time = Now;
             owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(_wmDeleteWindowAtom).U32(time).Zero(12), sent: true);
+            Ping(top, owner, time);
             return;
         }
-        owner.Abort();
-        DisconnectClient(owner);
+        // 没声明 WM_DELETE_WINDOW:断开它(与窗口管理器的 XKillClient 一致)。已经以 Retain 模式断开的客户端消息发不过去、
+        // 也没有连接可断,原先窗口成了关不掉的僵尸 —— 销毁它留下的资源。
+        KillClientOf(owner);
+    }
+
+    /// <summary>_NET_WM_PING 发出去还没回的:顶层 → 发出时的时间戳。</summary>
+    private readonly Dictionary<XWindow, uint> _pendingPings = [];
+
+    /// <summary>ping 等回应的时限,过了还没回就告诉宿主它无响应(测试可以调短)。</summary>
+    internal TimeSpan PingTimeout { get; set; } = TimeSpan.FromSeconds(5);
+
+    /// <summary>
+    /// EWMH「_NET_WM_PING」:窗口在 WM_PROTOCOLS 里声明了它,就随关闭请求发一条 ping(ClientMessage,data 依次是 _NET_WM_PING、
+    /// 时间戳、窗口),客户端应当把它原样发回根窗口(见 <see cref="OnPong" />)。<see cref="PingTimeout" /> 之内没回就请宿主处理
+    /// (<see cref="XNotRespondingRequest" />):声明了 WM_DELETE_WINDOW 却卡死的程序,原先用户关不掉,只能停掉整个 X Server。
+    /// </summary>
+    private void Ping(XWindow top, XClient owner, uint time)
+    {
+        uint ping = Intern("_NET_WM_PING");
+        if (!SupportsProtocol(top, ping) || _pendingPings.ContainsKey(top))
+        {
+            return;
+        }
+        _pendingPings[top] = time;
+        owner.Event(XEventCode.ClientMessage, 32, w => w.U32(top.Id).U32(_wmProtocolsAtom).U32(ping).U32(time).U32(top.Id).Zero(8), sent: true);
+        _ = DelayThenPostAsync((uint)PingTimeout.TotalMilliseconds, () => PingExpired(top, time), _lifetime.Token);
+    }
+
+    private void PingExpired(XWindow top, uint time)
+    {
+        if (!_pendingPings.TryGetValue(top, out uint sent) || sent != time)
+        {
+            return;   // 回过了
+        }
+        _pendingPings.Remove(top);
+        if (top.Mapped && _topLevelHandles.TryGetValue(top, out XTopLevelWindow? handle))
+        {
+            _host.WindowManagerRequested(new XNotRespondingRequest(handle));
+        }
+    }
+
+    /// <summary>客户端回了 ping:发回根窗口的 ClientMessage,data[1] 是时间戳、data[2] 是它的窗口。</summary>
+    private void OnPong(uint time, uint windowId)
+    {
+        if (Lookup<XWindow>(windowId) is { } window && _pendingPings.TryGetValue(window, out uint sent) && sent == time)
+        {
+            _pendingPings.Remove(window);
+        }
     }
 
     /// <summary>宿主设定的窗口状态写进 _NET_WM_STATE / WM_STATE;Focused 位由服务端按焦点维护,保留现值。</summary>

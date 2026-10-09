@@ -150,7 +150,6 @@ public sealed class SshConfigImportService(ISessionRepository repository) : ISes
     private static bool IsLiteralAlias(string pattern) =>
         pattern.Length > 0 && !pattern.StartsWith('!') && pattern.AsSpan().IndexOfAny('*', '?') < 0;
 
-
     /// <summary>
     /// 把 SSH 库展开好的 <c>IdentityFile</c> 落成本机绝对路径(相对路径按 <c>~/.ssh</c>)。文件不存在也照样带上 ——
     /// 密钥可能在另一台机器上,或者用户正打算补进来;把路径留在配置里比悄悄丢掉更有用。

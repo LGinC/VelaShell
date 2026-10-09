@@ -185,6 +185,42 @@ public sealed class WindowAndDrawingTests
     }
 
     [TestMethod]
+    public async Task 单字节字体的CHAR2B按16位数取字_byte1不为0时画default_char()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        uint pixmap = c.NewId(), font = c.NewId(), gc = c.NewId(), clear = c.NewId();
+        await c.SendAsync(53, 24, b => b.U32(pixmap).U32(c.RootWindow).U16(20).U16(20));
+        await c.SendAsync(45, 0, b => b.U32(font).U16(5).U16(0).Bytes(Encoding.Latin1.GetBytes("fixed")));
+        await c.SendAsync(55, 0, b => b.U32(gc).U32(pixmap).U32(0x4 | 0x8 | 0x4000).U32(0xFFFFFF).U32(0x000000).U32(font));
+        await c.SendAsync(55, 0, b => b.U32(clear).U32(pixmap).U32(0x4).U32(0x000000));
+
+        async Task<byte[]> DrawAsync(bool image, byte byte1, byte byte2)
+        {
+            await c.SendAsync(70, 0, b => b.U32(pixmap).U32(clear).I16(0).I16(0).U16(20).U16(20));   // 清成黑
+            if (image)
+            {
+                await c.SendAsync(77, 1, b => b.U32(pixmap).U32(gc).I16(2).I16(14).U8(byte1).U8(byte2));   // ImageText16
+            }
+            else
+            {
+                await c.SendAsync(75, 0, b => b.U32(pixmap).U32(gc).I16(2).I16(14).U8(1).U8(0).U8(byte1).U8(byte2));   // PolyText16
+            }
+            XMessage pixels = await c.RequestAsync(73, 2, b => b.U32(pixmap).I16(0).I16(0).U16(20).U16(20).U32(0xFFFFFFFF));   // GetImage
+            return pixels.Bytes[32..];
+        }
+
+        foreach (bool image in (bool[])[true, false])
+        {
+            byte[] fallback = await DrawAsync(image, 0, 0);       // default-char 是 0
+            byte[] letter = await DrawAsync(image, 0, (byte)'A');
+            byte[] outOfRange = await DrawAsync(image, 1, (byte)'A');   // 0x0141:单字节字体里没有
+            CollectionAssert.AreNotEqual(letter, fallback);
+            CollectionAssert.AreEqual(fallback, outOfRange, $"{(image ? "ImageText16" : "PolyText16")}:原先丢掉 byte1,画成了 A");
+        }
+    }
+
+    [TestMethod]
     public async Task QueryFont返回fixed的度量与每个字符的CHARINFO()
     {
         await using X11Server server = new();
@@ -198,6 +234,29 @@ public sealed class WindowAndDrawingTests
         Assert.AreEqual(2, reply.I16(54), "font-descent");
         uint charInfos = reply.U32(56);
         Assert.AreEqual(256u - reply.U16(40), charInfos, "单字节字体:min..255 每个一条");
+    }
+
+    [TestMethod]
+    public async Task 字体的短名字与没有的字号退到最接近的内置字体_别的字族照旧BadName()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        async Task<int?> OpenWidthAsync(string name)
+        {
+            uint font = c.NewId();
+            byte[] bytes = Encoding.Latin1.GetBytes(name);
+            await c.SendAsync(45, 0, b => b.U32(font).U16((ushort)bytes.Length).U16(0).Bytes(bytes).Pad());
+            XMessage reply = await c.RequestAsync(47, 0, b => b.U32(font));   // QueryFont
+            return reply.IsReply ? reply.I16(28) : null;                       // max-bounds 的 character-width
+        }
+
+        Assert.AreEqual(6, await OpenWidthAsync("8x13"), "原先 BadName");
+        Assert.AreEqual(6, await OpenWidthAsync("5x7"));
+        Assert.AreEqual(9, await OpenWidthAsync("9x18bold"));
+        Assert.AreEqual(6, await OpenWidthAsync("-misc-fixed-medium-r-normal--14-*-*-*-*-*-iso8859-1"), "14 像素:13 与 15 一样近,取小的");
+        Assert.AreEqual(9, await OpenWidthAsync("-misc-fixed-bold-r-normal--18-*-*-*-*-*-iso10646-1"), "粗体里最接近的是 9x15B");
+        Assert.AreEqual(10, await OpenWidthAsync("-*-fixed-medium-r-*-*-*-200-75-75-*-*-iso8859-1"), "按 20 磅 75 dpi 换成 21 像素");
+        Assert.IsNull(await OpenWidthAsync("-adobe-helvetica-medium-r-normal--12-*-*-*-*-*-iso8859-1"), "没有的字族照旧 BadName(数据见 F21)");
     }
 
     [TestMethod]
@@ -276,6 +335,70 @@ public sealed class WindowAndDrawingTests
         Assert.AreNotEqual(0, message.Kind & 0x80, "SendEvent 合成的事件带 sent 位");
         Assert.AreEqual(protocols, message.U32(8));
         Assert.AreEqual(delete, message.U32(12));
+    }
+
+    [TestMethod]
+    public async Task 关闭时对声明了NET_WM_PING的窗口发ping_回了不打扰宿主_不回就报无响应_宿主可以强制结束()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        server.PingTimeout = TimeSpan.FromMilliseconds(200);
+        await using XTestClient c = await XTestClient.ConnectAsync(server, label: "joe@build:22");
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0);
+        Assert.AreEqual("joe@build:22", handle.Snapshot.ClientLabel);
+
+        uint protocols = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_PROTOCOLS")))).U32(8);
+        uint delete = (await c.RequestAsync(16, 0, b => b.U16(16).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_DELETE_WINDOW")))).U32(8);
+        uint ping = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("_NET_WM_PING")))).U32(8);
+        await c.SendAsync(18, 0, b => b.U32(win).U32(protocols).U32(4).U8(32).U8(0).U8(0).U8(0).U32(2).U32(delete).U32(ping));
+        await c.SyncAsync();
+
+        // 第一次:回了 ping(原样发回根窗口,窗口字段是根)—— 宿主收不到无响应。
+        server.CloseTopLevel(handle);
+        await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 33 && m.U32(12) == delete);
+        XMessage request = await c.NextAsync(m => !m.IsReply && !m.IsError && m.EventCode == 33 && m.U32(12) == ping);
+        Assert.AreEqual(win, request.U32(20), "data[2] 是窗口");
+        await c.SendAsync(25, 0, b => b.U32(c.RootWindow).U32(0x180000)
+            .U8(33).U8(32).U16(0).U32(c.RootWindow).U32(protocols).U32(ping).U32(request.U32(16)).U32(win).U32(0).U32(0));
+        await Task.Delay(400);
+        Assert.IsFalse(host.Requests.OfType<XNotRespondingRequest>().Any(), "回了 ping 就不报");
+
+        // 第二次:程序卡住了,不回 —— 时限一过请宿主处理。
+        server.CloseTopLevel(handle);
+        await host.WaitForAsync(() => host.Requests.OfType<XNotRespondingRequest>().Any(r => r.Window == handle));
+
+        IReadOnlyList<XClientInfo> clients = await server.GetClientsAsync();
+        XClientInfo info = clients.Single(i => i.Label == "joe@build:22");
+        Assert.AreEqual(handle.Snapshot.ClientId, info.Id);
+        Assert.Contains(handle, info.TopLevels);
+        Assert.IsGreaterThan(0, info.ResourceCount);
+
+        server.KillTopLevelClient(handle);   // 用户确认强制结束
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(win));
+        Assert.IsFalse((await server.GetClientsAsync()).Any(i => i.Label == "joe@build:22"));
+    }
+
+    [TestMethod]
+    public async Task 以Retain模式断开的客户端_关闭它的窗口与DisconnectClient都销毁它留下的资源()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        XTestClient c = await XTestClient.ConnectAsync(server);
+        (uint win, XTopLevelWindow handle) = await MapWindowAsync(c, host, 0, 0);
+        uint protocols = (await c.RequestAsync(16, 0, b => b.U16(12).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_PROTOCOLS")))).U32(8);
+        uint delete = (await c.RequestAsync(16, 0, b => b.U16(16).U16(0).Bytes(Encoding.Latin1.GetBytes("WM_DELETE_WINDOW")))).U32(8);
+        await c.SendAsync(18, 0, b => b.U32(win).U32(protocols).U32(4).U8(32).U8(0).U8(0).U8(0).U32(1).U32(delete));
+        await c.SendAsync(112, 1, _ => { });   // SetCloseDownMode(RetainPermanent)
+        await c.SyncAsync();
+        Task serving = c.ServerTask;
+        await c.DisposeAsync();
+        await serving.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.IsTrue((await server.GetClientsAsync()).Single().Retained);
+
+        // 原先:WM_DELETE_WINDOW 发给已经关掉的连接被丢弃,窗口成了关不掉的僵尸。
+        server.CloseTopLevel(handle);
+        await host.WaitForAsync(() => !host.Mapped.ContainsKey(win));
+        Assert.IsEmpty(await server.GetClientsAsync());
     }
 
     [TestMethod]

@@ -27,8 +27,8 @@ internal sealed record RemoteIdentityMap(
     /// <summary>补进几条 id → 名称(表里已有的不动);名称 → id 的反查表跟着补。</summary>
     public RemoteIdentityMap With(IEnumerable<KeyValuePair<int, string>> users, IEnumerable<KeyValuePair<int, string>> groups)
     {
-        Dictionary<int, string> u = new(Users);
-        Dictionary<int, string> g = new(Groups);
+        Dictionary<int, string> u = [with(Users)];
+        Dictionary<int, string> g = [with(Groups)];
         Dictionary<string, int> uid = new(UserIds, StringComparer.Ordinal);
         Dictionary<string, int> gid = new(GroupIds, StringComparer.Ordinal);
         foreach ((int id, string name) in users)

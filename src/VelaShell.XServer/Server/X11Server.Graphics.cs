@@ -59,6 +59,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Alloc);   // 65535² 一块就是 16 GB
         }
+        RequireMemory(c, ResourceOverheadBytes + PixelBytes(width, height));   // 先核账再分配(xs_plan X-2)
         AddResource(c, new XPixmap(id, c, width, height, depth));
     }
 
@@ -140,18 +141,59 @@ public sealed partial class X11Server
         Copy(XGcMask.ArcMode, () => dst.ArcMode = src.ArcMode);
     }
 
+    /// <summary>
+    /// CreateGC / ChangeGC 的值表。先全部读出来、逐项核对(枚举越界回 BadValue,像素图 / 字体不存在或深度不对回相应的错误),
+    /// 都没问题才一起写进 GC —— 核心协议:出错的请求不产生效果(原先边读边改,出错时前面的值已经生效;function 还被 &amp; 0xF 截断)。
+    /// </summary>
     private void ApplyGcValues(XGc gc, uint mask, XRequestReader r)
     {
+        uint[] values = new uint[23];
+        for (int bit = 0; bit < 23; bit++)
+        {
+            if ((mask & (1u << bit)) != 0)
+            {
+                values[bit] = r.U32();
+            }
+        }
+        bool Has(XGcMask m) => (mask & (uint)m) != 0;
+        uint Value(XGcMask m) => values[System.Numerics.BitOperations.TrailingZeroCount((uint)m)];
+        void Range(XGcMask m, uint max)
+        {
+            if (Has(m) && Value(m) > max)
+            {
+                throw new XProtocolError(XErrorCode.Value, Value(m));
+            }
+        }
+        Range(XGcMask.Function, 15);
+        Range(XGcMask.LineStyle, 2);            // Solid / OnOffDash / DoubleDash
+        Range(XGcMask.CapStyle, 3);             // NotLast / Butt / Round / Projecting
+        Range(XGcMask.JoinStyle, 2);            // Miter / Round / Bevel
+        Range(XGcMask.FillStyle, 3);            // Solid / Tiled / Stippled / OpaqueStippled
+        Range(XGcMask.FillRule, 1);             // EvenOdd / Winding
+        Range(XGcMask.SubwindowMode, 1);        // ClipByChildren / IncludeInferiors
+        Range(XGcMask.GraphicsExposures, 1);    // BOOL
+        Range(XGcMask.ArcMode, 1);              // Chord / PieSlice
+        if (Has(XGcMask.Dashes) && (byte)Value(XGcMask.Dashes) == 0)
+        {
+            throw new XProtocolError(XErrorCode.Value, Value(XGcMask.Dashes));
+        }
+        XPixmap? tile = Has(XGcMask.Tile) ? PixmapOfDepth(Value(XGcMask.Tile), gc.Depth) : null;
+        XPixmap? stipple = Has(XGcMask.Stipple) ? PixmapOfDepth(Value(XGcMask.Stipple), 1) : null;
+        XFontResource? font = Has(XGcMask.Font)
+            ? Lookup<XFontResource>(Value(XGcMask.Font)) ?? throw new XProtocolError(XErrorCode.Font, Value(XGcMask.Font))
+            : null;
+        XPixmap? clip = Has(XGcMask.ClipMask) && Value(XGcMask.ClipMask) != 0 ? PixmapOfDepth(Value(XGcMask.ClipMask), 1) : null;
+
         for (int bit = 0; bit < 23; bit++)
         {
             if ((mask & (1u << bit)) == 0)
             {
                 continue;
             }
-            uint v = r.U32();
+            uint v = values[bit];
             switch ((XGcMask)(1u << bit))
             {
-                case XGcMask.Function: gc.Function = (byte)(v & 0xF); break;
+                case XGcMask.Function: gc.Function = (byte)v; break;
                 case XGcMask.PlaneMask: gc.PlaneMask = v; break;
                 case XGcMask.Foreground: gc.Foreground = v; break;
                 case XGcMask.Background: gc.Background = v; break;
@@ -161,66 +203,44 @@ public sealed partial class X11Server
                 case XGcMask.JoinStyle: gc.JoinStyle = (byte)v; break;
                 case XGcMask.FillStyle: gc.FillStyle = (byte)v; break;
                 case XGcMask.FillRule: gc.FillRule = (byte)v; break;
-                case XGcMask.Tile:
-                    XPixmap tile = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (tile.Depth != gc.Depth)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
-                    gc.Tile = tile;
-                    break;
-                case XGcMask.Stipple:
-                    XPixmap stipple = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (stipple.Depth != 1)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
-                    gc.Stipple = stipple;
-                    break;
+                case XGcMask.Tile: gc.Tile = tile; break;
+                case XGcMask.Stipple: gc.Stipple = stipple; break;
                 case XGcMask.TileStipXOrigin: gc.TileStipXOrigin = (short)v; break;
                 case XGcMask.TileStipYOrigin: gc.TileStipYOrigin = (short)v; break;
-                case XGcMask.Font: gc.Font = Lookup<XFontResource>(v) ?? throw new XProtocolError(XErrorCode.Font, v); break;
+                case XGcMask.Font: gc.Font = font; break;
                 case XGcMask.SubwindowMode: gc.SubwindowMode = (byte)v; break;
                 case XGcMask.GraphicsExposures: gc.GraphicsExposures = v != 0; break;
                 case XGcMask.ClipXOrigin: gc.ClipXOrigin = (short)v; break;
                 case XGcMask.ClipYOrigin: gc.ClipYOrigin = (short)v; break;
                 case XGcMask.ClipMask:
                     gc.ClipRects = null;
-                    if (v == 0)
-                    {
-                        gc.ClipPixmap = null;
-                        break;
-                    }
-                    XPixmap clip = Lookup<XPixmap>(v) ?? throw new XProtocolError(XErrorCode.Pixmap, v);
-                    if (clip.Depth != 1)
-                    {
-                        throw new XProtocolError(XErrorCode.Match);
-                    }
                     gc.ClipPixmap = clip;
                     break;
                 case XGcMask.DashOffset: gc.DashOffset = (ushort)v; break;
-                case XGcMask.Dashes:
-                    if ((byte)v == 0)
-                    {
-                        throw new XProtocolError(XErrorCode.Value, v);
-                    }
-                    gc.Dashes = [(byte)v, (byte)v];
-                    break;
+                case XGcMask.Dashes: gc.Dashes = [(byte)v, (byte)v]; break;
                 case XGcMask.ArcMode: gc.ArcMode = (byte)v; break;
             }
         }
     }
 
+    /// <summary>GC 引用的像素图:不存在回 BadPixmap,深度不对回 BadMatch。</summary>
+    private XPixmap PixmapOfDepth(uint id, byte depth)
+    {
+        XPixmap pixmap = Lookup<XPixmap>(id) ?? throw new XProtocolError(XErrorCode.Pixmap, id);
+        return pixmap.Depth == depth ? pixmap : throw new XProtocolError(XErrorCode.Match);
+    }
+
     private void SetDashes(XRequestReader r)
     {
         XGc gc = Gc(r.U32());
-        gc.DashOffset = r.U16();
+        ushort offset = r.U16();
         int n = r.U16();
         byte[] dashes = r.BytesPadded(n);
         if (n == 0 || dashes.Any(d => d == 0))
         {
-            throw new XProtocolError(XErrorCode.Value, 0);
+            throw new XProtocolError(XErrorCode.Value, 0);   // 先核对:出错时 dash-offset 也不改
         }
+        gc.DashOffset = offset;
         // 奇数个元素时图案重复一遍(协议规定),保证开 / 关交替。
         gc.Dashes = n % 2 == 1 ? [.. dashes, .. dashes] : dashes;
     }
@@ -276,11 +296,14 @@ public sealed partial class X11Server
         {
             MarkDamage(top, raster.DirtyBounds);
         }
-        else if (_damageObjects.Count != 0 && Lookup<XPixmap>(drawable) is { } pixmap)
+        else if ((_damageObjects.Count != 0 || _namedWindowBuffers.Count != 0) && Lookup<XPixmap>(drawable) is { } pixmap)
         {
             NotePixmapDrawn(pixmap, raster.DirtyBounds);
         }
     }
+
+    /// <summary>CoordModePrevious 累加出来的坐标饱和在这个范围里(见 <see cref="ReadPoints" />)。</summary>
+    private const long MaxAccumulatedCoordinate = 1L << 30;
 
     private static List<(int X, int Y)> ReadPoints(XRequestReader r, bool relative)
     {
@@ -291,8 +314,9 @@ public sealed partial class X11Server
             int x = r.I16(), y = r.I16();
             if (relative && points.Count > 0)
             {
-                x += px;
-                y += py;
+                // CoordModePrevious 一路累加:几百万个点能加出 int 范围之外,饱和在 ±2³⁰(早已远在任何可绘对象之外)。
+                x = (int)Math.Clamp((long)x + px, -MaxAccumulatedCoordinate, MaxAccumulatedCoordinate);
+                y = (int)Math.Clamp((long)y + py, -MaxAccumulatedCoordinate, MaxAccumulatedCoordinate);
             }
             points.Add((x, y));
             (px, py) = (x, y);
@@ -319,7 +343,10 @@ public sealed partial class X11Server
         bool relative = r.Data == 1;
         uint drawable = r.U32(), gc = r.U32();
         List<(int X, int Y)> points = ReadPoints(r, relative);
-        Draw(drawable, gc, raster => raster.PolyLine(points));
+        // 协议:首尾两点重合时,第一段与最后一段也要「join correctly」—— 当闭合路径画:宽线在那里加接头而不是两个端帽,
+        // 细线不再把起点画第二遍(GXxor 下会抵消)。只有两个点时是端点重合的一条线,按端帽的规则画。
+        bool closed = points.Count > 2 && points[0] == points[^1];
+        Draw(drawable, gc, raster => raster.PolyLine(points, closed));
     }
 
     private void PolySegment(XRequestReader r)
@@ -334,7 +361,7 @@ public sealed partial class X11Server
         {
             foreach ((int x1, int y1, int x2, int y2) in segments)
             {
-                raster.PolyLine([(x1, y1), (x2, y2)]);
+                raster.Segment(x1, y1, x2, y2);
             }
         });
     }
@@ -347,8 +374,7 @@ public sealed partial class X11Server
         {
             foreach (XRect rect in rects)
             {
-                int x2 = rect.X + rect.Width, y2 = rect.Y + rect.Height;
-                raster.PolyLine([(rect.X, rect.Y), (x2, rect.Y), (x2, y2), (rect.X, y2), (rect.X, rect.Y)], closed: true);
+                raster.Rectangle(rect.X, rect.Y, rect.Width, rect.Height);
             }
         });
     }
@@ -494,7 +520,9 @@ public sealed partial class X11Server
                 }
                 buffer = b;
                 (ox, oy) = w.OffsetInTopLevel();
-                bounds = new XRect(0, 0, w.Width, w.Height);
+                // 窗口里只有落在顶层缓冲之内的部分拿得到:伸出祖先之外的子窗口、被 PixelBuffer.MaxPixels 削掉的行都不在缓冲里
+                // (原先只按窗口尺寸裁,下标越界回 BadImplementation,伸出右边时读到折到下一行开头的像素)。
+                bounds = new XRect(0, 0, w.Width, w.Height).Intersect(new XRect(-ox, -oy, b.Width, b.Height));
                 break;
             default:
                 throw new XProtocolError(XErrorCode.Drawable, drawable);
@@ -548,36 +576,80 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Match);
         }
-        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
-        {
-            SendNoExposure(c, gc, dst, XOpcode.CopyArea);
-            return;
-        }
-        XRect avail = source.Available;
+        (uint[]? pixels, XRect block, Region copyable) = ReadCopySource(src, gc, sx, sy, width, height);
         try
         {
-            // 只贴源里拿得到的那一块;拿不到的部分由 GraphicsExposure 请客户端自己补画。
-            if (!avail.IsEmpty)
+            // 只贴源里拿得到的那几块;拿不到的部分由 GraphicsExposure 请客户端自己补画。
+            if (pixels is not null && !copyable.IsEmpty)
             {
-                Draw(dst, gcId, raster => raster.Blit(source.Pixels, avail.Width, avail.Height,
-                    dx + (avail.X - sx), dy + (avail.Y - sy), preMasked: true));
+                Draw(dst, gcId, raster => BlitCopyable(raster, pixels, block, copyable, dx - sx, dy - sy, preMasked: true));
             }
         }
         finally
         {
-            ArrayPool<uint>.Shared.Return(source.Pixels);
+            if (pixels is not null)
+            {
+                ArrayPool<uint>.Shared.Return(pixels);
+            }
         }
+        FinishCopy(c, gc, dst, new XRect(dx, dy, width, height), copyable.Translate(dx - sx, dy - sy), XOpcode.CopyArea);
+    }
 
+    /// <summary>
+    /// CopyArea / CopyPlane 的源:读出 (x, y, w, h) 里拿得到的像素(<c>Block</c> 这一块,行优先),以及其中真正可以拷的区域
+    /// (可绘对象坐标)。窗口只有看得见的部分可拷:被兄弟或祖先挡住的、伸出缓冲的、窗口不可见的都拷不到;gc 的 subwindow-mode 为
+    /// ClipByChildren 时映射着的子窗口也挡着,IncludeInferiors 时连子窗口的内容一起拷(核心协议「CopyArea」与 CreateGC 的 subwindow-mode)。
+    /// 原先直接拷缓冲里的像素 —— 被挡住的地方拷到的是别的窗口。像素数组是租来的,调用方用完要还。
+    /// </summary>
+    private (uint[]? Pixels, XRect Block, Region Copyable) ReadCopySource(uint drawable, XGc gc, int x, int y, int width, int height)
+    {
+        if (ReadSource(drawable, x, y, width, height, out _) is not { } source)
+        {
+            return (null, default, new Region());
+        }
+        Region copyable = new(source.Available);
+        if (Lookup<XResource>(drawable) is XWindow { IsRoot: false } window && window.TopLevel is { Buffer: not null })
+        {
+            (int ox, int oy) = window.OffsetInTopLevel();
+            copyable.Intersect(CachedClip(window, includeInferiors: gc.SubwindowMode == 1).Clone().Translate(-ox, -oy));
+        }
+        return (source.Pixels, source.Available, copyable);
+    }
+
+    /// <summary>把 <paramref name="block" /> 这块源像素里 <paramref name="copyable" /> 的部分平移 (<paramref name="dx" />, <paramref name="dy" />) 贴上去。</summary>
+    private static void BlitCopyable(Rasterizer raster, uint[] pixels, XRect block, Region copyable, int dx, int dy, bool preMasked)
+    {
+        foreach (XRect r in copyable.Rects)
+        {
+            int offset = ((r.Y - block.Y) * block.Width) + (r.X - block.X);
+            raster.Blit(pixels.AsSpan(offset), block.Width, r.Width, r.Height, r.X + dx, r.Y + dy, preMasked);
+        }
+    }
+
+    /// <summary>
+    /// CopyArea / CopyPlane 之后:目标矩形里对应源拿不到的部分(<paramref name="copied" /> 之外,只算目标可绘对象范围内的)——
+    /// 目标是背景不为 None 的窗口时先用背景铺上(按 GXcopy、全平面),再逐块发 GraphicsExposure 请客户端自己补画;
+    /// 都拿到了发一个 NoExposure(gc 的 graphics-exposures 关着时都不发)。核心协议「CopyArea」。
+    /// </summary>
+    private void FinishCopy(XClient c, XGc gc, uint dst, XRect destination, Region copied, byte major)
+    {
+        Region missing = new Region(destination).Subtract(copied).Intersect(DrawableRect(dst));
+        if (!missing.IsEmpty && Lookup<XResource>(dst) is XWindow { IsRoot: false } window && DrawTarget(dst, null) is { TopLevel: { } top } target)
+        {
+            Region area = missing.Clone().Translate(target.OriginX, target.OriginY).Intersect(target.Clip);
+            if (!area.IsEmpty)
+            {
+                PaintBackground(window, area);
+                MarkDamage(top, area);
+            }
+        }
         if (!gc.GraphicsExposures)
         {
             return;
         }
-        // 需要补画的:目标矩形里对应源拿不到的部分,且只算目标可绘对象范围内的(坐标不会是负数)。
-        Region missing = new Region(new XRect(dx, dy, width, height)).Subtract(avail.Offset(dx - sx, dy - sy))
-            .Intersect(DrawableRect(dst));
         if (missing.IsEmpty)
         {
-            SendNoExposure(c, gc, dst, XOpcode.CopyArea);
+            SendNoExposure(c, gc, dst, major);
             return;
         }
         List<XRect> rects = [.. missing.Rects];
@@ -587,7 +659,7 @@ public sealed partial class X11Server
             int count = rects.Count - 1 - i;
             c.Event(XEventCode.GraphicsExposure, 0, w => w
                 .U32(dst).U16((ushort)m.X).U16((ushort)m.Y).U16((ushort)m.Width).U16((ushort)m.Height)
-                .U16(0).U16((ushort)count).U8(XOpcode.CopyArea));
+                .U16(0).U16((ushort)count).U8(major));
         }
     }
 
@@ -620,36 +692,39 @@ public sealed partial class X11Server
         short sx = r.I16(), sy = r.I16(), dx = r.I16(), dy = r.I16();
         ushort width = r.U16(), height = r.U16();
         uint plane = r.U32();
-        if (plane == 0 || (plane & (plane - 1)) != 0)
+        XGc gc = Gc(gcId);
+        byte srcDepth = DrawableDepth(src);
+        _ = DrawableDepth(dst);
+        // 协议:bit-plane 恰好一位、且小于 2^源深度(深度 8 的源没有第 8 位以上的平面)。
+        if (plane == 0 || (plane & (plane - 1)) != 0 || (srcDepth < 32 && plane >= 1u << srcDepth))
         {
             throw new XProtocolError(XErrorCode.Value, plane);
         }
-        XGc gc = Gc(gcId);
-        if (ReadSource(src, sx, sy, width, height, out _) is not { } source)
-        {
-            SendNoExposure(c, gc, dst, XOpcode.CopyPlane);
-            return;
-        }
-        XRect avail = source.Available;
+        (uint[]? pixels, XRect block, Region copyable) = ReadCopySource(src, gc, sx, sy, width, height);
         try
         {
-            Draw(dst, gcId, raster =>
+            // 等于拿源的这一位平面当点画、按 OpaqueStippled 填:位为 1 处是前景、0 处是背景,再按 CopyArea 贴(走光栅操作与平面掩码,
+            // GXcopy + 全平面时整行拷)。原先逐像素 PutPixel。
+            if (pixels is not null && !copyable.IsEmpty)
             {
-                for (int row = avail.Y; row < avail.Bottom; row++)
+                uint foreground = gc.Foreground, background = gc.Background;
+                Span<uint> span = pixels.AsSpan(0, block.Width * block.Height);
+                for (int i = 0; i < span.Length; i++)
                 {
-                    for (int col = avail.X; col < avail.Right; col++)
-                    {
-                        uint bit = source.Pixels[((row - avail.Y) * avail.Width) + (col - avail.X)] & plane;
-                        raster.PutPixel(dx + (col - sx), dy + (row - sy), bit != 0 ? gc.Foreground : gc.Background);
-                    }
+                    span[i] = (span[i] & plane) != 0 ? foreground : background;
                 }
-            });
+                Draw(dst, gcId, raster => BlitCopyable(raster, pixels, block, copyable, dx - sx, dy - sy, preMasked: false));
+            }
         }
         finally
         {
-            ArrayPool<uint>.Shared.Return(source.Pixels);
+            if (pixels is not null)
+            {
+                ArrayPool<uint>.Shared.Return(pixels);
+            }
         }
-        SendNoExposure(c, gc, dst, XOpcode.CopyPlane);
+        // 与 CopyArea 同样的曝光语义:源拿不到的部分发 GraphicsExposure。
+        FinishCopy(c, gc, dst, new XRect(dx, dy, width, height), copyable.Translate(dx - sx, dy - sy), XOpcode.CopyPlane);
     }
 
     // ------------------------------------------------------------------ PutImage / GetImage
@@ -733,12 +808,16 @@ public sealed partial class X11Server
     };
 
     /// <summary>格式与深度的搭配(协议「PutImage」):Bitmap 必须深度 1;XYPixmap / ZPixmap 必须与可绘对象同深度,ZPixmap 不许左补。</summary>
+    /// <summary>
+    /// PutImage 的格式与深度:Bitmap 深度为 1、其余与目标同深度;ZPixmap 的 left-pad 必须为 0,Bitmap / XYPixmap 的 left-pad 必须小于
+    /// 连接建立时声明的 bitmap-scanline-pad(32)—— 否则 BadMatch(核心协议「PutImage」)。
+    /// </summary>
     private static void ValidateImageFormat(byte format, byte depth, byte targetDepth, byte leftPad)
     {
         bool ok = format switch
         {
-            0 => depth == 1,
-            1 => depth == targetDepth,
+            0 => depth == 1 && leftPad < 32,
+            1 => depth == targetDepth && leftPad < 32,
             2 => depth == targetDepth && leftPad == 0,
             _ => throw new XProtocolError(XErrorCode.Value, format),
         };
@@ -882,6 +961,12 @@ public sealed partial class X11Server
         }
     }
 
+    /// <summary>
+    /// GetImage 回复里的像素数据最多这么大,再大回 BadAlloc —— 先按尺寸估、再取像素,超了不白算。与最大的像素图(2^26 像素 × 4 字节)一样;
+    /// 三块 4K 横排时 <c>xwd -root</c> 的回复约 100 MB,在上限之内(超过输出队列上限的单条回复照样发得出去,见 <see cref="XClient.Send" />)。
+    /// </summary>
+    internal const long MaxImageReplyBytes = 256L * 1024 * 1024;
+
     private void GetImage(XClient c, XRequestReader r)
     {
         byte format = r.Data;
@@ -889,12 +974,13 @@ public sealed partial class X11Server
         short x = r.I16(), y = r.I16();
         ushort width = r.U16(), height = r.U16();
         uint planeMask = r.U32();
-        (byte depth, uint visual, byte[] data) = CaptureImage(format, drawable, x, y, width, height, planeMask);
+        (byte depth, uint visual, byte[] data) = CaptureImage(format, drawable, x, y, width, height, planeMask, MaxImageReplyBytes);
         c.Reply(depth, w => w.U32(visual).Zero(20).Bytes(data).Pad4());
     }
 
-    /// <summary>GetImage 与 MIT-SHM 的 GetImage 共用:核对矩形,按格式编好像素。</summary>
-    private (byte Depth, uint Visual, byte[] Data) CaptureImage(byte format, uint drawable, short x, short y, ushort width, ushort height, uint planeMask)
+    /// <summary>GetImage 与 MIT-SHM 的 GetImage 共用:核对矩形,按格式编好像素;编出来会超过 <paramref name="maxBytes" /> 时先回 BadAlloc。</summary>
+    private (byte Depth, uint Visual, byte[] Data) CaptureImage(byte format, uint drawable, short x, short y, ushort width, ushort height, uint planeMask,
+        long maxBytes = long.MaxValue)
     {
         if (format is not (1 or 2))
         {
@@ -922,9 +1008,27 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Match);
         }
+        byte drawableDepth = resource is XPixmap pixmap ? pixmap.Depth : ((XWindow)resource).Depth;
+        if (ImageDataLength(format, drawableDepth, width, height, 0) > maxBytes)
+        {
+            throw new XProtocolError(XErrorCode.Alloc);
+        }
 
-        // 矩形已核对在可绘对象之内:拿得到的就是整块,按请求宽度排列(池化,编完码就还)。
-        uint[]? pooled = ReadSource(drawable, x, y, width, height, out byte depth)?.Pixels;
+        // 矩形已核对在可绘对象之内,按请求宽度排列(池化,编完码就还)。窗口伸出顶层之外的部分拿不到(核心协议:
+        // 被遮住的区域内容未定义),补 0 —— 回 BadMatch 的话,Xlib 默认的错误处理会让程序直接退出。
+        (uint[] Pixels, XRect Available)? source = ReadSource(drawable, x, y, width, height, out byte depth);
+        uint[]? pooled = source?.Pixels;
+        if (source is { } s && s.Available != new XRect(x, y, width, height))
+        {
+            pooled = ArrayPool<uint>.Shared.Rent(Math.Max(1, width * height));
+            Array.Clear(pooled, 0, Math.Max(1, width * height));
+            XRect a = s.Available;
+            for (int row = 0; row < a.Height; row++)
+            {
+                Array.Copy(s.Pixels, row * a.Width, pooled, ((a.Y - y + row) * width) + a.X - x, a.Width);
+            }
+            ArrayPool<uint>.Shared.Return(s.Pixels);
+        }
         uint[] pixels = pooled ?? new uint[Math.Max(1, width * height)];
         uint depthMask = PixelBuffer.DepthMaskOf(depth);
         if ((planeMask & depthMask) == depthMask)
@@ -939,33 +1043,50 @@ public sealed partial class X11Server
         else
         {
             // 深度 1 的 ZPixmap 与 XYPixmap 都是位图(XYPixmap 按平面掩码里的平面逐张给出,高位在前)。
+            // 先数出要几个平面,一次分配整块回复数据,逐平面、逐字节直接写进去(原先每个平面一个数组,再 AddRange 进 List<byte>,
+            // 最后再拷一遍成数组)。
             int stride = BitmapStride(width);
-            List<byte> planes = [];
+            int planeBytes = stride * height;
+            int count = 0;
             for (int plane = depth - 1; plane >= 0; plane--)
+            {
+                if (format == 2 || (planeMask & (1u << plane)) != 0)
+                {
+                    count++;
+                }
+                if (format == 2)
+                {
+                    break;
+                }
+            }
+            data = new byte[(long)count * planeBytes];
+            int offset = 0;
+            for (int plane = depth - 1; plane >= 0 && offset < data.Length; plane--)
             {
                 uint bit = 1u << plane;
                 if (format == 1 && (planeMask & bit) == 0)
                 {
                     continue;
                 }
-                byte[] one = new byte[stride * height];
                 for (int yy = 0; yy < height; yy++)
                 {
-                    for (int xx = 0; xx < width; xx++)
+                    ReadOnlySpan<uint> row = pixels.AsSpan(yy * width, width);
+                    Span<byte> to = data.AsSpan(offset + (yy * stride), stride);
+                    for (int xx = 0; xx < width; xx += 8)
                     {
-                        if ((pixels[(yy * width) + xx] & bit) != 0)
+                        int end = Math.Min(8, width - xx), v = 0;
+                        for (int k = 0; k < end; k++)
                         {
-                            one[(yy * stride) + (xx >> 3)] |= (byte)(1 << (xx & 7));
+                            if ((row[xx + k] & bit) != 0)
+                            {
+                                v |= 1 << k;   // LSBFirst(连接建立时声明的 bitmap-format-bit-order)
+                            }
                         }
+                        to[xx >> 3] = (byte)v;
                     }
                 }
-                planes.AddRange(one);
-                if (format == 2)
-                {
-                    break;
-                }
+                offset += planeBytes;
             }
-            data = [.. planes];
         }
         if (pooled is not null)
         {

@@ -48,6 +48,28 @@ internal sealed class PixelGate
         }
     }
 
+    /// <summary>
+    /// 宿主线程限时拿锁:<paramref name="timeout" /> 之内拿不到返回 false(不必 <see cref="ExitHost" />)。
+    /// 执行线程正在跑一条很慢的请求时,宿主的 UI 线程跳过这一帧,而不是陪着冻住。
+    /// </summary>
+    public bool TryEnterHost(TimeSpan timeout)
+    {
+        Interlocked.Increment(ref _waiting);
+        bool taken = false;
+        try
+        {
+            Monitor.TryEnter(Lock, timeout, ref taken);
+            return taken;
+        }
+        finally
+        {
+            if (!taken)
+            {
+                Interlocked.Decrement(ref _waiting);
+            }
+        }
+    }
+
     public void ExitHost()
     {
         Monitor.Exit(Lock);

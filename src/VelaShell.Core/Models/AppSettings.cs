@@ -1485,12 +1485,24 @@ public class XServerOptions : ObservableOptions
         set => Set(ref field, value);
     } = true;
 
-    /// <summary>选中即复制:把 PRIMARY 选区也映射到 Windows 剪贴板(<c>-primary</c>);只在开了剪贴板时起作用。</summary>
+    /// <summary>
+    /// 选中即复制:把 PRIMARY 选区也映射到 Windows 剪贴板(<c>-primary</c>);只在开了剪贴板时起作用。默认关(与内置 X 服务端的库默认一致):
+    /// 开着时本机复制的内容在 X 程序里点一下鼠标中键就能粘出来,选中文字也随手改写系统剪贴板。
+    /// </summary>
     public bool CopyOnSelection
     {
         get;
         set => Set(ref field, value);
-    } = true;
+    }
+
+    /// <summary>
+    /// 内置 X Server:限制经 SSH 转发来的程序 —— 不能模拟输入(XTEST)、收不到原始按键事件、不能改输入设备。默认关(远端的 xdotool 靠 XTEST)。
+    /// </summary>
+    public bool RestrictForwardedClients
+    {
+        get;
+        set => Set(ref field, value);
+    }
 
     /// <summary>XKB 键盘布局(<c>-xkblayout</c>);留空 = 跟随 Windows 当前布局。</summary>
     public string KeyboardLayout

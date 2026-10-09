@@ -177,8 +177,8 @@ public sealed class SshConfigMoreKeysTests
         Directory.CreateDirectory(dir);
         try
         {
-            using InMemorySshSigner hostKey = InMemorySshSigner.GenerateEd25519();
-            using InMemorySshSigner other = InMemorySshSigner.GenerateEd25519();
+            using var hostKey = InMemorySshSigner.GenerateEd25519();
+            using var other = InMemorySshSigner.GenerateEd25519();
             string own = Path.Combine(dir, "known_hosts");
             string global = Path.Combine(dir, "global");
             await File.WriteAllTextAsync(global, $"shared-box {hostKey.PublicKey.ToOpenSshFormat()}\n");

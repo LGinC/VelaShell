@@ -59,7 +59,7 @@ internal static class AgentSignedData
             byte[] signature = reader.ReadStringAsArray(MaxFieldBytes);
             reader.ReadBoolean();   // is_forwarding：给人看用不上
 
-            SshPublicKey hostKey = SshPublicKey.Decode(hostKeyBlob);
+            var hostKey = SshPublicKey.Decode(hostKeyBlob);
             return sessionId.Length > 0 && SignedBy(hostKey, signature, sessionId)
                 ? new SessionBinding(sessionId, hostKey)
                 : null;

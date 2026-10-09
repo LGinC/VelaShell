@@ -20,6 +20,7 @@
 
 using System.Buffers.Binary;
 using System.Numerics;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -30,42 +31,68 @@ internal sealed partial class GlContext
     private readonly GlTexture _proxy1D = new(0) { Target = GlEnum.PROXY_TEXTURE_1D };
     private readonly GlTexture _proxy2D = new(0) { Target = GlEnum.PROXY_TEXTURE_2D };
 
-    private GlTexture? DefaultTexture(uint cap) => cap == GlEnum.TEXTURE_1D ? _default1D : _default2D;
-
     /// <summary>目标当前绑定的纹理对象(含名字 0 的默认纹理与代理纹理)。</summary>
     private GlTexture? BoundTexture(uint target) => target switch
     {
-        GlEnum.TEXTURE_1D => State.Texture1D == 0 ? _default1D : Shared.Textures.GetValueOrDefault(State.Texture1D),
-        GlEnum.TEXTURE_2D => State.Texture2D == 0 ? _default2D : Shared.Textures.GetValueOrDefault(State.Texture2D),
+        GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D when TextureBinding(target) is not 0 and var name => Shared.Textures[name],
+        GlEnum.TEXTURE_1D => _default1D,
+        GlEnum.TEXTURE_2D => _default2D,
         GlEnum.PROXY_TEXTURE_1D => _proxy1D,
         GlEnum.PROXY_TEXTURE_2D => _proxy2D,
         _ => null,
     };
 
-    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记账的对象;名字 0 的默认纹理与代理纹理每个上下文就几个,不记)。</summary>
+    /// <summary>
+    /// TEXTURE_1D / TEXTURE_2D 当前绑定的纹理名。名字已不在共享组里时按「删掉即退回 0」处理(§3.8.12,与本上下文 DeleteTextures
+    /// 的效果一样)并就地改回 0。名字悬空有三条来路:PushAttrib(TEXTURE_BIT) 之后删了当前绑定再 PopAttrib(合法的 GL 序列)、
+    /// CopyContext 拷来另一个共享组的名字、共享组里另一个上下文删了它。原先 TexImage / CopyTexImage 拿到 null 抛
+    /// NullReferenceException,客户端收到 BadImplementation。
+    /// </summary>
+    private uint TextureBinding(uint target)
+    {
+        ref uint bound = ref target == GlEnum.TEXTURE_1D ? ref State.Texture1D : ref State.Texture2D;
+        if (bound != 0 && !Shared.Textures.ContainsKey(bound))
+        {
+            bound = 0;
+        }
+        return bound;
+    }
+
+    /// <summary>这个纹理对象是共享名字空间里有名字的那一个(记在共享组的账上;名字 0 的默认纹理记在本上下文的账上)。</summary>
     private bool IsNamed(GlTexture texture) =>
         texture.Name != 0 && Shared.Textures.TryGetValue(texture.Name, out GlTexture? named) && ReferenceEquals(named, texture);
 
-    /// <summary>给这个纹理的某一级换一张 <paramref name="bytes" /> 字节的图像放得下吗;放不下记 OUT_OF_MEMORY(先问再分配)。</summary>
-    private bool FitsTexture(GlTexture texture, int level, long bytes)
+    /// <summary>
+    /// 给纹理的第 <paramref name="level" /> 级换一张 <paramref name="bytes" /> 字节的图像:分配之前先记账。有名字的记在共享组上
+    /// (组的上限,加上建组客户端的账),名字 0 的默认纹理记在本上下文的账上 —— 原先不记,默认 2D 纹理 12 级、每级 2048² 就是 192 MB;
+    /// 代理纹理不存纹素,不占账。记不下时记 OUT_OF_MEMORY、返回 false,账不变;变小的当场退账。之后调用方必须换上这一级。
+    /// </summary>
+    private bool TryAccountLevel(GlTexture texture, int level, long bytes)
     {
         long delta = bytes - (texture.Levels[level]?.Texels.Length ?? 0);
-        if (!IsNamed(texture) || delta <= 0 || Shared.TextureBytes + delta <= GlShared.MaxTextureBytes)
+        if (delta == 0)
+        {
+            return true;
+        }
+        bool named = IsNamed(texture);
+        if (delta < 0)
+        {
+            if (named)
+            {
+                Shared.RefundTexture(-delta);
+            }
+            else
+            {
+                Account?.Refund(-delta);
+            }
+            return true;
+        }
+        if (named ? Shared.TryChargeTexture(delta) : Account?.TryCharge(delta) ?? true)
         {
             return true;
         }
         SetError(GlEnum.OUT_OF_MEMORY);
         return false;
-    }
-
-    /// <summary>换掉纹理的一级图像并记账。</summary>
-    private void StoreLevel(GlTexture texture, int level, GlTexImage? image)
-    {
-        if (IsNamed(texture))
-        {
-            Shared.TextureBytes += (image?.Texels.Length ?? 0) - (texture.Levels[level]?.Texels.Length ?? 0);
-        }
-        texture.Levels[level] = image;
     }
 
     private void BindTexture(uint target, uint name)
@@ -85,7 +112,7 @@ internal sealed partial class GlContext
                     return;
                 }
                 texture = new GlTexture(name);
-                Shared.Textures[name] = texture;
+                Shared.AddTexture(texture);
             }
             if (texture.Target == 0)
             {
@@ -114,19 +141,22 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
+        // 过滤与环绕方式只收规范列出的值(§3.8.4,含 SGIS_texture_edge_clamp 的 CLAMP_TO_EDGE),别的记 INVALID_ENUM、不改。
+        uint value = EnumParam(v[0]);
         switch (pname)
         {
-            case GlEnum.TEXTURE_MIN_FILTER:
-                t.MinFilter = (uint)v[0];
+            case GlEnum.TEXTURE_MIN_FILTER when value is GlEnum.NEAREST or GlEnum.LINEAR or GlEnum.NEAREST_MIPMAP_NEAREST
+                                                or GlEnum.LINEAR_MIPMAP_NEAREST or GlEnum.NEAREST_MIPMAP_LINEAR or GlEnum.LINEAR_MIPMAP_LINEAR:
+                t.MinFilter = value;
                 break;
-            case GlEnum.TEXTURE_MAG_FILTER:
-                t.MagFilter = (uint)v[0];
+            case GlEnum.TEXTURE_MAG_FILTER when value is GlEnum.NEAREST or GlEnum.LINEAR:
+                t.MagFilter = value;
                 break;
-            case GlEnum.TEXTURE_WRAP_S:
-                t.WrapS = (uint)v[0];
+            case GlEnum.TEXTURE_WRAP_S when IsWrapMode(value):
+                t.WrapS = value;
                 break;
-            case GlEnum.TEXTURE_WRAP_T:
-                t.WrapT = (uint)v[0];
+            case GlEnum.TEXTURE_WRAP_T when IsWrapMode(value):
+                t.WrapT = value;
                 break;
             case GlEnum.TEXTURE_BORDER_COLOR:
                 t.BorderColor = Vector4.Clamp(Vec4(v), Vector4.Zero, Vector4.One);
@@ -141,6 +171,14 @@ internal sealed partial class GlContext
                 break;
         }
     }
+
+    private static bool IsWrapMode(uint mode) => mode is GlEnum.CLAMP or GlEnum.REPEAT or GlEnum.CLAMP_TO_EDGE;
+
+    /// <summary>
+    /// 浮点给的枚举参数(TexParameterf、Fogf、TexEnvf……)换成枚举值。负数、NaN 与超出 32 位的换成一个不是任何枚举的值 ——
+    /// 浮点转无符号整数在越界时的结果与平台有关。
+    /// </summary>
+    private static uint EnumParam(float value) => value is >= 0 and < 4294967296f ? (uint)value : uint.MaxValue;
 
     /// <summary>内部格式 → 基本内部格式(Table 3.15 / 3.16;1–4 是 GL 1.0 的 components 写法)。不认识的返回 0。</summary>
     private static uint BaseInternalFormat(uint internalFormat) => internalFormat switch
@@ -284,32 +322,6 @@ internal sealed partial class GlContext
         return ToRgba(layout.Format, comp);
     }
 
-    /// <summary>
-    /// 按附录 A.2.1 解出 width × height 的像素矩形,每个像素给出 RGBA 浮点(第 0 行是图像的第一行,即 GL 里最下面一行)。
-    /// 格式或类型不认识时记 INVALID_ENUM 并返回 null。纹理图像用;画像素矩形的命令逐行解、不整张解(见 <see cref="DrawPixels" />)。
-    /// </summary>
-    private Vector4[]? UnpackImage(ReadOnlySpan<byte> data, PixelStore store, int width, int height, uint format, uint type, bool bigEndian)
-    {
-        if (Layout(store, width, format, type, bigEndian) is not { } layout)
-        {
-            return null;
-        }
-        if (width <= 0 || height <= 0)
-        {
-            return [];
-        }
-        var result = new Vector4[width * height];
-        Span<float> comp = stackalloc float[4];
-        for (int j = 0; j < height; j++)
-        {
-            for (int i = 0; i < width; i++)
-            {
-                result[(j * width) + i] = ReadGroup(data, layout, i, j, comp);
-            }
-        }
-        return result;
-    }
-
     /// <summary>一个元素换成浮点(Table 2.6:无符号除以最大值,有符号 (2c + 1)/(2^b − 1))。</summary>
     private static float ReadElement(ReadOnlySpan<byte> e, uint type, bool bigEndian) => type switch
     {
@@ -372,7 +384,11 @@ internal sealed partial class GlContext
             return;
         }
         bool proxy = target is GlEnum.PROXY_TEXTURE_1D or GlEnum.PROXY_TEXTURE_2D;
-        GlTexture texture = BoundTexture(target)!;
+        if (BoundTexture(target) is not { } texture)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
         if (w > MaxTextureSize || h > MaxTextureSize || w < 0 || h < 0)
         {
@@ -389,32 +405,42 @@ internal sealed partial class GlContext
             texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, []);
             return;
         }
-        if (!FitsTexture(texture, level, (long)w * h * 4))
+        // 格式、类型与像素存储参数先核(客户端传 NULL 时也核),再扣工作量、记账,最后才分配。
+        if (Layout(store, width, format, type, r.BigEndian) is not { } layout)
+        {
+            return;
+        }
+        ReadOnlySpan<byte> data = r.Rest();
+        bool hasData = data.Length > 0 && w > 0 && h > 0;
+        if (hasData)
+        {
+            // 带了数据就得装得下整张图像(含边框),否则命令作废 —— 与 DrawPixels 一样。原先 1 字节的数据也照声明的 2050² 逐个解码。
+            if (!layout.Covers(data.Length, width, oneD ? 1 : height))
+            {
+                SetError(GlEnum.INVALID_VALUE);
+                return;
+            }
+            WorkBudget.Charge(2L * w * h);   // 逐个解码
+        }
+        if (!TryAccountLevel(texture, level, (long)w * h * 4))
         {
             return;
         }
         // 数据为空(客户端传 NULL)时纹理内容未定义:这里填 0。边框像素只存内圈。
         byte[] texels = new byte[w * h * 4];
-        if (r.Remaining > 0 && w > 0 && h > 0)
+        if (hasData)
         {
-            Vector4[]? pixels = UnpackImage(r.Rest(), store, width, oneD ? 1 : height, format, type, r.BigEndian);
-            if (pixels is null)
-            {
-                return;
-            }
+            Span<float> comp = stackalloc float[4];
+            int rowOffset = oneD ? 0 : border;
             for (int y = 0; y < h; y++)
             {
                 for (int x = 0; x < w; x++)
                 {
-                    int src = ((y + (oneD ? 0 : border)) * width) + x + border;
-                    if (src < pixels.Length)
-                    {
-                        StoreTexel(texels, (y * w) + x, pixels[src], baseFormat);
-                    }
+                    StoreTexel(texels, (y * w) + x, ReadGroup(data, layout, x + border, y + rowOffset, comp), baseFormat);
                 }
             }
         }
-        StoreLevel(texture, level, new GlTexImage(w, h, internalFormat, baseFormat, texels));
+        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
     }
 
     private void TexSubImage(ref GlReader r, bool oneD)
@@ -428,9 +454,14 @@ internal sealed partial class GlContext
         {
             (yoffset, height) = (0, 1);
         }
-        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D) || level < 0 || level >= GlTexture.MaxLevels)
+        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D))
         {
             SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        if (level is < 0 or >= GlTexture.MaxLevels)
+        {
+            SetError(GlEnum.INVALID_VALUE);
             return;
         }
         if (BoundTexture(target)?.Levels[level] is not { } image)
@@ -444,16 +475,27 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
-        Vector4[]? pixels = UnpackImage(r.Rest(), store, width, height, format, type, r.BigEndian);
-        if (pixels is null)
+        if (Layout(store, width, format, type, r.BigEndian) is not { } layout)
         {
             return;
         }
+        ReadOnlySpan<byte> data = r.Rest();
+        if (data.IsEmpty || width == 0 || height == 0)
+        {
+            return;   // 没有数据(客户端传 NULL):什么都不改
+        }
+        if (!layout.Covers(data.Length, width, height))
+        {
+            SetError(GlEnum.INVALID_VALUE);   // 数据装不下声明的矩形:命令作废(同 DrawPixels)
+            return;
+        }
+        WorkBudget.Charge(2L * width * height);   // 逐个解码,直接写进纹素(不先整张解成浮点)
+        Span<float> comp = stackalloc float[4];
         for (int y = 0; y < height; y++)
         {
             for (int x = 0; x < width; x++)
             {
-                StoreTexel(image.Texels, ((y + yoffset) * image.Width) + x + xoffset, pixels[(y * width) + x], image.BaseFormat);
+                StoreTexel(image.Texels, ((y + yoffset) * image.Width) + x + xoffset, ReadGroup(data, layout, x, y, comp), image.BaseFormat);
             }
         }
     }
@@ -473,12 +515,18 @@ internal sealed partial class GlContext
             return;
         }
         int w = width - (2 * border), h = oneD ? 1 : height - (2 * border);
-        GlTexture texture = BoundTexture(target)!;
-        if (!FitsTexture(texture, level, Math.Max(0, (long)w * h * 4)))
+        if (BoundTexture(target) is not { } texture)
+        {
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        (w, h) = (Math.Max(0, w), Math.Max(0, h));
+        WorkBudget.Charge(2L * w * h);
+        if (!TryAccountLevel(texture, level, (long)w * h * 4))
         {
             return;
         }
-        byte[] texels = new byte[Math.Max(0, w * h * 4)];
+        byte[] texels = new byte[w * h * 4];
         for (int j = 0; j < h; j++)
         {
             for (int i = 0; i < w; i++)
@@ -486,14 +534,28 @@ internal sealed partial class GlContext
                 StoreTexel(texels, (j * w) + i, ReadColorPixel(x + i + border, y + j + (oneD ? 0 : border)), baseFormat);
             }
         }
-        StoreLevel(texture, level, new GlTexImage(Math.Max(0, w), Math.Max(0, h), internalFormat, baseFormat, texels));
+        texture.Levels[level] = new GlTexImage(w, h, internalFormat, baseFormat, texels);
     }
 
-    private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height)
+    /// <summary>
+    /// CopyTexSubImage1D / 2D(§3.8.2):target 只能是 TEXTURE_1D / TEXTURE_2D —— 原先不核,代理目标的那一级只记尺寸、
+    /// 纹素是空数组,往里写抛 IndexOutOfRange,客户端收到 BadImplementation。
+    /// </summary>
+    private void CopyTexSubImage(uint target, int level, int xoffset, int yoffset, int x, int y, int width, int height, bool oneD)
     {
-        if (level < 0 || level >= GlTexture.MaxLevels || BoundTexture(target)?.Levels[level] is not { } image)
+        if (target != (oneD ? GlEnum.TEXTURE_1D : GlEnum.TEXTURE_2D))
         {
-            SetError(GlEnum.INVALID_OPERATION);
+            SetError(GlEnum.INVALID_ENUM);
+            return;
+        }
+        if (level is < 0 or >= GlTexture.MaxLevels)
+        {
+            SetError(GlEnum.INVALID_VALUE);
+            return;
+        }
+        if (BoundTexture(target)?.Levels[level] is not { } image)
+        {
+            SetError(GlEnum.INVALID_OPERATION);   // 这一级没有用 TexImage 定义过
             return;
         }
         // 按 long 比:xoffset + width 在 int 上会溢出成负数,越界的写入就混过去了(原先抛 IndexOutOfRange 当 BadImplementation)。
@@ -502,6 +564,7 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
+        WorkBudget.Charge(2L * width * height);
         for (int j = 0; j < height; j++)
         {
             for (int i = 0; i < width; i++)
@@ -587,18 +650,41 @@ internal sealed partial class GlContext
             return Texel(image, Wrap(texture.WrapS, (int)MathF.Floor(WrapCoord(texture.WrapS, s) * w), w),
                 Wrap(texture.WrapT, (int)MathF.Floor(WrapCoord(texture.WrapT, t) * h), h));
         }
-        float u = (WrapCoord(texture.WrapS, s) * w) - 0.5f, v = (WrapCoord(texture.WrapT, t) * h) - 0.5f;
-        int i0 = (int)MathF.Floor(u), j0 = (int)MathF.Floor(v);
-        float a = u - i0, b = v - j0;
-        int x0 = Wrap(texture.WrapS, i0, w), x1 = Wrap(texture.WrapS, i0 + 1, w);
-        int y0 = Wrap(texture.WrapT, j0, h), y1 = Wrap(texture.WrapT, j0 + 1, h);
-        return ((1 - a) * (1 - b) * Texel(image, x0, y0)) + (a * (1 - b) * Texel(image, x1, y0))
-               + ((1 - a) * b * Texel(image, x0, y1)) + (a * b * Texel(image, x1, y1));
+        float u = (WrapCoord(texture.WrapS, s) * w) - 0.5f;
+        int i0 = (int)MathF.Floor(u);
+        float a = u - i0;
+        int x0 = LinearIndex(texture.WrapS, i0, w), x1 = LinearIndex(texture.WrapS, i0 + 1, w);
+        if (texture.Target == GlEnum.TEXTURE_1D)
+        {
+            // 一维纹理只沿 s 插值(t 无关,§3.8.8):不然 CLAMP 的 t 方向会把边框色混进来。
+            return ((1 - a) * TexelOrBorder(texture, image, x0, 0)) + (a * TexelOrBorder(texture, image, x1, 0));
+        }
+        float v = (WrapCoord(texture.WrapT, t) * h) - 0.5f;
+        int j0 = (int)MathF.Floor(v);
+        float b = v - j0;
+        int y0 = LinearIndex(texture.WrapT, j0, h), y1 = LinearIndex(texture.WrapT, j0 + 1, h);
+        return ((1 - a) * (1 - b) * TexelOrBorder(texture, image, x0, y0)) + (a * (1 - b) * TexelOrBorder(texture, image, x1, y0))
+               + ((1 - a) * b * TexelOrBorder(texture, image, x0, y1)) + (a * b * TexelOrBorder(texture, image, x1, y1));
     }
 
     private static float WrapCoord(uint mode, float c) => mode == GlEnum.REPEAT ? c - MathF.Floor(c) : Math.Clamp(c, 0, 1);
 
+    /// <summary>NEAREST 的纹素下标:REPEAT 取模,其余夹到图像里(CLAMP 在 s = 1 时取最后一个纹素,§3.8.8)。</summary>
     private static int Wrap(uint mode, int i, int size) => mode == GlEnum.REPEAT ? ((i % size) + size) % size : Math.Clamp(i, 0, size - 1);
+
+    /// <summary>
+    /// LINEAR 取的纹素下标(§3.8.7–3.8.8):REPEAT 取模,CLAMP_TO_EDGE 夹到图像里;CLAMP 取到图像之外时给 −1,表示用边框色
+    /// (TEXTURE_BORDER_COLOR)—— 原先也夹到图像里,GL_CLAMP 配 LINEAR 的边上不与边框色混合。
+    /// </summary>
+    private static int LinearIndex(uint mode, int i, int size) => mode switch
+    {
+        GlEnum.REPEAT => ((i % size) + size) % size,
+        GlEnum.CLAMP => (uint)i < (uint)size ? i : -1,
+        _ => Math.Clamp(i, 0, size - 1),
+    };
+
+    private static Vector4 TexelOrBorder(GlTexture texture, GlTexImage image, int x, int y) =>
+        x < 0 || y < 0 ? texture.BorderColor : Texel(image, x, y);
 
     private static Vector4 Texel(GlTexImage image, int x, int y)
     {
@@ -641,15 +727,37 @@ internal sealed partial class GlContext
         {
             return;
         }
-        var row = new Vector4[i1 - i0];
+        // 只解码放大之后真盖得住像素中心的源像素:列与行各自先挑出来,其余的不碰。PixelZoom 很小(1e-6)时一整行源像素
+        // 可能只落进一个像素 —— 原先照样逐个解码,而 ROW_LENGTH 比 width 小时各行在数据里重叠,16 KB 就能声称 8000 × 8000。
+        WorkBudget.Charge(1L + i1 - i0);
+        List<int> columns = [];
+        for (int i = i0; i < i1; i++)
+        {
+            (int x0, int x1) = PixelColumnSpan(i);
+            if (x0 < x1)
+            {
+                columns.Add(i);
+            }
+        }
+        if (columns.Count == 0)
+        {
+            return;
+        }
         Span<float> comp = stackalloc float[4];
         for (int j = j0; j < j1; j++)
         {
-            for (int i = i0; i < i1; i++)
+            WorkBudget.Charge(1);
+            (int y0, int y1) = PixelRowSpan(j);
+            if (y0 >= y1)
             {
-                row[i - i0] = ReadGroup(data, layout, i, j, comp);
+                continue;
             }
-            DrawRow(j, i0, row);
+            WorkBudget.Charge(columns.Count);
+            foreach (int i in columns)
+            {
+                (int x0, int x1) = PixelColumnSpan(i);
+                DrawZoomedPixel(x0, x1, y0, y1, ReadGroup(data, layout, i, j, comp));
+            }
         }
     }
 
@@ -680,26 +788,44 @@ internal sealed partial class GlContext
         return ((int)Math.Clamp(first, 0, count), (int)Math.Clamp(last, 0, count));
     }
 
+    /// <summary>第 j 行源像素放大之后盖住的窗口行 [Y0, Y1)(已裁到剪裁框;空的表示一个像素中心都没盖住)。</summary>
+    private (int Y0, int Y1) PixelRowSpan(int j)
+    {
+        float yr = State.RasterPos.Y, zy = State.ZoomY;
+        float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
+        return ((int)Math.Clamp(MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), _clipY0, _clipY1),
+            (int)Math.Clamp(MathF.Ceiling(MathF.Max(ya, yb) - 0.5f), _clipY0, _clipY1));
+    }
+
+    /// <summary>第 i 列源像素放大之后盖住的窗口列 [X0, X1)。</summary>
+    private (int X0, int X1) PixelColumnSpan(int i)
+    {
+        float xr = State.RasterPos.X, zx = State.ZoomX;
+        float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
+        return ((int)Math.Clamp(MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), _clipX0, _clipX1),
+            (int)Math.Clamp(MathF.Ceiling(MathF.Max(xa, xb) - 0.5f), _clipX0, _clipX1));
+    }
+
     /// <summary>画像素矩形的第 j 行里从第 i0 个起的一段(§3.6.5):每个源像素覆盖一块 zoom 大小的区域。</summary>
     private void DrawRow(int j, int i0, ReadOnlySpan<Vector4> colors)
     {
-        float xr = State.RasterPos.X, yr = State.RasterPos.Y, z = State.RasterPos.Z;
-        float zx = State.ZoomX, zy = State.ZoomY;
-        float ya = yr + (zy * j), yb = yr + (zy * (j + 1));
-        int y0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(ya, yb) - 0.5f), _clipY0, _clipY1);
-        int y1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(ya, yb) - 0.5f), _clipY0, _clipY1);
+        (int y0, int y1) = PixelRowSpan(j);
         for (int n = 0; n < colors.Length && y0 < y1; n++)
         {
-            int i = i0 + n;
-            float xa = xr + (zx * i), xb = xr + (zx * (i + 1));
-            int x0 = (int)Math.Clamp(MathF.Ceiling(MathF.Min(xa, xb) - 0.5f), _clipX0, _clipX1);
-            int x1 = (int)Math.Clamp(MathF.Ceiling(MathF.Max(xa, xb) - 0.5f), _clipX0, _clipX1);
-            for (int y = y0; y < y1; y++)
+            (int x0, int x1) = PixelColumnSpan(i0 + n);
+            DrawZoomedPixel(x0, x1, y0, y1, colors[n]);
+        }
+    }
+
+    /// <summary>一个源像素放大后的那一块:[x0, x1) × [y0, y1) 里每个像素一个片元。</summary>
+    private void DrawZoomedPixel(int x0, int x1, int y0, int y1, Vector4 color)
+    {
+        float z = State.RasterPos.Z;
+        for (int y = y0; y < y1; y++)
+        {
+            for (int x = x0; x < x1; x++)
             {
-                for (int x = x0; x < x1; x++)
-                {
-                    Fragment(x, y, z, colors[n], Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
-                }
+                Fragment(x, y, z, color, Vector3.Zero, State.RasterTexCoord, State.RasterDistance);
             }
         }
     }
@@ -746,6 +872,7 @@ internal sealed partial class GlContext
                 int jFrom = (int)Math.Clamp(_clipY0 - y0, 0, height), jTo = (int)Math.Clamp(_clipY1 - y0, 0, height);
                 for (int j = jFrom; j < jTo; j++)
                 {
+                    WorkBudget.Charge(1L + iTo - iFrom);
                     for (int i = iFrom; i < iTo; i++)
                     {
                         int bit = i + skipPixels;
@@ -782,15 +909,17 @@ internal sealed partial class GlContext
         {
             return;
         }
-        i0 = (int)Math.Max(i0, -(long)x);
-        i1 = (int)Math.Min(i1, s.Width - (long)x);
-        j0 = (int)Math.Max(j0, -(long)y);
-        j1 = (int)Math.Min(j1, s.Height - (long)y);
-        if (i0 >= i1 || j0 >= j1)
+        // 读缓冲里真有的那部分:源像素 i 落在缓冲的第 x + i 列。全按 long 算再比 —— x 为 int.MinValue 时 −x 转回 int 会回绕成负数,
+        // 原先拿它当下标抛 ArgumentOutOfRange(BadImplementation)。比完之后夹在 [i0, i1) 里,转回 int 是安全的。
+        long li0 = Math.Max(i0, -(long)x), li1 = Math.Min(i1, s.Width - (long)x);
+        long lj0 = Math.Max(j0, -(long)y), lj1 = Math.Min(j1, s.Height - (long)y);
+        if (li0 >= li1 || lj0 >= lj1)
         {
             return;
         }
+        (i0, i1, j0, j1) = ((int)li0, (int)li1, (int)lj0, (int)lj1);
         int w = i1 - i0, h = j1 - j0;
+        WorkBudget.Charge(2L * w * h);
         uint[] source = new uint[w * h];
         for (int j = 0; j < h; j++)
         {
@@ -1008,6 +1137,12 @@ internal sealed partial class GlContext
                 break;
         }
     }
+
+    /// <summary>TEXTURE_1D / TEXTURE_2D 当前绑定的纹理第 <paramref name="level" /> 级的尺寸;目标或级别不对、这一级没定义时为 null。</summary>
+    public (int Width, int Height)? TexLevelSize(uint target, int level) =>
+        target is GlEnum.TEXTURE_1D or GlEnum.TEXTURE_2D && level is >= 0 and < GlTexture.MaxLevels && BoundTexture(target)?.Levels[level] is { } image
+            ? (image.Width, image.Height)
+            : null;
 
     /// <summary>GetTexImage:第 <paramref name="level" /> 级按附录 A.3.1 打包;没有这一级时返回空。</summary>
     public byte[]? GetTexImage(uint target, int level, uint format, uint type, bool swapBytes, bool bigEndian, out int width, out int height)

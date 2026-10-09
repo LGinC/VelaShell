@@ -276,11 +276,11 @@ public sealed class VcXsrvLocalXServer : ILocalXServer, IDisposable
             : new(Display: null, result.Error);
     }
 
-    /// <summary>自动模式:从 0 起挑第一个没人在听的显示号。</summary>
+    /// <summary>自动模式:从 <paramref name="first" />(默认 0)起挑第一个没人在听的显示号。</summary>
     internal static async Task<int?> SelectFreeDisplayAsync(
-        Func<int, CancellationToken, Task<bool>> isDisplayInUse, CancellationToken cancellationToken)
+        Func<int, CancellationToken, Task<bool>> isDisplayInUse, CancellationToken cancellationToken, int first = 0)
     {
-        for (int display = 0; display <= XServerOptions.MaxDisplayNumber; display++)
+        for (int display = first; display <= XServerOptions.MaxDisplayNumber; display++)
         {
             if (!await isDisplayInUse(display, cancellationToken).ConfigureAwait(false))
             {

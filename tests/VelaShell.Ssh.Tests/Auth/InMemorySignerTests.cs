@@ -16,7 +16,7 @@ public sealed class InMemorySignerTests
     [TestMethod]
     public async Task Ed25519签名用自己的公钥验得过()
     {
-        using InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        using var signer = InMemorySshSigner.GenerateEd25519();
         byte[] data = RandomNumberGenerator.GetBytes(100);
 
         byte[] signature = await signer.SignAsync(data, SshAlgorithmNames.SshEd25519);
@@ -35,7 +35,7 @@ public sealed class InMemorySignerTests
         byte[] expectedSignature = Convert.FromHexString(
             "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b");
 
-        using InMemorySshSigner signer = InMemorySshSigner.FromEd25519(secret);
+        using var signer = InMemorySshSigner.FromEd25519(secret);
         byte[] blob = await signer.SignAsync(ReadOnlyMemory<byte>.Empty, SshAlgorithmNames.SshEd25519);
 
         // 公钥 blob 的末尾 32 字节是公钥，签名 blob 的末尾 64 字节是签名。
@@ -49,7 +49,7 @@ public sealed class InMemorySignerTests
     [TestMethod]
     public async Task Ed25519签名器释放时清零种子且之后不能再签()
     {
-        InMemorySshSigner signer = InMemorySshSigner.GenerateEd25519();
+        var signer = InMemorySshSigner.GenerateEd25519();
         signer.Dispose();
 
         Assert.IsTrue(signer.IsKeyMaterialCleared, "释放之后种子还在");
@@ -61,13 +61,13 @@ public sealed class InMemorySignerTests
     [TestMethod]
     public void 交进来的RSA与ECDSA私钥按ownsKey决定释放不释放()
     {
-        using RSA rsa = RSA.Create(2048);
+        using var rsa = RSA.Create(2048);
         InMemorySshSigner.FromRsa(rsa, ownsKey: false).Dispose();
         _ = rsa.ExportParameters(includePrivateParameters: false);
         InMemorySshSigner.FromRsa(rsa).Dispose();
         Assert.ThrowsExactly<ObjectDisposedException>(() => rsa.ExportParameters(includePrivateParameters: false), "默认交进来就归签名器");
 
-        using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP256);
         InMemorySshSigner.FromEcdsa(ecdsa, ownsKey: false).Dispose();
         _ = ecdsa.ExportParameters(includePrivateParameters: false);
         InMemorySshSigner.FromEcdsa(ecdsa).Dispose();

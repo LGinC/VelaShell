@@ -71,6 +71,36 @@ public class LocalXServerSelectorTests
         await builtIn.DidNotReceive().StartAsync(Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// 会话开 shell 时绑了内置引擎的连接器;之后用户停掉内置引擎、改用 VcXsrv:老会话的新 x11 通道按本机 TCP 连到此刻在运行的那个,
+    /// 原先连接器只认内置引擎,远端只看到 Failed to open display。
+    /// </summary>
+    [TestMethod]
+    public async Task BuiltInConnector_FallsBackToTcp_WhenTheBuiltInEngineIsNoLongerRunning()
+    {
+        using System.Net.Sockets.TcpListener listener = new(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int display = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port - XServerCommandLine.TcpPort(0);
+
+        ILocalXServer builtIn = Engine(), vcXsrv = Engine();
+        builtIn.State.Returns(XServerState.Running);
+        builtIn.ResolveForwardingDisplayAsync(Arg.Any<CancellationToken>()).Returns(new XServerDisplayResolution(
+            "localhost:0.0", Connector: (_, _) => throw new InvalidOperationException("The built-in X server is not running.")));
+        LocalXServerSelector selector = new(Settings(XServerEngines.BuiltIn), builtIn, vcXsrv);
+        XServerDisplayResolution resolution = await selector.ResolveForwardingDisplayAsync();
+
+        builtIn.State.Returns(XServerState.Stopped);   // 用户停掉内置引擎、开了 VcXsrv
+        vcXsrv.State.Returns(XServerState.Running);
+        vcXsrv.DisplayNumber.Returns(display);
+        Task<System.Net.Sockets.TcpClient> accepted = listener.AcceptTcpClientAsync();
+        await using Stream stream = await resolution.Connector!("user@host:22", CancellationToken.None);
+        using System.Net.Sockets.TcpClient peer = await accepted.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.IsTrue(peer.Connected, "连到了此刻在运行的 X 服务端的 6000+N");
+
+        vcXsrv.State.Returns(XServerState.Stopped);   // 都没在运行:连解析时的显示地址,连不上按 IOException 报
+        await Assert.ThrowsAsync<IOException>(async () => await LocalXServerSelector.ConnectTcpAsync(display + 1, CancellationToken.None));
+    }
+
     [TestMethod]
     public void StateChanged_IsForwardedFromBothEngines_AndOnEngineChange()
     {

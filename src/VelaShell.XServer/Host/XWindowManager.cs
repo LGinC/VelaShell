@@ -101,8 +101,8 @@ public enum XMoveResizeDirection
     Cancel = 11,
 }
 
-/// <summary>一个窗口图标(<c>_NET_WM_ICON</c>):非预乘的 <c>0xAARRGGBB</c>,行优先。</summary>
-public sealed record XWindowIcon(int Width, int Height, uint[] Pixels);
+/// <summary>一个窗口图标(<c>_NET_WM_ICON</c>):非预乘的 <c>0xAARRGGBB</c>,行优先。像素只读:各份快照共用同一份图标。</summary>
+public sealed record XWindowIcon(int Width, int Height, ReadOnlyMemory<uint> Pixels);
 
 /// <summary>客户端向窗口管理器(即宿主)提出的请求。宿主按自己的规则决定是否照办。</summary>
 /// <param name="Window">提出请求的顶层窗口。</param>
@@ -119,8 +119,43 @@ public sealed record XMoveResizeRequest(XTopLevelWindow Window, XMoveResizeDirec
 public sealed record XStateChangeRequest(XTopLevelWindow Window, XWindowStates Add, XWindowStates Remove)
     : XWindowManagerRequest(Window);
 
-/// <summary>激活窗口(<c>_NET_ACTIVE_WINDOW</c>):拿到前台、得到焦点。</summary>
-public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+/// <summary>
+/// 激活窗口(<c>_NET_ACTIVE_WINDOW</c>):拿到前台、得到焦点。任何 X 客户端都能随时发它 —— 宿主应当只在 <see cref="UserInitiated" /> 时照办
+/// (而且用户此刻正在用 X 窗口),否则改为提醒(闪任务栏),免得远端程序在用户输口令时跳到前台接走按键(EWMH 的焦点窃取防护)。
+/// </summary>
+public sealed record XActivateRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window)
+{
+    /// <summary>EWMH 的来源指示:0 旧客户端没给、1 普通程序、2 分页器 / 任务栏(直接代表用户的操作)。</summary>
+    public int Source { get; init; }
+
+    /// <summary>请求带的时间戳(引起它的那次用户操作的时间);0 = CurrentTime,说明不了什么。</summary>
+    public uint Timestamp { get; init; }
+
+    /// <summary>
+    /// 服务端的判断:来源是分页器,或时间戳不早于用户最近一次在 X 窗口里按键 / 按按钮的时间 —— 是那次操作引起的。
+    /// CurrentTime、过期的时间戳都不算。
+    /// </summary>
+    public bool UserInitiated { get; init; }
+}
+
+/// <summary>
+/// 把窗口抬到最上面(客户端对顶层发了 stack-mode 为 Above 的 ConfigureWindow:XRaiseWindow、XMapRaised、Java 的 toFront)。
+/// 只是次序,不要求得到焦点;宿主按自己的规则决定照不照办(别从用户正在用的本机窗口那里抢走前台)。
+/// </summary>
+public sealed record XRaiseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+
+/// <summary>
+/// 客户端自己把键盘焦点挪到了这个顶层(SetInputFocus / XISetFocus,不是 <see cref="X11Server.FocusTopLevel" /> 引起的),按键此刻送往它。
+/// 宿主应当让用户看得出键盘去了哪儿:激活它的原生窗口;不愿意(用户正在用本机的其它窗口)可以调 <see cref="X11Server.FocusTopLevel" />
+/// 把焦点交回宿主认定的那个顶层。
+/// </summary>
+public sealed record XFocusRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
+
+/// <summary>
+/// 窗口对 <c>_NET_WM_PING</c> 没有回应(用户点了关闭,服务端发 WM_DELETE_WINDOW 的同时 ping 了它,时限内没回):程序多半卡住了。
+/// 宿主可以问用户要不要强制结束(<see cref="X11Server.KillTopLevelClient" />)。只对在 WM_PROTOCOLS 里声明了 <c>_NET_WM_PING</c> 的窗口发。
+/// </summary>
+public sealed record XNotRespondingRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);
 
 /// <summary>关闭窗口(<c>_NET_CLOSE_WINDOW</c>,一般由任务栏 / 分页器发出)。</summary>
 public sealed record XCloseRequest(XTopLevelWindow Window) : XWindowManagerRequest(Window);

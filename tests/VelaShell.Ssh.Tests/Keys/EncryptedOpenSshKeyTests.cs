@@ -239,7 +239,7 @@ public sealed class EncryptedOpenSshKeyTests
         using CancellationTokenSource cancel = new(TimeSpan.FromMilliseconds(100));
         byte[] output = new byte[48];
 
-        Task deriving = Task.Run(() => BcryptPbkdf.DeriveKey("pw"u8, "salt"u8, 1_000_000, output, cancel.Token));
+        var deriving = Task.Run(() => BcryptPbkdf.DeriveKey("pw"u8, "salt"u8, 1_000_000, output, cancel.Token));
 
         await Assert.ThrowsAsync<OperationCanceledException>(() => deriving.WaitAsync(TimeSpan.FromSeconds(10)));
     }

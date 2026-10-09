@@ -78,6 +78,42 @@ public sealed class RenderPixelTests
     }
 
     [TestMethod]
+    public void 多色标渐变按二分找色标_与逐个找的结果相同_相等的色标是硬过渡()
+    {
+        // 0, 0.1, 0.1, 0.2, ..., 0.9, 1:每一段一种颜色,0.1 处两个色标相等(硬过渡)。
+        List<double> stops = [0];
+        List<Argb> colors = [new Argb(1, 0, 0, 0)];
+        for (int i = 1; i <= 10; i++)
+        {
+            stops.Add(i / 10.0);
+            colors.Add(new Argb(1, i / 10f, 0, 0));
+            if (i == 1)
+            {
+                stops.Add(0.1);
+                colors.Add(new Argb(1, 0, 1, 0));
+            }
+        }
+        LinearGradientSource g = new(0, 0, 1000, 0, [.. stops], [.. colors]) { Repeat = RenderSource.RepeatPad };
+        var row = new Argb[1000];
+        g.FetchRow(0, 0, row);
+        for (int x = 0; x < row.Length; x++)
+        {
+            double t = (x + 0.5) / 1000;
+            int i = 1;
+            while (stops[i] < t)
+            {
+                i++;   // 参照:逐个往后找
+            }
+            double span = stops[i] - stops[i - 1];
+            float f = span <= 0 ? 1 : (float)((t - stops[i - 1]) / span);
+            float expectedRed = colors[i - 1].R + ((colors[i].R - colors[i - 1].R) * f);
+            Assert.AreEqual(expectedRed, row[x].R, 1e-5, $"x = {x}");
+        }
+        Assert.IsGreaterThan(0.4f, row[150].G, "0.1 处硬过渡到绿色,往后渐变到下一个色标");
+        Assert.AreEqual(0f, row[99].G, 1e-6, "硬过渡之前没有绿色");
+    }
+
+    [TestMethod]
     public void 梯形覆盖率在半像素边上是一半()
     {
         CoverageMask mask = new(new XRect(0, 0, 4, 2));
@@ -251,5 +287,91 @@ public sealed class RenderPixelTests
             }
         }
         Console.WriteLine($"{cases} 种组合,最大通道差 {worst}");
+    }
+
+    [TestMethod]
+    public void a8目标的PorterDuff运算走整数_与浮点只差取整()
+    {
+        const int size = 24;
+        Random random = new(81);
+        PixelBuffer a8Image = RandomBuffer(random, 17, 13, 8);
+        PixelBuffer argbImage = RandomBuffer(random, 17, 13, 32);
+        byte[] maskBytes = new byte[size * size];
+        random.NextBytes(maskBytes);
+        double c = Math.Cos(0.4), sn = Math.Sin(0.4);
+        double[] rotate = [c, -sn, 2.5, sn, c, -1.5, 0, 0, 1];
+        List<(string Name, Func<RenderSource> Make)> sources =
+        [
+            ("a8 平铺", () => new ImageSource(a8Image, 0, 0, 17, 13, PictFormat.A8) { Repeat = RenderSource.RepeatNormal }),
+            ("argb 旋转双线性", () => new ImageSource(argbImage, 0, 0, 17, 13, PictFormat.A8R8G8B8) { Repeat = RenderSource.RepeatReflect, Bilinear = true, Transform = rotate }),
+            ("纯色", () => new SolidSource(new Argb(0.4f, 0.1f, 0.2f, 0.3f))),
+        ];
+        int worst = 0;
+        for (byte op = 0; op <= RenderOps.Saturate; op++)
+        {
+            foreach ((string name, Func<RenderSource> make) in sources)
+            {
+                foreach (bool withMask in (bool[])[false, true])
+                {
+                    PixelBuffer dst = RandomBuffer(random, size, size, 8);
+                    RenderSource? mask = withMask ? new ByteMaskSource(maskBytes, 0, 0, size, size) : null;
+                    uint[] expected = FloatComposite(op, make(), mask, dst, PictFormat.A8);
+                    RenderTarget target = new(dst, 0, 0, PictFormat.A8, [new XRect(0, 0, size, size)]);
+                    RenderCompositor.Composite(op, make(), mask, false, target, 0, 0, 0, 0, 0, 0, size, size);
+                    for (int i = 0; i < expected.Length; i++)
+                    {
+                        int diff = Math.Abs((int)expected[i] - (int)dst.Pixels[i]);
+                        worst = Math.Max(worst, diff);
+                        Assert.IsLessThanOrEqualTo(2, diff, $"op {op}、{name}、遮罩 {withMask}:像素 {i} 期望 {expected[i]},实际 {dst.Pixels[i]}");
+                    }
+                }
+            }
+        }
+        Console.WriteLine($"a8 目标最大差 {worst}");
+    }
+
+    [TestMethod]
+    public void 源与目标同缓冲时只拷变换后读得到的那一块_取样结果不变()
+    {
+        // 窗口的 picture 至多 256 MB:原先源带变换或重复时每条请求整张拷一遍。现在按四个角变换后的外接矩形估算,
+        // 拷出来的源在要读的范围里逐像素与原来相同。
+        Random random = new(9);
+        PixelBuffer image = RandomBuffer(random, 300, 200, 32);
+        double c = Math.Cos(0.3) * 1.3, sn = Math.Sin(0.3) * 1.3;
+        double[][] transforms =
+        [
+            [2, 0, 7.5, 0, 2, -3.25, 0, 0, 1],                 // 缩小一半(矩阵把目标坐标映回源坐标)
+            [0.5, 0, 0, 0, 0.5, 0, 0, 0, 1],                   // 放大两倍
+            [c, -sn, 40, sn, c, 10, 0, 0, 1],                  // 旋转
+            [1, 0.1, 0, 0, 1, 0, 0.002, 0.001, 1],             // 投影
+            [1, 0, 0, 0, 1, 0, 0.01, 0, -1],                   // 齐次坐标在矩形里变号
+        ];
+        for (int round = 0; round < 400; round++)
+        {
+            ImageSource source = new(image, 0, 0, 300, 200, PictFormat.A8R8G8B8)
+            {
+                Repeat = (byte)random.Next(4),
+                Bilinear = random.Next(2) == 0,
+                Transform = random.Next(5) == 0 ? null : transforms[random.Next(transforms.Length)],
+            };
+            XRect needed = new(random.Next(-50, 320), random.Next(-50, 220), random.Next(1, 40), random.Next(1, 40));
+            ImageSource detached = source.Detach(needed);
+            uint[] expected = new uint[needed.Width], actual = new uint[needed.Width];
+            Argb[] expectedF = new Argb[needed.Width], actualF = new Argb[needed.Width];
+            for (int y = needed.Y; y < needed.Bottom; y++)
+            {
+                source.FetchRow8888(needed.X, y, expected);
+                detached.FetchRow8888(needed.X, y, actual);
+                CollectionAssert.AreEqual(expected, actual, $"第 {round} 组 {needed} 第 {y} 行(repeat {source.Repeat}、双线性 {source.Bilinear})");
+                source.FetchRow(needed.X, y, expectedF);
+                detached.FetchRow(needed.X, y, actualF);
+                CollectionAssert.AreEqual(expectedF, actualF, $"第 {round} 组 {needed} 第 {y} 行(浮点)");
+            }
+        }
+
+        // 放大两倍、重复平铺,读 20×20:要拷的只有 10×10 左右,而不是整张 300×200。
+        ImageSource tiled = new(image, 0, 0, 300, 200, PictFormat.A8R8G8B8) { Repeat = RenderSource.RepeatNormal, Bilinear = true, Transform = transforms[1] };
+        PixelBuffer copy = tiled.Detach(new XRect(40, 40, 20, 20)).Buffer;
+        Assert.IsLessThanOrEqualTo(14 * 14, copy.Width * copy.Height, $"拷了 {copy.Width}×{copy.Height}");
     }
 }

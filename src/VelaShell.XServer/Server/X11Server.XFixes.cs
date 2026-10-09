@@ -20,8 +20,18 @@ namespace VelaShell.XServer;
 
 public sealed partial class X11Server
 {
-    /// <summary>SelectSelectionInput 的登记:(客户端, 窗口, 选区) → 掩码。</summary>
-    private readonly Dictionary<(XClient Client, XWindow Window, uint Selection), uint> _selectionInputs = [];
+    /// <summary>
+    /// 每个客户端 SelectSelectionInput 登记的上限。真实的用法(剪贴板管理器、XEmbed、托盘)盯的是少数几个选区;
+    /// 原先没有上限,一个客户端能登记几百万条,之后每次换属主都要整表扫一遍(xs_plan WN-S9)。超出回 BadAlloc。
+    /// </summary>
+    internal const int MaxSelectionInputsPerClient = 1024;
+
+    /// <summary>SelectSelectionInput 的登记,按选区分开:选区 → (客户端, 窗口) → 掩码。换属主时只看那一个选区的。</summary>
+    private readonly Dictionary<uint, Dictionary<(XClient Client, XWindow Window), uint>> _selectionInputs = [];
+
+    /// <summary>每个客户端、每个窗口名下各有几条选区登记 —— 计上限,收尾时没有登记的就不用扫。</summary>
+    private readonly Dictionary<XClient, int> _selectionInputsByClient = [];
+    private readonly Dictionary<XWindow, int> _selectionInputsByWindow = [];
 
     /// <summary>SelectCursorInput 的登记:(客户端, 窗口) → 掩码。</summary>
     private readonly Dictionary<(XClient Client, XWindow Window), uint> _cursorInputs = [];
@@ -30,6 +40,13 @@ public sealed partial class X11Server
     private readonly Dictionary<(XClient Client, XWindow Window), int> _hiddenCursors = [];
 
     private uint _cursorSerial = 1;
+
+    /// <summary>区域对象换一份新值:按新的块数对账(xs_plan X-2),记不下回 Alloc、区域不变。</summary>
+    private void SetRegion(XRegionResource resource, Region value)
+    {
+        Recharge(resource, ResourceOverheadBytes + RegionBytes(value));
+        resource.Region = value;
+    }
 
     private XRegionResource RegionRes(uint id) =>
         Lookup<XRegionResource>(id) ?? throw new XProtocolError((XErrorCode)XFixesErrorBase, id);
@@ -55,22 +72,21 @@ public sealed partial class X11Server
                     c.Reply(0, w => w.U32(maj).U32(min).Zero(16));
                     break;
                 }
-            case 1:   // ChangeSaveSet:我们的窗口管理器是宿主本身,不会断开(同核心 ChangeSaveSet)。
-                break;
+            case 1:   // ChangeSaveSet:mode(0 插入、1 删除)、target(0 最近的祖先、1 根窗口)、map(0 补映射、1 不补)、窗口
+                {
+                    byte mode = r.U8(), target = r.U8(), map = r.U8();
+                    r.Skip(1);
+                    XWindow window = Window(r.U32());
+                    ChangeSaveSet(c, window, mode == 0, toRoot: target == 1, map: map == 0);
+                    break;
+                }
             case 2:   // SelectSelectionInput
                 {
                     XWindow window = Window(r.U32());
                     uint selection = r.U32();
                     uint mask = r.U32();
                     CheckAtom(selection);
-                    if (mask == 0)
-                    {
-                        _selectionInputs.Remove((c, window, selection));
-                    }
-                    else
-                    {
-                        _selectionInputs[(c, window, selection)] = mask;
-                    }
+                    SelectSelectionInput(c, window, selection, mask);
                     break;
                 }
             case 3:   // SelectCursorInput
@@ -87,11 +103,16 @@ public sealed partial class X11Server
                     }
                     break;
                 }
-            case 4:   // GetCursorImage:光标由宿主的系统光标画,这里给一个 1×1 透明像素与热点
+            case 4:   // GetCursorImage:指针处那个光标的图像(预乘的 ARGB)与热点
                 {
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    (int px, int py, XCursorImage image) = CursorImageAtPointer();
                     uint serial = _cursorSerial;
-                    c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).Zero(8).U32(0));
+                    c.Reply(0, w =>
+                    {
+                        w.I16((short)px).I16((short)py).U16((ushort)image.Width).U16((ushort)image.Height)
+                            .U16((ushort)image.HotspotX).U16((ushort)image.HotspotY).U32(serial).Zero(8);
+                        WritePixels(w, image);
+                    });
                     break;
                 }
             case 5:   // CreateRegion
@@ -145,12 +166,12 @@ public sealed partial class X11Server
                     break;
                 }
             case 11:  // SetRegion
-                RegionRes(r.U32()).Region = Exact(ReadRegionRects(r));
+                SetRegion(RegionRes(r.U32()), Exact(ReadRegionRects(r)));
                 break;
             case 12:  // CopyRegion
                 {
                     Region src = RegionRes(r.U32()).Region;
-                    RegionRes(r.U32()).Region = src.Clone();
+                    SetRegion(RegionRes(r.U32()), src.Clone());
                     break;
                 }
             case 13:  // UnionRegion
@@ -161,19 +182,19 @@ public sealed partial class X11Server
                     Region a = RegionRes(r.U32()).Region.Clone();
                     Region b = RegionRes(r.U32()).Region;
                     XRegionResource dst = RegionRes(r.U32());
-                    dst.Region = Exact(op switch
+                    SetRegion(dst, Exact(op switch
                     {
                         13 => a.Union(b),
                         14 => a.Intersect(b),
                         _ => a.Subtract(b),
-                    });
+                    }));
                     break;
                 }
             case 16:  // InvertRegion:dst = bounds − src
                 {
                     Region src = RegionRes(r.U32()).Region;
                     XRect bounds = new(r.I16(), r.I16(), r.U16(), r.U16());
-                    RegionRes(r.U32()).Region = Exact(new Region(bounds).Subtract(src));
+                    SetRegion(RegionRes(r.U32()), Exact(new Region(bounds).Subtract(src)));
                     break;
                 }
             case 17:  // TranslateRegion
@@ -185,7 +206,7 @@ public sealed partial class X11Server
             case 18:  // RegionExtents
                 {
                     XRect extents = RegionRes(r.U32()).Region.Bounds;
-                    RegionRes(r.U32()).Region = new Region(extents);
+                    SetRegion(RegionRes(r.U32()), new Region(extents));
                     break;
                 }
             case 19:  // FetchRegion
@@ -237,25 +258,51 @@ public sealed partial class X11Server
                     XCursorResource cursor = CursorRes(r.U32());
                     int length = r.U16();
                     r.Skip(2);
-                    SetCursorName(cursor, r.String8(length));
+                    string name = r.String8(length);
+                    if (name.Length != 0)
+                    {
+                        InternForClient(name);   // 规范:「interns name as an atom」—— 与 InternAtom 同一套上限(原先在 GetCursorName 时不设限地建)
+                    }
+                    SetCursorName(cursor, name);
                     break;
                 }
-            case 26:  // ChangeCursor
-            case 27:  // ChangeCursorByName
-                break;
+            case 26:  // ChangeCursor:destination 从此显示成 source 的样子
+                {
+                    XCursorResource source = CursorRes(r.U32());
+                    ChangeCursorAppearance(source, [CursorRes(r.U32())]);
+                    break;
+                }
+            case 27:  // ChangeCursorByName:叫这个名字的光标都显示成 source 的样子
+                {
+                    XCursorResource source = CursorRes(r.U32());
+                    int length = r.U16();
+                    r.Skip(2);
+                    string name = r.String8(length);
+                    ChangeCursorAppearance(source, [.. AllResources.OfType<XCursorResource>().Where(cursor => cursor.Name == name)]);
+                    break;
+                }
             case 24:  // GetCursorName
                 {
                     string name = CursorRes(r.U32()).Name ?? "";
-                    uint atom = name.Length == 0 ? 0 : Intern(name);
+                    uint atom = name.Length == 0 ? 0 : _atomsByName.GetValueOrDefault(name);   // SetCursorName 时已经建好
                     byte[] bytes = XWire.Latin1.GetBytes(name);
                     c.Reply(0, w => w.U32(atom).U16((ushort)bytes.Length).Zero(18).Bytes(bytes));
                     break;
                 }
             case 25:  // GetCursorImageAndName
                 {
-                    int px = Math.Max(0, _pointerX), py = Math.Max(0, _pointerY);
+                    (int px, int py, XCursorImage image) = CursorImageAtPointer();
+                    string name = CurrentCursor()?.Name ?? "";
+                    uint atom = name.Length == 0 ? 0 : _atomsByName.GetValueOrDefault(name);
+                    byte[] bytes = XWire.Latin1.GetBytes(name);
                     uint serial = _cursorSerial;
-                    c.Reply(0, w => w.I16(px).I16(py).U16(1).U16(1).U16(0).U16(0).U32(serial).U32(0).U16(0).Zero(2).U32(0));
+                    c.Reply(0, w =>
+                    {
+                        w.I16((short)px).I16((short)py).U16((ushort)image.Width).U16((ushort)image.Height)
+                            .U16((ushort)image.HotspotX).U16((ushort)image.HotspotY).U32(serial).U32(atom).U16((ushort)bytes.Length).Zero(2);
+                        WritePixels(w, image);
+                        w.Bytes(bytes).Pad4();
+                    });
                     break;
                 }
             case 28:  // ExpandRegion
@@ -263,8 +310,8 @@ public sealed partial class X11Server
                     Region src = RegionRes(r.U32()).Region;
                     XRegionResource dst = RegionRes(r.U32());
                     int left = r.U16(), right = r.U16(), top = r.U16(), bottom = r.U16();
-                    dst.Region = Exact(Region.FromRects(src.Rects.Select(rect =>
-                        new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom))));
+                    SetRegion(dst, Exact(Region.FromRects(src.Rects.Select(rect =>
+                        new XRect(rect.X - left, rect.Y - top, rect.Width + left + right, rect.Height + top + bottom)))));
                     break;
                 }
             case 29:  // HideCursor
@@ -334,6 +381,62 @@ public sealed partial class X11Server
         return false;
     }
 
+    /// <summary>登记 / 改 / 撤一条 SelectSelectionInput(掩码为 0 是撤)。新登记超过 <see cref="MaxSelectionInputsPerClient" /> 回 BadAlloc。</summary>
+    private void SelectSelectionInput(XClient c, XWindow window, uint selection, uint mask)
+    {
+        _selectionInputs.TryGetValue(selection, out Dictionary<(XClient Client, XWindow Window), uint>? watchers);
+        bool exists = watchers?.ContainsKey((c, window)) == true;
+        if (mask == 0)
+        {
+            if (exists)
+            {
+                RemoveSelectionInput(selection, watchers!, (c, window));
+            }
+            return;
+        }
+        if (!exists)
+        {
+            if (_selectionInputsByClient.GetValueOrDefault(c) >= MaxSelectionInputsPerClient)
+            {
+                throw new XProtocolError(XErrorCode.Alloc);
+            }
+            if (watchers is null)
+            {
+                watchers = [];
+                _selectionInputs[selection] = watchers;
+            }
+            _selectionInputsByClient[c] = _selectionInputsByClient.GetValueOrDefault(c) + 1;
+            _selectionInputsByWindow[window] = _selectionInputsByWindow.GetValueOrDefault(window) + 1;
+        }
+        watchers![(c, window)] = mask;
+    }
+
+    private void RemoveSelectionInput(uint selection, Dictionary<(XClient Client, XWindow Window), uint> watchers, (XClient Client, XWindow Window) key)
+    {
+        if (!watchers.Remove(key))
+        {
+            return;
+        }
+        if (watchers.Count == 0)
+        {
+            _selectionInputs.Remove(selection);
+        }
+        Decrement(_selectionInputsByClient, key.Client);
+        Decrement(_selectionInputsByWindow, key.Window);
+
+        static void Decrement<T>(Dictionary<T, int> counts, T key) where T : notnull
+        {
+            if (counts.TryGetValue(key, out int n) && n > 1)
+            {
+                counts[key] = n - 1;
+            }
+            else
+            {
+                counts.Remove(key);
+            }
+        }
+    }
+
     /// <summary>
     /// 选区属主变了:给 SelectSelectionInput 登记过的客户端发 XFixesSelectionNotify。
     /// </summary>
@@ -341,17 +444,18 @@ public sealed partial class X11Server
     /// <param name="subtype">0 SetSelectionOwner,1 SelectionWindowDestroy,2 SelectionClientClose。</param>
     /// <param name="owner">新属主窗口;没有为 0。</param>
     /// <param name="selectionTime">属主获取选区的时间。</param>
-    private void NotifySelectionChange(uint selection, byte subtype, uint owner, uint selectionTime)
+    /// <param name="visibleTo">只发给它认可的客户端;null = 都发。</param>
+    private void NotifySelectionChange(uint selection, byte subtype, uint owner, uint selectionTime, Func<XClient, bool>? visibleTo = null)
     {
-        if (_selectionInputs.Count == 0)
+        if (!_selectionInputs.TryGetValue(selection, out Dictionary<(XClient Client, XWindow Window), uint>? watchers))
         {
             return;
         }
         uint bit = 1u << subtype;
         uint time = Now;
-        foreach (((XClient client, XWindow window, uint sel), uint mask) in _selectionInputs)
+        foreach (((XClient client, XWindow window), uint mask) in watchers)
         {
-            if (sel == selection && (mask & bit) != 0 && !client.Closed)
+            if ((mask & bit) != 0 && !client.Closed && (visibleTo is null || visibleTo(client)))
             {
                 client.Event(XFixesEventBase, subtype, w => w
                     .U32(window.Id).U32(owner).U32(selection).U32(time).U32(selectionTime));
@@ -379,17 +483,66 @@ public sealed partial class X11Server
 
     private XCursorResource CursorRes(uint id) => Lookup<XCursorResource>(id) ?? throw new XProtocolError(XErrorCode.Cursor, id);
 
+    /// <summary>没有图像可给时(cursor 字体的字形光标 —— 字体只有度量 —— 与隐形指针):1×1 的透明像素。</summary>
+    private static readonly XCursorImage NoCursorImage = new(1, 1, 0, 0, new uint[1]);
+
+    /// <summary>
+    /// XFIXES §7「GetCursorImage」:指针的位置(根坐标)与指针处那个光标的图像。位图光标、ARGB 光标、别的字体的字形光标都烙过图像,
+    /// 原样给出(预乘的 ARGB);原先一律给 1×1 的透明像素,x11vnc、ffmpeg x11grab 录不到光标。
+    /// </summary>
+    private (int X, int Y, XCursorImage Image) CursorImageAtPointer() =>
+        (_pointerX, _pointerY, CurrentCursor()?.Image ?? NoCursorImage);
+
+    private static void WritePixels(XWriter w, XCursorImage image)
+    {
+        foreach (uint pixel in image.Pixels.Span)
+        {
+            w.U32(pixel);
+        }
+    }
+
+    /// <summary>
+    /// XFIXES §9「ChangeCursor」「ChangeCursorByName」:这些光标从此显示成 <paramref name="source" /> 的样子(正在用它们的窗口跟着变)。
+    /// 原先是空操作。
+    /// </summary>
+    private void ChangeCursorAppearance(XCursorResource source, IReadOnlyList<XCursorResource> destinations)
+    {
+        XCursor appearance = AppearanceOf(source);
+        foreach (XCursorResource destination in destinations)
+        {
+            if (ReferenceEquals(destination, source))
+            {
+                continue;
+            }
+            destination.Glyph = source.Glyph;
+            destination.Image = source.Image;
+            destination.Blank = source.Blank;
+            destination.Appearance = appearance;   // 名字留着(ChangeCursorByName 按它找),样子跟 source
+        }
+        UpdateCursor();
+    }
+
     /// <summary>客户端断开:清掉它的 XFIXES 登记。</summary>
-    private void CleanupXFixes(XClient client) => RemoveXFixesEntries((c, _) => ReferenceEquals(c, client));
+    private void CleanupXFixes(XClient client) =>
+        RemoveXFixesEntries((c, _) => ReferenceEquals(c, client), _selectionInputsByClient.ContainsKey(client));
 
     /// <summary>窗口销毁:清掉登记在它上面的 XFIXES 登记。</summary>
-    private void CleanupXFixes(XWindow window) => RemoveXFixesEntries((_, w) => ReferenceEquals(w, window));
+    private void CleanupXFixes(XWindow window) =>
+        RemoveXFixesEntries((_, w) => ReferenceEquals(w, window), _selectionInputsByWindow.ContainsKey(window));
 
-    private void RemoveXFixesEntries(Func<XClient, XWindow, bool> match)
+    /// <param name="match">要清掉的登记。</param>
+    /// <param name="anySelectionInputs">它名下有没有选区登记 —— 没有就不扫(一棵窗口树销毁时每个窗口都来一次)。</param>
+    private void RemoveXFixesEntries(Func<XClient, XWindow, bool> match, bool anySelectionInputs)
     {
-        foreach ((XClient Client, XWindow Window, uint Selection) key in _selectionInputs.Keys.Where(k => match(k.Client, k.Window)).ToArray())
+        if (anySelectionInputs)
         {
-            _selectionInputs.Remove(key);
+            foreach ((uint selection, Dictionary<(XClient Client, XWindow Window), uint> watchers) in _selectionInputs.ToArray())
+            {
+                foreach ((XClient Client, XWindow Window) key in watchers.Keys.Where(k => match(k.Client, k.Window)).ToArray())
+                {
+                    RemoveSelectionInput(selection, watchers, key);
+                }
+            }
         }
         foreach ((XClient Client, XWindow Window) key in _cursorInputs.Keys.Where(k => match(k.Client, k.Window)).ToArray())
         {

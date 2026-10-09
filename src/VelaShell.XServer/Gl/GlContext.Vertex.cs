@@ -14,6 +14,8 @@
 //   Rasterization」(PolygonMode 与边界边)、§3.5.5「Depth Offset」、§3.10「Fog」(雾坐标取眼坐标到原点的距离的近似 |z_e|)。
 
 using System.Numerics;
+using System.Runtime.CompilerServices;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Gl;
 
@@ -30,6 +32,12 @@ internal sealed partial class GlContext
         public Vector3 BackSpec;
         public Vector4 Tex;
         public float Fog;
+
+        /// <summary>
+        /// 指定这个顶点时的边标记(§2.6.2):POLYGON / TRIANGLES / QUADS 里从它出发的那条边是不是边界边。裁剪出来的顶点不用它
+        /// (裁剪时边标记跟着多边形的边走)。
+        /// </summary>
+        public bool EdgeFlag;
 
         public static GlVertex Lerp(in GlVertex a, in GlVertex b, float t) => new()
         {
@@ -54,6 +62,16 @@ internal sealed partial class GlContext
     public const int MaxPrimitiveVertices = 1 << 19;
 
     private bool _primitiveOverflow;
+
+    /// <summary>图元缓冲(<see cref="_primitive" /> 的容量)记在账上的字节数。</summary>
+    private long _primitiveCharged;
+
+    /// <summary>一个缓冲着的顶点占多少字节。</summary>
+    private static readonly int VertexBytes = Unsafe.SizeOf<GlVertex>();
+
+    /// <summary>End 之后图元缓冲的容量超过这么多个顶点就整个还掉(退账),免得画过一次大图元的上下文一直占着几十 MB。</summary>
+    private const int RetainedPrimitiveVertices = 16384;
+
     private Matrix4x4 _normalMatrix = Matrix4x4.Identity;
 
     public bool InBeginEnd => _primitiveMode != uint.MaxValue;
@@ -72,7 +90,7 @@ internal sealed partial class GlContext
     private void SetCurrentColor(Vector4 color)
     {
         State.Color = color;
-        if (State.Enabled.Contains(GlEnum.COLOR_MATERIAL))
+        if (State.Enabled.Has(GlEnum.COLOR_MATERIAL))
         {
             ApplyColorMaterial();
         }
@@ -81,37 +99,41 @@ internal sealed partial class GlContext
     /// <summary>ColorMaterial 打开时,选定面的选定材质参数跟随当前颜色(§2.14.3)。</summary>
     private void ApplyColorMaterial()
     {
-        Vector4 c = State.Color;
-        foreach (GlMaterial m in MaterialsFor(State.ColorMaterialFace))
+        // 每个颜色命令都走这里:不为挑正反面新建数组(原先 MaterialsFor 每次分配一个)。
+        uint face = State.ColorMaterialFace;
+        if (face != GlEnum.BACK)
         {
-            switch (State.ColorMaterialMode)
-            {
-                case GlEnum.AMBIENT:
-                    m.Ambient = c;
-                    break;
-                case GlEnum.DIFFUSE:
-                    m.Diffuse = c;
-                    break;
-                case GlEnum.SPECULAR:
-                    m.Specular = c;
-                    break;
-                case GlEnum.EMISSION:
-                    m.Emission = c;
-                    break;
-                case GlEnum.AMBIENT_AND_DIFFUSE:
-                    m.Ambient = c;
-                    m.Diffuse = c;
-                    break;
-            }
+            ApplyColorMaterial(State.FrontMaterial);
+        }
+        if (face != GlEnum.FRONT)
+        {
+            ApplyColorMaterial(State.BackMaterial);
         }
     }
 
-    private GlMaterial[] MaterialsFor(uint face) => face switch
+    private void ApplyColorMaterial(GlMaterial m)
     {
-        GlEnum.FRONT => [State.FrontMaterial],
-        GlEnum.BACK => [State.BackMaterial],
-        _ => [State.FrontMaterial, State.BackMaterial],
-    };
+        Vector4 c = State.Color;
+        switch (State.ColorMaterialMode)
+        {
+            case GlEnum.AMBIENT:
+                m.Ambient = c;
+                break;
+            case GlEnum.DIFFUSE:
+                m.Diffuse = c;
+                break;
+            case GlEnum.SPECULAR:
+                m.Specular = c;
+                break;
+            case GlEnum.EMISSION:
+                m.Emission = c;
+                break;
+            case GlEnum.AMBIENT_AND_DIFFUSE:
+                m.Ambient = c;
+                m.Diffuse = c;
+                break;
+        }
+    }
 
     private void SetMaterial(uint face, uint pname, float[] v)
     {
@@ -120,41 +142,52 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_ENUM);
             return;
         }
-        foreach (GlMaterial m in MaterialsFor(face))
+        if (face != GlEnum.BACK && !SetMaterial(State.FrontMaterial, pname, v))
         {
-            switch (pname)
-            {
-                case GlEnum.AMBIENT:
-                    m.Ambient = Vec4(v);
-                    break;
-                case GlEnum.DIFFUSE:
-                    m.Diffuse = Vec4(v);
-                    break;
-                case GlEnum.SPECULAR:
-                    m.Specular = Vec4(v);
-                    break;
-                case GlEnum.EMISSION:
-                    m.Emission = Vec4(v);
-                    break;
-                case GlEnum.AMBIENT_AND_DIFFUSE:
-                    m.Ambient = Vec4(v);
-                    m.Diffuse = Vec4(v);
-                    break;
-                case GlEnum.SHININESS:
-                    if (v[0] is < 0 or > 128)
-                    {
-                        SetError(GlEnum.INVALID_VALUE);
-                        return;
-                    }
-                    m.Shininess = v[0];
-                    break;
-                case GlEnum.COLOR_INDEXES:
-                    break;
-                default:
-                    SetError(GlEnum.INVALID_ENUM);
-                    return;
-            }
+            return;
         }
+        if (face != GlEnum.FRONT)
+        {
+            SetMaterial(State.BackMaterial, pname, v);
+        }
+    }
+
+    /// <summary>设一面的材质参数;参数不合法时记错误、返回 false。</summary>
+    private bool SetMaterial(GlMaterial m, uint pname, float[] v)
+    {
+        switch (pname)
+        {
+            case GlEnum.AMBIENT:
+                m.Ambient = Vec4(v);
+                break;
+            case GlEnum.DIFFUSE:
+                m.Diffuse = Vec4(v);
+                break;
+            case GlEnum.SPECULAR:
+                m.Specular = Vec4(v);
+                break;
+            case GlEnum.EMISSION:
+                m.Emission = Vec4(v);
+                break;
+            case GlEnum.AMBIENT_AND_DIFFUSE:
+                m.Ambient = Vec4(v);
+                m.Diffuse = Vec4(v);
+                break;
+            case GlEnum.SHININESS:
+                if (v[0] is < 0 or > 128)
+                {
+                    SetError(GlEnum.INVALID_VALUE);
+                    return false;
+                }
+                m.Shininess = v[0];
+                break;
+            case GlEnum.COLOR_INDEXES:
+                break;
+            default:
+                SetError(GlEnum.INVALID_ENUM);
+                return false;
+        }
+        return true;
     }
 
     private void SetLight(uint light, uint pname, float[] v)
@@ -240,7 +273,7 @@ internal sealed partial class GlContext
                 State.LightModelTwoSide = v[0] != 0;
                 break;
             case GlEnum.LIGHT_MODEL_COLOR_CONTROL:
-                State.LightModelColorControl = (uint)v[0];
+                SetEnum(ref State.LightModelColorControl, EnumParam(v[0]), static m => m is GlEnum.SINGLE_COLOR or GlEnum.SEPARATE_SPECULAR_COLOR);
                 break;
             default:
                 SetError(GlEnum.INVALID_ENUM);
@@ -253,7 +286,7 @@ internal sealed partial class GlContext
         switch (pname)
         {
             case GlEnum.FOG_MODE:
-                State.FogMode = (uint)v[0];
+                SetEnum(ref State.FogMode, EnumParam(v[0]), static m => m is GlEnum.LINEAR or GlEnum.EXP or GlEnum.EXP2);
                 break;
             case GlEnum.FOG_DENSITY:
                 if (v[0] < 0)
@@ -289,7 +322,9 @@ internal sealed partial class GlContext
         }
         if (pname == GlEnum.TEXTURE_ENV_MODE)
         {
-            State.TexEnvMode = (uint)v[0];
+            // Table 3.22 的五种纹理函数(ADD 来自 1.3,软件管线照样实现了)。
+            SetEnum(ref State.TexEnvMode, EnumParam(v[0]),
+                static m => m is GlEnum.MODULATE or GlEnum.DECAL or GlEnum.BLEND or GlEnum.REPLACE or GlEnum.ADD);
         }
         else if (pname == GlEnum.TEXTURE_ENV_COLOR)
         {
@@ -312,8 +347,19 @@ internal sealed partial class GlContext
         switch (pname)
         {
             case GlEnum.TEXTURE_GEN_MODE:
-                State.TexGenMode[i] = (uint)v[0];
-                break;
+                {
+                    // SPHERE_MAP 只对 S、T 有定义(§2.11.4)。
+                    uint mode = EnumParam(v[0]);
+                    if (mode is GlEnum.OBJECT_LINEAR or GlEnum.EYE_LINEAR || (mode == GlEnum.SPHERE_MAP && i < 2))
+                    {
+                        State.TexGenMode[i] = mode;
+                    }
+                    else
+                    {
+                        SetError(GlEnum.INVALID_ENUM);
+                    }
+                    break;
+                }
             case GlEnum.OBJECT_PLANE:
                 State.TexGenObjectPlane[i] = Vec4(v);
                 break;
@@ -358,11 +404,37 @@ internal sealed partial class GlContext
         }
         uint mode = _primitiveMode;
         _primitiveMode = uint.MaxValue;
-        if (RenderModeValue == GlEnum.RENDER && Draw is not null)
+        try
         {
-            Assemble(mode, _primitive);
+            if (RenderModeValue == GlEnum.RENDER && Draw is not null)
+            {
+                Assemble(mode, _primitive);
+            }
         }
-        _primitive.Clear();
+        finally
+        {
+            _primitive.Clear();
+            if (_primitive.Capacity > RetainedPrimitiveVertices)
+            {
+                _primitive.Capacity = 0;
+                Account?.Refund(_primitiveCharged);
+                _primitiveCharged = 0;
+            }
+        }
+    }
+
+    /// <summary>图元缓冲满了:容量翻倍(到 <see cref="MaxPrimitiveVertices" /> 为止),先记账。记不下返回 false。</summary>
+    private bool GrowPrimitive()
+    {
+        int capacity = Math.Min(MaxPrimitiveVertices, Math.Max(64, _primitive.Capacity * 2));
+        long bytes = ((long)capacity * VertexBytes) - _primitiveCharged;
+        if (bytes > 0 && Account is not null && !Account.TryCharge(bytes))
+        {
+            return false;
+        }
+        _primitiveCharged += Math.Max(0, bytes);
+        _primitive.Capacity = capacity;
+        return true;
     }
 
     /// <summary>一个顶点:变换、光照、纹理坐标;在 Begin/End 之外的顶点被忽略(§2.6,行为未定义)。</summary>
@@ -372,8 +444,9 @@ internal sealed partial class GlContext
         {
             return;
         }
-        if (_primitive.Count >= MaxPrimitiveVertices)
+        if (_primitive.Count >= MaxPrimitiveVertices || (_primitive.Count == _primitive.Capacity && !GrowPrimitive()))
         {
+            // 缓冲到了上限,或客户端的内存账上记不下了(图元缓冲记在本上下文的账上,xs_plan GL-S3)。
             if (!_primitiveOverflow)
             {
                 _primitiveOverflow = true;
@@ -381,8 +454,14 @@ internal sealed partial class GlContext
             }
             return;
         }
-        _primitive.Add(Transform(obj));
+        WorkBudget.Charge(VertexWork);
+        GlVertex vertex = Transform(obj);
+        vertex.EdgeFlag = State.EdgeFlag;
+        _primitive.Add(vertex);
     }
+
+    /// <summary>一个顶点(变换、光照)按这么多个工作量单位计(见 <see cref="WorkBudget" />;一个单位约等于画一个 2D 像素)。</summary>
+    private const int VertexWork = 16;
 
     private GlVertex Transform(Vector4 obj)
     {
@@ -394,7 +473,7 @@ internal sealed partial class GlContext
             Tex = TexCoordFor(obj, eye),
             Fog = MathF.Abs(eye.W != 0 ? eye.Z / eye.W : eye.Z),
         };
-        if (State.Enabled.Contains(GlEnum.LIGHTING))
+        if (State.Enabled.Has(GlEnum.LIGHTING))
         {
             Vector3 normal = EyeNormal();
             (v.Front, v.FrontSpec) = Light(eye, normal, State.FrontMaterial);
@@ -410,7 +489,7 @@ internal sealed partial class GlContext
     private Vector3 EyeNormal()
     {
         var n = Vector3.TransformNormal(State.Normal, _normalMatrix);
-        if (State.Enabled.Contains(GlEnum.NORMALIZE) || State.Enabled.Contains(GlEnum.RESCALE_NORMAL))
+        if (State.Enabled.Has(GlEnum.NORMALIZE) || State.Enabled.Has(GlEnum.RESCALE_NORMAL))
         {
             float len = n.Length();
             if (len > 0)
@@ -429,7 +508,7 @@ internal sealed partial class GlContext
         Span<float> c = [tc.X, tc.Y, tc.Z, tc.W];
         for (int i = 0; i < 4; i++)
         {
-            if (!State.Enabled.Contains(GlEnum.TEXTURE_GEN_S + (uint)i))
+            if (!State.Enabled.HasTexGen(i))
             {
                 continue;
             }
@@ -467,13 +546,9 @@ internal sealed partial class GlContext
         Vector3 color = Rgb(m.Emission) + (Rgb(m.Ambient) * Rgb(State.LightModelAmbient));
         Vector3 specular = Vector3.Zero;
         Vector3 toEye = State.LightModelLocalViewer ? SafeNormalize(-v) : Vector3.UnitZ;
-        for (int i = 0; i < MaxLights; i++)
+        for (int lights = State.Enabled.LightMask; lights != 0; lights &= lights - 1)
         {
-            if (!State.Enabled.Contains(GlEnum.LIGHT0 + (uint)i))
-            {
-                continue;
-            }
-            GlLight l = State.Lights[i];
+            GlLight l = State.Lights[BitOperations.TrailingZeroCount(lights)];
             Vector3 toLight;
             float att = 1;
             if (l.Position.W != 0)
@@ -532,9 +607,16 @@ internal sealed partial class GlContext
 
     // ------------------------------------------------------------------ 图元装配
 
-    /// <summary>把 Begin/End 之间的顶点拆成点、线段、三角形(带边界边标记),处理平直着色后送去裁剪与光栅化。</summary>
+    /// <summary>
+    /// 把 Begin/End 之间的顶点拆成点、线段、三角形(带边界边标记),处理平直着色后送去裁剪与光栅化。
+    /// 边界边(§2.6.2):POLYGON、TRIANGLES、QUADS 的每条边由起点顶点的边标记决定(GLU 的镶嵌器靠它把内部对角线标成非边界,
+    /// PolygonMode(LINE) 时不画);拆四边形 / 多边形产生的对角线不是边界边;条带与扇形的边都是边界边。
+    /// 边标记位:bit0 = v0→v1,bit1 = v1→v2,bit2 = v2→v0。
+    /// </summary>
     private void Assemble(uint mode, List<GlVertex> v)
     {
+        static int Edge(GlVertex vertex, int bit) => vertex.EdgeFlag ? bit : 0;
+
         int n = v.Count;
         bool flat = State.ShadeModel == GlEnum.FLAT;
         switch (mode)
@@ -565,7 +647,8 @@ internal sealed partial class GlContext
             case GlEnum.TRIANGLES:
                 for (int i = 0; i + 2 < n; i += 3)
                 {
-                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], 0b111, flat ? i + 2 : -1, v);
+                    int edges = Edge(v[i], 0b001) | Edge(v[i + 1], 0b010) | Edge(v[i + 2], 0b100);
+                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], edges, flat ? i + 2 : -1, v);
                 }
                 break;
             case GlEnum.TRIANGLE_STRIP:
@@ -591,9 +674,9 @@ internal sealed partial class GlContext
             case GlEnum.QUADS:
                 for (int i = 0; i + 3 < n; i += 4)
                 {
-                    // 0-1-2 与 0-2-3:对角线 0-2 不是边界边。边标记位:bit0 = v0v1,bit1 = v1v2,bit2 = v2v0。
-                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], 0b011, flat ? i + 3 : -1, v);
-                    TrianglePrimitive(v[i], v[i + 2], v[i + 3], 0b110, flat ? i + 3 : -1, v);
+                    // 0-1-2 与 0-2-3:对角线 0-2 不是边界边,其余四条边按各自起点的边标记。
+                    TrianglePrimitive(v[i], v[i + 1], v[i + 2], Edge(v[i], 0b001) | Edge(v[i + 1], 0b010), flat ? i + 3 : -1, v);
+                    TrianglePrimitive(v[i], v[i + 2], v[i + 3], Edge(v[i + 2], 0b010) | Edge(v[i + 3], 0b100), flat ? i + 3 : -1, v);
                 }
                 break;
             case GlEnum.QUAD_STRIP:
@@ -607,7 +690,8 @@ internal sealed partial class GlContext
             case GlEnum.POLYGON:
                 for (int i = 1; i + 1 < n; i++)
                 {
-                    int edges = 0b010 | (i == 1 ? 0b001 : 0) | (i + 2 == n ? 0b100 : 0);
+                    // 扇形拆分:0→i(i = 1 时是原边)、i→i+1(原边)、i+1→0(最后一个三角形时是原边);其余是对角线。
+                    int edges = Edge(v[i], 0b010) | (i == 1 ? Edge(v[0], 0b001) : 0) | (i + 2 == n ? Edge(v[n - 1], 0b100) : 0);
                     TrianglePrimitive(v[0], v[i], v[i + 1], edges, flat ? 0 : -1, v);
                 }
                 break;
@@ -646,17 +730,22 @@ internal sealed partial class GlContext
             a.FrontSpec = b.FrontSpec = c.FrontSpec = p.FrontSpec;
             a.BackSpec = b.BackSpec = c.BackSpec = p.BackSpec;
         }
-        List<(GlVertex V, bool Edge)> polygon = [(a, (edges & 1) != 0), (b, (edges & 2) != 0), (c, (edges & 4) != 0)];
-        polygon = ClipPolygon(polygon);
-        if (polygon.Count < 3)
+        // 裁剪与窗口坐标都在栈上:原先每个三角形新建几个 List、一个迭代器、一个数组,约 650 字节垃圾(xs_plan GL-P1)。
+        Span<GlVertex> polygon = stackalloc GlVertex[MaxClipVertices], spare = stackalloc GlVertex[MaxClipVertices];
+        Span<bool> boundary = stackalloc bool[MaxClipVertices], spareBoundary = stackalloc bool[MaxClipVertices];
+        (polygon[0], polygon[1], polygon[2]) = (a, b, c);
+        (boundary[0], boundary[1], boundary[2]) = ((edges & 1) != 0, (edges & 2) != 0, (edges & 4) != 0);
+        int count = ClipPolygon(ref polygon, ref boundary, 3, spare, spareBoundary);
+        if (count < 3)
         {
             return;
         }
         // 正反面:窗口坐标里的有向面积(§3.5.1,式 3.6)。
-        var w = new RasterVertex[polygon.Count];
-        for (int i = 0; i < polygon.Count; i++)
+        Span<RasterVertex> w = stackalloc RasterVertex[MaxClipVertices];
+        w = w[..count];
+        for (int i = 0; i < count; i++)
         {
-            w[i] = ToWindow(polygon[i].V, front: true);
+            w[i] = ToWindow(polygon[i], front: true);
         }
         float area = 0;
         for (int i = 0; i < w.Length; i++)
@@ -669,16 +758,16 @@ internal sealed partial class GlContext
             return;
         }
         bool front = (area > 0) == (State.FrontFace == GlEnum.CCW);
-        if (State.Enabled.Contains(GlEnum.CULL_FACE)
+        if (State.Enabled.Has(GlEnum.CULL_FACE)
             && (State.CullFaceMode == GlEnum.FRONT_AND_BACK || (State.CullFaceMode == GlEnum.FRONT) == front))
         {
             return;
         }
-        if (!front && State.LightModelTwoSide && State.Enabled.Contains(GlEnum.LIGHTING))
+        if (!front && State.LightModelTwoSide && State.Enabled.Has(GlEnum.LIGHTING))
         {
             for (int i = 0; i < w.Length; i++)
             {
-                w[i] = ToWindow(polygon[i].V, front: false);
+                w[i] = ToWindow(polygon[i], front: false);
             }
         }
         uint polygonMode = front ? State.PolygonModeFront : State.PolygonModeBack;
@@ -689,7 +778,11 @@ internal sealed partial class GlContext
                     float offset = OffsetFor(w, GlEnum.POLYGON_OFFSET_POINT);
                     for (int i = 0; i < w.Length; i++)
                     {
-                        // 只画原图元的顶点(边标记为起点的那些),裁剪产生的新顶点也算 —— 近似。
+                        // 只画边界边的起点(§3.5.4);裁剪进来的那个交点接着原来那条边,也算 —— 近似。
+                        if (!boundary[i])
+                        {
+                            continue;
+                        }
                         RasterVertex p = w[i];
                         p.Z += offset;
                         RasterPoint(p, State.PointSize);
@@ -701,7 +794,7 @@ internal sealed partial class GlContext
                     float offset = OffsetFor(w, GlEnum.POLYGON_OFFSET_LINE);
                     for (int i = 0; i < w.Length; i++)
                     {
-                        if (!polygon[i].Edge)
+                        if (!boundary[i])
                         {
                             continue;
                         }
@@ -728,10 +821,13 @@ internal sealed partial class GlContext
         }
     }
 
+    /// <summary>24 位深度的分辨级数:最小可分辨量 r = 1 / 2²⁴。EXT_polygon_offset 的 bias(深度范围单位)乘它换成 units。</summary>
+    private const float DepthResolutionSteps = 1 << 24;
+
     /// <summary>深度偏移 o = m·factor + r·units(§3.5.5),m 取多边形里最大的深度斜率,r 取 24 位深度的最小可分辨量。</summary>
-    private float OffsetFor(RasterVertex[] w, uint cap)
+    private float OffsetFor(ReadOnlySpan<RasterVertex> w, uint cap)
     {
-        if (!State.Enabled.Contains(cap) || w.Length < 3)
+        if (!State.Enabled.Has(cap) || w.Length < 3)
         {
             return 0;
         }
@@ -744,7 +840,7 @@ internal sealed partial class GlContext
             float dzdy = (((c.Z - a.Z) * (b.X - a.X)) - ((b.Z - a.Z) * (c.X - a.X))) / det;
             m = MathF.Max(MathF.Abs(dzdx), MathF.Abs(dzdy));
         }
-        return (m * State.PolygonOffsetFactor) + (State.PolygonOffsetUnits / (1 << 24));
+        return (m * State.PolygonOffsetFactor) + (State.PolygonOffsetUnits / DepthResolutionSteps);
     }
 
     // ------------------------------------------------------------------ 裁剪
@@ -761,26 +857,17 @@ internal sealed partial class GlContext
         _ => Vector4.Dot(State.ClipPlanes[plane - 6], v.Eye),
     };
 
-    private IEnumerable<int> ActivePlanes()
-    {
-        for (int i = 0; i < 6; i++)
-        {
-            yield return i;
-        }
-        for (int i = 0; i < MaxClipPlanes; i++)
-        {
-            if (State.Enabled.Contains(GlEnum.CLIP_PLANE0 + (uint)i))
-            {
-                yield return 6 + i;
-            }
-        }
-    }
+    /// <summary>一个三角形裁过视体六个面与六个用户裁剪面之后至多这么多个顶点(每个面至多多出一个)。</summary>
+    private const int MaxClipVertices = 3 + 6 + MaxClipPlanes + 1;
+
+    /// <summary>要裁的面:第 i 位是 <see cref="PlaneDistance" /> 的第 i 个面(视体六个面总在,用户裁剪面按开关)。原先是每次新建的迭代器。</summary>
+    private int ActivePlaneMask => 0x3F | (State.Enabled.ClipPlaneMask << 6);
 
     private bool InsideAll(in GlVertex v)
     {
-        foreach (int plane in ActivePlanes())
+        for (int planes = ActivePlaneMask; planes != 0; planes &= planes - 1)
         {
-            if (PlaneDistance(v, plane) < 0)
+            if (PlaneDistance(v, BitOperations.TrailingZeroCount(planes)) < 0)
             {
                 return false;
             }
@@ -791,8 +878,9 @@ internal sealed partial class GlContext
     private bool ClipLine(ref GlVertex a, ref GlVertex b)
     {
         float t0 = 0, t1 = 1;
-        foreach (int plane in ActivePlanes())
+        for (int planes = ActivePlaneMask; planes != 0; planes &= planes - 1)
         {
+            int plane = BitOperations.TrailingZeroCount(planes);
             float da = PlaneDistance(a, plane), db = PlaneDistance(b, plane);
             if (da < 0 && db < 0)
             {
@@ -817,51 +905,62 @@ internal sealed partial class GlContext
         return a.Clip.W > 0 && b.Clip.W > 0;
     }
 
-    /// <summary>Sutherland–Hodgman:逐个裁剪面裁多边形;每个顶点带着「从它出发的边是不是边界边」。</summary>
-    private List<(GlVertex V, bool Edge)> ClipPolygon(List<(GlVertex V, bool Edge)> input)
+    /// <summary>
+    /// Sutherland–Hodgman:逐个裁剪面裁多边形;每个顶点带着「从它出发的边是不是边界边」(<paramref name="boundary" />)。
+    /// 结果留在 <paramref name="polygon" /> / <paramref name="boundary" /> 里(裁的过程中与 <paramref name="spare" /> 轮换),返回顶点数。
+    /// 全在内侧的面不裁(多数三角形一个面都不用裁)。
+    /// </summary>
+    private int ClipPolygon(ref Span<GlVertex> polygon, ref Span<bool> boundary, int count, Span<GlVertex> spare, Span<bool> spareBoundary)
     {
-        foreach (int plane in ActivePlanes())
+        Span<float> distance = stackalloc float[MaxClipVertices];
+        for (int planes = ActivePlaneMask; planes != 0; planes &= planes - 1)
         {
+            int plane = BitOperations.TrailingZeroCount(planes);
             bool allInside = true;
-            foreach ((GlVertex v, _) in input)
+            for (int i = 0; i < count; i++)
             {
-                if (PlaneDistance(v, plane) < 0)
-                {
-                    allInside = false;
-                    break;
-                }
+                distance[i] = PlaneDistance(polygon[i], plane);
+                allInside &= distance[i] >= 0;
             }
             if (allInside)
             {
                 continue;
             }
-            List<(GlVertex V, bool Edge)> output = [];
-            for (int i = 0; i < input.Count; i++)
+            int n = 0;
+            for (int i = 0; i < count; i++)
             {
-                (GlVertex cur, bool edge) = input[i];
-                GlVertex next = input[(i + 1) % input.Count].V;
-                float dc = PlaneDistance(cur, plane), dn = PlaneDistance(next, plane);
+                int j = i + 1 == count ? 0 : i + 1;
+                float dc = distance[i], dn = distance[j];
                 if (dc >= 0)
                 {
-                    output.Add((cur, edge));
+                    (spare[n], spareBoundary[n]) = (polygon[i], boundary[i]);
+                    n++;
                     if (dn < 0)
                     {
                         // 出去:交点到下一个进来的点之间是裁剪面上的新边(不是原图元的边界边)。
-                        output.Add((GlVertex.Lerp(cur, next, dc / (dc - dn)), false));
+                        (spare[n], spareBoundary[n]) = (GlVertex.Lerp(polygon[i], polygon[j], dc / (dc - dn)), false);
+                        n++;
                     }
                 }
                 else if (dn >= 0)
                 {
-                    output.Add((GlVertex.Lerp(cur, next, dc / (dc - dn)), edge));
+                    (spare[n], spareBoundary[n]) = (GlVertex.Lerp(polygon[i], polygon[j], dc / (dc - dn)), boundary[i]);
+                    n++;
                 }
             }
-            input = output;
-            if (input.Count < 3)
+            Span<GlVertex> swapV = polygon;
+            Span<bool> swapB = boundary;
+            polygon = spare;
+            boundary = spareBoundary;
+            spare = swapV;
+            spareBoundary = swapB;
+            count = n;
+            if (count < 3)
             {
-                return input;
+                return count;
             }
         }
-        return input;
+        return count;
     }
 
     /// <summary>透视除法与视口变换;颜色按面选正面或背面的。</summary>
@@ -917,9 +1016,15 @@ internal sealed partial class GlContext
     }
 
     /// <summary>
-    /// DrawArrays(GLX 编码 §2.3.4):n 个顶点、m 个 ARRAY_INFO(类型、分量数、数组种类),再是逐顶点紧排的数据 ——
-    /// 每个顶点依次是边标记、纹理坐标、颜色、索引、法线、顶点,各自补齐到 4 字节。
+    /// DrawArrays(GLX 编码 §2.3.4):n 个顶点、m 个 ARRAY_INFO(类型、分量数、数组种类),再是逐顶点紧排的数据,
+    /// 每个数组的元素各自补齐到 4 字节。
     /// </summary>
+    /// <remarks>
+    /// 每个顶点里各数组的先后**按 ARRAY_INFO 出现的顺序**。编码规范的 VERTEX_DATA 一节按「边标记、纹理坐标、颜色、索引、法线、顶点」
+    /// 列出各段,同时说 ARRAY_INFO 的列表是无序的;实际的客户端(Mesa 的间接 GLX)按它自己列 ARRAY_INFO 的顺序
+    /// (比如颜色、边标记、顶点)放数据 —— 用 velashell-xclients 里的小程序核对过。原先按固定的槽位次序读,分量整个错位。
+    /// ARRAY_INFO 恰好按规范的次序列时两种读法一致。同一种数组列两次的记 INVALID_ENUM。
+    /// </remarks>
     private void DrawArrays(ref GlReader r)
     {
         int count = r.I32();
@@ -930,7 +1035,8 @@ internal sealed partial class GlContext
             SetError(GlEnum.INVALID_VALUE);
             return;
         }
-        (uint Type, int Size, int Bytes)[] info = new (uint, int, int)[6];   // 按数据里的次序:边、纹理、颜色、索引、法线、顶点
+        Span<(int Slot, uint Type, int Size, int Bytes)> info = stackalloc (int, uint, int, int)[arrays];   // 按 ARRAY_INFO 的顺序
+        int seen = 0;
         for (int i = 0; i < arrays; i++)
         {
             uint type = r.U32();
@@ -954,12 +1060,13 @@ internal sealed partial class GlContext
                 GlEnum.DOUBLE => 8,
                 _ => 0,
             };
-            if (slot < 0 || elem == 0 || size is < 1 or > 4)
+            if (slot < 0 || elem == 0 || size is < 1 or > 4 || (seen & (1 << slot)) != 0)
             {
                 SetError(GlEnum.INVALID_ENUM);
                 return;
             }
-            info[slot] = (type, size, elem * size);
+            seen |= 1 << slot;
+            info[i] = (slot, type, size, elem * size);
         }
         Begin(mode);
         if (!InBeginEnd)
@@ -968,23 +1075,20 @@ internal sealed partial class GlContext
         }
         // 顶点数以数据里真有的为准:一个数组都没给(每个顶点 0 字节)时不空转 count 次。
         int stride = 0;
-        foreach ((_, _, int bytes) in info)
+        foreach ((_, _, _, int bytes) in info)
         {
             stride += (bytes + 3) & ~3;
         }
         int vertices = stride == 0 ? 0 : Math.Min(count, r.Remaining / stride);
+        Span<float> c = stackalloc float[4];
         for (int v = 0; v < vertices; v++)
         {
             Vector4 position = new(0, 0, 0, 1);
             bool hasVertex = false;
-            for (int slot = 0; slot < 6; slot++)
+            foreach ((int slot, uint type, int size, int bytes) in info)
             {
-                (uint type, int size, int bytes) = info[slot];
-                if (bytes == 0)
-                {
-                    continue;
-                }
-                Span<float> c = [0, 0, 0, 1];
+                c[0] = c[1] = c[2] = 0;
+                c[3] = 1;
                 for (int k = 0; k < size; k++)
                 {
                     c[k] = ReadArrayComponent(ref r, type, normalized: slot is 2 or 4);

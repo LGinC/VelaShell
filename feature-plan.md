@@ -31,7 +31,7 @@
 
 ## 🎯 建议的下一步
 
-按「杠杆 ÷ 成本」排，下面这件最值得先动（内置 X 服务端全库审查的 31 项已在 `plan.md` §124 修完；keyboard-interactive 动态码界面、算法协商可配已在 §133、§134 落地；「怎么改都绿」的 UI 用例已在 §139 修完、§148 加了守门）：
+按「杠杆 ÷ 成本」排，下面这件最值得先动（内置 X 服务端全库审查的 31 项已在 `plan.md` §124 修完、第二次审查的 184 条已在 §167 修完；keyboard-interactive 动态码界面、算法协商可配已在 §133、§134 落地；「怎么改都绿」的 UI 用例已在 §139 修完、§148 加了守门）：
 
 1. **录制与日志的输出脱敏**（🟠 P1）—— `cat .env`、`kubectl get secret` 的输出正原样落盘，是现实风险。
 
@@ -40,8 +40,8 @@
 | 部分 | 🔴 P0 | 🟠 P1 | 🟡 P2 | 🟢 P3 | 合计 |
 | --- | :---: | :---: | :---: | :---: | :---: |
 | 一、欠账 | 4 | 2 | 9 | 9 | **24** |
-| 二、路线图 | — | 5 | 16 | 14 | **35** |
-| 三、文档待同步 | — | — | — | — | **28** |
+| 二、路线图 | — | 6 | 18 | 16 | **40** |
+| 三、文档待同步 | — | — | — | — | **29** |
 
 
 ---
@@ -221,6 +221,18 @@
 | ⏳ | 🟡 P2 | **插件往消息中心发通知** | SDK 的 `IUiApi` 只有 `ShowPanelAsync`，插件发不了通知；宿主侧的接口形状已按这个用途定好（`plan.md` §20）。要开放得改 velashell-plugin-sdk + 扩展隔离进程 IPC + 走 SDK 发版流程，是独立一批。⚠️ 消息中心只收「要留存、可回看」的东西，插件通知同样守这条边界 |
 | 💡 | 🟡 P2 | **插件互调 / 插件间事件** | AI 插件能调 DockerPanel 的能力，「让 agent 帮我看看那个容器为什么起不来」就通了。**先想清楚权限模型再设计接口** —— 插件 A 借 B 的手绕过自己没拿到的授权，是这类设计最容易出的洞 |
 
+### H. 内置 X 服务端
+
+> 第二次全库审查(`plan.md` §167,草案 `xs_plan.md`)修完 184 条问题之后剩下的。新功能的编号沿用草案第五节(F1–F30)。
+
+| 状态 | 优先级 | 项 | 架构落点 |
+| :---: | :---: | --- | --- |
+| ⏳ | 🟠 P1 | **X 程序清单与强制结束的界面**(F3) | 库已经就绪(`plan.md` §167):`GetClientsAsync` / `XClientInfo`、`DisconnectClient`、`KillTopLevelClient`、`BreakGrabs`、连接标签(SSH 会话的 `user@host:port`)。差标题栏 X Server 按钮的浮层:列出「谁连着、来自哪个会话、占多少内存」,能断开单个程序、能解除卡住的抓取与冻结;GrabServer 被占太久时提示(库已记日志点名持有者)。五份 resx |
+| 💡 | 🟡 P2 | **按连接给信任级别 / 每个会话一个显示**(F2 / F1,决策 Q5) | 现在所有转发来的会话共用一个受信的显示,`RestrictForwardedClients` 是全局开关。F2:按连接给信任级别,在分派层做访问检查(隐藏 XTEST、原始事件、跨客户端 GetImage);F1:每个 SSH 会话一个显示号,彼此看不见。默认值要拍板 |
+| 💡 | 🟡 P2 | **草案第五节的其余功能**(F4–F30) | 本机输入法组好字上屏(F5,决策 Q1 的第一步)、宿主光标跟着 Warp(F8)、屏保 Suspend 转告宿主(F9)、更宽的边缘缩放区(F11)、可选的「一个大窗口」模式(F13,Q2)、更多字族(F21)、GL 的选择 / 反馈 / 求值器(F23)等,逐项评估 |
+| ⏳ | 🟢 P3 | **审查留下的部分完成项** | PolyArc 连续弧之间的接头(DR-M1)、RENDER 的 alpha-map(DR-M4)、a1 目标与 Disjoint / Conjoint / 混合模式的整数路径(DR-P3)、cursor 字体的字形光标位图(WN-M5)、别的会话仍看得到 SelectionClear 与属主跳变(WN-S11)、间接 GLX 选不到单缓冲视觉(要加单缓冲的 X 视觉)、点本机窗口或桌面就收起 X 的弹出菜单(WN-M7,要全局指针钩子) |
+| 💡 | 🟢 P3 | **需要实机核对的** | 分数缩放下最后一列像素可能被裁(API-H13);macOS 上 Command 组合键收不到 KeyUp 时的处理(IN-E19);macOS / FreeBSD 经 `getpeereid` 取对端 uid(CN-S8) |
+
 ---
 
 ## 三、文档待同步（velashell-docs）
@@ -230,6 +242,7 @@
 
 | 出处 | 要改什么 | 进度 |
 | --- | --- | --- |
+| `plan.md` §167 X 服务端第二次审查的修复 | `{zh,en}/xserver/design/architecture.md` §5–§10(工作量预算与内存账、宿主接口的新 API、安全取舍、各扩展的行为与上限、未实现清单)、`xserver/troubleshooting.md`、`host/settings-audit.md`(CopyOnSelection 默认关、RestrictForwardedClients)、`交互与界面规格.md`(强制结束、停服确认、焦点窃取防护、摆放与重力)、ssh 文档里 `XAuthority` 的公开面 | [velashell-docs#93](https://github.com/VelaShellLabs/velashell-docs/pull/93) 已开,与宿主 PR 一起合 |
 | `plan.md` §118 窗口外框 | `{zh,en}/host/architecture.md` §5「窗口壳」的 ⚠️ 限定为 Win32、新增「各平台的外框」；`交互与界面规格.md` §2 补 macOS 红绿灯与各平台外框；`design-specs.md` 补 macOS 红绿灯；标题栏统一 28 的口径（设置窗口与消息框保持 48 的例外） | [velashell-docs#70](https://github.com/VelaShellLabs/velashell-docs/pull/70) 已开，与宿主 PR 一起合；实机验收后改掉 architecture 里「验收」那一段 |
 | `plan.md` §74 / §75 目录比较与同步 | `SFTP双栏与WinSCP差距分析.md`（C1 改已实现、新增第七节）与 `交互与界面规格.md` §6（文档工具条、同步窗口、保持远端最新、SHA-256 优先比较） | [velashell-docs#35](https://github.com/VelaShellLabs/velashell-docs/pull/35) **待合入** |
 | `plan.md` §82 #474 | `交互与界面规格.md` 资源管理器补**置顶**与 SFTP 路径栏的**复制当前路径**；`设置项审计.md` 补 `General.CollapseGroupsByDefault`、`Transfer.UseRecursiveDeleteCommand`（写明只对有 exec 通道的 SSH 会话生效、失败自动回退、没有逐条进度） | 已在 `docs/474-explorer-sftp` 分支改好（中英各 3 个文件），**待开 PR** |

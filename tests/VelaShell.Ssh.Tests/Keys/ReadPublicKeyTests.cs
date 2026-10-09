@@ -42,8 +42,8 @@ public sealed class ReadPublicKeyTests
     [TestMethod]
     public void 未加密的PEM由私钥导出公钥()
     {
-        using RSA rsa = RSA.Create(2048);
-        using ECDsa ec = ECDsa.Create(ECCurve.NamedCurves.nistP384);
+        using var rsa = RSA.Create(2048);
+        using var ec = ECDsa.Create(ECCurve.NamedCurves.nistP384);
 
         foreach (string pem in new[] { rsa.ExportRSAPrivateKeyPem(), ec.ExportECPrivateKeyPem(), ec.ExportPkcs8PrivateKeyPem() })
         {

@@ -662,7 +662,7 @@ public sealed class LocalPortForwarder : PortForwarder
         byte? socksAddressType,
         CancellationToken cancellationToken)
     {
-        using CancellationTokenSource limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         if (_options.ChannelOpenTimeout != Timeout.InfiniteTimeSpan)
         {
             limit.CancelAfter(_options.ChannelOpenTimeout);

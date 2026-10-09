@@ -37,6 +37,8 @@
   <ItemGroup>
     <!-- 内置位图字体(X.Org font-misc-misc,公有领域),见 Fonts/Data/README.md。 -->
     <EmbeddedResource Include="Fonts/Data/*.bdf" LogicalName="VelaShell.XServer.Fonts.%(Filename).bdf" />
+    <!-- 颜色名表(X.Org rgb.txt,MIT / X11 许可),见 Resources/Data/README.md。 -->
+    <EmbeddedResource Include="Resources/Data/rgb.txt" LogicalName="VelaShell.XServer.Resources.rgb.txt" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(SignAssembly)' != 'true'">

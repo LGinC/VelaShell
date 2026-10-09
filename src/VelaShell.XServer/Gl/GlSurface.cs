@@ -32,6 +32,18 @@ internal sealed class GlSurface
 
     public int Height { get; private set; }
 
+    /// <summary>
+    /// X 可绘对象的尺寸。超过表面的像素上限、表面被夹小了时比 <see cref="Width" /> / <see cref="Height" /> 大:
+    /// 表面只盖住可绘对象左下的那一块(GL 窗口坐标的原点在左下),视口仍按整个可绘对象初始化。
+    /// </summary>
+    public int DrawableWidth { get; private set; }
+
+    /// <inheritdoc cref="DrawableWidth" />
+    public int DrawableHeight { get; private set; }
+
+    /// <summary>表面被夹小了:只渲染可绘对象的一块。</summary>
+    public bool Clamped => DrawableWidth > Width || DrawableHeight > Height;
+
     public bool DoubleBuffered { get; }
 
     public bool HasAlpha { get; }
@@ -80,11 +92,29 @@ internal sealed class GlSurface
     /// <summary>前缓冲拷出去了。</summary>
     public void ClearFrontDirty() => (_dirtyX0, _dirtyY0, _dirtyX1, _dirtyY1) = (0, 0, 0, 0);
 
+    /// <summary>边长的上下限(<see cref="Resize(int, int, int, int)" /> 按它夹)。</summary>
+    private const int MaxSide = 16384;
+
+    /// <summary>
+    /// 一块 <paramref name="width" /> × <paramref name="height" /> 的表面占的字节(记账用,与 <see cref="Resize(int, int, int, int)" /> 一样先夹尺寸):
+    /// 每像素前缓冲 4、后缓冲 4(双缓冲时)、深度 4、模板 1。
+    /// </summary>
+    public static long BytesFor(int width, int height, bool doubleBuffered) =>
+        (long)Math.Clamp(width, 1, MaxSide) * Math.Clamp(height, 1, MaxSide) * (doubleBuffered ? 13 : 9);
+
     /// <summary>尺寸跟随 X 可绘对象;变了就重新分配(内容未定义,这里清零)。</summary>
-    public void Resize(int width, int height)
+    public void Resize(int width, int height) => Resize(width, height, width, height);
+
+    /// <summary>
+    /// 尺寸跟随 X 可绘对象(<paramref name="drawableWidth" /> × <paramref name="drawableHeight" />),缓冲本身是
+    /// <paramref name="width" /> × <paramref name="height" />(可绘对象太大时比它小);变了就重新分配(内容未定义,这里清零)。
+    /// </summary>
+    public void Resize(int width, int height, int drawableWidth, int drawableHeight)
     {
-        width = Math.Clamp(width, 1, 16384);
-        height = Math.Clamp(height, 1, 16384);
+        width = Math.Clamp(width, 1, MaxSide);
+        height = Math.Clamp(height, 1, MaxSide);
+        DrawableWidth = Math.Max(width, drawableWidth);
+        DrawableHeight = Math.Max(height, drawableHeight);
         if (width == Width && height == Height)
         {
             return;

@@ -2,11 +2,15 @@ using System.Diagnostics;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
+using Avalonia.Input;
 using Avalonia.Input.Platform;
+using Avalonia.Interactivity;
 using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
+using VelaShell.Core.Resources;
 using VelaShell.Infrastructure.XServer;
+using VelaShell.Views;
 using VelaShell.Views.XServer;
 using VelaShell.XServer;
 
@@ -28,7 +32,10 @@ namespace VelaShell.Services.XServer;
 /// </remarks>
 public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 {
-    private readonly Dictionary<uint, XNativeWindow> _windows = [];
+    private readonly Dictionary<XTopLevelWindow, XNativeWindow> _windows = [];
+
+    /// <summary>映射着、但不给原生窗口的桌面类窗口(见 <see cref="IsDesktop" />)。只在 UI 线程上碰。</summary>
+    private readonly HashSet<XTopLevelWindow> _desktops = [];
     private volatile X11Server? _server;
     private Screens? _watchedScreens;
     private string? _lastClipboard;
@@ -42,8 +49,8 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
 
     private readonly Lock _damageGate = new();
     private readonly Action _deliverDamage;
-    private Dictionary<uint, List<XRect>> _incomingDamage = [];
-    private Dictionary<uint, List<XRect>> _deliveringDamage = [];
+    private Dictionary<XTopLevelWindow, List<XRect>> _incomingDamage = [];
+    private Dictionary<XTopLevelWindow, List<XRect>> _deliveringDamage = [];
     private bool _damagePosted;
 
     /// <summary>新建一个宿主;经 <see cref="AttachAsync" /> 接到服务端上。</summary>
@@ -52,20 +59,64 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>当前附着的服务端;没在运行时为 <see langword="null" />。窗口的注入经它走。</summary>
     public X11Server? Server => _server;
 
+    /// <summary>
+    /// 句柄是此刻附着的服务端发出的。停掉服务端再起一个时 UI 队列里还排着旧服务端的回调,新服务端的 XID 又与旧的重合:
+    /// 原先按 XID 找窗口,旧回调会用旧句柄建原生窗口(之后注入时新服务端抛 ArgumentException)、误关新窗口。
+    /// </summary>
+    private bool IsCurrent(XTopLevelWindow handle) => _server is { } server && ReferenceEquals(handle.Server, server);
+
+    /// <summary>句柄所属的服务端,只在它就是此刻附着的那个时给出(交给别的服务端会抛异常)。</summary>
+    internal X11Server? CurrentServer(XTopLevelWindow handle) => IsCurrent(handle) ? handle.Server : null;
+
     /// <summary>当前开着的原生窗口(UI 线程上读;测试用)。</summary>
     internal IReadOnlyCollection<XNativeWindow> Windows => _windows.Values;
+
+    /// <summary>用户此刻在用 X 窗口(某个 X 窗口是活动窗口)。UI 线程上读。</summary>
+    public bool XActive => _windows.Values.Any(w => w.IsActive);
 
     /// <summary>根窗口原点在系统虚拟桌面里的位置(物理像素)。只在 UI 线程上读写。</summary>
     public (int X, int Y) RootOrigin { get; private set; }
 
+    /// <summary>
+    /// 最近一个有系统边框的原生窗口量到的边框尺寸(物理像素):新窗口显示之前按它预估,第一帧就摆在对的位置。只在 UI 线程上读写。
+    /// </summary>
+    internal XFrameExtents LastDecoratedFrame { get; set; }
+
     // ================================================================== 生命周期
+
+    /// <summary>当前附着着的宿主:本机活动上报给它的服务端(见 <see cref="HookLocalActivity" />)。</summary>
+    private static volatile AvaloniaXServerHost? s_attached;
+
+    private static bool s_activityHooked;
+
+    /// <summary>
+    /// 用户在 VelaShell 自己的任何窗口里按键、点击、滚动、移动鼠标时告诉服务端(<see cref="X11Server.NoteUserActivity" />):
+    /// 远端程序看到的空闲时间不再只按 X 窗口里的输入算 —— 原先用户整小时在本机终端里打字,远端的「离开」状态与空闲锁屏照样触发。
+    /// 挂一次全局的类处理器(隧道阶段、已处理的事件也算),服务端那边自己节流。只在 UI 线程上调。
+    /// </summary>
+    private static void HookLocalActivity()
+    {
+        if (s_activityHooked)
+        {
+            return;
+        }
+        s_activityHooked = true;
+        InputElement.KeyDownEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerPressedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerMovedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+        InputElement.PointerWheelChangedEvent.AddClassHandler<TopLevel>((_, _) => ReportLocalActivity(), RoutingStrategies.Tunnel, handledEventsToo: true);
+    }
+
+    private static void ReportLocalActivity() => s_attached?._server?.NoteUserActivity();
 
     /// <inheritdoc />
     public async Task AttachAsync(X11Server server, CancellationToken cancellationToken)
     {
         _server = server;
+        s_attached = this;
         await Dispatcher.UIThread.InvokeAsync(() =>
         {
+            HookLocalActivity();
             _keyboardLayout = 0;
             _appliedKeymap = null;   // 新起的服务端是 US 键位表:按当前布局重推一次
             ApplyKeyboardLayout(server);
@@ -79,7 +130,17 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                     {
                         if (_server is { } current && _watchedScreens is { } screens)
                         {
+                            (int, int) before = RootOrigin;
                             ApplyLayout(current, screens);
+                            if (RootOrigin != before)
+                            {
+                                // 左侧 / 上方的显示器插拔:根原点挪了,原生窗口没动,X 坐标却整体差了这么多(菜单、对话框会摆到别处)。
+                                // 按每个窗口此刻的原生位置重报一次。
+                                foreach (XNativeWindow window in _windows.Values)
+                                {
+                                    window.ReportPosition();
+                                }
+                            }
                         }
                     };
                 }
@@ -91,13 +152,24 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     public void Detach()
     {
         _server = null;
+        if (ReferenceEquals(s_attached, this))
+        {
+            s_attached = null;
+        }
         Dispatcher.UIThread.Post(() =>
         {
-            foreach (XNativeWindow window in _windows.Values.ToArray())
+            XNativeWindow[] windows = [.. _windows.Values];
+            _windows.Clear();
+            _desktops.Clear();
+            // 先全部打上标记再关:关 owner 时 Avalonia 先问它的子窗口,子窗口不拦,owner 才关得掉(原先留下关不掉的空壳)。
+            foreach (XNativeWindow window in windows)
+            {
+                window.MarkClosingByHost();
+            }
+            foreach (XNativeWindow window in windows)
             {
                 window.CloseByHost();
             }
-            _windows.Clear();
         });
     }
 
@@ -106,13 +178,15 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// </summary>
     private void ApplyLayout(X11Server server, Screens screens)
     {
-        IReadOnlyList<Screen> all = screens.All;
+        IReadOnlyList<Screen> all = LimitScreens(screens.All);
         if (all.Count == 0)
         {
             return;
         }
         int minX = all.Min(s => s.Bounds.X), minY = all.Min(s => s.Bounds.Y);
-        int maxX = all.Max(s => s.Bounds.Right), maxY = all.Max(s => s.Bounds.Bottom);
+        // 虚拟桌面超出根窗口的上限时截到上限(多出来的部分 X 程序摆不过去);服务端对超限的参数抛异常,原先异常落在 UI 线程上。
+        int maxX = Math.Min(all.Max(s => s.Bounds.Right), minX + X11ServerOptions.MaxScreenSize);
+        int maxY = Math.Min(all.Max(s => s.Bounds.Bottom), minY + X11ServerOptions.MaxScreenSize);
         RootOrigin = (minX, minY);
         List<XMonitor> monitors = [];
         for (int i = 0; i < all.Count; i++)
@@ -120,12 +194,17 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             Screen screen = all[i];
             PixelRect b = screen.Bounds;
             double dpi = 96 * Math.Max(1, screen.Scaling);
+            // 工作区(去掉任务栏 / Dock):服务端据此算 _NET_WORKAREA,菜单、最大化、对话框才不会落到任务栏后面。
+            PixelRect work = screen.WorkingArea.Intersect(b);
             monitors.Add(new XMonitor(b.X - minX, b.Y - minY, b.Width, b.Height)
             {
                 Name = string.IsNullOrWhiteSpace(screen.DisplayName) ? $"SCREEN-{i + 1}" : screen.DisplayName,
                 Primary = screen.IsPrimary,
                 WidthMillimeters = (int)Math.Round(b.Width / dpi * 25.4),
                 HeightMillimeters = (int)Math.Round(b.Height / dpi * 25.4),
+                WorkArea = work.Width > 0 && work.Height > 0 && work != b
+                    ? new XRect(work.X - minX, work.Y - minY, work.Width, work.Height)
+                    : null,
             });
         }
         server.SetScreenLayout(maxX - minX, maxY - minY, monitors);
@@ -137,21 +216,51 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     }
 
     /// <summary>
+    /// 服务端最多接受 <see cref="X11Server.MaxMonitors" /> 台显示器:多了只交主显示器与排在前面的几台(原先整个列表交过去,
+    /// 服务端抛的异常落在 UI 线程上,布局一次也没换成)。
+    /// </summary>
+    private static IReadOnlyList<Screen> LimitScreens(IReadOnlyList<Screen> all) => LimitScreens(all, s => s.IsPrimary);
+
+    internal static IReadOnlyList<T> LimitScreens<T>(IReadOnlyList<T> all, Func<T, bool> isPrimary)
+    {
+        if (all.Count <= X11Server.MaxMonitors)
+        {
+            return all;
+        }
+        T[] primary = [.. all.Where(isPrimary).Take(1)];
+        return [.. primary, .. all.Where(s => !isPrimary(s)).Take(X11Server.MaxMonitors - primary.Length)];
+    }
+
+    /// <summary>
     /// 按键盘布局换服务端的键位表:设置里手选了布局时用随程序带的表(<see cref="BundledKeymaps" />);否则跟随系统当前的布局 ——
     /// Windows 见 <see cref="WindowsKeymap" />,macOS 见 <see cref="MacKeymap" />,Linux 见 <see cref="LinuxKeymap" />。
     /// 算出来的与上次推给服务端的一样时什么也不做;取不到布局时沿用服务端内置的 US 键位表。
+    /// Linux 上要连桌面的 X 显示、拉一遍完整的 XKB 表,放到后台去读(见 <see cref="RefreshFromDesktop" />),连同锁定键一起。
     /// </summary>
     private void ApplyKeyboardLayout(X11Server server)
     {
+        if (DesktopKeyboardReader is not null)
+        {
+            RefreshFromDesktop(server);   // 锁定键总要读;键位表在没手选布局时才用(见 OnDesktopRead)
+            if (ChosenKeymap() is null)
+            {
+                return;
+            }
+        }
         HostKeymapResult? keymap;
         try
         {
-            keymap = BuildHostKeymap(server);
+            keymap = BuildHostKeymap();
         }
         catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
         {
             return;   // 系统库缺了哪一个:沿用现在的键位表
         }
+        ApplyKeymap(server, keymap);
+    }
+
+    private void ApplyKeymap(X11Server server, HostKeymapResult? keymap)
+    {
         if (keymap is null || keymap.SameAs(_appliedKeymap))
         {
             return;
@@ -162,13 +271,102 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         server.SetKeymap(keymap.ToXKeymap());
     }
 
+    /// <summary>
+    /// 读桌面的键位表与锁定键(Linux:<see cref="LinuxKeymap.ReadDesktop" />;其余平台为 null,在 UI 线程上直接读)。
+    /// 参数是内置服务端自己的显示号。测试可以换掉。
+    /// </summary>
+    internal Func<int, DesktopKeyboard?>? DesktopKeyboardReader { get; set; } =
+        OperatingSystem.IsLinux() ? display => OperatingSystem.IsLinux() ? LinuxKeymap.ReadDesktop(display) : null : null;
+
+    /// <summary>后台读桌面键盘的那一次;没在读为 null。只在 UI 线程上碰。</summary>
+    private Task? _desktopRead;
+
+    /// <summary>读的期间又有窗口激活了:读完再读一次(只再读一次,不排队)。</summary>
+    private bool _desktopReadAgain;
+
+    /// <summary>
+    /// 在后台读桌面的键位表与锁定键,读完回到 UI 线程交给服务端。原先 Linux 上每次激活 X 窗口都在 UI 线程上 <c>xcb_connect</c>
+    /// 桌面、完整拉两遍 XKB 表(键位表、锁定键各一遍):<c>$DISPLAY</c> 指向慢的显示时,切一次窗口界面就卡一下。
+    /// 同一时刻只读一次,读的期间再激活的合成读完之后的一次。
+    /// </summary>
+    private void RefreshFromDesktop(X11Server server)
+    {
+        if (DesktopKeyboardReader is not { } reader)
+        {
+            return;
+        }
+        if (_desktopRead is not null)
+        {
+            _desktopReadAgain = true;
+            return;
+        }
+        int display = server.DisplayNumber;
+        Task<DesktopKeyboard?> read = Task.Run(() => reader(display));
+        _desktopRead = read.ContinueWith(done => Dispatcher.UIThread.Post(() => OnDesktopRead(server, done)), TaskScheduler.Default);
+    }
+
+    private void OnDesktopRead(X11Server server, Task<DesktopKeyboard?> read)
+    {
+        _desktopRead = null;
+        if (read.IsFaulted)
+        {
+            Trace.WriteLine($"[XServer] cannot read the desktop keyboard: {read.Exception.InnerException?.Message}");
+        }
+        // 读的期间服务端停了 / 换了一个:结果不交给它(新服务端附着时自己会再读)。
+        if (ReferenceEquals(_server, server) && read.IsCompletedSuccessfully && read.Result is { } desktop)
+        {
+            if (desktop.Locks is var (capsLock, numLock))
+            {
+                server.SetLockState(capsLock, numLock);
+            }
+            if (ChosenKeymap() is null)
+            {
+                ApplyKeymap(server, desktop.Keymap);
+            }
+        }
+        if (_desktopReadAgain && _server is { } current)
+        {
+            _desktopReadAgain = false;
+            RefreshFromDesktop(current);
+        }
+    }
+
     /// <inheritdoc />
     public void UseKeyboardLayout(string layout) => _chosenLayout = layout ?? "";
 
-    private HostKeymapResult? BuildHostKeymap(X11Server server)
+    private long _layoutCheckedAt;
+
+    /// <summary>
+    /// X 窗口里按下了一个键:系统布局可能刚在 X 窗口里切过(Win+Space、Alt+Shift、输入法的切换)—— 先看一眼,变了就把新的键位表推过去,
+    /// 再注入这个键(同一个工作队列,按先后处理)。原先只在激活 X 窗口时重推,在 X 窗口里切了布局,继续敲出的仍是旧布局。
+    /// Windows 上只比一下布局句柄(很便宜);别的系统算一遍键位表较贵,至多每秒看一次(Linux 上在后台读,读完才推,
+    /// 紧接着的这个键可能还按旧布局)。设置里手选了布局时不跟随系统。
+    /// 服务端只改与上次不同的键,用户在 X 里做的 xmodmap 改动不受影响。
+    /// </summary>
+    internal void RefreshKeyboardLayoutOnKey()
     {
-        // 设置里手选了布局:用随程序带的键位表,不再跟随系统。
-        if (_chosenLayout.Length != 0 && HostKeymap.FromBundled(_chosenLayout) is { } chosen)
+        if (_server is not { } server || _chosenLayout.Length != 0)
+        {
+            return;
+        }
+        if (!OperatingSystem.IsWindows())
+        {
+            long now = Environment.TickCount64;
+            if (now - _layoutCheckedAt < 1000)
+            {
+                return;
+            }
+            _layoutCheckedAt = now;
+        }
+        ApplyKeyboardLayout(server);
+    }
+
+    /// <summary>设置里手选了布局:随程序带的键位表(不再跟随系统);没手选、或选的名字表里没有时为 null。</summary>
+    private HostKeymapResult? ChosenKeymap() => _chosenLayout.Length != 0 ? HostKeymap.FromBundled(_chosenLayout) : null;
+
+    private HostKeymapResult? BuildHostKeymap()
+    {
+        if (ChosenKeymap() is { } chosen)
         {
             return chosen;
         }
@@ -186,10 +384,6 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         if (OperatingSystem.IsMacOS())
         {
             return MacKeymap.Build();
-        }
-        if (OperatingSystem.IsLinux())
-        {
-            return LinuxKeymap.Build(server.DisplayNumber);
         }
         return null;
     }
@@ -211,20 +405,65 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void TopLevelUnmapped(XTopLevelWindow window) => Dispatcher.UIThread.Post(() =>
     {
-        if (_windows.Remove(window.Id, out XNativeWindow? native))
+        _desktops.Remove(window);
+        if (_windows.Remove(window, out XNativeWindow? native))
         {
-            native.CloseByHost();
+            CloseWithOwnedWindows(native);
         }
     });
+
+    /// <summary>
+    /// 收掉一个原生窗口:Avalonia 关 owner 时连带关掉它拥有的窗口(对话框、瞬态窗口)。它们在 X 里可能还映射着 ——
+    /// 主窗口先于对话框取消映射、程序只把主窗口藏起来 —— 那样就成了看不见的幽灵。所以先把它们一起收掉,
+    /// 再把 X 里还映射着的不带 owner 重新显示。
+    /// </summary>
+    private void CloseWithOwnedWindows(XNativeWindow native)
+    {
+        XNativeWindow[] owned = [.. _windows.Values.Where(w => ReferenceEquals(w.Owner, native))];
+        foreach (XNativeWindow child in owned)
+        {
+            _windows.Remove(child.Handle);
+            child.MarkClosingByHost();
+        }
+        native.CloseByHost();
+        foreach (XNativeWindow child in owned)
+        {
+            child.CloseByHost();   // 已经随 owner 关了的,再关一次是空操作
+            if (child.Handle.Snapshot.IsMapped)
+            {
+                Map(child.Handle);
+            }
+        }
+    }
 
     /// <inheritdoc />
     public void TopLevelChanged(XTopLevelWindow window, XTopLevelChanges changes) => Dispatcher.UIThread.Post(() =>
     {
-        if (_windows.TryGetValue(window.Id, out XNativeWindow? native))
+        if (_windows.TryGetValue(window, out XNativeWindow? native))
         {
+            if (IsDesktop(window.Snapshot))
+            {
+                // 映射之后才把类型改成桌面:收掉原生窗口(见 IsDesktop)。
+                _windows.Remove(window);
+                _desktops.Add(window);
+                CloseWithOwnedWindows(native);
+                return;
+            }
             native.ApplyProperties(changes);
         }
+        else if (_desktops.Contains(window) && !IsDesktop(window.Snapshot))
+        {
+            _desktops.Remove(window);   // 不再是桌面了:照常给一个原生窗口
+            Map(window);
+        }
     });
+
+    /// <summary>
+    /// 桌面类窗口(<c>_NET_WM_WINDOW_TYPE_DESKTOP</c>:xfdesktop、caja、pcmanfm 画图标的底层窗口)不给原生窗口。rootless 下没有能放它的
+    /// 「桌面底层」:原先它成了一个与整个虚拟桌面一样大、无边框的普通窗口,一激活就挡住本机所有程序(xs_plan CP-24)。
+    /// 它在 X 里照常映射着,只是看不见。
+    /// </summary>
+    private static bool IsDesktop(XTopLevelSnapshot snapshot) => snapshot.WindowType == XWindowType.Desktop && !snapshot.OverrideRedirect;
 
     /// <inheritdoc />
     /// <remarks>
@@ -235,9 +474,9 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     {
         lock (_damageGate)
         {
-            if (!_incomingDamage.TryGetValue(window.Id, out List<XRect>? rects))
+            if (!_incomingDamage.TryGetValue(window, out List<XRect>? rects))
             {
-                _incomingDamage[window.Id] = rects = [];
+                _incomingDamage[window] = rects = [];
             }
             rects.AddRange(damage);
             if (rects.Count > MaxQueuedDamageRects)
@@ -263,15 +502,15 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <summary>UI 线程:把攒下的损伤交给各自的原生窗口。</summary>
     private void DeliverDamage()
     {
-        Dictionary<uint, List<XRect>> batch;
+        Dictionary<XTopLevelWindow, List<XRect>> batch;
         lock (_damageGate)
         {
             (batch, _incomingDamage, _deliveringDamage) = (_incomingDamage, _deliveringDamage, _incomingDamage);
             _damagePosted = false;
         }
-        foreach ((uint id, List<XRect> rects) in batch)
+        foreach ((XTopLevelWindow handle, List<XRect> rects) in batch)
         {
-            if (_windows.TryGetValue(id, out XNativeWindow? native))
+            if (_windows.TryGetValue(handle, out XNativeWindow? native))
             {
                 native.AddDamage(rects);
             }
@@ -282,14 +521,20 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void CursorChanged(XTopLevelWindow? window, XCursor cursor) => Dispatcher.UIThread.Post(() =>
     {
-        if (window is not null && _windows.TryGetValue(window.Id, out XNativeWindow? native))
+        if (window is not null && _windows.TryGetValue(window, out XNativeWindow? native))
         {
             native.ApplyCursor(cursor);
         }
     });
 
     /// <inheritdoc />
-    public void BellRequested(int volume) => Dispatcher.UIThread.Post(SystemSound.Alert);   // 系统提示音没有音量可调
+    public void BellRequested(int volume)
+    {
+        if (volume > 0)   // 系统提示音没有音量可调;音量 0(xset b 0、Bell -100)就是不响
+        {
+            Dispatcher.UIThread.Post(SystemSound.Alert);
+        }
+    }
 
     /// <inheritdoc />
     public void ClipboardChanged(string text) => Dispatcher.UIThread.Post(() => FireAndForget.Run(async () =>
@@ -311,7 +556,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     /// <inheritdoc />
     public void WindowManagerRequested(XWindowManagerRequest request) => Dispatcher.UIThread.Post(() =>
     {
-        if (!_windows.TryGetValue(request.Window.Id, out XNativeWindow? native))
+        if (!_windows.TryGetValue(request.Window, out XNativeWindow? native))
         {
             return;
         }
@@ -323,36 +568,82 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
             case XStateChangeRequest state:
                 native.ApplyStateRequest(state.Add, state.Remove);
                 break;
+            case XActivateRequest activate when activate.UserInitiated && XActive:
+                native.Activate();
+                break;
             case XActivateRequest:
+                // 不是用户操作引起的(CurrentTime、过期的时间戳),或用户此刻在用本机窗口:只闪任务栏,不切前台 ——
+                // 原先无条件激活,远端程序能在用户输 sudo 口令时跳到前台接走按键。
+                WindowAttention.Request(native);
+                break;
+            case XRaiseRequest when !ReferenceEquals(native, _windows.Values.FirstOrDefault(w => w.IsActive))
+                                    && _windows.Values.Any(w => w.IsActive):
+                // 只是抬高次序:用户此刻正在用这个 X 程序(另一个 X 窗口是活动的)才照办,不从本机窗口那里抢走前台。
+                native.Activate();
+                break;
+            case XFocusRequest when !native.IsActive && _windows.Values.Any(w => w.IsActive):
+                // X 客户端自己把键盘焦点挪到了这个窗口:按键已经送往它,把它的原生窗口激活,用户才看得出键盘去了哪儿。
+                // 用户正在用本机的其它窗口时不抢前台 —— 那时按键本来就不进 X,用户回到某个 X 窗口时焦点随激活重新给出。
                 native.Activate();
                 break;
             case XMinimizeRequest:
                 native.WindowState = WindowState.Minimized;
                 break;
             case XCloseRequest:
-                _server?.CloseTopLevel(request.Window);
+                CurrentServer(request.Window)?.CloseTopLevel(request.Window);
+                break;
+            case XNotRespondingRequest:
+                FireAndForget.Run(() => ConfirmKillAsync(native, request.Window));
                 break;
         }
     });
+
+    /// <summary>
+    /// 用户点了关闭,窗口却对 <c>_NET_WM_PING</c> 没有回应(程序卡住了):问用户要不要强制结束这个 X 程序 ——
+    /// 原先声明了 WM_DELETE_WINDOW 却卡死的程序关不掉,只能停掉整个 X Server,所有会话的程序一起断。
+    /// </summary>
+    private async Task ConfirmKillAsync(XNativeWindow native, XTopLevelWindow handle)
+    {
+        XTopLevelSnapshot snapshot = handle.Snapshot;
+        string name = snapshot.Title.Length > 0 ? snapshot.Title : snapshot.ClassName;
+        bool kill = await MessageDialog.ConfirmAsync(native,
+            Strings.Get("XServer_NotRespondingTitle"),
+            Strings.Format("XServer_NotRespondingMessage", name),
+            Strings.Get("XServer_ForceQuit"),
+            kind: MessageDialogKind.Warning,
+            danger: true);
+        if (kill)
+        {
+            CurrentServer(handle)?.KillTopLevelClient(handle);   // 等用户回答期间服务端可能已经换了一个
+        }
+    }
 
     // ================================================================== UI 线程
 
     private void Map(XTopLevelWindow handle)
     {
-        if (_server is null || _windows.ContainsKey(handle.Id))
+        // 旧服务端的句柄、已经没了的窗口不建;InputOnly 的顶层(GtkInvisible 之类)看不见:不开原生窗口(原先多出一个黑窗口)。
+        if (!IsCurrent(handle) || !handle.IsAlive || _windows.ContainsKey(handle) || handle.Snapshot.InputOnly)
         {
             return;
         }
+        if (IsDesktop(handle.Snapshot))
+        {
+            _desktops.Add(handle);
+            return;
+        }
         XNativeWindow window = new(this, handle);
-        _windows[handle.Id] = window;
+        _windows[handle] = window;
         PlaceIfUnpositioned(handle, window);
         window.ApplyProperties(XTopLevelChanges.All);
+        window.ApplyInitialStates();   // 映射前就设好的最大化 / 全屏 / initial_state = Iconic
 
-        // 对话框、瞬态窗口压在父窗口之上;弹出菜单跟着当前活动的 X 窗口走。
+        // 对话框、瞬态窗口(连同声明了 WM_TRANSIENT_FOR 的弹出菜单)压在父窗口之上。没声明的弹层不借用「当前活动的 X 窗口」当 owner:
+        // 那个窗口可能属于别的程序甚至别的会话,owner 关闭时会把它连带关掉(弹层本身照样置顶,不需要 owner)。
         XTopLevelSnapshot snapshot = handle.Snapshot;
-        XNativeWindow? owner = snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent)
+        XNativeWindow? owner = snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor, out XNativeWindow? parent)
             ? parent
-            : snapshot.OverrideRedirect ? _windows.Values.FirstOrDefault(w => w.IsActive) : null;
+            : null;
         if (owner is not null && !ReferenceEquals(owner, window))
         {
             window.Show(owner);
@@ -364,21 +655,23 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
     }
 
     /// <summary>
-    /// 客户端没给位置(映射在 0,0)的普通窗口,像窗口管理器那样摆:对话框居中压在父窗口上,其余放在主显示器工作区正中。
+    /// 客户端没给位置的普通窗口像窗口管理器那样摆:对话框居中压在父窗口上,其余放在主显示器工作区正中。「没给位置」指请求的位置是 (0, 0)
+    /// 而且不是用户指定的(没有 USPosition;程序自己设的 PPosition 在 (0, 0) 时多半只是默认值)—— 原先只看坐标是不是 0,
+    /// <c>xterm -geometry +0+0</c> 也被挪到屏幕中央。给了位置的由原生窗口按重力摆外框(见 <see cref="XNativeWindow.ApplyGeometry" />)。
     /// </summary>
     private void PlaceIfUnpositioned(XTopLevelWindow handle, XNativeWindow window)
     {
         XTopLevelSnapshot snapshot = handle.Snapshot;
-        if (snapshot.OverrideRedirect || snapshot.X != 0 || snapshot.Y != 0 || _server is not { } server)
+        if (!snapshot.NeedsPlacement || snapshot.UserPosition || snapshot.X != 0 || snapshot.Y != 0)
         {
             return;
         }
+        (int ox, int oy) = RootOrigin;
         PixelRect area;
-        if (snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor.Id, out XNativeWindow? parent))
+        if (snapshot.TransientFor is { } transientFor && _windows.TryGetValue(transientFor, out XNativeWindow? parent))
         {
-            (int ox, int oy) = RootOrigin;
             XTopLevelSnapshot p = parent.Handle.Snapshot;
-            area = new PixelRect(p.X + ox, p.Y + oy, p.Width, p.Height);
+            area = new PixelRect(p.X + p.BorderWidth + ox, p.Y + p.BorderWidth + oy, p.Width, p.Height);
         }
         else if ((MainWindow()?.Screens ?? window.Screens).Primary is { } primary)
         {
@@ -388,20 +681,25 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             return;
         }
-        int x = area.X + Math.Max(0, (area.Width - snapshot.Width) / 2) - RootOrigin.X;
-        int y = area.Y + Math.Max(0, (area.Height - snapshot.Height) / 2) - RootOrigin.Y;
-        window.PlaceAt(x, y);
-        server.MoveTopLevel(handle, x, y);
+        // 居中的是外框(内容区加系统边框);边框尺寸要等显示出来才量得到,之前按 0 算。
+        XFrameExtents frame = window.FrameExtents;
+        int outerWidth = snapshot.Width + frame.Left + frame.Right, outerHeight = snapshot.Height + frame.Top + frame.Bottom;
+        window.PlaceFrameAt(area.X + Math.Max(0, (area.Width - outerWidth) / 2) - ox, area.Y + Math.Max(0, (area.Height - outerHeight) / 2) - oy);
     }
 
     /// <summary>某个 X 窗口成了活动窗口:键盘焦点给它;顺带把系统剪贴板里别的程序复制的新文本交给 X。</summary>
     public void OnWindowActivated(XNativeWindow window)
     {
-        if (_server is not { } server)
+        if (CurrentServer(window.Handle) is not { } server)
         {
             return;
         }
+        UpdateTopmost(xActive: true);
         server.FocusTopLevel(window.Handle);
+        if (HostLockState.Read() is var (capsLock, numLock))
+        {
+            server.SetLockState(capsLock, numLock);   // 用户可能在别的程序里切过 CapsLock / NumLock(Linux 上随键位表在后台读)
+        }
         ApplyKeyboardLayout(server);   // 用户可能在别的程序里切了输入法 / 布局
         FireAndForget.Run(() => OfferSystemClipboardAsync(server, window));
     }
@@ -431,14 +729,26 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
         {
             server.FocusTopLevel(null);
         }
+        if (!XActive)
+        {
+            UpdateTopmost(xActive: false);   // 用户回到了本机窗口:X 的弹出层与「总在最前」的窗口退到后面
+        }
     });
+
+    private void UpdateTopmost(bool xActive)
+    {
+        foreach (XNativeWindow window in _windows.Values)
+        {
+            window.UpdateTopmost(xActive);
+        }
+    }
 
     /// <summary>原生窗口已关闭(宿主关的,或系统强制关的)。</summary>
     public void OnWindowClosed(XNativeWindow window)
     {
-        if (_windows.TryGetValue(window.Handle.Id, out XNativeWindow? current) && ReferenceEquals(current, window))
+        if (_windows.TryGetValue(window.Handle, out XNativeWindow? current) && ReferenceEquals(current, window))
         {
-            _windows.Remove(window.Handle.Id);
+            _windows.Remove(window.Handle);
         }
     }
 
@@ -461,7 +771,7 @@ public sealed class AvaloniaXServerHost : IEmbeddedXServerHost
                 int[] row = new int[best.Width];
                 for (int y = 0; y < best.Height; y++)
                 {
-                    Buffer.BlockCopy(best.Pixels, y * best.Width * 4, row, 0, best.Width * 4);
+                    System.Runtime.InteropServices.MemoryMarshal.Cast<uint, int>(best.Pixels.Span.Slice(y * best.Width, best.Width)).CopyTo(row);
                     System.Runtime.InteropServices.Marshal.Copy(row, 0, frame.Address + (y * frame.RowBytes), best.Width);
                 }
             }

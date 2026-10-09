@@ -50,7 +50,7 @@ public sealed partial class X11Server
         {
             if (ShouldLogFrequent())
             {
-                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
+                LogFrequent($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: Bad{error.Code} 0x{error.BadValue:x}"
                     + $"(之前:{client.RecentRequests()})");
             }
             client.Error(error.Code, error.BadValue, minor, r.Opcode);
@@ -59,7 +59,7 @@ public sealed partial class X11Server
         {
             if (ShouldLogFrequent())
             {
-                Log($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation {ex}");
+                LogFailure($"{client} #{client.Sequence} opcode {r.Opcode}.{minor}: BadImplementation", $"{r.Opcode}.{minor}", ex);
             }
             client.Error(XErrorCode.Implementation, 0, minor, r.Opcode);
         }
@@ -75,13 +75,13 @@ public sealed partial class X11Server
             case XOpcode.DestroyWindow: DestroyWindow(c, r); break;
             case XOpcode.DestroySubwindows: DestroySubwindows(r); break;
             case XOpcode.ChangeSaveSet: ChangeSaveSet(c, r); break;
-            case XOpcode.ReparentWindow: ReparentWindow(r); break;
+            case XOpcode.ReparentWindow: ReparentWindow(c, r); break;
             case XOpcode.MapWindow: MapWindow(c, r); break;
             case XOpcode.MapSubwindows: MapSubwindows(c, r); break;
             case XOpcode.UnmapWindow: UnmapWindow(r); break;
             case XOpcode.UnmapSubwindows: UnmapSubwindows(r); break;
             case XOpcode.ConfigureWindow: ConfigureWindow(c, r); break;
-            case XOpcode.CirculateWindow: CirculateWindow(r); break;
+            case XOpcode.CirculateWindow: CirculateWindow(c, r); break;
             case XOpcode.GetGeometry: GetGeometry(c, r); break;
             case XOpcode.QueryTree: QueryTree(c, r); break;
             case XOpcode.InternAtom: InternAtom(c, r); break;
@@ -95,16 +95,16 @@ public sealed partial class X11Server
             case XOpcode.ConvertSelection: ConvertSelection(c, r); break;
             case XOpcode.SendEvent: SendEvent(c, r); break;
             case XOpcode.GrabPointer: GrabPointer(c, r); break;
-            case XOpcode.UngrabPointer: UngrabPointer(c); break;
+            case XOpcode.UngrabPointer: UngrabPointer(c, r.U32()); break;
             case XOpcode.GrabButton: GrabButton(c, r); break;
             case XOpcode.UngrabButton: UngrabButton(c, r); break;
             case XOpcode.ChangeActivePointerGrab: ChangeActivePointerGrab(c, r); break;
             case XOpcode.GrabKeyboard: GrabKeyboard(c, r); break;
-            case XOpcode.UngrabKeyboard: UngrabKeyboard(c); break;
+            case XOpcode.UngrabKeyboard: UngrabKeyboard(c, r.U32()); break;
             case XOpcode.GrabKey: GrabKey(c, r); break;
             case XOpcode.UngrabKey: UngrabKey(c, r); break;
-            case XOpcode.AllowEvents: AllowEvents(c, r.Data); break;
-            case XOpcode.GrabServer: _serverGrabber = c; break;
+            case XOpcode.AllowEvents: AllowEvents(c, r.Data, r.U32()); break;
+            case XOpcode.GrabServer: GrabServer(c); break;
             case XOpcode.UngrabServer: if (ReferenceEquals(_serverGrabber, c)) { ReleaseServerGrab(); } break;
             case XOpcode.QueryPointer: QueryPointer(c, r); break;
             case XOpcode.GetMotionEvents: c.MotionHint = default; c.Reply(0, w => w.U32(0).Zero(20)); break;
@@ -170,21 +170,21 @@ public sealed partial class X11Server
             case XOpcode.ListExtensions: ListExtensions(c); break;
             case XOpcode.ChangeKeyboardMapping: ChangeKeyboardMapping(c, r); break;
             case XOpcode.GetKeyboardMapping: GetKeyboardMapping(c, r); break;
-            case XOpcode.ChangeKeyboardControl: break;
+            case XOpcode.ChangeKeyboardControl: ChangeKeyboardControl(r); break;
             case XOpcode.GetKeyboardControl: GetKeyboardControl(c); break;
             case XOpcode.Bell: Bell(r); break;
             case XOpcode.ChangePointerControl: break;
             case XOpcode.GetPointerControl: c.Reply(0, w => w.U16(2).U16(1).U16(4).Zero(18)); break;
             case XOpcode.SetScreenSaver: SetScreenSaver(r); break;
             case XOpcode.GetScreenSaver: GetScreenSaver(c); break;
-            case XOpcode.ChangeHosts: break;
-            case XOpcode.ListHosts: c.Reply(0, w => w.U16(0).Zero(22)); break;
-            case XOpcode.SetAccessControl: break;
-            case XOpcode.SetCloseDownMode: c.CloseDownMode = r.Data; break;
+            case XOpcode.ChangeHosts: ChangeHosts(r); break;
+            case XOpcode.ListHosts: ListHosts(c); break;
+            case XOpcode.SetAccessControl: SetAccessControl(r); break;
+            case XOpcode.SetCloseDownMode: SetCloseDownMode(c, r); break;
             case XOpcode.KillClient: KillClient(r); break;
             case XOpcode.RotateProperties: RotateProperties(r); break;
             case XOpcode.ForceScreenSaver: ForceScreenSaver(r); break;
-            case XOpcode.SetPointerMapping: c.Reply(0, w => w.Zero(24)); break;
+            case XOpcode.SetPointerMapping: SetPointerMapping(c, r); break;
             case XOpcode.GetPointerMapping: GetPointerMapping(c); break;
             case XOpcode.SetModifierMapping: SetModifierMapping(c, r); break;
             case XOpcode.GetModifierMapping: GetModifierMapping(c); break;

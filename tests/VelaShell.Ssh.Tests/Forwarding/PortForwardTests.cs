@@ -636,7 +636,7 @@ public sealed class PortForwardTests
             new RemotePortForwardOptions { BindPort = 34572, CancelReplyTimeout = TimeSpan.FromMilliseconds(300) },
             harness.Token);
 
-        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         await forwarder.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(10), harness.Token);
 
         Assert.IsFalse(forwarder.IsActive);
@@ -1368,7 +1368,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
         echo.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         echo.Listen(4);
         int echoPort = ((IPEndPoint)echo.LocalEndPoint!).Port;
-        Task serving = Task.Run(async () =>
+        var serving = Task.Run(async () =>
         {
             using Socket accepted = await echo.AcceptAsync(harness.Token);
             byte[] buffer = new byte[4];
@@ -1452,7 +1452,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
     [TestMethod]
     public void 放行名单的规则与匹配()
     {
-        RemoteOpenPolicy policy = RemoteOpenPolicy.Allow("*.corp.example:443", "10.0.0.?:*", "[::1]:22", "Build:8080");
+        var policy = RemoteOpenPolicy.Allow("*.corp.example:443", "10.0.0.?:*", "[::1]:22", "Build:8080");
 
         Assert.IsTrue(policy.Permits("git.corp.example", 443));
         Assert.IsFalse(policy.Permits("git.corp.example", 80));
@@ -1523,7 +1523,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
     {
         List<string> targets = [];
         await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
-        await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(harness.Connection, "/var/run/docker.sock");
+        await using var forwarder = LocalPortForwarder.StartToUnixSocket(harness.Connection, "/var/run/docker.sock");
 
         using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
         await client.ConnectAsync(forwarder.BoundEndPoint!, harness.Token);
@@ -1546,7 +1546,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
         await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
         string path = ShortSocketPath();
 
-        LocalPortForwarder forwarder = LocalPortForwarder.Start(
+        var forwarder = LocalPortForwarder.Start(
             harness.Connection, "db.internal", 5432, new LocalPortForwardOptions { ListenSocketPath = path });
         try
         {
@@ -1589,7 +1589,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
             Assert.AreEqual(Diagnostics.SshFailureReason.ForwardBindFailed, exists.Reason);
             Assert.AreEqual("someone else's", await File.ReadAllTextAsync(path, harness.Token));
 
-            await using LocalPortForwarder replaced = LocalPortForwarder.Start(
+            await using var replaced = LocalPortForwarder.Start(
                 harness.Connection, "h", 1, new LocalPortForwardOptions { ListenSocketPath = path, AllowSocketReplacement = true });
             Assert.IsTrue(replaced.IsActive);
         }
@@ -1615,7 +1615,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
     {
         List<string> targets = [];
         await using Harness harness = await Harness.StartAsync(new TestChannelScript { TunnelHandler = EchoTunnel(targets) });
-        await using LocalPortForwarder forwarder = LocalPortForwarder.Start(
+        await using var forwarder = LocalPortForwarder.Start(
             harness.Connection, "bulk.internal", 9000, new LocalPortForwardOptions { MaxBytesPerSecond = 64 * 1024 });
 
         using Socket client = new(SocketType.Stream, ProtocolType.Tcp);
@@ -1623,7 +1623,7 @@ SshProtocolNames.RequestStreamLocalForward, harness.Observed.GlobalRequests);
 
         byte[] payload = new byte[192 * 1024];
         Random.Shared.NextBytes(payload);
-        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         Task sending = client.SendAsync(payload, harness.Token).AsTask();
 
         byte[] back = new byte[payload.Length];

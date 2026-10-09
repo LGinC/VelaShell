@@ -8,6 +8,7 @@
 //   多个图元以 Add 累加进遮罩)
 
 using System.Buffers;
+using VelaShell.XServer.Protocol;
 
 namespace VelaShell.XServer.Drawing;
 
@@ -22,15 +23,41 @@ internal static class RenderCompositor
     public static XRect Composite(byte op, RenderSource src, RenderSource? mask, bool componentAlpha, RenderTarget dst,
         int srcX, int srcY, int maskX, int maskY, int dstX, int dstY, int width, int height)
     {
+        // 工作量按真正要合成的像素数先扣(快路径与逐像素路径一样算,见 WorkBudget)。
+        XRect requested = new(dstX + dst.OriginX, dstY + dst.OriginY, width, height);
+        long work = 1;
+        foreach (XRect clip in dst.Clip)
+        {
+            XRect r = clip.Intersect(requested);
+            work += 1 + ((long)r.Width * r.Height);
+        }
+        WorkBudget.Charge(work);
+
         // 源 / 遮罩与目标是同一块缓冲(同一张像素图、同一个顶层里的窗口):先把要读的那一块拷出来。逐行从上往下合成时,
         // 目标在源下面(或同一行靠右)的话,后面要读的源行已经被前面写过了 —— 结果得像「先读完源再写」。
-        if (src is ImageSource sharedSource && ReferenceEquals(sharedSource.Buffer, dst.Buffer))
+        // 要读的只是目标上真正写得到的那几行几列对应的部分(可写区域之外的不合成)。
+        bool srcShared = src is ImageSource { } s0 && ReferenceEquals(s0.Buffer, dst.Buffer);
+        bool maskShared = mask is ImageSource { } m0 && ReferenceEquals(m0.Buffer, dst.Buffer);
+        if (srcShared || maskShared)
         {
-            src = sharedSource.Detach(new XRect(srcX, srcY, width, height));
-        }
-        if (mask is ImageSource sharedMask && ReferenceEquals(sharedMask.Buffer, dst.Buffer))
-        {
-            mask = sharedMask.Detach(new XRect(maskX, maskY, width, height));
+            int wx1 = int.MaxValue, wy1 = int.MaxValue, wx2 = int.MinValue, wy2 = int.MinValue;
+            foreach (XRect clip in dst.Clip)
+            {
+                XRect r = clip.Intersect(requested);
+                if (!r.IsEmpty)
+                {
+                    (wx1, wy1, wx2, wy2) = (Math.Min(wx1, r.X), Math.Min(wy1, r.Y), Math.Max(wx2, r.Right), Math.Max(wy2, r.Bottom));
+                }
+            }
+            XRect local = wx2 <= wx1 ? default : new XRect(wx1 - dst.OriginX - dstX, wy1 - dst.OriginY - dstY, wx2 - wx1, wy2 - wy1);
+            if (srcShared)
+            {
+                src = ((ImageSource)src).Detach(local.Offset(srcX, srcY));
+            }
+            if (maskShared)
+            {
+                mask = ((ImageSource)mask!).Detach(local.Offset(maskX, maskY));
+            }
         }
         if (TryFastPath(op, src, mask, componentAlpha, dst, srcX, srcY, maskX, maskY, dstX, dstY, width, height, out XRect fastDirty))
         {
@@ -43,7 +70,9 @@ internal static class RenderCompositor
 
         // 8888 目标上最常用的三种运算走整数:源与遮罩各取成 8 位预乘的一行(渐变、变换、重复、各种源格式都在取样里处理掉),
         // 逐像素整数合成。其余运算、分量 alpha 与别的目标格式走浮点。
-        bool integer = Is8888(dst.Format) && !componentAlpha && op is RenderOps.Src or RenderOps.Over or RenderOps.Add;
+        // 只有 alpha 的 a8 目标(cairo 拼遮罩、Qt 的 alpha 图)上的 Porter-Duff 运算同样走整数,只算 alpha 一个通道。
+        bool alphaOnly = ReferenceEquals(dst.Format, PictFormat.A8) && !componentAlpha && op <= RenderOps.Saturate;
+        bool integer = alphaOnly || (Is8888(dst.Format) && !componentAlpha && op is RenderOps.Src or RenderOps.Over or RenderOps.Add);
         Argb[] srcRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
         Argb[] maskRow = integer ? [] : ArrayPool<Argb>.Shared.Rent(Math.Max(1, width));
         uint[] srcRow8 = integer ? ArrayPool<uint>.Shared.Rent(Math.Max(1, width)) : [];
@@ -84,7 +113,15 @@ internal static class RenderCompositor
                         int dy = by - dst.OriginY - dstY;
                         src.FetchRow8888(srcX + dx, srcY + dy, s8);
                         mask?.FetchRow8888(maskX + dx, maskY + dy, m8);
-                        CombineRow(op, s8, m8, buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width), dst.Format.HasAlpha, depthMask);
+                        Span<uint> row = buffer.Pixels.AsSpan((by * buffer.Width) + r.X, r.Width);
+                        if (alphaOnly)
+                        {
+                            CombineAlphaRow(op, s8, m8, row);
+                        }
+                        else
+                        {
+                            CombineRow(op, s8, m8, row, dst.Format.HasAlpha, depthMask);
+                        }
                     }
                     continue;
                 }
@@ -210,13 +247,48 @@ internal static class RenderCompositor
         }
     }
 
+    /// <summary>
+    /// a8 目标的一行:只有 alpha。结果 = 源 alpha × Fa + 目标 alpha × Fb(Porter-Duff 的两个因子,0–255 定点,同 <see cref="RenderOps" />
+    /// 的浮点公式),夹到 255。原先逐像素浮点 Decode、四通道合成、再 Encode。
+    /// </summary>
+    private static void CombineAlphaRow(byte op, ReadOnlySpan<uint> src, ReadOnlySpan<uint> mask, Span<uint> dst)
+    {
+        for (int i = 0; i < dst.Length; i++)
+        {
+            uint sa = src[i] >> 24;
+            if (!mask.IsEmpty)
+            {
+                sa = Argb8.Div255(sa * (mask[i] >> 24));
+            }
+            uint da = dst[i] & 0xFF;
+            (uint fa, uint fb) = op switch
+            {
+                RenderOps.Clear => (0u, 0u),
+                RenderOps.Src => (255u, 0u),
+                RenderOps.Dst => (0u, 255u),
+                RenderOps.Over => (255u, 255 - sa),
+                4 => (255 - da, 255u),           // OverReverse
+                5 => (da, 0u),                   // In
+                6 => (0u, sa),                   // InReverse
+                7 => (255 - da, 0u),             // Out
+                8 => (0u, 255 - sa),             // OutReverse
+                9 => (da, 255 - sa),             // Atop
+                10 => (255 - da, sa),            // AtopReverse
+                11 => (255 - da, 255 - sa),      // Xor
+                RenderOps.Add => (255u, 255u),
+                _ => (255 - da >= sa ? 255u : (255 - da) * 255 / sa, 255u),   // Saturate:min(1, (1 − da) / sa)
+            };
+            dst[i] = Math.Min(Argb8.Div255(sa * fa) + Argb8.Div255(da * fb), 255);
+        }
+    }
+
     private static bool Is8888(PictFormat f) => ReferenceEquals(f, PictFormat.A8R8G8B8) || ReferenceEquals(f, PictFormat.X8R8G8B8);
 
     /// <summary>
     /// 两种占绝大多数的情形不逐行取样,直接按源的存储整块算(比 <see cref="CombineRow" /> 那条整数路径还省一次取样):
     /// <list type="number">
     /// <item>纯色源 + 单字节遮罩(字形、梯形覆盖率)+ Over → 8888 目标(Xft 画字、cairo 画抗锯齿图形);</item>
-    /// <item>8888 图像源(无变换、取样范围在图像之内)+ 无遮罩 + Src / Over → 8888 目标(cairo 贴图、窗口间拷贝)。</item>
+    /// <item>8888 图像源(无变换、取样范围在图像与它的缓冲之内)+ 无遮罩 + Src / Over → 8888 目标(cairo 贴图、窗口间拷贝)。</item>
     /// </list>
     /// 条件不满足时返回 false,由通用路径处理。
     /// </summary>
@@ -234,7 +306,10 @@ internal static class RenderCompositor
             return true;
         }
         if (mask is null && op is RenderOps.Src or RenderOps.Over && src is ImageSource image && Is8888(image.Format)
-            && srcX >= 0 && srcY >= 0 && srcX + width <= image.Width && srcY + height <= image.Height)
+            && srcX >= 0 && srcY >= 0 && srcX + width <= image.Width && srcY + height <= image.Height
+            // 还要整块在缓冲之内:窗口 picture 伸出顶层之外的部分不在缓冲里(交给通用路径,读到的是透明)。
+            && image.OriginX + srcX >= 0 && image.OriginY + srcY >= 0
+            && image.OriginX + srcX + width <= image.Buffer.Width && image.OriginY + srcY + height <= image.Buffer.Height)
         {
             dirty = BlitImage(op, image, dst, srcX - dstX, srcY - dstY, dstX, dstY, width, height);
             return true;
@@ -390,23 +465,34 @@ internal sealed class CoverageMask
 
     /// <summary>梯形:top ≤ y &lt; bottom 之间、左边线与右边线之间的部分(左在右的右边时那一段不画)。</summary>
     public void AddTrapezoid(double top, double bottom, Line left, Line right) =>
-        AddBand(top, bottom, y => (left.XAt(y), right.XAt(y)));
+        AddBand(top, bottom, left, right, ordered: true);
 
     /// <summary>三角形:按中间顶点拆成上下两段,每条子扫描线取与各边交点的最小 / 最大值。</summary>
     public void AddTriangle((double X, double Y) a, (double X, double Y) b, (double X, double Y) c)
     {
-        (double X, double Y)[] v = [a, b, c];
-        Array.Sort(v, (p, q) => p.Y.CompareTo(q.Y));
-        Line longEdge = new(v[0].X, v[0].Y, v[2].X, v[2].Y);
-        Line upper = new(v[0].X, v[0].Y, v[1].X, v[1].Y);
-        Line lower = new(v[1].X, v[1].Y, v[2].X, v[2].Y);
-        AddBand(v[0].Y, v[1].Y, y => MinMax(longEdge.XAt(y), upper.XAt(y)));
-        AddBand(v[1].Y, v[2].Y, y => MinMax(longEdge.XAt(y), lower.XAt(y)));
-
-        static (double, double) MinMax(double p, double q) => p <= q ? (p, q) : (q, p);
+        // 三个顶点按 y 排好(不经数组与比较委托)。
+        if (b.Y < a.Y)
+        {
+            (a, b) = (b, a);
+        }
+        if (c.Y < b.Y)
+        {
+            (b, c) = (c, b);
+            if (b.Y < a.Y)
+            {
+                (a, b) = (b, a);
+            }
+        }
+        Line longEdge = new(a.X, a.Y, c.X, c.Y);
+        AddBand(a.Y, b.Y, longEdge, new Line(a.X, a.Y, b.X, b.Y), ordered: false);
+        AddBand(b.Y, c.Y, longEdge, new Line(b.X, b.Y, c.X, c.Y), ordered: false);
     }
 
-    private void AddBand(double top, double bottom, Func<double, (double Left, double Right)> span)
+    /// <summary>
+    /// top ≤ y &lt; bottom 之间两条线所夹的部分:<paramref name="ordered" /> 时 <paramref name="first" /> 是左边线(左在右的右边时那一段不画),
+    /// 否则每条子扫描线取两个交点的较小 / 较大值。原先每条子扫描线调一次委托,每个梯形、三角形分配闭包。
+    /// </summary>
+    private void AddBand(double top, double bottom, Line first, Line second, bool ordered)
     {
         double yStart = Math.Max(top, Bounds.Y), yEnd = Math.Min(bottom, Bounds.Bottom);
         if (yEnd <= yStart)
@@ -416,6 +502,7 @@ internal sealed class CoverageMask
         const float weight = 1f / SubRows;
         for (int row = (int)Math.Floor(yStart); row < (int)Math.Ceiling(yEnd); row++)
         {
+            WorkBudget.Charge(SubRows);
             for (int k = 0; k < SubRows; k++)
             {
                 double y = row + ((k + 0.5) / SubRows);
@@ -423,7 +510,11 @@ internal sealed class CoverageMask
                 {
                     continue;
                 }
-                (double left, double right) = span(y);
+                double left = first.XAt(y), right = second.XAt(y);
+                if (!ordered && right < left)
+                {
+                    (left, right) = (right, left);
+                }
                 AddSpan(row, left, right, weight);
             }
         }
@@ -439,6 +530,7 @@ internal sealed class CoverageMask
         }
         int offset = (row - Bounds.Y) * Bounds.Width;
         int first = (int)Math.Floor(left), last = (int)Math.Ceiling(right) - 1;
+        WorkBudget.Charge(1 + Math.Max(0, last - first + 1));
         for (int px = first; px <= last; px++)
         {
             double covered = Math.Min(right, px + 1) - Math.Max(left, px);

@@ -42,7 +42,7 @@ public sealed class CngSignerTests
     [SupportedOSPlatform("windows")]
     internal static void DeleteKey(string name)
     {
-        using CngKey key = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
+        using var key = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
         key.Delete();
     }
 
@@ -66,7 +66,7 @@ public sealed class CngSignerTests
             string name = CreateKey(algorithm, bits);
             try
             {
-                using CngSshSigner signer = CngSshSigner.Open(name);
+                using var signer = CngSshSigner.Open(name);
                 Assert.AreEqual(expected, signer.SignatureAlgorithms[0]);
                 Assert.IsFalse(signer.IsLocalAndCheap);
                 Assert.AreEqual(name, signer.KeyName);
@@ -74,7 +74,7 @@ public sealed class CngSignerTests
                 byte[] signature = await signer.SignAsync(data, expected);
                 Assert.IsTrue(signer.PublicKey.VerifySignature(signature, data, expected), $"{algorithm.Algorithm}：签名验不过");
 
-                using CngKey raw = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
+                using var raw = CngKey.Open(name, CngProvider.MicrosoftSoftwareKeyStorageProvider);
                 Assert.AreEqual(CngExportPolicies.None, raw.ExportPolicy, "这把钥确实导不出来");
             }
             finally

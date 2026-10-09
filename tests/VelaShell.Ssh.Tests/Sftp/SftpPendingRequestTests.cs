@@ -92,7 +92,7 @@ public sealed class SftpPendingRequestTests
     {
         string marker = Guid.NewGuid().ToString("N");
         List<Exception> unobserved = [];
-        EventHandler<UnobservedTaskExceptionEventArgs> handler = (_, e) =>
+        void handler(object? _, UnobservedTaskExceptionEventArgs e)
         {
             if (e.Exception.InnerExceptions.Any(x => x.Message == marker))
             {
@@ -101,7 +101,7 @@ public sealed class SftpPendingRequestTests
                     unobserved.Add(e.Exception);
                 }
             }
-        };
+        }
 
         TaskScheduler.UnobservedTaskException += handler;
         try

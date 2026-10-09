@@ -254,7 +254,6 @@ internal static class SshConnectionAssembler
     /// </remarks>
     internal static SshAlgorithmSet Algorithms(VelaConnectionInfo info) => SshAlgorithmPreferences.Build(info.Ssh);
 
-
     /// <summary>连本机 agent。</summary>
     /// <remarks>
     /// Windows 上 agent 服务没起时命名管道根本不存在 —— 等它出现的时限在库里

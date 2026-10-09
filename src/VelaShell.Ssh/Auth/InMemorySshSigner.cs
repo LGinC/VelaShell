@@ -102,7 +102,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             throw new ArgumentOutOfRangeException(nameof(bits), bits, "RSA 密钥要 2048–16384 位，且是 8 的倍数。");
         }
 
-        RSA rsa = RSA.Create(bits);
+        var rsa = RSA.Create(bits);
         try
         {
             return FromRsa(rsa);
@@ -127,7 +127,7 @@ public sealed class InMemorySshSigner : ISshSigner, IDisposable
             _ => throw new ArgumentOutOfRangeException(nameof(bits), bits, "ECDSA 只支持 256 / 384 / 521 位（NIST P-256 / P-384 / P-521）。"),
         };
 
-        ECDsa ecdsa = ECDsa.Create(curve);
+        var ecdsa = ECDsa.Create(curve);
         try
         {
             return FromEcdsa(ecdsa);

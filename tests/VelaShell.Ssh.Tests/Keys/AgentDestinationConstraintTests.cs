@@ -200,8 +200,8 @@ public sealed class AgentDestinationConstraintTests
         using var key = InMemorySshSigner.GenerateEd25519();
         SshPublicKey[] big = [.. Enumerable.Range(0, 32).Select(_ =>
         {
-            using ECDsa ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP521);
-            using InMemorySshSigner signer = InMemorySshSigner.FromEcdsa(ecdsa);
+            using var ecdsa = ECDsa.Create(ECCurve.NamedCurves.nistP521);
+            using var signer = InMemorySshSigner.FromEcdsa(ecdsa);
             return signer.PublicKey;
         })];
         SshAgentHopHost host = new("h", big);
@@ -362,7 +362,7 @@ public sealed class AgentDestinationConstraintTests
         listener.Listen();
 
         List<Task> sessions = [];
-        Task accepting = Task.Run(async () =>
+        var accepting = Task.Run(async () =>
         {
             while (!cts.IsCancellationRequested)
             {

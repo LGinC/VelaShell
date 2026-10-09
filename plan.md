@@ -1757,7 +1757,57 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 「Code scanning AI findings」那一项是 GitHub 托管的 Copilot 任务,#562 之前就一直失败、日志里只有退出码,不在仓库的 CI 里,没有动。文档同步在 velashell-docs#92(规格 04 的 `.ppk` 决策)。
 全量测试通过(ShellIntegration 32 项按环境早退跳过,属既有行为)。
 
-## ✅ 167. 2026-09-22 AI 插件:provider 健康检查 + 请求故障转移(用户定稿)
+## ✅ 167. 2026-10-07 内置 X 服务端:按第二次全库审查的结论逐条修复(`xs_plan.md`)
+
+**一、来由**:2026-10-07 对 `src/VelaShell.XServer` 与宿主的 X Server 做了第二次全库审查(第一次见 §124):分领域读代码、对照 X.Org 协议与扩展规范、ICCCM、EWMH(全程守净室规程,没有打开任何其它 X 服务端或 Mesa 的源码),结论写成仓库根的 `xs_plan.md`(未入库的草案):184 条问题(🔴 9 / 🟠 43 / 🟡 132,分 X、连接 CN、窗口 WN、绘图 DR、输入 IN、GLX GL、宿主 API、客户端兼容 CP 八组)、30 项可以支持的功能(F1–F30)、11 条待拍板的决策(Q1–Q11)、16 条测试缺口(T1–T16)。照计划逐条修,一条一个本地提交:`dev` 上 184 个(183 个带 `xs_plan:` 行,库 165 个、宿主 40 个,有的两边都动)。前 50 条在主会话里修;其余按子系统分给六个并行的会话,各在自己的 git worktree 里做完再 cherry-pick 回 `dev`、手工合冲突。产品层面的取舍按决策表里保守的建议走。文档在 velashell-docs 的 `fix/xserver-review-fixes`([velashell-docs#93](https://github.com/VelaShellLabs/velashell-docs/pull/93),`zh/` 与 `en/` 一起改)。每条提交信息里写着它对应哪一条、为什么、怎么验证的;这里只记全貌。
+
+**二、做了什么**(按领域):
+- **资源与拒绝服务**:每项工作的工作量预算(2²⁸ 单位,扣光回 BadAlloc / GL 的 OUT_OF_MEMORY),持锁超过 250 ms 记日志,宿主限时读像素;每客户端 1 GiB / 全局 2 GiB 的内存账(像素图、属性、字形、DBE、区域、GL 对象与表面);握手阶段至多 32 条、10 秒时限、授权字段 256 字节;宿主回调合并、响铃节流;Retain 客户端至多 16 个;客户端触发的日志转义并限额;GetImage 回复超 256 MB 回 BadAlloc。
+- **安全**:剪贴板跟着键盘焦点所在的会话(`ClipboardFollowsFocus`),PRIMARY 同步默认关(Q3);可以限制经 SSH 转发来的程序用 XTEST、原始按键与设备层级(`RestrictForwardedClients`,默认关,Q5);`_NET_ACTIVE_WINDOW` 防焦点窃取,弹出层只在用户用 X 窗口时置顶;服务端占住根窗口的 SubstructureRedirect 与 `WM_S0`,自己的窗口受保护,save-set 生效;SetSelectionOwner、SetInputFocus 的时间戳规则;Unix 套接字(占用探测限时、名字被占整个显示号不用、目录属主核对、`/tmp/.X{N}-lock`、按对端 uid 授权)、MIT-SHM 只给同一 IPC 命名空间的对端、Windows 上 TCP 独占绑定;`ListenTcp` 默认只在配了 cookie 时开(Q4);cookie 长度;交给宿主的标题去掉控制符与双向控制符;内置引擎下勾掉「受信任」时直说转发开不起来(X-3)。
+- **按协议改对的**:核心绘图在整数坐标采样,宽线与弧的虚线、接头、端帽;CopyArea / CopyPlane / GetImage 读窗口源;GC 参数校验与「出错不产生效果」;SYNC、Present、DAMAGE、DBE、Composite 的语义;XInput2 按 deviceid 存选择、原始事件报设备位置、自动抓取的 crossing、抓取的时间戳与冻结、被动抓取冲突;XKB 的字母类型、自动重复按 X 的语义(Q10)、ChangeKeyboardControl 与 SetPointerMapping 生效;RANDR / XINERAMA;ConfigureWindow 全集、CirculateWindow、VisibilityNotify、win-gravity;剪贴板双向 INCR、MULTIPLE、COMPOUND_TEXT;光标、字体别名;颜色名换成 X.Org 的 `rgb.txt`;GLX 的 create_context、纹理绑定悬空、像素图表面随 FreePixmap 释放、状态命令校验。
+- **宿主当窗口管理器**:快照补齐 ICCCM / Motif / EWMH 提示,外框按重力摆、USPosition 照办;锁定键同步、日韩巴西键盘与 F13–F24;最大化 / 全屏时客户端自己改尺寸推回原生尺寸;InputOnly 与桌面类窗口不开原生窗口;形状以外的点击穿透、窗口透明度、urgency 闪任务栏;对 `_NET_WM_PING` 没有回应时可以强制结束(KillTopLevelClient);停 X Server 前说清会断开几个程序;客户端清单与连接标签(SSH 会话的 `user@host:port`);`BreakGrabs` 等卡住时的恢复手段。
+- **Java**:实测 OpenJDK 17 的窗口管理器判定 —— 占住 `WM_S0` 之后名字不认得就当成会套外框、最大化与改尺寸后不重排 —— `WindowManagerName` 默认改为 `LG3D`(CP-9);互操作镜像加 `default-jdk`,RealClientTests 加 Swing 用例。
+- **性能**:光栅化与 RENDER 的整数路径、平铺按行整段拷、重画时的可见区域不再 O(n²)、被动抓取按 detail 分桶、GL 的三角形光栅与显示列表、交换只拷变化的像素等(前后数字写在各提交里)。
+
+**三、没做的 / 只做了一部分**(要做的已记入 `feature-plan.md`):
+- **新功能**:F1–F30 整体不在这一批(`xs_plan.md` 第五节)。修法要靠新功能的条目只做了库层面的最小修复:卡住时恢复与客户端清单的宿主入口(F3)、宿主光标的 Warp(F8)、屏保 Suspend 转告宿主(F9)、更宽的边缘缩放区(F11)、其余字族(F21)、GL 的选择 / 反馈 / 求值器(F23);点本机窗口或桌面就收起 X 的弹出菜单要全局指针钩子(WN-M7)。
+- **只做了一部分**:PolyArc 连续弧之间的接头(DR-M1);RENDER 的 alpha-map 接受不生效(DR-M4);a1 目标、Disjoint / Conjoint 与混合模式仍走浮点路径(DR-P3);cursor 字体的字形光标没有位图(WN-M5);别的会话仍能看到 SelectionClear 与属主跳变(WN-S11)。
+- **缺验证环境**:分数缩放下最后一列像素可能被裁(API-H13 ❓,各平台待查);macOS 上 Command 组合键收不到 KeyUp 的处理(IN-E19)没有实机;macOS / FreeBSD 的 `getpeereid`(CN-S8)。
+- **审查时新发现、没修**:间接 GLX 选不到单缓冲视觉(GetVisualConfigs 每个视觉只列双缓冲配置,要加单缓冲的 X 视觉)。
+
+**四、验证**:`VelaShell.XServer.Tests` 的测试方法从 199 个到 413 个,426 例通过 / 9 例按平台跳过;开互操作(Docker 里的真实客户端:xterm、xeyes、xclock、xlogo、RENDER 版本、直接与间接 glxgears、Swing)12 例全过、没有 `[SKIP]`。宿主 `VelaShell.Tests` 1811 / 8、`Infrastructure.Tests` 633 / 4、`Ssh.Tests` 1349 / 57、`Core.Tests` 704 通过,只有 `X11_RefusedByServer_KeepsAgentForwardingAndWarnsOnce` 因靶机镜像建于 Dockerfile 那次改动之前而失败(同 §159、§161,在这一批之前的提交上一样失败)。全解决方案零警告零错误。每条修复的回归用例都在旧代码上确认过失败(引用新 API、旧代码上编不过的除外);只在 Linux 上才有的行为(backlog 满的 AF_UNIX 阻塞 connect、fd 用尽、IPC 命名空间)在 Linux 容器里核对过。合并六个分支时手工合了几处冲突(Map 里 NameWindowPixmap 与 InputOnly、XFIXES 的光标图像、平铺背景、SYNC / Present 的清理钩子拆成「连接断开」与「资源销毁」、Dispatch),并修了三条机器忙时偶发失败的用例。
+
+## ✅ 168. 2026-10-07 CI:#565 上的两处红
+
+- **`放套接字文件的目录是符号链接或属于别的用户时不开套接字文件`(macOS)**:§167 起配置了要监听、结果一种传输也没开起来时 `StartAsync` 抛 `IOException`。这条用例 `ListenTcp = false`、套接字文件又因目录不可信不开:Linux 上抽象名照样开着,macOS 没有抽象名,按约定就该抛 —— 用例原先当它照常返回。改为 Linux 上照常开起来、别的平台抛 `IOException`;没写成按平台的 `if` 分支,免得打断分析器对前面 Linux / macOS 守卫的推断(CA1416)。库不用改。
+- **`输出读够了告诉OpenSSH_之后的输出丢弃且不会停住`(Ubuntu,偶发;平时 15–28 ms,这次 30 秒被掐)**:真的卡死,是 SSH 库的竞态。`WindowedPipeReader` 收尾时先清点管道里没读的字节、报成已消费(回补窗口),再完成内层读端;两步之间接收循环照样往管道里写,那几包随读端完成一起丢掉、没人回补。机器忙、用户线程恰好在那里被换下时,这段空隙里能进来半个窗口以上,攒着的回补就再也够不到阈值(窗口的一半),对端停在零窗口上,退出状态等不来。修法:读端收尾时先在通道的状态锁里标记 `IsAbandoned`,`TryDeliver` 在同一把锁里看它 —— 之后到的数据走「丢弃并立刻回补」那条路,清点到的就是全部。在清点与完成之间人为睡 20 ms 能稳定摆出来:改之前两例都 30 秒超时,改之后通过。回归用例 `WindowedPipeReaderTests` 在清点回调里(正是那段空隙)模拟接收循环送到一包,把标记挪回清点之后它就红。规格 05 §3.2 / §5.2 说的本来就是「丢弃的数据照常回补」,行为没变,文档不用改。
+
+「GitHub Advanced Security」那一项失败是 Copilot 的月度额度用完(HTTP 402),不在仓库的 CI 里,没有动。
+
+## ✅ 169. 2026-10-07 CI:输出队列记帐的飞行窗口把连接判死;ppk 截断用例撞上自己的超时
+
+- **输出队列:单条大回复写出去的途中所到达的每条消息都被当成积压(`XClient.MaxQueuedOutputBytes` 64 MB)**。`PumpOutputAsync` 原先整批写完并 flush 之后才 `NoteWritten`,于是 71 MB 的 GetImage 回复(三块 4K 横排的 `xwd -root` 约 100 MB)在飞行期间一直把计数顶在上限之上 —— 客户端读完它之后紧接着发的那条请求,回它时被 `Send` 判成「客户端不读了」、`Abort()` 掉,回复永远发不出去。[run 37590196560](https://github.com/joesdu/VelaShell/actions/runs/37590196560/job/112689572329) 的 macOS 作业就是这么红的:5.63 秒里约 0.6 秒收完 71 MB,再 5 秒等 `SyncAsync` 超时(`XTestClient.NextAsync` 的默认预算)。3 核 runner 上线程池下限就是核数、注入慢,写出端那个续延排不上队,判死的一侧先跑完 —— 判据是「永久不回」而不是「慢」,机器闲时才赌得赢。**改法**:写出端**一取走就减**,`_queuedBytes` 从此表示「还在通道里、没交给套接字」,语义正是注释原本的意思;保护不变 —— 客户端真不读时写出端堵在写上,后续消息照样在通道里累积到 64 MB 才断。生产上同样受害(回复完 100 MB 之后客户端再发请求就可能被判死)。回归用例 `大回复还在写出去的途中小请求照常排队_不被当成积压判死` 不赌调度:客户端故意不把回复读完,把「还在写」从一瞬间撑成稳态,判据是连接还在不在(旧代码 0 个客户端、新代码 1 个,本机双向验过),所以也不必读完那 71 MB。
+- **`ppk截断到任意位置只报私钥异常` 撞上 Ssh.Tests 自己那份 30 秒全局超时([run 37526852105](https://github.com/joesdu/VelaShell/actions/runs/37526852105))**:不是挂死。逐点量过:493 个字符的加密 .ppk 上只有**一个**截断点(492,整份只差结尾那个换行)会真的走到口令派生 —— Argon2id 8 MB × 55 passes,本机 1.2 秒、CI 上 4.34 秒,3 核 runner 上内存带宽被瓜分时涨到 30 秒以上;其余 492 个截断点都在 20 毫秒以内(结构不全,解析在派生之前就抛)。**改法**:最后一个点不扫 —— 那不算「截断」,是完整文件,由 `PuttyKeyTests` / `EncryptedOpenSshKeyTests` 覆盖(口令对与错各派生一次);截断扫描仍按 3 个字符密扫,本机 1.15 秒 → 14 毫秒。顺带把 `test.runsettings` 里「30 秒还没完就一定是挂了,不会是这台机器慢」那句改掉:CPU 密集的除外。
+- **顺带查清、不用改的**:`只连限定的地址族_从指定的本机地址发起` 在 macOS 上的 `EADDRNOTAVAIL` 不是偶发。`20530d38`(10-06)让这条用例从 127.0.0.2 发起,而 macOS 的 lo0 只配了 127.0.0.1 —— 之后每个 macOS 作业都红(4/4);`b36eaa8d`(10-07)改成 macOS 上从 127.0.0.1 发起,之后全绿。按提交的祖先关系核对过:不含那个兜底的 macOS 运行 4/4 红,含的全绿。
+
+## ✅ 170. 2026-10-07 CI:主机密钥轮换的用例等宣告靠轮询,机器忙时就红
+
+- **现象**:[run 37638519269](https://github.com/joesdu/VelaShell/actions/runs/37638519269)(main,合并 #566 之后)的 ubuntu 作业连着两次红,**两次不是同一条**:`宣告不完整时不删旧钥`、`证实了的新钥补记进known_hosts`。同一份提交的 PR run(#566)三个平台全绿;main 与 dev 的树完全相同(`git diff origin/main origin/dev` 为空);三次的 `VelaShell.Ssh.Tests` 都是 55–57 秒 —— 没有整体变慢,是单点抖动。判定为偶发,不是合并引出的回归。
+- **根因**:`HostKeyRotationTests.ConnectAsync` 用「100 × 10 毫秒」轮询 `connection.LastHostKeyUpdate`,是个**固定 1 秒预算**。宣告(`hostkeys-00@openssh.com`)在认证之后才由服务端发出,客户端还要再走一轮证明才给结果;抖动落在这一秒之外时,要么 `update` 直接是 null(`Assert.IsNotNull(first)` 红),要么前一步 TOFU 该补的那把还没落盘就被读了(文件里没有那把 RSA)。就是 §71 那句「固定泵几十毫秒等于赌调度」。
+- **改法**:`TestChannelScript` 加 `HostKeysAnnouncementSent` —— 宣告发出之后打个点;用例等这个**确定事件**,再给客户端 20 秒把它走完(证明 + 写 known_hosts)。**「不会有更新」的那一条**(没打开 `AllowHostKeyUpdates`)没有信号可等,缺席只能等出来,单独给 2 秒并写明:这个方向赌输了是断言变弱(漏判),不是 CI 上红。
+- **验证**:让服务端的宣告迟到 3 秒(临时加的延迟,已撤)撑大窗口 —— **旧写法 5/5 红、新写法 5/5 绿**。全量 `VelaShell.Ssh.Tests` 1351 通过 / 0 失败。
+
+## ✅ 171. 2026-10-07 CI:把「3 核 + 线程池下限 = 核数」这个放大器压下去
+
+- **为什么不再逐个修**。§169 / §170 修掉了四处依赖时序的地方(输出队列记帐是真 bug,另三条是用例在赌调度),可每次运行仍从长尾里冒出别的:[run 37638519269](https://github.com/joesdu/VelaShell/actions/runs/37638519269) 的 ubuntu 连着两次红(轮换用例的两条),[run 37644333884](https://github.com/joesdu/VelaShell/actions/runs/37644333884) 的 macOS 又红了另外两条(`sftp_server起不来时报出退出码与它的stderr`、`SendEofAsync被取消EOF照样发出去`)。逐个修是在打地鼠 —— 共同的放大器一直没动。
+- **放大器**:macOS runner 是 3 核;线程池下限默认就是核数,多出来的线程靠「爬坡」注入(每秒一两条);而每条连接要占读端、写出端、执行循环好几个续延,另有约三套程序集同时跑。于是「谁的续延先排上队」全看运气,运气不好的那条用例就红,而且红法不固定。
+- **改了两处**:
+  - `VelaShell.Ssh.Tests` 与 `VelaShell.XServer.Tests` 各加 `TestSession`(`[AssemblyInitialize]`):`ThreadPool.SetMinThreads(max(16, 核数 × 4))`,工作线程与 I/O 完成端口都抬。它只管「线程到得快不快」,**不管并发度,也不改任何断言** —— 该等信号的照等(见 §170)。
+  - `VelaShell.Ssh.Tests` 的 `Parallelize` `Workers` 从 0(= 核数)压到 **2**:不再把 3 核铺满,CPU / 内存带宽密集的用例不再互相挤。
+- **代价(写在这里,免得以后忘了)**:`Workers=2` 让本机(核多)这套从 **10 秒变 60 秒**;CI 上 3 核,预计 55 秒 → 80 秒左右。`test.runsettings` 是 IDE 与 CI 共用的(仓库刻意如此),要本机不受影响得另做区分。
+- **验证**:临时让 `Init` 抛一次,确认 `AssemblyInitialize` 真的会跑(`程序集初始化方法 …TestSession.Init 引发异常`),探针已撤;`VelaShell.Ssh.Tests` 1351 通过、`VelaShell.XServer.Tests` 429 通过、全解决方案 `-warnaserror` 0 警告 0 错误。
+
+## ✅ 172. 2026-09-22 AI 插件:provider 健康检查 + 请求故障转移(用户定稿)
 
 回答不上来时不再一头撞死:按用户排好的有序链自动换一家继续说,UI 落在全局设置窗口新一节。
 口径全部由用户答完,实现照办,过程中没有改设计。
@@ -1811,7 +1861,7 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 
 插件 README 新增「故障转移与健康检查」一节;`plan.md` 记本节。
 
-## 168. 2026-10-07 AI 插件:同供应商多 API Key、逐 Key 检测与可选轮流首发
+## 173. 2026-10-07 AI 插件:同供应商多 API Key、逐 Key 检测与可选轮流首发
 
 **行为**:目录的 API Key「再添加一个」改为同实例「添加 API Key」,只收空遮罩草稿,不复制供应商/模型或触发模型拉取。OAuth 第二账号仍独立实例。主槽沿用 `apikey:<provider.Id>`,补充槽按 Guid 加密;JSON 仅存 `AdditionalApiKeyIds`、`ActiveApiKeyId` 与默认关闭的 `BalanceApiKeys`,旧配置不迁移、不合并历史实例。
 
@@ -1826,24 +1876,3 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 **文档**:更新插件工程 README 的入口、逐槽管理、机密归属和故障转移说明;未改变 SDK 契约或外部插件架构/威胁模型文档。
 
 最终批准筛选专项 **94/94**、插件全量 **975/975** 通过,本次插件构建 **0 警告 / 0 错误**;未运行宿主完整解决方案构建或 Docker/跨平台发布集成。临时消费者的 Program.cs/Proof.csproj 已删除,仅保留运行产物与420/900光栅图作为验收证据。
-
-## 177. 2026-10-09 AI 插件:供应商全部 API Key 状态检测
-
-- 供应商设置页增加「检测全部 Key」及一次性模型选择器，只列能由全部已保存 Key 使用的模型；不自动选首模型，选择前与纯语言切换均零 HTTP。按行顺序检测每把 Key，固定各行凭据、复用既有真实 SSE 探活与机密/端点复验；单把鉴权失败继续检测剩余 Key，冷却中的 Key 也能主动复测，各行独立显示结果。
-- 检测期间入口变为「取消」并禁用单行重复探测；未保存地址/协议或 Key 草稿先提示保存。取消、导航、关闭窗口、编辑/增删 Key 或模型请求快照失效后停止剩余请求、丢弃迟到证据；无共同模型时禁用批量入口。检测不切当前模型/当前 Key，不改变轮流使用开关与游标。五语文案与可访问用途名齐全。
-- 新增批量检测专项 **9/9** 通过：一次选模型、A成功/B401/C成功仍逐行完成、仅B冷却、取消/导航/编辑/模型变化/健康代际变化停止队列、三类未保存草稿拒发 HTTP。独立消费者装载实际 SettingsView 与宿主暗色令牌、Skia，真实 SSE 观察到 A→B→C 三把固定凭据与相同型号；原冷却B成功解除。420/900 DIP 实际渲染确认入口、选择器与三行检测结果可见，未改变当前模型、Key或默认关闭的轮流开关。插件工程 README 同步使用与取消边界；没有更改 SDK 契约或插件架构文档。
-- 当前源码插件完整回归 **1411/1411** 通过（0失败、0跳过），包含新增9项批量检测回归；临时消费者源码已清理，保留420/900光栅截图作为验收证据。未重置、暂存或提交现有修改。
-
-## 178. 2026-10-09 AI 插件:单 Key 检测复用最近选择的模型
-
-- 同一供应商编辑页按模型配置 ID 记住单 Key 检测最近选择的模型；点击其它行的检测按钮时，默认选中并以所点行的已保存 Key 直接探活，无须再次选择。首次仍明确选模型；记忆模型已删除、改为独立 Key或不符合补充槽 origin 范围时，回到未选择状态，不擅自检测首模型。导航/重载编辑页清除临时记忆，不新增设置字段。
-- 预选在选择事件退订期间完成，只有用户点击检测才主动探活，语言切换与状态刷新不重测；在途行再次点击仅取消，不重启。原未保存地址/协议/Key草稿、固定凭据复验和迟到证据护栏不变；批量检测仍按其一次性模型选择流程工作。
-- Key相关专项 **85/85** 通过，包括新增删除/独立Key/草稿三项回归、同名模型ID复用、跨origin模型失效与既有取消用例。独立实际 SettingsView 窗口与环回SSE消费者观察到：A明确选择非首模型chosen，随后只点B检测按钮，B自动选中chosen并收到真实成功；HTTP顺序严格为A:chosen→B:chosen，换语言后仍只有两次请求，两行状态均显示所选型号。插件README同步使用边界。
-- 当前源码插件完整回归 **1414/1414** 通过（0失败、0跳过）；独立消费者临时源码已清理。未重置、暂存或提交现有修改。
-
-## 179. 2026-10-09 AI 插件:批量检测失效编辑行审核修复
-
-- 修复已复现的 P2：补充 Key 空编辑行被外部删除后仍留在页面，批量入口可用却在第一轮因失效槽直接退出，连有效主 Key 也没有检测。统一检查空值及槽归属，保留编辑稿但禁用批量入口/模型选择器，并在入口下方明确提示取消该行编辑；展开入口及晚到模型选择同样复验，不再静默接受操作。
-- 取消编辑并刷新移除失效行后恢复有效 Key 检测。新增五语独立提示区域，语言切换即时更新，不覆盖保存、冲突或其它操作错误；不改变原单 Key 检测、模型记忆、请求凭据复验与取消边界。
-- 新增覆盖原失效空编辑行、旧选择器晚到选择、五语用途名与提示、取消后真实恢复的回归；Key专项 **86/86** 通过。独立实际 SettingsView 窗口验证修后入口/选择器禁用、提示可见且零 HTTP，提示刷新不改其它操作错误；取消失效编辑后收到主 Key A 的一次真实 SSE，状态显示通过及 m1。插件README同步恢复操作与提示归属。
-- 当前源码插件完整回归 **1415/1415** 通过（0失败、0跳过）；临时消费者源码已清理。未重置、暂存或提交现有修改。

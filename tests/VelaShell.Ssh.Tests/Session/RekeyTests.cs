@@ -296,7 +296,7 @@ public sealed class RekeyTests
             timeProvider: clock);
 
         // 一拍一拍地拨到 55 秒：每拍等巡检循环睡下（5 秒后醒）再拨，它每一拍都看一次阈值。
-        TimeSpan tick = TimeSpan.FromSeconds(5);
+        var tick = TimeSpan.FromSeconds(5);
         for (int second = 5; second <= 55; second += 5)
         {
             await clock.WaitUntilArmedAsync(tick, host.Token);

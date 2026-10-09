@@ -1123,7 +1123,7 @@ public sealed partial class OpenSshInteropTests
             {
                 string fixture = Path.Combine(AppContext.BaseDirectory, "Keys", "Fixtures", name);
                 using InMemorySshSigner key = await SshPrivateKeyFile.LoadAsync(fixture);
-                SshPublicKey certificate = SshPublicKey.Parse(await File.ReadAllTextAsync(fixture + "-cert.pub"));
+                var certificate = SshPublicKey.Parse(await File.ReadAllTextAsync(fixture + "-cert.pub"));
                 await agent.AddIdentityAsync(key, certificate, "vela-" + name);
 
                 string algorithm = certificate.SignatureAlgorithms[0];
@@ -1198,11 +1198,11 @@ public sealed partial class OpenSshInteropTests
                 $"printf 'dest.example %s\\n' '{destination.PublicKey.ToOpenSshFormat()}' > {scratch}/known_hosts && " +
                 $"SSH_AUTH_SOCK={socket} ssh-add -H {scratch}/known_hosts -h dest.example {scratch}/id && cat {scratch}/id.pub");
             Assert.AreEqual(0, prepared.ExitCode, prepared.StandardError);
-            SshPublicKey userKey = SshPublicKey.Parse(prepared.StandardOutput.Trim().Split('\n')[^1]);
+            var userKey = SshPublicKey.Parse(prepared.StandardOutput.Trim().Split('\n')[^1]);
 
             // ① 声明成 dest.example 的会话，替它的认证请求签名。
             SshSessionProof toDestination = await ProofAsync(destination);
-            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            await using (var agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
             {
                 Assert.IsTrue(
                     await agent.DeclareSessionAsync(toDestination, SshAgentConnectionPurpose.Authentication),
@@ -1215,14 +1215,14 @@ public sealed partial class OpenSshInteropTests
 
             // ② 篡改过签名的声明：agent 必须拒绝。
             SshSessionProof forged = toDestination with { Signature = [.. toDestination.Signature[..^1], (byte)(toDestination.Signature[^1] ^ 0xFF)] };
-            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            await using (var agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
             {
                 Assert.IsFalse(await agent.DeclareSessionAsync(forged, SshAgentConnectionPurpose.Authentication));
             }
 
             // ③ 声明成别的主机的会话：受约束的钥拒签。
             SshSessionProof toElsewhere = await ProofAsync(elsewhere);
-            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            await using (var agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
             {
                 Assert.IsTrue(await agent.DeclareSessionAsync(toElsewhere, SshAgentConnectionPurpose.Authentication));
 
@@ -1233,7 +1233,7 @@ public sealed partial class OpenSshInteropTests
             }
 
             // 不声明时 agent 怎么对待受约束的钥 —— 只记下来，不断言（这正是本库曾经的样子）。
-            await using (SshAgentClient agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
+            await using (var agent = SshAgentClient.FromStream((await connection.OpenUnixSocketTunnelAsync(socket)).AsStream(), socket))
             {
                 string unbound;
                 try
@@ -1324,7 +1324,7 @@ public sealed partial class OpenSshInteropTests
         echo.Bind(new IPEndPoint(IPAddress.Loopback, 0));
         echo.Listen(4);
         int echoPort = ((IPEndPoint)echo.LocalEndPoint!).Port;
-        Task serving = Task.Run(async () =>
+        var serving = Task.Run(async () =>
         {
             using Socket accepted = await echo.AcceptAsync();
             byte[] buffer = new byte[64];
@@ -1378,13 +1378,13 @@ public sealed partial class OpenSshInteropTests
         string localSocket = Path.Combine(Path.GetTempPath(), $"vs-{Guid.NewGuid():N}"[..11] + ".sock");
         try
         {
-            await using LocalPortForwarder forwarder = LocalPortForwarder.StartToUnixSocket(
+            await using var forwarder = LocalPortForwarder.StartToUnixSocket(
                 connection, remoteSocket, new LocalPortForwardOptions { ListenSocketPath = localSocket });
 
             using Socket client = new(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
             await client.ConnectAsync(new UnixDomainSocketEndPoint(localSocket));
-            await using SshAgentClient agent = SshAgentClient.FromStream(new NetworkStream(client, ownsSocket: false), localSocket);
-            using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+            await using var agent = SshAgentClient.FromStream(new NetworkStream(client, ownsSocket: false), localSocket);
+            using var key = InMemorySshSigner.GenerateEd25519();
             await agent.AddIdentityAsync(key, "via-unix-forward");
 
             string listed = (await connection.RunAsync($"SSH_AUTH_SOCK={remoteSocket} ssh-add -l")).StandardOutput;
@@ -1447,8 +1447,8 @@ public sealed partial class OpenSshInteropTests
             Assert.HasCount(lines.Length, await File.ReadAllLinesAsync(knownHosts));
 
             // 〔Q4〕记着一把 sshd 没有的钥（换下来的旧钥）：真 sshd 的宣告里没有它，连上之后从 known_hosts 删掉，别的行不动。
-            using TestHostKey retired = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
-            SshPublicKey retiredKey = SshPublicKey.Decode(retired.PublicKeyBlob);
+            using var retired = TestHostKey.Create(SshAlgorithmNames.SshEd25519);
+            var retiredKey = SshPublicKey.Decode(retired.PublicKeyBlob);
             await File.AppendAllTextAsync(knownHosts, $"{lines[0].Split(' ')[0]} {retiredKey.KeyType} {Convert.ToBase64String(retiredKey.Blob.Span)}\n");
             // 新的策略实例：上面那个缓存着文件改动之前的内容。
             SshHostKeyUpdate third = await ConnectAndAwaitRotationAsync(
@@ -1493,7 +1493,7 @@ public sealed partial class OpenSshInteropTests
         string marker = $"vela-cng-{Guid.NewGuid():N}";
         try
         {
-            using CngSshSigner signer = CngSshSigner.Open(name);
+            using var signer = CngSshSigner.Open(name);
             SshCommandResult added = await admin.RunAsync(
                 $"mkdir -p ~/.ssh && chmod 700 ~/.ssh && echo '{signer.PublicKey.ToOpenSshFormat()} {marker}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys");
             Assert.AreEqual(0, added.ExitCode, added.StandardError);
@@ -1577,7 +1577,7 @@ public sealed partial class OpenSshInteropTests
 
         for (int round = 0; round < 2; round++)
         {
-            System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+            var elapsed = System.Diagnostics.Stopwatch.StartNew();
             SshConnection connection;
             try
             {

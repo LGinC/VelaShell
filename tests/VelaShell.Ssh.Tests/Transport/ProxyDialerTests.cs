@@ -474,7 +474,7 @@ $"Proxy-Authorization: Basic {Convert.ToBase64String(Encoding.UTF8.GetBytes("bob
             ConnectTimeout = TimeSpan.FromSeconds(1),
         };
 
-        System.Diagnostics.Stopwatch elapsed = System.Diagnostics.Stopwatch.StartNew();
+        var elapsed = System.Diagnostics.Stopwatch.StartNew();
         await using SshConnection connection = await SshConnection.ConnectAsync(options);
         Assert.AreEqual("来自目标", (await connection.RunAsync("hello")).StandardOutput);
         Assert.AreEqual(1, thinking.Evaluations, "跳板的主机密钥要经过这个策略");

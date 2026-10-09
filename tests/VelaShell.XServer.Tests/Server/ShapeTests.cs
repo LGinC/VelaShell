@@ -64,6 +64,85 @@ public sealed class ShapeTests
     }
 
     [TestMethod]
+    public async Task ShapeCombine只按客户端给的偏移放源形状_子窗口在10_10时并进父窗口不偏两倍()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        uint parent = c.NewId(), child = c.NewId();
+        await c.SendAsync(1, 24, b => b.U32(parent).U32(c.RootWindow).I16(50).I16(50).U16(100).U16(100).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(1, 24, b => b.U32(child).U32(parent).I16(10).I16(10).U16(20).U16(20).U16(0).U16(1).U32(0).U32(0));
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(child).I16(0).I16(0).I16(0).I16(0).U16(5).U16(5));   // 子窗口:左上 5×5
+        // Xt / Motif 的写法:把子窗口的形状并进父窗口,偏移给子窗口在父窗口里的位置。
+        await c.SendAsync(major, 3, b => b.U8(0).U8(0).U8(0).U8(0).U32(parent).I16(10).I16(10).U32(child));   // Combine:Set、Bounding ← Bounding
+        XMessage rects = await c.RequestAsync(major, 8, b => b.U32(parent).U8(0).Pad());                       // GetRectangles
+        Assert.AreEqual(1u, rects.U32(8), "一块");
+        Assert.AreEqual((10, 10, 5, 5), (rects.I16(32), rects.I16(34), rects.U16(36), rects.U16(38)),
+            "原先另外加了两个窗口内区原点之差,落在 (20, 20)");
+    }
+
+    [TestMethod]
+    public async Task 宿主拿到顶层的输入形状_是输入形状与边界形状的交集()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        (uint top, XTopLevelWindow handle) = await MapTopAsync(c, host, 0x000000);
+        Assert.IsNull(handle.Snapshot.InputShape, "没设输入形状");
+
+        // 输入形状:左上 30×20(xeyes、透明的通知气泡只在眼睛 / 正文上接收鼠标)。
+        await c.SendAsync(major, 1, b => b.U8(0).U8(2).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(30).U16(20));
+        await host.WaitForAsync(() => handle.Snapshot.InputShape is not null);
+        Assert.AreEqual(new XRect(0, 0, 30, 20), handle.Snapshot.InputShape!.Single(), "原先快照里没有输入形状");
+        IReadOnlyList<XRect> first = handle.Snapshot.InputShape;
+
+        // 边界形状只留右半边 → 有效输入区是两者的交集。
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(20).I16(0).U16(40).U16(40));
+        await host.WaitForAsync(() => handle.Snapshot.Shape is not null);
+        Assert.AreEqual(new XRect(20, 0, 10, 20), handle.Snapshot.InputShape!.Single());
+        Assert.AreNotSame(first, handle.Snapshot.InputShape);
+    }
+
+    [TestMethod]
+    public async Task 顶层改输入形状不重画_边界形状变大只Expose新露出来的部分()
+    {
+        using RecordingHost host = new();
+        await using X11Server server = new(host: host);
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte major = await ShapeMajorAsync(c);
+        (uint top, _) = await MapTopAsync(c, host, 0x000000, 0x8000);   // ExposureMask
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(30).U16(40));   // 边界:左半边
+        await c.SyncAsync();
+        async Task<List<XRect>> ExposedAsync()
+        {
+            await c.SyncAsync();
+            List<XRect> rects = [];
+            try
+            {
+                while (true)
+                {
+                    XMessage e = await c.NextEventAsync(12, timeoutMs: 100);
+                    rects.Add(new XRect(e.U16(8), e.U16(10), e.U16(12), e.U16(14)));
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            return rects;
+        }
+        await ExposedAsync();   // 映射与第一次设形状的 Expose 读掉
+
+        await c.SendAsync(major, 1, b => b.U8(0).U8(2).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(10).U16(10));   // 输入形状
+        Assert.IsEmpty(await ExposedAsync(), "输入形状不改看得见的东西:原先整窗重画、整窗 Expose");
+
+        await c.SendAsync(major, 1, b => b.U8(0).U8(0).U8(0).U8(0).U32(top).I16(0).I16(0).I16(0).I16(0).U16(60).U16(40));   // 边界:整个窗口
+        List<XRect> exposed = await ExposedAsync();
+        Assert.AreEqual(30 * 40, exposed.Sum(r => r.Width * r.Height), "只有新露出来的右半边");
+        Assert.IsTrue(exposed.All(r => r.X >= 30));
+    }
+
+    [TestMethod]
     public async Task 设形状发ShapeNotify且宿主拿到顶层形状()
     {
         using RecordingHost host = new();

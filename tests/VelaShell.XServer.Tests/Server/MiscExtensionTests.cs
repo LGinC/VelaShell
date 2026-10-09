@@ -110,6 +110,23 @@ public sealed class MiscExtensionTests
         Assert.IsLessThan(100u, after.U32(16), $"输入后空闲应归零,实际 {after.U32(16)} ms");
     }
 
+    /// <summary>用户在宿主的本机界面里打字:宿主报一声 NoteUserActivity,远端看到的空闲时间同样归零(不产生任何输入事件)。</summary>
+    [TestMethod]
+    public async Task 宿主报的本机活动让空闲时间归零()
+    {
+        await using X11Server server = new();
+        await using XTestClient c = await XTestClient.ConnectAsync(server);
+        byte saver = await MajorAsync(c, "MIT-SCREEN-SAVER");
+        await Task.Delay(120);
+        XMessage before = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
+        Assert.IsGreaterThanOrEqualTo(100u, before.U32(16), $"空闲 {before.U32(16)} ms");
+
+        server.NoteUserActivity();
+        server.NoteUserActivity();   // 连着报只排一个工作项
+        XMessage after = await c.RequestAsync(saver, 1, b => b.U32(c.RootWindow));
+        Assert.IsLessThan(100u, after.U32(16), $"本机有动静之后空闲应归零,实际 {after.U32(16)} ms");
+    }
+
     [TestMethod]
     public async Task DPMS的超时与开关往返()
     {
@@ -197,7 +214,7 @@ public sealed class MiscExtensionTests
         await c.SendAsync(1, 0, b => b.U32(window).U32(c.RootWindow).I16(0).I16(0).U16(10).U16(10).U16(0).U16(1).U32(0).U32(0));
 
         // NotifyMSC 目标 MSC 在几十天之后:每条一个计时器。
-        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingNotifyMsc + 1).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
+        ushort last = await c.SendManyAsync(Enumerable.Range(0, X11Server.MaxPendingPresents + 1).Select<int, (byte, byte, Action<XTestClient.Body>?)>(i =>
             (present, 2, b => b.U32(window).U32((uint)i).U32(0).U32(100_000_000).U32(0).U32(0).U32(0).U32(0).U32(0))));
         XMessage refused = await c.NextAsync(m => m.IsError && m.Sequence == last);
         Assert.AreEqual(11, refused.Detail, "超过上限:BadAlloc");
@@ -211,12 +228,12 @@ public sealed class MiscExtensionTests
                 await Task.Delay(10, timeout.Token);
             }
         }
-        Assert.AreEqual((1, X11Server.MaxPendingNotifyMsc), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)));
+        Assert.AreEqual((1, X11Server.MaxPendingPresents), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingPresents)));
 
         Task serving = c.ServerTask;
         await c.DisposeAsync();
         await serving.WaitAsync(TimeSpan.FromSeconds(3));
-        Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingNotifyMsc)), "断开时计时器一并取消");
+        Assert.AreEqual((0, 0), await server.InvokeAsync(() => (server.PendingFakeInputDelays, server.PendingPresents)), "断开时计时器一并取消");
     }
 
     [TestMethod]

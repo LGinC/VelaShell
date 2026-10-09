@@ -78,7 +78,11 @@ public sealed partial class X11Server
         });
         Register(new Extension("RENDER", RenderMajor, Render) { FirstError = RenderErrorBase, ErrorCount = 5 });
         Register(new Extension("Generic Event Extension", GenericEventMajor, GenericEventExtension));
-        Register(new Extension("XTEST", XTestMajor, XTest) { ClientClosed = CleanupXTest });
+        Register(new Extension("XTEST", XTestMajor, XTest)
+        {
+            ClientClosed = CleanupXTest,
+            VisibleTo = client => !IsRestricted(client),   // 伪造的输入与真实键盘无从区分(见 RestrictForwardedClients)
+        });
         Register(new Extension("XINERAMA", XineramaMajor, Xinerama));
         Register(new Extension("MIT-SCREEN-SAVER", ScreenSaverMajor, ScreenSaverExtension)
         {
@@ -95,6 +99,7 @@ public sealed partial class X11Server
             FirstError = SyncErrorBase,
             ErrorCount = 3,
             ClientClosed = CleanupSync,
+            ClientResourcesDestroyed = CleanupSyncResources,
         });
         Register(new Extension("DAMAGE", DamageMajor, DamageExtension)
         {
@@ -102,25 +107,28 @@ public sealed partial class X11Server
             EventCount = 1,
             FirstError = DamageErrorBase,
             ErrorCount = 1,
-            ClientClosed = CleanupDamage,
+            ClientResourcesDestroyed = CleanupDamage,
             WindowDestroyed = CleanupDamage,
         });
         Register(new Extension("Composite", CompositeMajor, CompositeExtension)
         {
             ClientClosed = CleanupComposite,
             WindowDestroyed = CleanupComposite,
+            PixmapFreed = CompositePixmapFreed,
         });
         Register(new Extension("DOUBLE-BUFFER", DbeMajor, Dbe)
         {
             FirstError = DbeErrorBase,
             ErrorCount = 1,
-            ClientClosed = CleanupDbe,
+            ClientResourcesDestroyed = CleanupDbe,
             WindowDestroyed = CleanupDbe,
         });
         Register(new Extension("Present", PresentMajor, Present)
         {
             ClientClosed = CleanupPresent,
+            ClientResourcesDestroyed = CleanupPresentResources,
             WindowDestroyed = CleanupPresent,
+            PixmapFreed = PresentPixmapFreed,
         });
         Register(new Extension("XKEYBOARD", XkbMajor, Xkb)
         {
@@ -146,6 +154,8 @@ public sealed partial class X11Server
             ErrorCount = 14,
             ClientClosed = _glx.CleanupClient,
             WindowDestroyed = _glx.CleanupWindow,
+            PixmapFreed = _glx.CleanupPixmap,
+            ResourceFreed = _glx.ResourceFreed,
         });
         if (ShmSupported)
         {
@@ -156,6 +166,7 @@ public sealed partial class X11Server
                 FirstError = ShmErrorBase,
                 ErrorCount = 1,
                 VisibleTo = static client => client.SameHost,
+                ClientClosed = CleanupShm,
             });
         }
     }
@@ -225,7 +236,7 @@ public sealed partial class X11Server
         {
             throw new XProtocolError(XErrorCode.Request);
         }
-        c.GenericEventsEnabled = true;
+        // 只回版本,不记「这个客户端声明过」:GenericEvent 只发给显式选了 XI2 / Present 事件的客户端,不必再按它把关。
         c.Reply(0, w => w.U16(1).U16(0).Zero(20));
     }
 }

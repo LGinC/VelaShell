@@ -57,7 +57,7 @@ public sealed class SftpNameCodecTests
     public void 选了别的编码就按那个编码解与编()
     {
         byte[] latin1 = [(byte)'c', (byte)'a', (byte)'f', 0xE9];
-        SftpNameCodec codec = SftpNameCodec.For(Encoding.Latin1);
+        var codec = SftpNameCodec.For(Encoding.Latin1);
 
         Assert.AreEqual("café", codec.Decode(latin1));
         CollectionAssert.AreEqual(latin1, codec.Encode("café"));

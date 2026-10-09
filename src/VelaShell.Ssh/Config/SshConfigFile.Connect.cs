@@ -521,13 +521,13 @@ public static partial class SshConfigFile
         SshHostConfig config, string user, SshConfigConnectOptions settings,
         List<(string Path, ISshSigner Signer)> loaded, CancellationToken cancellationToken)
     {
-        Dictionary<ISshSigner, List<SshCredential>> result = new(ReferenceEqualityComparer.Instance);
+        Dictionary<ISshSigner, List<SshCredential>> result = [with(ReferenceEqualityComparer.Instance)];
         List<(string Path, bool Explicit)> candidates =
         [
             .. config.ExpandCertificateFiles(user).Select(static p => (p, true)),
             .. loaded.Select(static l => (l.Path + "-cert.pub", false)),
         ];
-        HashSet<string> seen = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+        HashSet<string> seen = [with(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal)];
 
         foreach ((string path, bool isExplicit) in candidates)
         {

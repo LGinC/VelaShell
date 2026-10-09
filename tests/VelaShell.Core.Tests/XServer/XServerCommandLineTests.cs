@@ -10,14 +10,14 @@ namespace VelaShell.Core.Tests.XServer;
 [TestCategory("XServer")]
 public class XServerCommandLineTests
 {
-    /// <summary>默认设置:多窗口、剪贴板 + PRIMARY、不抓键、WGL、无托盘、pc105,不带 -ac。</summary>
+    /// <summary>默认设置:多窗口、剪贴板(PRIMARY 默认不同步)、不抓键、WGL、无托盘、pc105,不带 -ac。</summary>
     [TestMethod]
     public void Defaults_ProduceTheExpectedArguments()
     {
         IReadOnlyList<string> args = XServerCommandLine.Build(new XServerOptions(), 0);
 
         Assert.AreSequenceEqual(
-            [":0", "-multiwindow", "-clipboard", "-primary", "-nokeyhook", "-wgl", "-notrayicon",
+            [":0", "-multiwindow", "-clipboard", "-noprimary", "-nokeyhook", "-wgl", "-notrayicon",
              "-xkbmodel", "pc105", "-silent-dup-error"],
             [.. args]);
     }

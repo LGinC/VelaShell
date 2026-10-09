@@ -189,7 +189,7 @@ public sealed class SshAgentKeyLoaderTests
         string fixtures = Path.Combine(AppContext.BaseDirectory, "Fixtures");
         InMemorySshSigner key = await SshPrivateKeyFile.LoadAsync(Path.Combine(fixtures, "cert-ed25519"));
         OpenSshCertificate certificate = await OpenSshCertificate.LoadAsync(Path.Combine(fixtures, "cert-ed25519-cert.pub"));
-        using SshCertificateSigner signer = SshCertificateSigner.Create(certificate, key);
+        using var signer = SshCertificateSigner.Create(certificate, key);
         ConnectionInfo info = new()
         {
             Host = "h",

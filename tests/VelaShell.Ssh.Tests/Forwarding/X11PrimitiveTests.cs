@@ -73,7 +73,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 本机显示的候选端点包含套接字与回环TCP()
     {
-        X11Display display = X11Display.Parse(":0");
+        var display = X11Display.Parse(":0");
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();
 
         // 至少要有回环 TCP —— Windows 上的 VcXsrv 只听这个。
@@ -95,7 +95,7 @@ public sealed class X11PrimitiveTests
     {
         // 嵌套 ssh -X 时 sshd 给的是 DISPLAY=localhost:10 —— 按 X 的约定就是 TCP 6010。
         // 去试 Linux 抽象套接字的话，同机的别的用户抢先绑上 @/tmp/.X11-unix/X10 就能收到真 cookie。
-        X11Display display = X11Display.Parse("localhost:10");
+        var display = X11Display.Parse("localhost:10");
 
         var only = (IPEndPoint)display.GetCandidateEndPoints().Single();
         Assert.AreEqual(IPAddress.Loopback, only.Address);
@@ -109,7 +109,7 @@ public sealed class X11PrimitiveTests
     [TestMethod]
     public void 远程显示只走TCP且端口是6000加显示号()
     {
-        X11Display display = X11Display.Parse("box.example.com:7");
+        var display = X11Display.Parse("box.example.com:7");
 
         Assert.IsFalse(display.IsLocal);
         IReadOnlyList<EndPoint> candidates = display.GetCandidateEndPoints();
@@ -120,6 +120,40 @@ public sealed class X11PrimitiveTests
     }
 
     // ------------------------------------------------------------ .Xauthority
+
+    /// <summary>
+    /// 宿主改写 .Xauthority(登记内置 X 服务端的 cookie)用的严格解法与编码:原先宿主另有一份解析,规则与这里不同。
+    /// 认不全的文件不该被改写 —— 改写回去会把用户别的钥匙弄丢。
+    /// </summary>
+    [TestMethod]
+    public void Xauthority严格解析认不全就失败_编码与解析互逆_记录构造时查长度()
+    {
+        byte[] cookie = [.. Enumerable.Range(0, 16).Select(i => (byte)i)];
+        byte[] file =
+        [
+            .. Entry(XAuthority.FamilyLocal, "box", "10", XAuthority.MitMagicCookie1, cookie),
+            .. Entry(XAuthority.FamilyWild, "", "", "XDM-AUTHORIZATION-1", [7]),
+        ];
+        Assert.IsTrue(XAuthority.TryDecode(file, out IReadOnlyList<XAuthorityEntry>? entries));
+        Assert.HasCount(2, entries);
+        Assert.AreSequenceEqual(file, XAuthority.Encode(entries), "编码回去逐字节相同");
+        Assert.IsTrue(XAuthority.TryDecode([], out IReadOnlyList<XAuthorityEntry>? none));
+        Assert.IsEmpty(none, "空文件是零条记录");
+
+        byte[] truncated = file[..^1];
+        Assert.HasCount(1, XAuthority.Decode(truncated), "找 cookie 的宽容解法:截断之前的照常用");
+        Assert.IsFalse(XAuthority.TryDecode(truncated, out _), "严格解法:截断就整个不认");
+
+        byte[] notAscii = [.. file];
+        notAscii[2 + 2 + 3 + 2] = 0xC3;   // 第一条的显示号:改写回去会变成 '?'
+        Assert.IsFalse(XAuthority.TryDecode(notAscii, out _));
+        Assert.HasCount(1, XAuthority.Decode(notAscii), "宽容解法跳过它(反正匹配不上任何显示)");
+
+        Assert.ThrowsExactly<ArgumentException>(
+            () => new XAuthorityEntry(XAuthority.FamilyLocal, new byte[65536], "0", XAuthority.MitMagicCookie1, cookie), "地址超过 65535 字节");
+        Assert.ThrowsExactly<ArgumentException>(
+            () => new XAuthorityEntry(XAuthority.FamilyLocal, "box"u8.ToArray(), "零", XAuthority.MitMagicCookie1, cookie), "显示号不是 ASCII");
+    }
 
     [TestMethod]
     public void 解析Xauthority并按显示号与主机名匹配()
@@ -133,7 +167,7 @@ public sealed class X11PrimitiveTests
             .. Entry(XAuthority.FamilyLocal, Dns.GetHostName(), "0", XAuthority.MitMagicCookie1, cookie),
         ];
 
-        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
+        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Decode(file);
         Assert.HasCount(2, entries);
 
         byte[]? found = XAuthority.FindCookie(entries, X11Display.Parse(":0"));
@@ -152,7 +186,7 @@ public sealed class X11PrimitiveTests
         ];
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":0"), hostName: "myhost"));
     }
 
     [TestMethod]
@@ -163,8 +197,8 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost.example.com", "0", XAuthority.MitMagicCookie1, cookie);
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost.example.com"));
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0"), hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":0"), hostName: "myhost.example.com"));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":0"), hostName: "myhost"));
     }
 
     [TestMethod]
@@ -174,7 +208,7 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost", "0", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
 
         Assert.IsNull(XAuthority.FindCookie(
-            XAuthority.Parse(file), X11Display.Parse("otherhost:0"), hostName: "myhost", hostAddresses: [IPAddress.Parse("10.0.0.2")]));
+            XAuthority.Decode(file), X11Display.Parse("otherhost:0"), hostName: "myhost", hostAddresses: [IPAddress.Parse("10.0.0.2")]));
     }
 
     [TestMethod]
@@ -184,9 +218,9 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(XAuthority.FamilyLocal, "myhost", "0", XAuthority.MitMagicCookie1, cookie);
 
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("127.0.0.1:0"), hostName: "myhost"));
+            cookie, XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse("127.0.0.1:0"), hostName: "myhost"));
         Assert.AreSequenceEqual(
-            cookie, XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse("MyHost:0"), hostName: "myhost", hostAddresses: []));
+            cookie, XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse("MyHost:0"), hostName: "myhost", hostAddresses: []));
     }
 
     [TestMethod]
@@ -199,7 +233,7 @@ public sealed class X11PrimitiveTests
             .. Entry(XAuthority.FamilyInternet, [10, 0, 0, 1], "0", XAuthority.MitMagicCookie1, other),
             .. Entry(XAuthority.FamilyInternet, [10, 0, 0, 2], "0", XAuthority.MitMagicCookie1, cookie),
         ];
-        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
+        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Decode(file);
 
         Assert.AreSequenceEqual(cookie, XAuthority.FindCookie(entries, X11Display.Parse("10.0.0.2:0")));
         Assert.AreSequenceEqual(
@@ -216,7 +250,7 @@ public sealed class X11PrimitiveTests
             XAuthority.FamilyWild, "", "0", "XDM-AUTHORIZATION-1", [1, 2, 3, 4]);
 
         Assert.IsNull(
-            XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")),
+            XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":0")),
             "不支持的授权协议不该被当成可用的 cookie");
     }
 
@@ -226,8 +260,8 @@ public sealed class X11PrimitiveTests
         byte[] file = Entry(
             XAuthority.FamilyWild, "", "3", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
 
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":0")));
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":3")));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":0")));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":3")));
     }
 
     [TestMethod]
@@ -235,19 +269,19 @@ public sealed class X11PrimitiveTests
     {
         // 前导零只是写法不同：数值上就是 5。
         byte[] padded = Entry(XAuthority.FamilyWild, "", "05", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":5")));
-        Assert.IsNull(XAuthority.FindCookie(XAuthority.Parse(padded), X11Display.Parse(":0")));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Decode(padded), X11Display.Parse(":5")));
+        Assert.IsNull(XAuthority.FindCookie(XAuthority.Decode(padded), X11Display.Parse(":0")));
 
         // 空串仍是通配。
         byte[] wild = Entry(XAuthority.FamilyWild, "", "", XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
-        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Parse(wild), X11Display.Parse(":9")));
+        Assert.IsNotNull(XAuthority.FindCookie(XAuthority.Decode(wild), X11Display.Parse(":9")));
 
         // 非空而解析不了的（符号、空白、非数字、溢出）不匹配任何显示 —— 更不当通配。
         foreach (string bad in (string[])["+5", "-5", " 5", "5 ", "5x", "x", "99999999999"])
         {
             byte[] file = Entry(XAuthority.FamilyWild, "", bad, XAuthority.MitMagicCookie1, [1, 2, 3, 4]);
             Assert.IsNull(
-                XAuthority.FindCookie(XAuthority.Parse(file), X11Display.Parse(":5")),
+                XAuthority.FindCookie(XAuthority.Decode(file), X11Display.Parse(":5")),
                 $"显示号 \"{bad}\" 不该匹配");
         }
     }
@@ -261,7 +295,7 @@ public sealed class X11PrimitiveTests
 
         byte[] file = [.. good, .. good.AsSpan(0, good.Length / 2)];
 
-        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Parse(file);
+        IReadOnlyList<XAuthorityEntry> entries = XAuthority.Decode(file);
         Assert.HasCount(1, entries, "截断处之前的记录要保留");
         Assert.AreSequenceEqual(
             new byte[] { 7, 7, 7, 7 }, XAuthority.FindCookie(entries, X11Display.Parse(":0")));

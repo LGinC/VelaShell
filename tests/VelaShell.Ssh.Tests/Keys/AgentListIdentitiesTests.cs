@@ -163,9 +163,9 @@ public sealed class AgentListIdentitiesTests
     {
         using CancellationTokenSource cts = new(TimeSpan.FromSeconds(10));
         (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
-        await using SshAgentClient client = SshAgentClient.FromStream(ours, "(脚本 agent)");
+        await using var client = SshAgentClient.FromStream(ours, "(脚本 agent)");
 
-        Task answering = Task.Run(async () =>
+        var answering = Task.Run(async () =>
         {
             byte[] length = new byte[4];
             await theirs.ReadExactlyAsync(length, cts.Token);

@@ -271,7 +271,7 @@ internal sealed class SshKeyExchangeRunner
         bool discardGuess = serverKexInit.FirstKexPacketFollows && !GuessedCorrectly(serverKexInit, negotiated);
 
         // 群交换先多一轮：说要多大的群，收下服务端给的（spec/03 §3.5）。
-        ISshGroupExchange? groupExchange = kex as ISshGroupExchange;
+        var groupExchange = kex as ISshGroupExchange;
         SshGroupExchangeHashInput? groupHashInput = null;
         if (groupExchange is not null)
         {

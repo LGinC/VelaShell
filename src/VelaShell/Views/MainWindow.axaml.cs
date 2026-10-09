@@ -416,6 +416,10 @@ public partial class MainWindow : Window
             vm.CloseConfirmer = (title, body) => MessageDialog.ConfirmAsync(
                 this, title, body, Strings.Get("Main_CloseTabConfirmAction"),
                 Strings.Cancel, MessageDialogKind.Warning, danger: true);
+            // 停 X Server 会断开所有会话的 X 程序:有程序连着时先确认,说清会断几个。
+            vm.XServer.ConfirmStopAsync = clients => MessageDialog.ConfirmAsync(
+                this, Strings.Get("XServer_StopConfirmTitle"), Strings.Format("XServer_StopConfirmMessage", clients),
+                Strings.Get("XServer_Stop"), Strings.Cancel, MessageDialogKind.Warning, danger: true);
             vm.NewConnectionRequested += (_, _) => _ = OpenProfileDialogAsync(null);
             vm.SettingsRequested += (_, _) => _ = OpenSettingsAsync();
             vm.SettingsSectionRequested += (_, section) => _ = OpenSettingsAsync(section);

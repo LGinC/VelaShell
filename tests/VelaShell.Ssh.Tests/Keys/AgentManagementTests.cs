@@ -50,8 +50,8 @@ public sealed class AgentManagementTests
     public async Task 删钥只删那一把_删不存在的回false()
     {
         await using Rig rig = new();
-        using InMemorySshSigner first = InMemorySshSigner.GenerateEd25519();
-        using InMemorySshSigner second = InMemorySshSigner.GenerateEd25519();
+        using var first = InMemorySshSigner.GenerateEd25519();
+        using var second = InMemorySshSigner.GenerateEd25519();
         await rig.Client.AddIdentityAsync(first, "first", cancellationToken: rig.Token);
         await rig.Client.AddIdentityAsync(second, "second", cancellationToken: rig.Token);
 
@@ -68,7 +68,7 @@ public sealed class AgentManagementTests
     public async Task 清空之后一把不剩()
     {
         await using Rig rig = new();
-        using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
+        using var key = InMemorySshSigner.GenerateEd25519();
         await rig.Client.AddIdentityAsync(key, "k", cancellationToken: rig.Token);
 
         await rig.Client.RemoveAllIdentitiesAsync(rig.Token);
@@ -104,8 +104,8 @@ public sealed class AgentManagementTests
     public async Task 加证书时证书与私钥对不上当场报错()
     {
         await using Rig rig = new();
-        using InMemorySshSigner key = InMemorySshSigner.GenerateEd25519();
-        SshPublicKey otherCertificate = SshPublicKey.Parse(
+        using var key = InMemorySshSigner.GenerateEd25519();
+        var otherCertificate = SshPublicKey.Parse(
             File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Keys", "Fixtures", "cert-ed25519-cert.pub")));
 
         await Assert.ThrowsAsync<ArgumentException>(
@@ -141,7 +141,7 @@ public sealed class AgentManagementTests
         (InMemoryDuplexStream ours, InMemoryDuplexStream theirs) = InMemoryTransport.CreatePair();
         await using (theirs)
         {
-            SshAgentClient borrowed = SshAgentClient.FromStream(ours, ownsStream: false);
+            var borrowed = SshAgentClient.FromStream(ours, ownsStream: false);
             Assert.AreEqual("(stream)", borrowed.Endpoint);
             await borrowed.DisposeAsync();
             Assert.IsTrue(ours.CanRead, "没交出所有权，流不该被释放");

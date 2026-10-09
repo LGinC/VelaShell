@@ -46,15 +46,15 @@ public sealed class SshConfigForwardTests
     [TestMethod]
     public void 远程与动态转发的写法()
     {
-        SshConfigForward remoteDynamic = SshConfigForward.Parse(SshConfigForwardKind.Remote, "9090");
+        var remoteDynamic = SshConfigForward.Parse(SshConfigForwardKind.Remote, "9090");
         Assert.IsTrue(remoteDynamic.IsRemoteDynamic);
         Assert.AreEqual(9090, remoteDynamic.ListenPort);
 
-        SshConfigForward remote = SshConfigForward.Parse(SshConfigForwardKind.Remote, "0 localhost:22");
+        var remote = SshConfigForward.Parse(SshConfigForwardKind.Remote, "0 localhost:22");
         Assert.AreEqual(0, remote.ListenPort);
         Assert.IsFalse(remote.IsRemoteDynamic);
 
-        SshConfigForward dynamic = SshConfigForward.Parse(SshConfigForwardKind.Dynamic, "127.0.0.1:1080");
+        var dynamic = SshConfigForward.Parse(SshConfigForwardKind.Dynamic, "127.0.0.1:1080");
         Assert.AreEqual("127.0.0.1", dynamic.ListenAddress);
         Assert.AreEqual(1080, dynamic.ListenPort);
     }
