@@ -3486,6 +3486,265 @@ public sealed class SettingsViewUiTests
     }
 
     [TestMethod]
+    [DataRow("deleted")]
+    [DataRow("own")]
+    [DataRow("draft")]
+    public void ProviderApiKey_RememberedModelNeverSubstitutesFirstModelOrTestsUnsavedDraft(string change)
+    {
+        OnUi(async () =>
+        {
+            using var context = new TestPluginContext();
+            using var endpoint = new KeyProbeServer(_ => 200); endpoint.Start();
+            var first = new AiModelConfig { Model = "first" };
+            var chosen = new AiModelConfig { Model = "chosen" };
+            var provider = new AiProvider { BaseUrl = endpoint.BaseUrl, Models = [first, chosen] };
+            var settings = new AiSettings { Providers = [provider] };
+            var store = new AiSettingsStore(context);
+            await store.AddProviderApiKeyAsync(settings, provider, "key-a");
+            string b = await store.AddProviderApiKeyAsync(settings, provider, "key-b");
+            var loc = new Loc("en");
+            var view = new SettingsView(context, store, settings, loc, () => { });
+            var window = new Window { Content = view, Width = 900, Height = 700 }; window.Show();
+            try
+            {
+                await WaitUntilAsync(() => HasKeyRow(view, b));
+                Click(KeyControl<Button>(view, provider.Id, "ProviderKeyProbeButton"));
+                SelectKeyModel(view, provider.Id, chosen.Id);
+                await WaitUntilAsync(() => endpoint.Requests.Count == 1 && !IsKeyProbeRunning(KeyProbeState(view, provider.Id)));
+                switch (change)
+                {
+                    case "deleted": provider.Models.Remove(chosen); view.RefreshCatalogModels(); break;
+                    case "own": chosen.HasOwnApiKey = true; view.RefreshCatalogModels(); break;
+                    case "draft": EditProviderKey(view, b).Text = "unsaved-key"; break;
+                }
+                Click(KeyControl<Button>(view, b, "ProviderKeyProbeButton"));
+                ComboBox picker = KeyControl<ComboBox>(view, b, "ProviderKeyModelPicker");
+                if (change == "draft")
+                {
+                    Assert.AreEqual(loc["SetupSaveProviderFirst"], view.GetControl<TextBlock>("StatusText").Text);
+                    Assert.IsFalse(picker.IsVisible);
+                }
+                else
+                {
+                    Assert.IsTrue(picker.IsVisible);
+                    Assert.AreEqual(-1, picker.SelectedIndex);
+                }
+                loc.Switch("zh-Hans"); view.ApplyLoc(); await PumpAsync();
+                Assert.HasCount(1, endpoint.Requests, "失效模型不能改测首模型，记忆模型也不能绕过未保存草稿校验");
+                Assert.AreEqual("Bearer key-a", endpoint.Requests.Single().Auth);
+                Assert.Contains("\"model\":\"chosen\"", endpoint.Requests.Single().Body);
+            }
+            finally { window.Close(); }
+        });
+    }
+
+    [TestMethod]
+    public void ProviderApiKey_AllKeysProbeInvalidEmptyEditShowsReasonAndResumesAfterCancel()
+    {
+        OnUi(async () =>
+        {
+            using var context = new TestPluginContext();
+            using var endpoint = new KeyProbeServer(_ => 200); endpoint.Start();
+            var provider = new AiProvider { BaseUrl = endpoint.BaseUrl, Models = [new AiModelConfig { Model = "m1" }] };
+            var settings = new AiSettings { Providers = [provider] };
+            var store = new AiSettingsStore(context);
+            await store.AddProviderApiKeyAsync(settings, provider, "key-a");
+            string b = await store.AddProviderApiKeyAsync(settings, provider, "key-b");
+            var loc = new Loc("en");
+            var view = new SettingsView(context, store, settings, loc, () => { });
+            var window = new Window { Content = view, Width = 900, Height = 700 }; window.Show();
+            try
+            {
+                await WaitUntilAsync(() => HasKeyRow(view, b));
+                Button button = view.GetControl<Button>("ProviderProbeAllKeysButton");
+                Click(button);
+                ComboBox picker = view.GetControl<ComboBox>("ProviderAllKeysModelPicker");
+                TextBox edit = EditProviderKey(view, b);
+                await store.RemoveProviderApiKeyAsync(settings, provider, b);
+                view.RefreshCatalogModels();
+                await WaitUntilAsync(() => KeyControl<TextBlock>(view, b, "ProviderKeyStatus").Text == loc["StatusNeedsKey"]);
+                Assert.IsFalse(button.IsEnabled);
+                Assert.IsFalse(picker.IsEnabled);
+                Assert.IsTrue(edit.IsEffectivelyVisible, "外部删除不能丢弃仍在编辑的草稿行");
+                Assert.IsTrue(string.IsNullOrEmpty(edit.Text));
+                picker.SelectedIndex = 0; // 已展开的选择器晚到选择仍须被入口复验挡住。
+                foreach (string language in new[] { "en", "zh-Hans", "zh-Hant", "ja", "ko" })
+                {
+                    loc.Switch(language); view.ApplyLoc();
+                    Assert.IsTrue(view.GetControl<TextBlock>("ProviderAllKeysHintText").IsEffectivelyVisible);
+                    Assert.AreEqual(loc["SetupKeysInvalidDraft"], view.GetControl<TextBlock>("ProviderAllKeysHintText").Text);
+                    Assert.AreEqual(loc["SetupKeysInvalidDraft"], Avalonia.Automation.AutomationProperties.GetName(button));
+                }
+                Assert.IsEmpty(endpoint.Requests);
+                Click(KeyControl<Button>(view, b, "ProviderKeyEditCancelButton"));
+                view.RefreshCatalogModels();
+                await WaitUntilAsync(() => !HasKeyRow(view, b) && button.IsEnabled);
+                Assert.IsFalse(view.GetControl<TextBlock>("ProviderAllKeysHintText").IsVisible);
+                Click(button); picker.SelectedIndex = 0;
+                await WaitUntilAsync(() => endpoint.Requests.Count == 1 && !IsKeyProbeRunning(KeyProbeState(view, provider.Id)));
+                Assert.AreEqual("Bearer key-a", endpoint.Requests.Single().Auth);
+                Assert.Contains("\"model\":\"m1\"", endpoint.Requests.Single().Body);
+                Assert.Contains(loc.F("SetupKeyPassed", "m1", "").TrimEnd(), KeyControl<TextBlock>(view, provider.Id, "ProviderKeyStatus").Text!);
+                Assert.IsNull(await store.GetApiKeyAsync(b));
+            }
+            finally { window.Close(); }
+        });
+    }
+
+    [TestMethod]
+    public void ProviderApiKey_AllKeysProbeSelectsOnceAndContinuesAfterOneKeyFails()
+    {
+        OnUi(async () =>
+        {
+            using var context = new TestPluginContext();
+            using var endpoint = new KeyProbeServer(auth => auth == "Bearer key-b" ? 401 : 200);
+            endpoint.Start();
+            var model = new AiModelConfig { Model = "batch-model" };
+            var own = new AiModelConfig { Model = "own", HasOwnApiKey = true };
+            var cross = new AiModelConfig { Model = "cross", BaseUrlOverride = "https://other.example/v1" };
+            var provider = new AiProvider { BaseUrl = endpoint.BaseUrl, Models = [model, own, cross] };
+            var settings = new AiSettings { Providers = [provider], ActiveModelId = model.Id };
+            var store = new AiSettingsStore(context);
+            await store.AddProviderApiKeyAsync(settings, provider, "key-a");
+            string b = await store.AddProviderApiKeyAsync(settings, provider, "key-b");
+            string c = await store.AddProviderApiKeyAsync(settings, provider, "key-c");
+            var health = new ProviderHealth(); var loc = new Loc("en");
+            var view = new SettingsView(context, store, settings, loc, () => { }, health);
+            var window = new Window { Content = view, Width = 420, Height = 800 };
+            window.Show(); view.GetControl<ListBox>("ProvidersList").SelectedIndex = 0;
+            try
+            {
+                await WaitUntilAsync(() => HasKeyRow(view, c));
+                Button button = view.GetControl<Button>("ProviderProbeAllKeysButton");
+                Click(button);
+                ComboBox picker = view.GetControl<ComboBox>("ProviderAllKeysModelPicker");
+                Assert.IsTrue(picker.IsVisible);
+                Assert.AreEqual(-1, picker.SelectedIndex);
+                Assert.IsEmpty(endpoint.Requests);
+                foreach (string language in new[] { "en", "zh-Hans", "zh-Hant", "ja", "ko" })
+                {
+                    loc.Switch(language); view.ApplyLoc();
+                    Assert.AreEqual(loc["SetupKeysProbeAll"], button.Content);
+                    Assert.AreEqual(-1, picker.SelectedIndex);
+                }
+                Assert.IsEmpty(endpoint.Requests, "选模型前及切换语言均不得发请求");
+                object choice = picker.ItemsSource!.Cast<object>().Single();
+                Assert.AreEqual(model.Id, choice.GetType().GetProperty("Id")!.GetValue(choice));
+                picker.SelectedItem = choice;
+                await WaitUntilAsync(() => button.Content?.ToString() == loc["SetupKeysProbeAll"]);
+                CollectionAssert.AreEqual(new[] { "Bearer key-a", "Bearer key-b", "Bearer key-c" }, endpoint.Requests.Select(r => r.Auth).ToArray());
+                Assert.IsTrue(endpoint.Requests.All(r => r.Body.Contains("\"model\":\"batch-model\"", StringComparison.Ordinal)
+                    && r.Body.Contains("Reply with exactly:", StringComparison.Ordinal)));
+                Assert.Contains(loc.F("SetupKeyPassed", "batch-model", "").TrimEnd(), KeyControl<TextBlock>(view, provider.Id, "ProviderKeyStatus").Text!);
+                Assert.Contains(loc.F("SetupKeyFailed", "batch-model", "").TrimEnd(), KeyControl<TextBlock>(view, b, "ProviderKeyStatus").Text!);
+                Assert.Contains(loc.F("SetupKeyPassed", "batch-model", "").TrimEnd(), KeyControl<TextBlock>(view, c, "ProviderKeyStatus").Text!);
+                Assert.IsTrue(health.IsKeyCooling(b));
+                Assert.IsFalse(health.IsKeyCooling(provider.Id)); Assert.IsFalse(health.IsKeyCooling(c));
+                Assert.IsFalse(health.IsCooling(model.Id));
+                Assert.IsNull(provider.ActiveApiKeyId); Assert.IsFalse(provider.BalanceApiKeys);
+                Assert.AreEqual(model.Id, settings.ActiveModelId);
+                model.HasOwnApiKey = true; view.RefreshCatalogModels();
+                await WaitUntilAsync(() => !button.IsEnabled);
+                Assert.AreEqual(loc["SetupKeysNoModel"], Avalonia.Automation.AutomationProperties.GetName(button));
+                Assert.HasCount(3, endpoint.Requests, "没有共同模型时不得借用模型独立 Key 或跨域发送补充 Key");
+            }
+            finally { window.Close(); }
+        });
+    }
+
+    [TestMethod]
+    [DataRow("cancel")]
+    [DataRow("navigate")]
+    [DataRow("edit")]
+    [DataRow("model")]
+    [DataRow("health")]
+    public void ProviderApiKey_AllKeysProbeCancellationStopsQueuedKeysAndDiscardsLateFailure(string change)
+    {
+        OnUi(async () =>
+        {
+            using var context = new TestPluginContext();
+            using var endpoint = new KeyProbeServer(_ => 401, holdFirst: true); endpoint.Start();
+            var model = new AiModelConfig { Model = "m1" };
+            var provider = new AiProvider { BaseUrl = endpoint.BaseUrl, Models = [model] };
+            var other = new AiProvider { Name = "other" };
+            var settings = new AiSettings { Providers = [provider, other] };
+            var store = new AiSettingsStore(context);
+            await store.AddProviderApiKeyAsync(settings, provider, "key-a");
+            string b = await store.AddProviderApiKeyAsync(settings, provider, "key-b");
+            var health = new ProviderHealth(); var loc = new Loc("en");
+            var view = new SettingsView(context, store, settings, loc, () => { }, health);
+            var window = new Window { Content = view, Width = 900, Height = 700 }; window.Show();
+            try
+            {
+                await WaitUntilAsync(() => HasKeyRow(view, b));
+                Button button = view.GetControl<Button>("ProviderProbeAllKeysButton");
+                Click(button);
+                ComboBox picker = view.GetControl<ComboBox>("ProviderAllKeysModelPicker");
+                picker.SelectedIndex = 0;
+                await WaitUntilAsync(() => endpoint.Requests.Count == 1);
+                Assert.AreEqual(loc["Cancel"], button.Content);
+                switch (change)
+                {
+                    case "cancel": Click(button); break;
+                    case "navigate": view.ReloadFromCatalog(other.Id); break;
+                    case "edit": EditProviderKey(view, b).Text = "draft-key"; break;
+                    case "model": model.Model = "new-model"; view.RefreshCatalogModels(); break;
+                    case "health": health.Clear(); break;
+                }
+                endpoint.Release();
+                await WaitUntilAsync(() => button.Content?.ToString() == loc["SetupKeysProbeAll"]);
+                Assert.HasCount(1, endpoint.Requests, "取消或配置失效后不继续检测排队 Key");
+                Assert.IsFalse(health.IsKeyCooling(provider.Id)); Assert.IsFalse(health.IsKeyCooling(b));
+                Assert.IsFalse(health.IsCooling(model.Id));
+                if (HasKeyRow(view, provider.Id))
+                    Assert.DoesNotContain("Last check failed", KeyControl<TextBlock>(view, provider.Id, "ProviderKeyStatus").Text!);
+            }
+            finally { endpoint.Release(); window.Close(); }
+        });
+    }
+
+    [TestMethod]
+    [DataRow("key")]
+    [DataRow("url")]
+    [DataRow("protocol")]
+    public void ProviderApiKey_AllKeysProbeRejectsUnsavedDraftEvenAfterPickerWasOpened(string draft)
+    {
+        OnUi(async () =>
+        {
+            using var context = new TestPluginContext();
+            using var endpoint = new KeyProbeServer(_ => 200); endpoint.Start();
+            var provider = new AiProvider { BaseUrl = endpoint.BaseUrl, Models = [new AiModelConfig { Model = "m1" }] };
+            var settings = new AiSettings { Providers = [provider] };
+            var store = new AiSettingsStore(context);
+            await store.AddProviderApiKeyAsync(settings, provider, "key-a");
+            string b = await store.AddProviderApiKeyAsync(settings, provider, "key-b");
+            var loc = new Loc("en");
+            var view = new SettingsView(context, store, settings, loc, () => { }, new ProviderHealth());
+            var window = new Window { Content = view, Width = 900, Height = 700 }; window.Show();
+            try
+            {
+                await WaitUntilAsync(() => HasKeyRow(view, b));
+                Button button = view.GetControl<Button>("ProviderProbeAllKeysButton");
+                Click(button);
+                ComboBox picker = view.GetControl<ComboBox>("ProviderAllKeysModelPicker");
+                switch (draft)
+                {
+                    case "key": EditProviderKey(view, b).Text = "draft-key"; break;
+                    case "url": view.GetControl<TextBox>("ProviderBaseUrlBox").Text = "https://draft.example/v1"; break;
+                    case "protocol": view.GetControl<ComboBox>("ProviderProtocolCombo").SelectedIndex = (int)ChatProtocol.AnthropicMessages; break;
+                }
+                picker.SelectedIndex = 0;
+                Assert.AreEqual(loc["SetupSaveProviderFirst"], view.GetControl<TextBlock>("StatusText").Text);
+                Assert.IsEmpty(endpoint.Requests);
+                Click(button);
+                Assert.AreEqual(loc["SetupSaveProviderFirst"], view.GetControl<TextBlock>("StatusText").Text);
+                Assert.IsEmpty(endpoint.Requests);
+            }
+            finally { window.Close(); }
+        });
+    }
+
+    [TestMethod]
     public void ProviderApiKey_ModelSelectionSendsFixedSlotAndOnlyAuthFailureCoolsThatKey()
     {
         OnUi(async () =>
@@ -3536,16 +3795,17 @@ public sealed class SettingsViewUiTests
                 Assert.IsFalse(health.IsCooling(m2.Id));
                 Assert.IsFalse(health.IsKeyCooling(provider.Id));
                 Click(KeyControl<Button>(view, provider.Id, "ProviderKeyProbeButton"));
-                SelectKeyModel(view, provider.Id, m1.Id);
+                Assert.AreEqual(m2.Id, KeyControl<ComboBox>(view, provider.Id, "ProviderKeyModelPicker").SelectedItem!.GetType()
+                    .GetProperty("Id")!.GetValue(KeyControl<ComboBox>(view, provider.Id, "ProviderKeyModelPicker").SelectedItem));
                 await WaitUntilAsync(() => (KeyControl<TextBlock>(view, provider.Id, "ProviderKeyStatus").Text ?? "").Contains("上次检测通过", StringComparison.Ordinal));
                 Assert.HasCount(2, endpoint.Requests);
                 Assert.AreEqual("Bearer key-a", endpoint.Requests[1].Auth);
-                Assert.Contains("\"model\":\"m1\"", endpoint.Requests[1].Body);
+                Assert.Contains("\"model\":\"m2\"", endpoint.Requests[1].Body);
                 Assert.IsNull(provider.ActiveApiKeyId);
                 Assert.AreEqual(m1.Id, settings.ActiveModelId);
                 Assert.IsFalse(provider.BalanceApiKeys);
                 Assert.IsTrue(health.IsKeyCooling(b));
-                m1.Model = "new-m1"; view.RefreshCatalogModels(); await PumpAsync();
+                m2.Model = "new-m2"; view.RefreshCatalogModels(); await PumpAsync();
                 Assert.AreEqual(loc["SetupKeyUntested"], KeyControl<TextBlock>(view, provider.Id, "ProviderKeyStatus").Text);
                 m2.HasOwnApiKey = true; m1.HasOwnApiKey = true; view.RefreshCatalogModels(); await PumpAsync();
                 Assert.IsFalse(KeyControl<Button>(view, b, "ProviderKeyProbeButton").IsEnabled);
@@ -3900,20 +4160,27 @@ public sealed class SettingsViewUiTests
             var window = new Window { Content = view, Width = 900, Height = 700 }; window.Show(); await PumpAsync();
             try
             {
+                Click(KeyControl<Button>(view, provider.Id, "ProviderKeyProbeButton"));
+                SelectKeyModel(view, provider.Id, cross.Id);
+                await WaitUntilAsync(() => other.Requests.Count == 1 && !IsKeyProbeRunning(KeyProbeState(view, provider.Id)));
+                Assert.AreEqual("Bearer primary", other.Authorizations.Single(), "主槽保留已保存模型覆盖地址的旧行为");
                 Click(KeyControl<Button>(view, extra, "ProviderKeyProbeButton"));
                 var choices = KeyControl<ComboBox>(view, extra, "ProviderKeyModelPicker").ItemsSource!.Cast<object>().ToList();
                 Assert.HasCount(2, choices);
                 Assert.AreNotEqual(choices[0].ToString(), choices[1].ToString(), "同名模型带短 ID 但绑定配置 ID");
-                Assert.IsEmpty(same.Requests); Assert.IsEmpty(other.Requests);
+                Assert.IsEmpty(same.Requests); Assert.HasCount(1, other.Requests);
+                Assert.AreEqual(-1, KeyControl<ComboBox>(view, extra, "ProviderKeyModelPicker").SelectedIndex,
+                    "上次主槽检测的跨域模型不适用于补充 Key，必须重新选择而不是自动改测首模型");
                 SelectKeyModel(view, extra, b.Id);
                 await WaitUntilAsync(() => same.Requests.Count == 1 && !IsKeyProbeRunning(KeyProbeState(view, extra)));
                 Assert.Contains("\"model\":\"m2\"", same.Requests.Single());
                 Assert.AreEqual("Bearer additional", same.Authorizations.Single());
                 Click(KeyControl<Button>(view, provider.Id, "ProviderKeyProbeButton"));
                 Assert.HasCount(3, KeyControl<ComboBox>(view, provider.Id, "ProviderKeyModelPicker").ItemsSource!.Cast<object>().ToList());
-                SelectKeyModel(view, provider.Id, cross.Id);
-                await WaitUntilAsync(() => other.Requests.Count == 1 && !IsKeyProbeRunning(KeyProbeState(view, provider.Id)));
-                Assert.AreEqual("Bearer primary", other.Authorizations.Single(), "主槽保留已保存模型覆盖地址的旧行为");
+                await WaitUntilAsync(() => same.Requests.Count == 2 && !IsKeyProbeRunning(KeyProbeState(view, provider.Id)));
+                Assert.Contains("\"model\":\"m2\"", same.Requests[1]);
+                Assert.AreEqual("Bearer primary", same.Authorizations[1], "同名模型必须按 ID 复用上次选择");
+                Assert.HasCount(1, other.Requests);
                 Assert.IsNull(provider.ActiveApiKeyId);
             }
             finally { window.Close(); }

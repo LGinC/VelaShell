@@ -257,7 +257,9 @@ public partial class SettingsView : UserControl
     private ProviderKeyRowState? _keyDraft;
     private ProviderKeyRowState? _savingKeyRow;
     private string? _pendingRemoveKeyId;
+    private string? _lastKeyProbeModelId;
     private CancellationTokenSource _keyEditorCts = new();
+    private CancellationTokenSource? _allKeyProbeCts;
     private DispatcherTimer? _keyLightTimer;
     private bool _keyMutation;
     private bool _refreshingKeyRowsOnTick;
@@ -350,6 +352,8 @@ public partial class SettingsView : UserControl
         RevealKeyToggle.IsCheckedChanged += (_, _) =>
             ApiKeyBox.PasswordChar = RevealKeyToggle.IsChecked == true ? '\0' : '●';
         ProviderAddApiKeyButton.Click += (_, _) => _ = AddProviderKeyAsync();
+        ProviderProbeAllKeysButton.Click += (_, _) => OpenAllKeysModelPicker();
+        ProviderAllKeysModelPicker.SelectionChanged += OnAllKeysModelSelected;
         BalanceApiKeysCheck.IsCheckedChanged += (_, _) => _ = SaveBalanceAsync();
         // TextChanged 延后派发，不能判断赋值当刻是否来自装载/合并。
         MaxInputTokensBox.PropertyChanged += (_, change) =>
@@ -393,6 +397,7 @@ public partial class SettingsView : UserControl
         BalanceApiKeysCheck.Content = _loc["SetupBalanceApiKeys"];
         BalanceApiKeysHintText.Text = _loc["SetupBalanceApiKeysHint"];
         foreach (ProviderKeyRowState row in _keyRows) ApplyKeyRowLoc(row);
+        RefreshAllKeysProbeControls();
         ProviderKeyBadgeText.Text = _loc["KeyEncrypted"];
         ModelKeyBadgeText.Text = _loc["KeyEncrypted"];
         ProviderAuthLabel.Text = _loc["SubscriptionAuth"];
@@ -695,6 +700,9 @@ public partial class SettingsView : UserControl
     private Task LoadEditorAsync() => _editorLoad = LoadEditorCoreAsync(++_editorRun);
     private void ResetKeyEditor()
     {
+        _lastKeyProbeModelId = null;
+        CancelAllKeysProbe();
+        ProviderAllKeysModelPicker.IsVisible = false;
         _keyEditorCts.Cancel();
         _keyEditorCts.Dispose();
         _keyEditorCts = new CancellationTokenSource();
@@ -1194,6 +1202,7 @@ public partial class SettingsView : UserControl
             row.Ordinal = index + 1;
         }
         foreach (ProviderKeyRowState row in _keyRows) ApplyKeyRowLoc(row);
+        RefreshAllKeysProbeControls();
     }
 
     private void BuildProviderKeyRow(ProviderKeyRowState row)
@@ -1325,7 +1334,7 @@ public partial class SettingsView : UserControl
         SetKeyActionName(row.Picker, $"{ordinal} · {_loc["SetupKeySelectModel"]}");
         row.Picker.PlaceholderText = _loc["SetupKeySelectModel"];
         bool hasModels = HasKeyModels(row);
-        row.Probe.IsEnabled = hasModels && !_keyMutation && !string.IsNullOrWhiteSpace(row.Key);
+        row.Probe.IsEnabled = hasModels && !_keyMutation && _allKeyProbeCts is null && !string.IsNullOrWhiteSpace(row.Key);
         SetKeyActionName(row.Probe, $"{ordinal} · {_loc[hasModels ? "SetupKeyProbe" : "SetupKeyNoModel"]}");
         RefreshKeyRowStatus(row);
     }
@@ -1397,6 +1406,7 @@ public partial class SettingsView : UserControl
     private void BeginKeyEdit(ProviderKeyRowState row)
     {
         if (ReferenceEquals(_savingKeyRow, row) || !KeyRowCurrent(row, _editorRun)) return;
+        CancelAllKeysProbe();
         if (_keyDraft is { } old) CancelKeyEdit(old);
         CancelKeyProbe(row);
         foreach (ProviderKeyRowState other in _keyRows) { other.Revealed = false; ApplyKeyRowLoc(other); }
@@ -1430,6 +1440,7 @@ public partial class SettingsView : UserControl
 
     private void SetKeyMutation(bool busy)
     {
+        if (busy) CancelAllKeysProbe();
         _keyMutation = busy;
         ProviderAddApiKeyButton.IsEnabled = !busy;
         BalanceApiKeysCheck.IsEnabled = !busy;
@@ -1440,6 +1451,7 @@ public partial class SettingsView : UserControl
             row.Edit.IsEnabled = row.EditBox.IsEnabled = row.Cancel.IsEnabled = !busy || !ReferenceEquals(_savingKeyRow, row);
             ApplyKeyRowLoc(row);
         }
+        RefreshAllKeysProbeControls();
     }
 
     private async Task AddProviderKeyAsync()
@@ -1524,9 +1536,116 @@ public partial class SettingsView : UserControl
         finally { SetKeyMutation(false); }
     }
 
+    private void CancelAllKeysProbe() => _allKeyProbeCts?.Cancel();
+
+    private bool HasInvalidKeyRows()
+    {
+        foreach (ProviderKeyRowState row in _keyRows)
+            if (string.IsNullOrWhiteSpace(row.Key) || !KeyRowCurrent(row, _editorRun)) return true;
+        return false;
+    }
+
+    private bool AllKeysCanUse(AiModelConfig model)
+    {
+        if (_keyRows.Count == 0) return false;
+        foreach (ProviderKeyRowState row in _keyRows)
+            if (!KeyModelEligible(row, model)) return false;
+        return true;
+    }
+
+    private bool HasAllKeysModel()
+    {
+        if (_keyRows.Count == 0) return false;
+        foreach (AiModelConfig model in _keyRows[0].Provider.Models)
+            if (AllKeysCanUse(model)) return true;
+        return false;
+    }
+
+    private List<KeyModelChoice> AllKeysModelChoices()
+        => _keyRows.Count == 0 ? [] : KeyModelChoices(_keyRows[0])
+            .Where(choice => _keyRows[0].Provider.Models.Find(model => model.Id == choice.Id) is { } model
+                && AllKeysCanUse(model)).ToList();
+
+    private void RefreshAllKeysProbeControls()
+    {
+        bool busy = _allKeyProbeCts is not null;
+        bool eligible = HasAllKeysModel();
+        bool invalid = HasInvalidKeyRows();
+        ProviderAllKeysHintText.Text = invalid ? _loc["SetupKeysInvalidDraft"] : "";
+        ProviderAllKeysHintText.IsVisible = invalid;
+        ProviderProbeAllKeysButton.Content = _loc[busy ? "Cancel" : "SetupKeysProbeAll"];
+        ProviderProbeAllKeysButton.IsEnabled = busy || !_keyMutation && eligible && !invalid;
+        SetKeyActionName(ProviderProbeAllKeysButton, _loc[busy ? "Cancel" : invalid ? "SetupKeysInvalidDraft"
+            : eligible ? "SetupKeysProbeAll" : "SetupKeysNoModel"]);
+        ProviderAllKeysModelPicker.IsEnabled = !busy && !_keyMutation && !invalid;
+        ProviderAllKeysModelPicker.PlaceholderText = _loc["SetupKeysSelectModel"];
+        SetKeyActionName(ProviderAllKeysModelPicker, _loc["SetupKeysSelectModel"]);
+    }
+
+    private void OpenAllKeysModelPicker()
+    {
+        if (_allKeyProbeCts is not null) { CancelAllKeysProbe(); return; }
+        if (_keyMutation || SelectedModel is not null || SelectedProvider is not { Auth: AuthMethod.ApiKey } provider) return;
+        if (HasInvalidKeyRows()) { RefreshAllKeysProbeControls(); return; }
+        if (ProviderDraftDirty(provider)) { StatusText.Text = _loc["SetupSaveProviderFirst"]; return; }
+        List<KeyModelChoice> choices = AllKeysModelChoices();
+        ProviderAllKeysModelPicker.SelectionChanged -= OnAllKeysModelSelected;
+        ProviderAllKeysModelPicker.ItemsSource = choices;
+        ProviderAllKeysModelPicker.SelectedIndex = -1;
+        ProviderAllKeysModelPicker.SelectionChanged += OnAllKeysModelSelected;
+        ProviderAllKeysModelPicker.IsVisible = choices.Count > 0;
+        if (ProviderAllKeysModelPicker.IsVisible) ProviderAllKeysModelPicker.Focus();
+    }
+
+    private void OnAllKeysModelSelected(object? sender, SelectionChangedEventArgs e)
+    {
+        if (ProviderAllKeysModelPicker.SelectedItem is KeyModelChoice choice) _ = ProbeAllProviderKeysAsync(choice.Id);
+    }
+
+    private async Task ProbeAllProviderKeysAsync(string modelId)
+    {
+        if (_allKeyProbeCts is not null || _keyMutation || SelectedModel is not null
+            || SelectedProvider is not { Auth: AuthMethod.ApiKey } provider) return;
+        if (HasInvalidKeyRows()) { RefreshAllKeysProbeControls(); return; }
+        if (ProviderDraftDirty(provider)) { StatusText.Text = _loc["SetupSaveProviderFirst"]; return; }
+        if (_settings.FindModel(modelId) is not { } model || !ReferenceEquals(model.Provider, provider)
+            || _keyRows.Count == 0 || _keyRows.Any(row => !KeyModelEligible(row, model.Config))) return;
+        int editorRun = _editorRun, version = _health?.Version ?? 0;
+        KeyRequestSnapshot snapshot = KeyRequestSnapshot.Capture(model);
+        var rows = _keyRows.Select(row => (Row: row, Key: row.Key)).ToArray();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(_keyEditorCts.Token);
+        _allKeyProbeCts = cts;
+        foreach (var (row, _) in rows)
+        {
+            CancelKeyProbe(row);
+            row.Picker.IsVisible = false;
+            ApplyKeyRowLoc(row);
+        }
+        RefreshAllKeysProbeControls();
+        try
+        {
+            // ponytail: 顺序探测避免同时突发请求；确有等待压力时再增加有界并发。
+            foreach (var (row, _) in rows)
+            {
+                if (cts.IsCancellationRequested || _keyMutation || ProviderDraftDirty(provider)
+                    || version != (_health?.Version ?? 0) || _keyRows.Count != rows.Length
+                    || rows.Any(entry => !KeyRowCurrent(entry.Row, editorRun) || entry.Row.Key != entry.Key)
+                    || _settings.FindModel(modelId) is not { } live || snapshot != KeyRequestSnapshot.Capture(live)) break;
+                await ProbeProviderKeyAsync(row, modelId, cts.Token);
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_allKeyProbeCts, cts)) _allKeyProbeCts = null;
+            RefreshAllKeysProbeControls();
+            foreach (ProviderKeyRowState row in _keyRows) ApplyKeyRowLoc(row);
+        }
+    }
+
     private void OpenKeyModelPicker(ProviderKeyRowState row)
     {
         if (!KeyRowCurrent(row, _editorRun) || _keyMutation) return;
+        if (_allKeyProbeCts is not null) return;
         if (ProviderConnectionDirty(row.Provider) || PendingProviderKey is not null)
         {
             CancelKeyProbe(row);
@@ -1534,24 +1653,32 @@ public partial class SettingsView : UserControl
             StatusText.Text = _loc["SetupSaveProviderFirst"];
             return;
         }
+        bool wasChecking = row.ProbeCts is not null;
         CancelKeyProbe(row);
         List<KeyModelChoice> choices = KeyModelChoices(row);
         row.Picker.SelectionChanged -= OnKeyModelSelected;
         row.Picker.ItemsSource = choices;
-        row.Picker.SelectedIndex = -1;
+        row.Picker.SelectedItem = choices.Find(choice => choice.Id == _lastKeyProbeModelId);
         row.Picker.SelectionChanged += OnKeyModelSelected;
         row.Picker.IsVisible = choices.Count > 0;
         ApplyKeyRowLoc(row);
         if (choices.Count > 0) row.Picker.Focus();
+        // 用户点击检测才复用上次型号；装载、重绘或换语言不触发请求。再次点击在途行只取消。
+        if (!wasChecking && row.Picker.SelectedItem is KeyModelChoice previous)
+            _ = ProbeProviderKeyAsync(row, previous.Id);
     }
 
     private void OnKeyModelSelected(object? sender, SelectionChangedEventArgs e)
     {
         if (sender is not ComboBox { Tag: string keyId, SelectedItem: KeyModelChoice choice }) return;
-        if (_keyRows.Find(row => row.Id == keyId) is { } row) _ = ProbeProviderKeyAsync(row, choice.Id);
+        if (_keyRows.Find(row => row.Id == keyId) is { } row)
+        {
+            _lastKeyProbeModelId = choice.Id;
+            _ = ProbeProviderKeyAsync(row, choice.Id);
+        }
     }
 
-    private async Task ProbeProviderKeyAsync(ProviderKeyRowState row, string modelId)
+    private async Task ProbeProviderKeyAsync(ProviderKeyRowState row, string modelId, CancellationToken batchToken = default)
     {
         int editorRun = _editorRun;
         if (!KeyRowCurrent(row, editorRun)) return;
@@ -1566,7 +1693,7 @@ public partial class SettingsView : UserControl
             || !KeyModelEligible(row, live.Config)) return;
         CancelKeyProbe(row);
         int run = row.ProbeRun;
-        var cts = CancellationTokenSource.CreateLinkedTokenSource(_keyEditorCts.Token);
+        var cts = CancellationTokenSource.CreateLinkedTokenSource(_keyEditorCts.Token, batchToken);
         row.ProbeCts = cts;
         CancellationToken token = cts.Token;
         row.CheckingModelId = modelId;
@@ -1649,6 +1776,7 @@ public partial class SettingsView : UserControl
     private void OnKeyLightTick(object? sender, EventArgs e)
     {
         foreach (ProviderKeyRowState row in _keyRows) ApplyKeyRowLoc(row);
+        RefreshAllKeysProbeControls();
         if (!_refreshingKeyRowsOnTick && !_loadingEditor && SelectedModel is null
             && SelectedProvider is { Auth: AuthMethod.ApiKey } provider)
             _ = RefreshKeyRowsOnTickAsync(provider, _editorRun);
@@ -1668,6 +1796,8 @@ public partial class SettingsView : UserControl
     {
         _keyLightTimer?.Stop();
         if (_keyLightTimer is not null) _keyLightTimer.Tick -= OnKeyLightTick;
+        CancelAllKeysProbe();
+        ProviderAllKeysModelPicker.IsVisible = false;
         _keyEditorCts.Cancel();
         foreach (ProviderKeyRowState row in _keyRows)
         {

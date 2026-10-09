@@ -197,6 +197,11 @@
                       </StackPanel>
                     </Border>
                   </StackPanel>
+                  <Button x:Name="ProviderProbeAllKeysButton"
+                          Theme="{DynamicResource VelaOutlineButtonTheme}" Padding="10,0" MinHeight="28" />
+                  <TextBlock x:Name="ProviderAllKeysHintText" Classes="hint" TextWrapping="Wrap" IsVisible="False" />
+                  <ComboBox x:Name="ProviderAllKeysModelPicker" IsVisible="False" SelectedIndex="-1"
+                            HorizontalAlignment="Stretch" />
                   <StackPanel x:Name="ProviderApiKeyRows" Spacing="8" />
                   <Grid ColumnDefinitions="*,6,Auto" Margin="0,8,0,0">
                     <TextBox x:Name="ProviderNewApiKeyBox" PasswordChar="●"
