@@ -1807,7 +1807,13 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 - **代价(写在这里,免得以后忘了)**:`Workers=2` 让本机(核多)这套从 **10 秒变 60 秒**;CI 上 3 核,预计 55 秒 → 80 秒左右。`test.runsettings` 是 IDE 与 CI 共用的(仓库刻意如此),要本机不受影响得另做区分。
 - **验证**:临时让 `Init` 抛一次,确认 `AssemblyInitialize` 真的会跑(`程序集初始化方法 …TestSession.Init 引发异常`),探针已撤;`VelaShell.Ssh.Tests` 1351 通过、`VelaShell.XServer.Tests` 429 通过、全解决方案 `-warnaserror` 0 警告 0 错误。
 
-## ✅ 172. 2026-09-22 AI 插件:provider 健康检查 + 请求故障转移(用户定稿)
+## ✅ 172. 2026-10-08 Linux:检查更新后打开发布页面供用户下载
+
+- **根因**:Linux 的关于页沿用便携式原地更新流程,系统安装目录不可写时只显示「目录不可写」,没有打开下载页面。
+- **行为**:发现新版本且有当前平台的更新包后,通过 Avalonia 的系统浏览器入口打开 GitHub Releases 发布列表,由用户选择 deb、rpm 或便携包下载并安装。Linux 的 `CanSelfUpdate` 固定为 false,关于页在目录可写判断之前转入手动下载,不下载更新包、不显示「重启并更新」。发布列表兼容预发布版本;提示保留版本号与下载地址,浏览器打不开时仍能手动访问。启动检查仍只投递消息;Windows、macOS 与 Microsoft Store 的更新分支不变。
+- **验证**:更新、本地化键与设置懒加载相关测试 107 通过、0 失败、0 跳过,包括 Linux 可写/不可写分支、浏览器异常、无更新不打开浏览器和切页后浏览器入口仍绑定到设置窗口。五份 resx 同步;中英文规格同步到 velashell-docs。真实桌面浏览器的启动需在 Linux 桌面环境验收。
+
+## ✅ 173. 2026-09-22 AI 插件:provider 健康检查 + 请求故障转移(用户定稿)
 
 回答不上来时不再一头撞死:按用户排好的有序链自动换一家继续说,UI 落在全局设置窗口新一节。
 口径全部由用户答完,实现照办,过程中没有改设计。
@@ -1861,7 +1867,7 @@ SSH 库此前没有成文的 API 规范，这次写进 `src/VelaShell.Ssh/AGENTS
 
 插件 README 新增「故障转移与健康检查」一节;`plan.md` 记本节。
 
-## 173. 2026-10-07 AI 插件:同供应商多 API Key、逐 Key 检测与可选轮流首发
+## 174. 2026-10-07 AI 插件:同供应商多 API Key、逐 Key 检测与可选轮流首发
 
 **行为**:目录的 API Key「再添加一个」改为同实例「添加 API Key」,只收空遮罩草稿,不复制供应商/模型或触发模型拉取。OAuth 第二账号仍独立实例。主槽沿用 `apikey:<provider.Id>`,补充槽按 Guid 加密;JSON 仅存 `AdditionalApiKeyIds`、`ActiveApiKeyId` 与默认关闭的 `BalanceApiKeys`,旧配置不迁移、不合并历史实例。
 
